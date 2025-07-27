@@ -4,15 +4,48 @@ description: "Webhooks provide a mechanism for real-time notifications when spec
 og:image: /images/cover-images/Webhooks.webp
 icon: "webhook"
 ---
+
 <Frame>
     <img src="/images/cover-images/Webhooks.webp" alt="Webhook Cover Image"/>
 </Frame>
 
+## Overview
 
-# Introduction
+Webhooks enable real-time communication between Dodo Payments and your application by sending HTTP POST requests to your specified endpoints when events occur. This guide covers webhook setup, event handling, security best practices, and troubleshooting.
 
-This guide will walk you through setting up and securely handling webhooks.
-Our implementation follows the [Standard Webhooks](https://standardwebhooks.com/) specification.
+<CardGroup cols={2}>
+  <Card title="Quick Setup" icon="bolt" href="#getting-started">
+    Get webhooks running in minutes with our step-by-step guide
+  </Card>
+  <Card title="Event Reference" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
+    Complete list of all webhook events and their payloads
+  </Card>
+  <Card title="Security Guide" icon="shield" href="#securing-webhooks">
+    Implement signature verification and secure webhook handling
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="#troubleshooting">
+    Debug common webhook issues and implementation problems
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<Note>
+**Standards Compliance:** Our webhooks follow the [Standard Webhooks](https://standardwebhooks.com/) specification, ensuring compatibility with existing tools and libraries.
+
+**Built-in Security:** All webhooks include HMAC SHA256 signatures for verification and tamper detection.
+
+**Reliability:** Automatic retries with exponential backoff ensure webhook delivery even during temporary outages.
+</Note>
+
+## Prerequisites
+
+Before implementing webhooks, ensure you have:
+
+- A publicly accessible HTTPS endpoint to receive webhook events
+- SSL certificate for your webhook endpoint (required for production)
+- Basic understanding of HTTP POST requests and JSON parsing
+- Webhook secret key from your Dodo Payments dashboard
 
 ## Getting Started
 
@@ -161,24 +194,297 @@ You can also use the Dodo Payments dashboard to manually retry each message at a
 
 ## Securing Webhooks
 
-To ensure the security of your webhooks, always validate the payloads and use HTTPS.    
+Security is crucial for webhook implementations. Always validate payloads, use HTTPS, and implement proper signature verification.
 
-### Verifying Signatures
+### Signature Verification
 
-Each webhook request includes a `webhook-signature` header -- an HMAC SHA256 signature of the webhook payload and timestamp, signed with your secret key.
-To verify a webhook came from DodoPayments:
+Every webhook request includes cryptographic signatures to ensure authenticity and prevent tampering.
 
-1. Compute the HMAC SHA256 of this string using your webhook secret key obtained from the DodoPayments Dashboard
-2. Concatenate the `webhook-id`, `webhook-timestamp`, and stringified `payload` values from the webhook with periods (`.`)  
-The respective payloads for outgoing webhooks can be found in the [Webhook Payload](/developer-resources/webhooks/intents/payment).
+<Tabs>
+  <Tab title="Node.js (Standard Webhooks)">
+    ```javascript
+    const { Webhook } = require('standardwebhooks');
+    const express = require('express');
+    const app = express();
+    
+    // Middleware to capture raw body for signature verification
+    app.use('/webhook/dodo-payments', express.raw({ type: 'application/json' }));
+    
+    const webhook = new Webhook(process.env.DODO_WEBHOOK_SECRET);
+    
+    app.post('/webhook/dodo-payments', async (req, res) => {
+      try {
+        const body = req.body;
+        const headers = {
+          'webhook-id': req.headers['webhook-id'],
+          'webhook-signature': req.headers['webhook-signature'],
+          'webhook-timestamp': req.headers['webhook-timestamp']
+        };
+        
+        // Verify the webhook signature
+        const payload = webhook.verify(body, headers);
+        
+        console.log('Verified webhook payload:', payload);
+        
+        // Process the event
+        await handleWebhookEvent(payload);
+        
+        res.status(200).json({ received: true });
+      } catch (error) {
+        console.error('Webhook verification failed:', error);
+        res.status(400).json({ error: 'Webhook verification failed' });
+      }
+    });
+    
+    async function handleWebhookEvent(event) {
+      switch (event.type) {
+        case 'payment.succeeded':
+          await handlePaymentSuccess(event.data);
+          break;
+        case 'subscription.active':
+          await handleSubscriptionActive(event.data);
+          break;
+        // Handle other events...
+        default:
+          console.log(`Unhandled event type: ${event.type}`);
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Python (Standard Webhooks)">
+    ```python
+    from standardwebhooks import Webhook
+    from flask import Flask, request, jsonify
+    import os
+    import json
+    
+    app = Flask(__name__)
+    webhook = Webhook(os.environ['DODO_WEBHOOK_SECRET'])
+    
+    @app.route('/webhook/dodo-payments', methods=['POST'])
+    def handle_webhook():
+        try:
+            body = request.get_data()
+            headers = {
+                'webhook-id': request.headers.get('webhook-id'),
+                'webhook-signature': request.headers.get('webhook-signature'),
+                'webhook-timestamp': request.headers.get('webhook-timestamp')
+            }
+            
+            # Verify the webhook signature
+            payload = webhook.verify(body, headers)
+            
+            print(f"Verified webhook payload: {payload}")
+            
+            # Process the event
+            handle_webhook_event(payload)
+            
+            return jsonify({'received': True}), 200
+            
+        except Exception as e:
+            print(f"Webhook verification failed: {str(e)}")
+            return jsonify({'error': 'Webhook verification failed'}), 400
+    
+    def handle_webhook_event(event):
+        event_type = event.get('type')
+        event_data = event.get('data')
+        
+        if event_type == 'payment.succeeded':
+            handle_payment_success(event_data)
+        elif event_type == 'subscription.active':
+            handle_subscription_active(event_data)
+        # Handle other events...
+        else:
+            print(f"Unhandled event type: {event_type}")
+    ```
+  </Tab>
+  
+  <Tab title="Manual Verification">
+    ```javascript
+    const crypto = require('crypto');
+    
+    function verifyWebhookSignature(payload, signature, timestamp, webhookId, secret) {
+      // Construct the signed payload string
+      const signedPayload = `${webhookId}.${timestamp}.${payload}`;
+      
+      // Compute HMAC SHA256
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(signedPayload, 'utf8')
+        .digest('base64');
+      
+      // Compare signatures (use crypto.timingSafeEqual to prevent timing attacks)
+      const actualSignature = signature.replace('v1,', ''); // Remove version prefix
+      
+      return crypto.timingSafeEqual(
+        Buffer.from(expectedSignature, 'base64'),
+        Buffer.from(actualSignature, 'base64')
+      );
+    }
+    
+    app.post('/webhook/dodo-payments', express.raw({ type: 'application/json' }), (req, res) => {
+      const payload = req.body.toString();
+      const signature = req.headers['webhook-signature'];
+      const timestamp = req.headers['webhook-timestamp'];
+      const webhookId = req.headers['webhook-id'];
+      
+      if (!verifyWebhookSignature(payload, signature, timestamp, webhookId, WEBHOOK_SECRET)) {
+        return res.status(400).json({ error: 'Invalid signature' });
+      }
+      
+      // Process verified webhook
+      const event = JSON.parse(payload);
+      handleWebhookEvent(event);
+      
+      res.status(200).json({ received: true });
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Go Implementation">
+    ```go
+    package main
+    
+    import (
+        "crypto/hmac"
+        "crypto/sha256"
+        "encoding/base64"
+        "encoding/json"
+        "fmt"
+        "io"
+        "net/http"
+        "os"
+        "strings"
+    )
+    
+    func verifyWebhookSignature(payload, signature, timestamp, webhookID, secret string) bool {
+        // Construct signed payload
+        signedPayload := fmt.Sprintf("%s.%s.%s", webhookID, timestamp, payload)
+        
+        // Compute HMAC SHA256
+        h := hmac.New(sha256.New, []byte(secret))
+        h.Write([]byte(signedPayload))
+        expectedSignature := base64.StdEncoding.EncodeToString(h.Sum(nil))
+        
+        // Remove version prefix and compare
+        actualSignature := strings.TrimPrefix(signature, "v1,")
+        
+        return hmac.Equal([]byte(expectedSignature), []byte(actualSignature))
+    }
+    
+    func webhookHandler(w http.ResponseWriter, r *http.Request) {
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+            http.Error(w, "Unable to read body", http.StatusBadRequest)
+            return
+        }
+        
+        signature := r.Header.Get("webhook-signature")
+        timestamp := r.Header.Get("webhook-timestamp")
+        webhookID := r.Header.Get("webhook-id")
+        
+        if !verifyWebhookSignature(string(body), signature, timestamp, webhookID, os.Getenv("DODO_WEBHOOK_SECRET")) {
+            http.Error(w, "Invalid signature", http.StatusUnauthorized)
+            return
+        }
+        
+        // Process verified webhook
+        var event map[string]interface{}
+        if err := json.Unmarshal(body, &event); err != nil {
+            http.Error(w, "Invalid JSON", http.StatusBadRequest)
+            return
+        }
+        
+        handleWebhookEvent(event)
+        
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(map[string]bool{"received": true})
+    }
+    ```
+  </Tab>
+</Tabs>
 
-3. Compare the computed signature to the received `webhook-signature` header value. If they match, the webhook is authentic.
+### Security Best Practices
 
-Since we follow the Standard Webhooks specification, you can use one of their libraries to verify the signature: https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries
+<AccordionGroup>
+  <Accordion title="Signature Verification">
+    **Always verify signatures before processing webhooks:**
+    
+    - Use the Standard Webhooks library when available
+    - Implement constant-time comparison to prevent timing attacks
+    - Store webhook secrets securely (environment variables, secret managers)
+    - Rotate webhook secrets periodically
+  </Accordion>
+  
+  <Accordion title="HTTPS Requirements">
+    **Use HTTPS for all webhook endpoints:**
+    
+    - SSL certificates are required for production webhooks
+    - Use TLS 1.2 or higher
+    - Verify certificate validity during testing
+    - Consider using services like Let's Encrypt for free SSL
+  </Accordion>
+  
+  <Accordion title="Idempotency">
+    **Handle duplicate webhooks gracefully:**
+    
+    ```javascript
+    const processedWebhooks = new Set();
+    
+    app.post('/webhook/dodo-payments', (req, res) => {
+      const webhookId = req.headers['webhook-id'];
+      
+      // Check if already processed
+      if (processedWebhooks.has(webhookId)) {
+        return res.status(200).json({ received: true, duplicate: true });
+      }
+      
+      // Process webhook
+      processWebhook(req.body);
+      
+      // Mark as processed
+      processedWebhooks.add(webhookId);
+      
+      res.status(200).json({ received: true });
+    });
+    ```
+  </Accordion>
+  
+  <Accordion title="Error Handling">
+    **Implement robust error handling:**
+    
+    ```javascript
+    app.post('/webhook/dodo-payments', async (req, res) => {
+      try {
+        // Verify and process webhook
+        await processWebhook(req.body);
+        res.status(200).json({ received: true });
+      } catch (error) {
+        console.error('Webhook processing error:', error);
+        
+        // Return 2xx for known errors to prevent retries
+        if (error.type === 'BUSINESS_LOGIC_ERROR') {
+          res.status(200).json({ received: true, error: 'handled' });
+        } else {
+          // Return 5xx for unknown errors to trigger retries
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
 
-### Responding to Webhooks
-- Your webhook handler must return a `2xx status code` to acknowledge receipt of the event.
-- Any other response will be treated as a failure, and the webhook will be retried.
+### Response Requirements
+
+<Note>
+**Important:** Your webhook endpoint must respond with a `2xx` status code to acknowledge successful receipt. Any other response will trigger our retry mechanism.
+
+**Timeout:** Webhook requests timeout after 15 seconds (including connection and read time).
+
+**Content-Type:** Responses should include appropriate `Content-Type` headers (e.g., `application/json`).
+</Note>
 
 ## Outgoing Webhook Payload Structure
 
@@ -193,7 +499,300 @@ POST /your-webhook-url
 ### Headers
 
 <ParamField header="webhook-id" type="string" required>
-Unique identifier for the webhook.
+Unique identifier for the webhook event. Use this for idempotency.
+</ParamField>
+
+<ParamField header="webhook-signature" type="string" required>
+HMAC SHA256 signature of the payload for verification. Format: `v1,{signature}`
+</ParamField>
+
+<ParamField header="webhook-timestamp" type="string" required>
+Unix timestamp of when the webhook was sent. Used in signature calculation.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+Always `application/json` for webhook payloads.
+</ParamField>
+
+### Payload Structure
+
+```json
+{
+  "type": "payment.succeeded",
+  "data": {
+    "payment_id": "pay_abc123",
+    "amount": 2999,
+    "currency": "USD",
+    "status": "succeeded",
+    "customer": {
+      "customer_id": "cus_xyz789",
+      "email": "customer@example.com",
+      "name": "John Doe"
+    },
+    "created_at": "2023-12-07T10:30:00Z"
+  },
+  "business_id": "biz_def456",
+  "timestamp": "2023-12-07T10:30:05Z"
+}
+```
+
+For complete payload documentation, see our [webhook events guide](/developer-resources/webhooks/intents/webhook-events-guide).
+
+## Troubleshooting
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Webhook Not Receiving Events">
+    **Symptoms:**
+    - No webhook requests reaching your endpoint
+    - Events visible in dashboard but not delivered
+    
+    **Solutions:**
+    <Steps>
+      <Step title="Verify URL Configuration">
+        - Ensure webhook URL is publicly accessible
+        - Test URL manually with tools like curl or Postman
+        - Check for typos in the configured URL
+      </Step>
+      <Step title="Check Firewall Settings">
+        - Verify your server accepts incoming HTTPS connections
+        - Check firewall rules and port configurations
+        - Ensure SSL certificate is valid and trusted
+      </Step>
+      <Step title="Review Event Subscriptions">
+        - Verify you've subscribed to the relevant events
+        - Check dashboard webhook configuration
+        - Ensure endpoint is active and not disabled
+      </Step>
+    </Steps>
+  </Accordion>
+  
+  <Accordion title="Signature Verification Failures">
+    **Symptoms:**
+    - Webhooks arriving but signature verification fails
+    - Getting `400` responses due to invalid signatures
+    
+    **Solutions:**
+    <Steps>
+      <Step title="Check Secret Key">
+        - Verify you're using the correct webhook secret
+        - Ensure secret matches the one in dashboard
+        - Check for extra spaces or characters
+      </Step>
+      <Step title="Verify Payload Handling">
+        - Ensure you're reading raw request body
+        - Don't parse JSON before signature verification
+        - Check for middleware that modifies the body
+      </Step>
+      <Step title="Debug Signature Calculation">
+        ```javascript
+        console.log('Webhook ID:', req.headers['webhook-id']);
+        console.log('Timestamp:', req.headers['webhook-timestamp']);
+        console.log('Signature:', req.headers['webhook-signature']);
+        console.log('Body:', req.body.toString());
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+  
+  <Accordion title="Timeout Issues">
+    **Symptoms:**
+    - Webhooks timing out after 15 seconds
+    - Multiple retries for the same event
+    
+    **Solutions:**
+    <Steps>
+      <Step title="Optimize Processing Time">
+        - Respond with `200` immediately, process asynchronously
+        - Use background jobs for heavy processing
+        - Implement database connection pooling
+      </Step>
+      <Step title="Quick Response Pattern">
+        ```javascript
+        app.post('/webhook/dodo-payments', async (req, res) => {
+          // Respond immediately
+          res.status(200).json({ received: true });
+          
+          // Process asynchronously
+          setImmediate(async () => {
+            try {
+              await processWebhookEvent(req.body);
+            } catch (error) {
+              console.error('Background processing error:', error);
+            }
+          });
+        });
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+  
+  <Accordion title="Duplicate Events">
+    **Symptoms:**
+    - Receiving the same event multiple times
+    - Duplicate processing in your system
+    
+    **Solutions:**
+    <Steps>
+      <Step title="Implement Idempotency">
+        ```javascript
+        const processedEvents = new Set();
+        
+        app.post('/webhook/dodo-payments', (req, res) => {
+          const webhookId = req.headers['webhook-id'];
+          
+          if (processedEvents.has(webhookId)) {
+            return res.status(200).json({ received: true, duplicate: true });
+          }
+          
+          processedEvents.add(webhookId);
+          // Process event...
+        });
+        ```
+      </Step>
+      <Step title="Database-Based Deduplication">
+        ```javascript
+        async function processWebhook(webhookId, eventData) {
+          const existing = await db.webhook_events.findOne({ webhook_id: webhookId });
+          if (existing) {
+            return { processed: false, reason: 'duplicate' };
+          }
+          
+          await db.webhook_events.create({ webhook_id: webhookId, processed_at: new Date() });
+          // Process event...
+          return { processed: true };
+        }
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+### Testing Webhooks
+
+<Tabs>
+  <Tab title="Local Development">
+    **Using ngrok for local testing:**
+    
+    ```bash
+    # Install ngrok
+    npm install -g ngrok
+    
+    # Start your local server
+    node server.js
+    
+    # Expose local server (replace 3000 with your port)
+    ngrok http 3000
+    
+    # Use the HTTPS URL from ngrok in your webhook configuration
+    ```
+    
+    **Local webhook server example:**
+    ```javascript
+    const express = require('express');
+    const app = express();
+    
+    app.use(express.raw({ type: 'application/json' }));
+    
+    app.post('/webhook/dodo-payments', (req, res) => {
+      console.log('Webhook received:');
+      console.log('Headers:', req.headers);
+      console.log('Body:', req.body.toString());
+      
+      res.status(200).json({ received: true });
+    });
+    
+    app.listen(3000, () => {
+      console.log('Webhook server running on port 3000');
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Test Webhook">
+    **Manual webhook testing:**
+    
+    ```bash
+    # Test your webhook endpoint
+    curl -X POST https://your-domain.com/webhook/dodo-payments \
+      -H "Content-Type: application/json" \
+      -H "webhook-id: test-webhook-id" \
+      -H "webhook-timestamp: $(date +%s)" \
+      -H "webhook-signature: v1,test-signature" \
+      -d '{"type":"payment.succeeded","data":{"payment_id":"test"}}'
+    ```
+    
+    **Webhook testing tools:**
+    - [webhook.site](https://webhook.site) - Temporary webhook URLs
+    - [RequestBin](https://requestbin.com) - Inspect webhook requests
+    - [Postman](https://postman.com) - API testing with webhook simulation
+  </Tab>
+  
+  <Tab title="Production Testing">
+    **Testing in production:**
+    
+    ```javascript
+    // Test mode webhook handler
+    app.post('/webhook/dodo-payments', (req, res) => {
+      const event = JSON.parse(req.body);
+      
+      if (event.type === 'payment.succeeded' && event.data.payment_id.startsWith('test_')) {
+        console.log('Test mode payment detected');
+        // Handle test event differently
+      }
+      
+      res.status(200).json({ received: true });
+    });
+    ```
+    
+    **Monitor webhook health:**
+    ```javascript
+    const webhookMetrics = {
+      received: 0,
+      processed: 0,
+      errors: 0,
+      lastReceived: null
+    };
+    
+    app.post('/webhook/dodo-payments', async (req, res) => {
+      webhookMetrics.received++;
+      webhookMetrics.lastReceived = new Date();
+      
+      try {
+        await processWebhook(req.body);
+        webhookMetrics.processed++;
+      } catch (error) {
+        webhookMetrics.errors++;
+        throw error;
+      }
+      
+      res.status(200).json({ received: true });
+    });
+    
+    // Health check endpoint
+    app.get('/webhook/health', (req, res) => {
+      res.json(webhookMetrics);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### Getting Help
+
+<CardGroup cols={2}>
+  <Card title="Developer Support" icon="headset" href="/miscellaneous/help-support">
+    Contact our technical support team for webhook implementation help
+  </Card>
+  <Card title="Event Reference" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
+    Complete reference of all webhook events and payloads
+  </Card>
+  <Card title="Standard Webhooks" icon="external-link" href="https://standardwebhooks.com/">
+    Learn more about the Standard Webhooks specification
+  </Card>
+  <Card title="GitHub Libraries" icon="github" href="https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries">
+    Official Standard Webhooks libraries for signature verification
+  </Card>
+</CardGroup>
 </ParamField>
 <ParamField header="webhook-signature" type="string" required>
 Signature of the Webhook (HMAC SHA256).

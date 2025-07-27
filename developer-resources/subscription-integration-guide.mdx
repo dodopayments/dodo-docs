@@ -61,27 +61,51 @@ For detailed dashboard setup instructions, see our [integration guide](/develope
 
 ## API Integration  
 
-### Payment Links  
+### Creating Subscription Payment Links
 
-Dodo Payments supports two types of payment links:  
+Dodo Payments offers two approaches for subscription payment link creation:
 
-#### 1. Static Payment Links  
+<Tabs>
+  <Tab title="Static Payment Links">
+    **Best for:** Simple subscriptions with predefined products
+    
+    ```text
+    https://checkout.dodopayments.com/buy/{subscription_product_id}?quantity=1&redirect_url={return_url}
+    ```
+    
+    **Example:**
+    ```text
+    https://checkout.dodopayments.com/buy/pdt_sub_abc123?quantity=1&redirect_url=https://yourapp.com/success
+    ```
+    
+    **Query Parameters:**
+    - `quantity`: Number of subscriptions (default: 1)
+    - `redirect_url`: Where to redirect after subscription setup
+    - `email`: Pre-fill customer email
+    - `firstName`: Pre-fill first name
+    - `lastName`: Pre-fill last name
+    
+    See our [static payment links guide](/developer-resources/integration-guide#1-static-payment-links) for more details.
+  </Tab>
+  
+  <Tab title="Dynamic Payment Links">
+    **Best for:** Custom pricing, multiple products, or personalized subscriptions
+    
+    Create subscription payment links programmatically using our API or SDKs:
+    
+    <Note>
+    **Important:** Set `payment_link: true` in your request to receive a payment link instead of processing the payment directly.
+    </Note>
+    
+    **API Endpoints:**
+    - **Subscription API:** [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) - For recurring billing
+    - **One-time Payment API:** [POST /payments](/api-reference/payments/post-payments) - For single payments
+    
+    This guide focuses on subscription creation. For one-time payments, see our [integration guide](/developer-resources/integration-guide).
+  </Tab>
+</Tabs>
 
-[Detailed Guide](/developer-resources/integration-guide#1-static-payment-links)  
-
-#### 2. Dynamic Payment Links  
-
-Created via API call or our SDK with customer details. Here's an example:  
-
-There are two APIs for creating dynamic payment links:  
-- **Subscription Payment Link API** - [API reference](/api-reference/subscriptions/post-subscriptions)  
-- **One-time Payment Link API** - [API reference](/api-reference/payments/post-payments)  
-
-The guide below focuses on subscription payment link creation.  
-
-For detailed instructions on integrating one-time products, refer to this [One-time Integration Guide](/developer-resources/integration-guide).  
-
-<Info>Make sure you are passing `payment_link = true` to get payment link </Info>
+### SDK Examples
 
 
 <Tabs>  
@@ -255,43 +279,149 @@ The following is an example of the response:
 Redirect the customer to `payment_link`.  
 
 
-### Webhooks
+### Webhook Integration
 
-When integrating subscriptions, you'll receive webhooks to track the subscription lifecycle. These webhooks help you manage subscription states and payment scenarios effectively.
+Webhooks are essential for subscription management, providing real-time notifications about subscription lifecycle events and payment processing.
 
-To set up your webhook endpoint, please follow our [Detailed Integration Guide](/developer-resources/integration-guide#implementing-webhooks).
+<Steps>
+  <Step title="Set Up Webhook Endpoint">
+    Configure your webhook endpoint to receive subscription events. See our [webhook setup guide](/developer-resources/webhooks) for detailed instructions.
+  </Step>
+  <Step title="Implement Event Handlers">
+    Handle subscription-specific events in your webhook endpoint
+  </Step>
+  <Step title="Test Webhook Delivery">
+    Verify webhook delivery using test mode subscriptions
+  </Step>
+</Steps>
 
 #### Subscription Event Types
 
-The following webhook events track subscription status changes:
+<AccordionGroup>
+  <Accordion title="subscription.active">
+    **Triggered when:** A subscription is successfully activated and ready for billing
+    
+    **Timing:** 
+    - Immediate billing: Within 2-10 minutes of subscription creation
+    - Trial period: When trial period ends
+    
+    **Use cases:**
+    - Grant access to subscription features
+    - Send welcome notifications
+    - Update customer status in your system
+  </Accordion>
+  
+  <Accordion title="subscription.renewed">
+    **Triggered when:** A subscription is renewed for the next billing period
+    
+    **Note:** This event occurs alongside `payment.succeeded` when payment is processed
+    
+    **Use cases:**
+    - Track billing cycles
+    - Update subscription status
+    - Send renewal confirmations
+  </Accordion>
+  
+  <Accordion title="subscription.on_hold">
+    **Triggered when:** A subscription is put on hold due to payment failure
+    
+    **Use cases:**
+    - Restrict access to subscription features
+    - Send payment retry notifications
+    - Update customer status
+  </Accordion>
+  
+  <Accordion title="subscription.failed">
+    **Triggered when:** Subscription creation fails during mandate setup
+    
+    **Use cases:**
+    - Handle subscription creation errors
+    - Notify customer of setup issues
+    - Trigger retry mechanisms
+  </Accordion>
+</AccordionGroup>
 
-1. **`subscription.active`** - Subscription is successfully activated.
-2. **`subscription.on_hold`** - Subscription is put on hold due to failed renewal.
-3. **`subscription.failed`** - Subscription creation failed during mandate creation.
-4. **`subscription.renewed`** - Subscription is renewed for the next billing period.
+#### Payment Event Flow
 
-For reliable subscription lifecycle management, we recommend tracking these subscription events.
+<Tabs>
+  <Tab title="Successful Subscription Flow">
+    **Event Sequence:**
+    
+    1. **`subscription.active`** - Subscription successfully activated
+    2. **`payment.succeeded`** - Initial payment processed (if no trial)
+    3. **`subscription.renewed`** - Subscription renewed for next cycle
+    
+    **Timeline:**
+    - **No trial period:** Events 1-3 occur within 2-10 minutes
+    - **With trial period:** Event 1 immediate, events 2-3 when trial ends
+    
+    ```javascript
+    // Example webhook handler
+    app.post('/webhook/dodo-payments', (req, res) => {
+      const event = req.body;
+      
+      switch (event.type) {
+        case 'subscription.active':
+          // Grant access to subscription features
+          await grantSubscriptionAccess(event.data.subscription_id);
+          break;
+          
+        case 'payment.succeeded':
+          // Record successful payment
+          await recordPayment(event.data.payment_id);
+          break;
+          
+        case 'subscription.renewed':
+          // Update billing cycle
+          await updateBillingCycle(event.data.subscription_id);
+          break;
+      }
+      
+      res.status(200).json({ received: true });
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Failed Subscription Flow">
+    **Event Sequence:**
+    
+    1. **`subscription.failed`** - Subscription creation failed
+    2. **`payment.failed`** - Payment processing failed
+    
+    **Common Causes:**
+    - Payment method declined
+    - Insufficient funds
+    - Invalid payment details
+    - Bank authentication failure
+    
+    ```javascript
+    // Example error handling
+    app.post('/webhook/dodo-payments', (req, res) => {
+      const event = req.body;
+      
+      switch (event.type) {
+        case 'subscription.failed':
+          // Handle subscription creation failure
+          await handleSubscriptionFailure(event.data);
+          await notifyCustomerOfFailure(event.data.customer_id);
+          break;
+          
+        case 'payment.failed':
+          // Handle payment failure
+          await handlePaymentFailure(event.data);
+          await triggerPaymentRetry(event.data.subscription_id);
+          break;
+      }
+      
+      res.status(200).json({ received: true });
+    });
+    ```
+  </Tab>
+</Tabs>
 
-#### Payment Scenarios
-
-**Successful Payment Flow**
-
-When a payment succeeds, you'll receive the following webhooks:
-
-
-1. `subscription.active` - Indicates subscription activation
-2. `payment.succeeded` - Confirms the initial payment:
-    - For immediate billing (0 trial days): Expect within 2-10 minutes
-    - For trial days: whenever that ends
-3. `subscription.renewed` - Indicates payment deduction and renewal for next cycle. (Basically, whenever payment gets deducted for subscription products, you will get `subscription.renewed` webhook along with `payment.succeeded`)
-
-**Payment Failure Scenarios**
-
-1. Subscription Failure
-  - `subscription.failed` - Subscription creation failed due to failure to create a mandate.
-  - `payment.failed` - Indicates failed payment.
-
-<Info>**Best Practice**: To simplify implementation, we recommend primarily tracking subscription events for managing the subscription lifecycle.</Info>
+<Note>
+**Best Practice:** Focus on subscription events (`subscription.*`) for lifecycle management, and use payment events (`payment.*`) for transaction tracking and reconciliation.
+</Note>
 
 ### Sample Subscription event payload
 
