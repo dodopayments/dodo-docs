@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to Dodo Payments documentation! We appreciate your help in making our documentation more comprehensive, accurate, and user-friendly.
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
@@ -13,7 +13,7 @@ Thank you for your interest in contributing to Dodo Payments documentation! We a
 - [Review Process](#review-process)
 - [Recognition](#recognition)
 
-## 📜 Code of Conduct
+## Code of Conduct
 
 ### Our Pledge
 
@@ -62,7 +62,7 @@ We are committed to providing a friendly, safe, and welcoming environment for al
    git checkout -b feature/your-feature-name
    ```
 
-## 🤝 Types of Contributions
+## Types of Contributions
 
 ### Documentation Improvements
 
@@ -70,22 +70,12 @@ We are committed to providing a friendly, safe, and welcoming environment for al
 - **New Guides**: Create tutorials for common use cases
 - **Code Examples**: Add or improve code snippets
 - **Diagrams**: Create visual aids to explain complex concepts
-
-### Technical Contributions
-
 - **API Documentation**: Update endpoint descriptions, parameters, and responses
 - **Integration Guides**: Document new framework adaptors or third-party integrations
 - **Troubleshooting**: Add solutions for common issues
-- **Performance Tips**: Share optimization techniques
 
-### Translations
 
-Help make our documentation accessible to a global audience:
-- Translate existing content
-- Review and improve translations
-- Maintain consistency across languages
-
-## 💻 Development Process
+## Development Process
 
 ### File Structure
 
@@ -117,10 +107,10 @@ dodo-docs/
    ```
 
 3. **Update Navigation**
-   - Edit `docs.json` to include your new page
+   - Edit `docs.json` to include your new page (if you have created one)
    - Maintain logical grouping and hierarchy
 
-## 📝 Style Guide
+## Style Guide
 
 ### Writing Style
 
@@ -131,13 +121,6 @@ dodo-docs/
 
 ### Formatting Guidelines
 
-#### Headers
-```mdx
-# H1 - Page Title (one per page)
-## H2 - Major Sections
-### H3 - Subsections
-#### H4 - Sub-subsections (use sparingly)
-```
 
 #### Code Blocks
 ````mdx
@@ -146,35 +129,7 @@ dodo-docs/
 const apiKey = process.env.DODO_API_KEY;
 ```
 ````
-
-#### API Examples
-```mdx
-<CodeGroup>
-```bash cURL
-curl -X POST https://api.dodopayments.com/v1/payments \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "amount": 1000,
-    "currency": "USD"
-  }'
-```
-
-```javascript Node.js
-const response = await fetch('https://api.dodopayments.com/v1/payments', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_API_KEY',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    amount: 1000,
-    currency: 'USD'
-  })
-});
-```
-</CodeGroup>
-```
+Use `expandable` after the language tag, such as `javascript expandable`, if the code block exceeds 4 lines.
 
 #### Images
 ```mdx
@@ -183,7 +138,9 @@ const response = await fetch('https://api.dodopayments.com/v1/payments', {
 </Frame>
 ```
 
-### Component Usage
+### Component Usage Example
+
+Dodo Payments uses Mintlify to maintain its documentation page. Please check the [Mintlify Documentation](https://mintlify.com/docs) for all available components.
 
 #### Cards
 ```mdx
@@ -219,13 +176,13 @@ const response = await fetch('https://api.dodopayments.com/v1/payments', {
 </AccordionGroup>
 ```
 
-## 🚢 Submitting Changes
+## Submitting Changes
 
 ### Pre-submission Checklist
 
 - [ ] Test your changes locally with `mintlify dev`
-- [ ] Check for broken links and images
-- [ ] Verify code examples work correctly
+- [ ] Check for broken links and images with `mintlify broken-links`
+- [ ] Verify code examples work correctly if you made any changes
 - [ ] Update relevant navigation in `docs.json`
 - [ ] Follow the style guide
 - [ ] Write a clear commit message
@@ -289,7 +246,7 @@ feat(integration): add Stripe integration guide
    Closes #123
    ```
 
-## 👀 Review Process
+## Review Process
 
 ### What We Look For
 
@@ -311,30 +268,24 @@ feat(integration): add Stripe integration guide
 - You'll be added to our contributors list
 - Consider joining our Discord to stay connected
 
-## 🌟 Recognition
+## Recognition
 
 We value all contributions and recognize our contributors through:
 
 - **Contributors List**: Added to our README
-- **Discord Role**: Special contributor role in our Discord server
-- **Swag**: Top contributors receive Dodo Payments swag
-- **Shoutouts**: Monthly recognition in our newsletter
+- **Exclusive Merch**: Exceptional contributors may receive Dodo Payments merchandise as a token of our appreciation
 
-## 📞 Getting Help
+
+## Getting Help
 
 If you need assistance:
 
 - **Discord**: Join our [Discord server](https://discord.gg/bYqAp4ayYh)
 - **GitHub Issues**: Open an issue for bugs or suggestions
-- **Email**: docs@dodopayments.com for direct support
+- **Email**: support@dodopayments.com for direct support
 
-## 🔗 Useful Resources
 
-- [Mintlify Documentation](https://mintlify.com/docs)
-- [MDX Documentation](https://mdxjs.com/)
-- [Dodo Payments API Reference](https://docs.dodopayments.com/api-reference)
-- [Style Guide Examples](https://docs.dodopayments.com/development)
 
 ---
 
-Thank you for contributing to Dodo Payments documentation! Your efforts help developers worldwide integrate payments more effectively. 🎉
+Thank you for contributing to Dodo Payments documentation! Your efforts help developers worldwide integrate payments more effectively.
