@@ -3,8 +3,9 @@ info:
   title: public
   description: ''
   license:
-    name: GPL-3.0
-  version: 1.51.0
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  version: 1.52.1
 servers:
   - url: https://test.dodopayments.com/
     description: Test Mode Server Host
@@ -2138,23 +2139,85 @@ paths:
     get:
       tags:
         - Events
-      summary: Get events endpoint
+      summary: Retrieve events with advanced filtering and pagination
+      description: >-
+        Fetch events from your account with powerful filtering capabilities. This endpoint is ideal for:
+
+        - Debugging event ingestion issues
+
+        - Analyzing customer usage patterns
+
+        - Building custom analytics dashboards
+
+        - Auditing billing-related events
+
+
+        ## Filtering Options:
+
+        - **Customer filtering**: Filter by specific customer ID
+
+        - **Event name filtering**: Filter by event type/name
+
+        - **Meter-based filtering**: Use a meter ID to apply the meter's event name and filter criteria
+        automatically
+
+        - **Time range filtering**: Filter events within a specific date range
+
+        - **Pagination**: Navigate through large result sets
+
+
+        ## Meter Integration:
+
+        When using `meter_id`, the endpoint automatically applies:
+
+        - The meter's configured `event_name` filter
+
+        - The meter's custom filter criteria (if any)
+
+        - If you also provide `event_name`, it must match the meter's event name
+
+
+        ## Example Queries:
+
+        - Get all events for a customer: `?customer_id=cus_abc123`
+
+        - Get API request events: `?event_name=api_request`
+
+        - Get events from last 24 hours: `?start=2024-01-14T10:30:00Z&end=2024-01-15T10:30:00Z`
+
+        - Get events with meter filtering: `?meter_id=mtr_xyz789`
+
+        - Paginate results: `?page_size=50&page_number=2`
       operationId: get_events
       parameters:
         - name: customer_id
           in: query
+          description: Filter events by customer ID
           required: false
           schema:
             type: string
           style: form
         - name: event_name
           in: query
+          description: >-
+            Filter events by event name. If both event_name and meter_id are provided, they must match the
+            meter's configured event_name
+          required: false
+          schema:
+            type: string
+          style: form
+        - name: meter_id
+          in: query
+          description: >-
+            Filter events by meter ID. When provided, only events that match the meter's event_name and filter
+            criteria will be returned
           required: false
           schema:
             type: string
           style: form
         - name: page_size
           in: query
+          description: 'Number of events to return per page (default: 10)'
           required: false
           schema:
             type: integer
@@ -2163,6 +2226,7 @@ paths:
           style: form
         - name: page_number
           in: query
+          description: 'Page number (0-based, default: 0)'
           required: false
           schema:
             type: integer
@@ -2171,6 +2235,7 @@ paths:
           style: form
         - name: start
           in: query
+          description: Filter events created after this timestamp
           required: false
           schema:
             type: string
@@ -2178,6 +2243,7 @@ paths:
           style: form
         - name: end
           in: query
+          description: Filter events created before this timestamp
           required: false
           schema:
             type: string
@@ -2191,16 +2257,123 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetEventsResponse'
         '400':
-          description: Invalid request
+          description: Invalid request - invalid query parameters, conflicting meter/event names, or malformed dates
         '401':
-          description: Unauthorized
+          description: Unauthorized - invalid or missing API key
+        '404':
+          description: Meter not found - the specified meter_id does not exist
+        '422':
+          description: Unprocessable entity - validation errors in query parameters
       security:
         - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            // Automatically fetches more pages as needed.
+            for await (const event of client.usageEvents.list()) {
+              console.log(event.business_id);
+            }
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            page = client.usage_events.list()
+            page = page.items[0]
+            print(page.business_id)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              page, err := client.UsageEvents.List(context.TODO(), dodopayments.UsageEventListParams{
+
+              })
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", page)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            page = dodo_payments.usage_events.list
+
+            puts(page)
   /events/ingest:
     post:
       tags:
         - Events
-      summary: Ingest events endpoint
+      summary: Ingest events for usage-based billing and analytics
+      description: >-
+        This endpoint allows you to ingest custom events that can be used for:
+
+        - Usage-based billing and metering
+
+        - Analytics and reporting
+
+        - Customer behavior tracking
+
+
+        ## Important Notes:
+
+        - **Duplicate Prevention**:
+          - Duplicate `event_id` values within the same request are rejected (entire request fails)
+          - Subsequent requests with existing `event_id` values are ignored (idempotent behavior)
+        - **Rate Limiting**: Maximum 1000 events per request
+
+        - **Time Validation**: Events with timestamps older than 1 hour or more than 5 minutes in the future
+        will be rejected
+
+        - **Metadata Limits**: Maximum 50 key-value pairs per event, keys max 100 chars, values max 500 chars
+
+
+        ## Example Usage:
+
+        ```json
+
+        {
+          "events": [
+            {
+              "event_id": "api_call_12345",
+              "customer_id": "cus_abc123",
+              "event_name": "api_request",
+              "timestamp": "2024-01-15T10:30:00Z",
+              "metadata": {
+                "endpoint": "/api/v1/users",
+                "method": "GET",
+                "tokens_used": "150"
+              }
+            }
+          ]
+        }
+
+        ```
       operationId: ingest_events
       requestBody:
         content:
@@ -2216,21 +2389,139 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestEventsResponse'
         '400':
-          description: Invalid request
+          description: Invalid request - validation errors, duplicate event IDs, or invalid timestamps
         '401':
-          description: Unauthorized
+          description: Unauthorized - invalid or missing API key
+        '413':
+          description: Payload too large - request exceeds maximum allowed size
+        '422':
+          description: Unprocessable entity - malformed JSON or schema validation errors
+        '429':
+          description: Too many requests - rate limit exceeded
       security:
         - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            const response = await client.usageEvents.ingest({
+              events: [{ customer_id: 'customer_id', event_id: 'event_id', event_name: 'event_name' }],
+            });
+
+            console.log(response.ingested_count);
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            response = client.usage_events.ingest(
+                events=[{
+                    "customer_id": "customer_id",
+                    "event_id": "event_id",
+                    "event_name": "event_name",
+                }],
+            )
+            print(response.ingested_count)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              response, err := client.UsageEvents.Ingest(context.TODO(), dodopayments.UsageEventIngestParams{
+                Events: dodopayments.F([]dodopayments.EventInputParam{dodopayments.EventInputParam{
+                  CustomerID: dodopayments.F("customer_id"),
+                  EventID: dodopayments.F("event_id"),
+                  EventName: dodopayments.F("event_name"),
+                }}),
+              })
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", response.IngestedCount)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            response = dodo_payments.usage_events.ingest(
+              events: [{customer_id: "customer_id", event_id: "event_id", event_name: "event_name"}]
+            )
+
+            puts(response)
   /events/{event_id}:
     get:
       tags:
         - Events
-      summary: Get single event by ID endpoint
+      summary: Retrieve a specific event by its unique ID
+      description: >-
+        Fetch detailed information about a single event using its unique event ID. This endpoint is useful
+        for:
+
+        - Debugging specific event ingestion issues
+
+        - Retrieving event details for customer support
+
+        - Validating that events were processed correctly
+
+        - Getting the complete metadata for an event
+
+
+        ## Event ID Format:
+
+        The event ID should be the same value that was provided during event ingestion via the
+        `/events/ingest` endpoint.
+
+        Event IDs are case-sensitive and must match exactly.
+
+
+        ## Response Details:
+
+        The response includes all event data including:
+
+        - Complete metadata key-value pairs
+
+        - Original timestamp (preserved from ingestion)
+
+        - Customer and business association
+
+        - Event name and processing information
+
+
+        ## Example Usage:
+
+        ```text
+
+        GET /events/api_call_12345
+
+        ```
       operationId: get_event_by_id
       parameters:
         - name: event_id
           in: path
-          description: Event ID
+          description: Unique event identifier (case-sensitive, must match the ID used during ingestion)
           required: true
           schema:
             type: string
@@ -2242,11 +2533,70 @@ paths:
               schema:
                 $ref: '#/components/schemas/Event'
         '401':
-          description: Unauthorized
+          description: Unauthorized - invalid or missing API key
         '404':
-          description: Event not found
+          description: Event not found - no event exists with the specified ID for your business
+        '422':
+          description: Unprocessable entity - invalid event ID format
       security:
         - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            const event = await client.usageEvents.retrieve('event_id');
+
+            console.log(event.business_id);
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            event = client.usage_events.retrieve(
+                "event_id",
+            )
+            print(event.business_id)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              event, err := client.UsageEvents.Get(context.TODO(), "event_id")
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", event.BusinessID)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            event = dodo_payments.usage_events.retrieve("event_id")
+
+            puts(event)
   /invoices/payments/{payment_id}:
     get:
       tags:
@@ -2335,6 +2685,94 @@ paths:
             payment = dodo_payments.invoices.payments.retrieve("payment_id")
 
             puts(payment)
+  /invoices/refunds/{refund_id}:
+    get:
+      tags:
+        - Invoices
+      operationId: get_refund_invoice_no_auth
+      parameters:
+        - name: refund_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: PDF document
+          content:
+            application/pdf:
+              schema:
+                type: array
+                items:
+                  type: integer
+                  format: int32
+                  minimum: 0
+        '429':
+          description: Too Many Requests have been sent
+        '500':
+          description: Something went wrong :(
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            const response = await client.invoices.payments.retrieveRefund('refund_id');
+
+            console.log(response);
+
+            const content = await response.blob();
+            console.log(content);
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            response = client.invoices.payments.retrieve_refund(
+                "refund_id",
+            )
+            print(response)
+            content = response.read()
+            print(content)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              response, err := client.Invoices.Payments.GetRefund(context.TODO(), "refund_id")
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", response)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            response = dodo_payments.invoices.payments.retrieve_refund("refund_id")
+
+            puts(response)
   /license_key_instances:
     get:
       tags:
@@ -3175,6 +3613,436 @@ paths:
             response = dodo_payments.licenses.validate(license_key: "2b1f8e2d-c41e-4e8f-b2d3-d9fd61c38f43")
 
             puts(response)
+  /meters:
+    get:
+      tags:
+        - Meters
+      operationId: list_meters_handler
+      parameters:
+        - name: page_size
+          in: query
+          description: Page size default is 10 max is 100
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+          style: form
+        - name: page_number
+          in: query
+          description: Page number default is 0
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+          style: form
+        - name: archived
+          in: query
+          description: List archived meters
+          required: false
+          schema:
+            type: boolean
+          style: form
+      responses:
+        '200':
+          description: Meters List
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMetersResponse'
+        '422':
+          description: Invalid Request Object or Parameters
+        '500':
+          description: Something went wrong :(
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            // Automatically fetches more pages as needed.
+            for await (const meter of client.meters.list()) {
+              console.log(meter.id);
+            }
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            page = client.meters.list()
+            page = page.items[0]
+            print(page.id)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              page, err := client.Meters.List(context.TODO(), dodopayments.MeterListParams{
+
+              })
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", page)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            page = dodo_payments.meters.list
+
+            puts(page)
+    post:
+      tags:
+        - Meters
+      operationId: create_meter
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMeterRequest'
+        required: true
+      responses:
+        '201':
+          description: Meter created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeterResponse'
+        '422':
+          description: Invalid Request Object or Parameters
+        '500':
+          description: Something went wrong :(
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            const meter = await client.meters.create({
+              aggregation: { type: 'count' },
+              event_name: 'event_name',
+              measurement_unit: 'measurement_unit',
+              name: 'name',
+            });
+
+            console.log(meter.id);
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            meter = client.meters.create(
+                aggregation={
+                    "type": "count"
+                },
+                event_name="event_name",
+                measurement_unit="measurement_unit",
+                name="name",
+            )
+            print(meter.id)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              meter, err := client.Meters.New(context.TODO(), dodopayments.MeterNewParams{
+                Aggregation: dodopayments.F(dodopayments.MeterAggregationParam{
+                  Type: dodopayments.F(dodopayments.MeterAggregationTypeCount),
+                }),
+                EventName: dodopayments.F("event_name"),
+                MeasurementUnit: dodopayments.F("measurement_unit"),
+                Name: dodopayments.F("name"),
+              })
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", meter.ID)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            meter = dodo_payments.meters.create(
+              aggregation: {type: :count},
+              event_name: "event_name",
+              measurement_unit: "measurement_unit",
+              name: "name"
+            )
+
+            puts(meter)
+  /meters/{id}:
+    get:
+      tags:
+        - Meters
+      operationId: get_meter_handler
+      parameters:
+        - name: id
+          in: path
+          description: Meter ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Meter details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeterResponse'
+        '404':
+          description: Meter not found
+        '500':
+          description: Something went wrong :(
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            const meter = await client.meters.retrieve('id');
+
+            console.log(meter.id);
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            meter = client.meters.retrieve(
+                "id",
+            )
+            print(meter.id)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              meter, err := client.Meters.Get(context.TODO(), "id")
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", meter.ID)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            meter = dodo_payments.meters.retrieve("id")
+
+            puts(meter)
+    delete:
+      tags:
+        - Meters
+      operationId: delete_meter
+      parameters:
+        - name: id
+          in: path
+          description: Meter ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Meter deleted successfully
+        '404':
+          description: Meter not found
+        '500':
+          description: Something went wrong :(
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            await client.meters.archive('id');
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            client.meters.archive(
+                "id",
+            )
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              err := client.Meters.Archive(context.TODO(), "id")
+              if err != nil {
+                panic(err.Error())
+              }
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            result = dodo_payments.meters.archive("id")
+
+            puts(result)
+  /meters/{id}/unarchive:
+    post:
+      tags:
+        - Meters
+      operationId: unarchive_meter
+      parameters:
+        - name: id
+          in: path
+          description: Meter ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Meter Unarchived Successfully
+        '500':
+          description: Something went wrong :(
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: |-
+            import DodoPayments from 'dodopayments';
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+            await client.meters.unarchive('id');
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            client.meters.unarchive(
+                "id",
+            )
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              err := client.Meters.Unarchive(context.TODO(), "id")
+              if err != nil {
+                panic(err.Error())
+              }
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            result = dodo_payments.meters.unarchive("id")
+
+            puts(result)
   /payments:
     get:
       tags:
@@ -3889,7 +4757,7 @@ paths:
               product, err := client.Products.New(context.TODO(), dodopayments.ProductNewParams{
                 Price: dodopayments.F[dodopayments.PriceUnionParam](dodopayments.PriceOneTimePriceParam{
                   Currency: dodopayments.F(dodopayments.CurrencyAed),
-                  Discount: dodopayments.F(0.000000),
+                  Discount: dodopayments.F(int64(0)),
                   Price: dodopayments.F(int64(0)),
                   PurchasingPowerParity: dodopayments.F(true),
                   Type: dodopayments.F(dodopayments.PriceOneTimePriceTypeOneTimePrice),
@@ -4026,7 +4894,7 @@ paths:
               bearerToken: 'My Bearer Token',
             });
 
-            await client.products.delete('id');
+            await client.products.archive('id');
         - lang: Python
           source: |-
             from dodopayments import DodoPayments
@@ -4034,7 +4902,7 @@ paths:
             client = DodoPayments(
                 bearer_token="My Bearer Token",
             )
-            client.products.delete(
+            client.products.archive(
                 "id",
             )
         - lang: Go
@@ -4052,7 +4920,7 @@ paths:
               client := dodopayments.NewClient(
                 option.WithBearerToken("My Bearer Token"),
               )
-              err := client.Products.Delete(context.TODO(), "id")
+              err := client.Products.Archive(context.TODO(), "id")
               if err != nil {
                 panic(err.Error())
               }
@@ -4066,7 +4934,7 @@ paths:
               environment: "test_mode" # defaults to "live_mode"
             )
 
-            result = dodo_payments.products.delete("id")
+            result = dodo_payments.products.archive("id")
 
             puts(result)
     patch:
@@ -5321,6 +6189,187 @@ paths:
             response = dodo_payments.subscriptions.charge("subscription_id", product_price: 0)
 
             puts(response)
+  /subscriptions/{subscription_id}/usage-history:
+    get:
+      tags:
+        - Subscriptions
+      summary: Retrieve usage-based billing history for a subscription
+      description: |-
+        Get detailed usage history for a subscription that includes usage-based billing (metered components).
+        This endpoint provides insights into customer usage patterns and billing calculations over time.
+
+        ## What You'll Get:
+        - **Billing periods**: Each item represents a billing cycle with start and end dates
+        - **Meter usage**: Detailed breakdown of usage for each meter configured on the subscription
+        - **Usage calculations**: Total units consumed, free threshold units, and chargeable units
+        - **Historical tracking**: Complete audit trail of usage-based charges
+
+        ## Use Cases:
+        - **Customer support**: Investigate billing questions and usage discrepancies
+        - **Usage analytics**: Analyze customer consumption patterns over time
+        - **Billing transparency**: Provide customers with detailed usage breakdowns
+        - **Revenue optimization**: Identify usage trends to optimize pricing strategies
+
+        ## Filtering Options:
+        - **Date range filtering**: Get usage history for specific time periods
+        - **Meter-specific filtering**: Focus on usage for a particular meter
+        - **Pagination**: Navigate through large usage histories efficiently
+
+        ## Important Notes:
+        - Only returns data for subscriptions with usage-based (metered) components
+        - Usage history is organized by billing periods (subscription cycles)
+        - Free threshold units are calculated and displayed separately from chargeable units
+        - Historical data is preserved even if meter configurations change
+
+        ## Example Query Patterns:
+        - Get last 3 months: `?start_date=2024-01-01T00:00:00Z&end_date=2024-03-31T23:59:59Z`
+        - Filter by meter: `?meter_id=mtr_api_requests`
+        - Paginate results: `?page_size=20&page_number=1`
+        - Recent usage: `?start_date=2024-03-01T00:00:00Z` (from March 1st to now)
+      operationId: list_usage_history_handler
+      parameters:
+        - name: subscription_id
+          in: path
+          description: Unique subscription identifier
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          description: Filter by start date (inclusive)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: end_date
+          in: query
+          description: Filter by end date (inclusive)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: meter_id
+          in: query
+          description: Filter by specific meter ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: page_size
+          in: query
+          description: 'Page size (default: 10, max: 100)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            minimum: 0
+        - name: page_number
+          in: query
+          description: 'Page number (default: 0)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            minimum: 0
+      responses:
+        '200':
+          description: Usage history retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListUsageHistoryResponse'
+        '400':
+          description: Invalid request - malformed parameters or validation errors
+        '401':
+          description: Unauthorized - invalid or missing API key
+        '404':
+          description: Subscription not found - no subscription exists with the specified ID
+        '422':
+          description: Unprocessable entity - invalid query parameter values or date ranges
+        '500':
+          description: Internal server error - please contact support if this persists
+      security:
+        - API_KEY: []
+      x-codeSamples:
+        - lang: JavaScript
+          source: >-
+            import DodoPayments from 'dodopayments';
+
+
+            const client = new DodoPayments({
+              bearerToken: 'My Bearer Token',
+            });
+
+
+            // Automatically fetches more pages as needed.
+
+            for await (const subscriptionRetrieveUsageHistoryResponse of
+            client.subscriptions.retrieveUsageHistory(
+              'subscription_id',
+            )) {
+              console.log(subscriptionRetrieveUsageHistoryResponse.end_date);
+            }
+        - lang: Python
+          source: |-
+            from dodopayments import DodoPayments
+
+            client = DodoPayments(
+                bearer_token="My Bearer Token",
+            )
+            page = client.subscriptions.retrieve_usage_history(
+                subscription_id="subscription_id",
+            )
+            page = page.items[0]
+            print(page.end_date)
+        - lang: Go
+          source: |
+            package main
+
+            import (
+              "context"
+              "fmt"
+
+              "github.com/dodopayments/dodopayments-go"
+              "github.com/dodopayments/dodopayments-go/option"
+            )
+
+            func main() {
+              client := dodopayments.NewClient(
+                option.WithBearerToken("My Bearer Token"),
+              )
+              page, err := client.Subscriptions.GetUsageHistory(
+                context.TODO(),
+                "subscription_id",
+                dodopayments.SubscriptionGetUsageHistoryParams{
+
+                },
+              )
+              if err != nil {
+                panic(err.Error())
+              }
+              fmt.Printf("%+v\n", page)
+            }
+        - lang: Ruby
+          source: |-
+            require "dodopayments"
+
+            dodo_payments = Dodopayments::Client.new(
+              bearer_token: "My Bearer Token",
+              environment: "test_mode" # defaults to "live_mode"
+            )
+
+            page = dodo_payments.subscriptions.retrieve_usage_history("subscription_id")
+
+            puts(page)
   /webhooks:
     get:
       tags:
@@ -6041,8 +7090,44 @@ components:
           type: string
         name:
           type: string
+    AddMeterToPrice:
+      type: object
+      title: Add Meter To Price
+      required:
+        - meter_id
+        - price_per_unit
+      properties:
+        description:
+          type:
+            - string
+            - 'null'
+          description: Meter description. Will ignored on Request, but will be shown in response
+        free_threshold:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        measurement_unit:
+          type:
+            - string
+            - 'null'
+          description: Meter measurement unit. Will ignored on Request, but will be shown in response
+        meter_id:
+          type: string
+        name:
+          type:
+            - string
+            - 'null'
+          description: Meter name. Will ignored on Request, but will be shown in response
+        price_per_unit:
+          type: string
+          description: >-
+            The price per unit in lowest denomination. Must be greater than zero. Supports up to 5 digits
+            before decimal point and 12 decimal places.
+          example: '10.50'
     AddonCartResponseItem:
       type: object
+      title: Addon Cart Response Item
       description: Response struct representing subscription details
       required:
         - addon_id
@@ -6121,6 +7206,7 @@ components:
         - last
     AttachAddonReq:
       type: object
+      title: Attach Addon Request
       required:
         - addon_id
         - quantity
@@ -6132,8 +7218,8 @@ components:
           format: int32
           minimum: 0
     AttachExistingCustomer:
-      title: Attach Existing Customer
       type: object
+      title: Attach Existing Customer
       required:
         - customer_id
       properties:
@@ -6219,6 +7305,7 @@ components:
         - Hold
     CheckoutSessionBillingAddress:
       type: object
+      title: Checkout Session Billing Address
       required:
         - country
       properties:
@@ -6247,6 +7334,7 @@ components:
           description: Postal code or ZIP code
     CheckoutSessionCustomization:
       type: object
+      title: Checkout Session Customization
       properties:
         show_on_demand_tag:
           type: boolean
@@ -6268,6 +7356,7 @@ components:
             Default is `System`.
     CheckoutSessionFlags:
       type: object
+      title: Checkout Session Flags
       properties:
         allow_currency_selection:
           type: boolean
@@ -6705,6 +7794,7 @@ components:
             - 'null'
     CreateDigitalProductDeliveryRequest:
       type: object
+      title: Create Digital Product Delivery Request
       properties:
         external_url:
           type:
@@ -6786,9 +7876,39 @@ components:
           description: |-
             How many times this discount can be used (if any).
             Must be >= 1 if provided.
-    CreateNewCustomer:
-      title: Create New Customer
+    CreateMeterRequest:
       type: object
+      required:
+        - name
+        - event_name
+        - aggregation
+        - measurement_unit
+      properties:
+        aggregation:
+          $ref: '#/components/schemas/MeterAggregation'
+          description: Aggregation configuration for the meter
+        description:
+          type:
+            - string
+            - 'null'
+          description: Optional description of the meter
+        event_name:
+          type: string
+          description: Event name to track
+        filter:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/MeterFilter'
+              description: Optional filter to apply to the meter
+        measurement_unit:
+          type: string
+          description: measurement unit
+        name:
+          type: string
+          description: Name of the meter
+    CreateNewCustomer:
+      type: object
+      title: Create New Customer
       required:
         - name
         - email
@@ -6809,6 +7929,7 @@ components:
             - 'null'
     CreateOneTimePaymentRequest:
       type: object
+      title: Create One-Time Payment Request
       required:
         - product_cart
         - customer
@@ -6879,6 +8000,7 @@ components:
           description: Tax ID in case the payment is B2B. If tax id validation fails the payment creation will fail
     CreateOneTimePaymentResponse:
       type: object
+      title: Create One-Time Payment Response
       required:
         - payment_id
         - total_amount
@@ -7457,6 +8579,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/AttachExistingCustomer'
         - $ref: '#/components/schemas/NewCustomer'
+      title: Customer Request
     CustomerResponse:
       type: object
       required:
@@ -7493,6 +8616,7 @@ components:
           type: string
     DigitalProductDelivery:
       type: object
+      title: Digital Product Delivery
       properties:
         external_url:
           type:
@@ -7513,6 +8637,7 @@ components:
           description: Instructions to download and use the digital product
     DigitalProductDeliveryFile:
       type: object
+      title: Digital Product Delivery File
       required:
         - file_id
         - file_name
@@ -7527,6 +8652,7 @@ components:
           type: string
     DisableOnDemandReq:
       type: object
+      title: Disable On Demand Request
       required:
         - next_billing_date
       properties:
@@ -7685,12 +8811,9 @@ components:
         event_name:
           type: string
         metadata:
-          type:
-            - object
-            - 'null'
-          additionalProperties: {}
-          propertyNames:
-            type: string
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/EventMetadata'
         timestamp:
           type: string
           format: date-time
@@ -7703,22 +8826,35 @@ components:
       properties:
         customer_id:
           type: string
+          description: customer_id of the customer whose usage needs to be tracked
         event_id:
           type: string
+          description: >-
+            Event Id acts as an idempotency key. Any subsequent requests with the same event_id will be
+            ignored
         event_name:
           type: string
+          description: Name of the event
         metadata:
-          type:
-            - object
-            - 'null'
-          additionalProperties: {}
-          propertyNames:
-            type: string
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/EventMetadata'
+              description: >-
+                Custom metadata. Only key value pairs are accepted, objects or arrays submitted will be
+                rejected.
         timestamp:
           type:
             - string
             - 'null'
           format: date-time
+          description: |-
+            Custom Timestamp. Defaults to current timestamp in UTC.
+            Timestamps that are older that 1 hour or after 5 mins, from current timestamp, will be rejected.
+    EventMetadata:
+      type: object
+      additionalProperties: {}
+      propertyNames:
+        type: string
     EventType:
       type: string
       description: Event types for Dodo events
@@ -7765,6 +8901,168 @@ components:
         - less_than_or_equals
         - contains
         - does_not_contain
+    FilterType:
+      oneOf:
+        - type: array
+          title: Direct Filter Conditions
+          items:
+            type: object
+            title: MeterFilterCondition
+            description: Filter condition with key, operator, and value
+            required:
+              - key
+              - operator
+              - value
+            properties:
+              key:
+                type: string
+                description: Filter key to apply
+                maxLength: 100
+                minLength: 1
+              operator:
+                $ref: '#/components/schemas/FilterOperator'
+              value:
+                oneOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+                title: Filter Value
+                description: Filter value - can be string, number, or boolean
+          description: Direct filter conditions - array of condition objects with key, operator, and value
+          maxItems: 10
+          minItems: 1
+        - type: array
+          title: Nested Meter Filters
+          items:
+            type: object
+            title: MeterFilter
+            description: Level 1 nested filter - can contain Level 2 filters
+            required:
+              - conjunction
+              - clauses
+            properties:
+              clauses:
+                oneOf:
+                  - type: array
+                    title: Level 1 Filter Conditions
+                    items:
+                      type: object
+                      title: MeterFilterCondition
+                      description: Filter condition with key, operator, and value
+                      required:
+                        - key
+                        - operator
+                        - value
+                      properties:
+                        key:
+                          type: string
+                          description: Filter key to apply
+                          maxLength: 100
+                          minLength: 1
+                        operator:
+                          $ref: '#/components/schemas/FilterOperator'
+                        value:
+                          oneOf:
+                            - type: string
+                            - type: number
+                            - type: boolean
+                          title: Filter Value
+                          description: Filter value - can be string, number, or boolean
+                    description: Array of filter conditions
+                  - type: array
+                    title: Level 1 Nested Filters
+                    items:
+                      type: object
+                      title: MeterFilter
+                      description: Level 2 nested filter
+                      required:
+                        - conjunction
+                        - clauses
+                      properties:
+                        clauses:
+                          oneOf:
+                            - type: array
+                              title: Level 2 Filter Conditions
+                              items:
+                                type: object
+                                title: MeterFilterCondition
+                                description: Filter condition with key, operator, and value
+                                required:
+                                  - key
+                                  - operator
+                                  - value
+                                properties:
+                                  key:
+                                    type: string
+                                    description: Filter key to apply
+                                    maxLength: 100
+                                    minLength: 1
+                                  operator:
+                                    $ref: '#/components/schemas/FilterOperator'
+                                  value:
+                                    oneOf:
+                                      - type: string
+                                      - type: number
+                                      - type: boolean
+                                    title: Filter Value
+                                    description: Filter value - can be string, number, or boolean
+                              description: Array of filter conditions
+                            - type: array
+                              title: Level 2 Nested Filters
+                              items:
+                                type: object
+                                title: MeterFilter
+                                description: Level 3 nested filter (final nesting level)
+                                required:
+                                  - conjunction
+                                  - clauses
+                                properties:
+                                  clauses:
+                                    type: array
+                                    title: Level 3 Filter Conditions
+                                    items:
+                                      type: object
+                                      title: MeterFilterCondition
+                                      description: Filter condition with key, operator, and value
+                                      required:
+                                        - key
+                                        - operator
+                                        - value
+                                      properties:
+                                        key:
+                                          type: string
+                                          description: Filter key to apply
+                                          maxLength: 100
+                                          minLength: 1
+                                        operator:
+                                          $ref: '#/components/schemas/FilterOperator'
+                                        value:
+                                          oneOf:
+                                            - type: string
+                                            - type: number
+                                            - type: boolean
+                                          title: Filter Value
+                                          description: Filter value - can be string, number, or boolean
+                                    description: 'Level 3: Filter conditions only (max depth reached)'
+                                    maxItems: 10
+                                    minItems: 1
+                                  conjunction:
+                                    $ref: '#/components/schemas/Conjunction'
+                              description: Array of level 3 nested filters (final level)
+                          title: Level 2 Clause
+                          description: 'Level 2: Can be conditions or nested filters (1 more level allowed)'
+                        conjunction:
+                          $ref: '#/components/schemas/Conjunction'
+                    description: Array of level 2 nested filters
+                title: Level 1 Clause
+                description: 'Level 1: Can be conditions or nested filters (2 more levels allowed)'
+              conjunction:
+                $ref: '#/components/schemas/Conjunction'
+          description: Nested filters - supports up to 3 levels deep
+          maxItems: 10
+          minItems: 1
+      title: FilterType
+      description: 'Filter type - supports up to 3 levels of nesting (Level 1: conditions or Level 2 filters)'
     GetCustomersListResponse:
       type: object
       required:
@@ -7851,38 +9149,53 @@ components:
           type:
             - string
             - 'null'
+          description: Filter events by customer ID
         end:
           type:
             - string
             - 'null'
           format: date-time
+          description: Filter events created before this timestamp
         event_name:
           type:
             - string
             - 'null'
+          description: >-
+            Filter events by event name. If both event_name and meter_id are provided, they must match the
+            meter's configured event_name
+        meter_id:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Filter events by meter ID. When provided, only events that match the meter's event_name and filter
+            criteria will be returned
         page_number:
           type:
             - integer
             - 'null'
           format: int32
+          description: 'Page number (0-based, default: 0)'
           minimum: 0
         page_size:
           type:
             - integer
             - 'null'
           format: int32
+          description: 'Number of events to return per page (default: 10)'
           minimum: 0
         start:
           type:
             - string
             - 'null'
           format: date-time
+          description: Filter events created after this timestamp
     GetEventsResponse:
       type: object
       required:
-        - events
+        - items
       properties:
-        events:
+        items:
           type: array
           items:
             $ref: '#/components/schemas/Event'
@@ -8182,6 +9495,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/EventInput'
+          description: List of events to be pushed
+          maxItems: 1000
+          minItems: 1
     IngestEventsResponse:
       type: object
       required:
@@ -8206,6 +9522,7 @@ components:
         - partially_captured_and_capturable
     LicenseKeyDuration:
       type: object
+      title: License Key Duration
       required:
         - count
         - interval
@@ -8374,6 +9691,59 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LicenseKeyResponse'
+    ListMetersResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeterResponse'
+    ListUsageHistoryQueryParams:
+      type: object
+      properties:
+        end_date:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter by end date (inclusive)
+        meter_id:
+          type:
+            - string
+            - 'null'
+          description: Filter by specific meter ID
+        page_number:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: 'Page number (default: 0)'
+          minimum: 0
+        page_size:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: 'Page size (default: 10, max: 100)'
+          minimum: 0
+        start_date:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter by start date (inclusive)
+    ListUsageHistoryResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageHistoryItem'
+          description: List of usage history items
     ListWebhooksResponse:
       type: object
       required:
@@ -8406,6 +9776,7 @@ components:
         type: string
     MeterAggregation:
       type: object
+      title: Meter Aggregation
       required:
         - type
       properties:
@@ -8417,8 +9788,136 @@ components:
         type:
           $ref: '#/components/schemas/AggregationType'
           description: Aggregation type for the meter
+    MeterFilter:
+      type: object
+      title: Meter Filter
+      description: >-
+        A filter structure that combines multiple conditions with logical conjunctions (AND/OR).
+
+
+        Supports up to 3 levels of nesting to create complex filter expressions.
+
+        Each filter has a conjunction (and/or) and clauses that can be either direct conditions or nested
+        filters.
+      required:
+        - conjunction
+        - clauses
+      properties:
+        clauses:
+          $ref: '#/components/schemas/FilterType'
+          description: Filter clauses - can be direct conditions or nested filters (up to 3 levels deep)
+        conjunction:
+          $ref: '#/components/schemas/Conjunction'
+          description: Logical conjunction to apply between clauses (and/or)
+      examples:
+        - clauses:
+            - key: user_id
+              operator: equals
+              value: user123
+            - key: amount
+              operator: greater_than
+              value: 100
+          conjunction: and
+        - clauses:
+            - key: plan
+              operator: equals
+              value: premium
+            - key: plan
+              operator: equals
+              value: enterprise
+          conjunction: or
+        - clauses:
+            - clauses:
+                - key: user_type
+                  operator: equals
+                  value: premium
+                - key: user_type
+                  operator: equals
+                  value: enterprise
+              conjunction: or
+            - key: active
+              operator: equals
+              value: true
+          conjunction: and
+    MeterResponse:
+      type: object
+      required:
+        - id
+        - business_id
+        - name
+        - event_name
+        - aggregation
+        - measurement_unit
+        - created_at
+        - updated_at
+      properties:
+        aggregation:
+          $ref: '#/components/schemas/MeterAggregation'
+        business_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        description:
+          type:
+            - string
+            - 'null'
+        event_name:
+          type: string
+        filter:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/MeterFilter'
+        id:
+          type: string
+        measurement_unit:
+          type: string
+        name:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    MeterUsageItem:
+      type: object
+      required:
+        - id
+        - name
+        - free_threshold
+        - price_per_unit
+        - currency
+        - total_price
+        - consumed_units
+        - chargeable_units
+      properties:
+        chargeable_units:
+          type: string
+          description: Chargeable units (after free threshold) as string for precision
+        consumed_units:
+          type: string
+          description: Total units consumed as string for precision
+        currency:
+          $ref: '#/components/schemas/Currency'
+          description: Currency for the price per unit
+        free_threshold:
+          type: integer
+          format: int64
+          description: Free threshold units for this meter
+        id:
+          type: string
+          description: Meter identifier
+        name:
+          type: string
+          description: Meter name
+        price_per_unit:
+          type: string
+          description: Price per unit in string format for precision
+        total_price:
+          type: integer
+          format: int32
+          description: Total price charged for this meter in smallest currency unit (cents)
     NewCustomer:
       type: object
+      title: New Customer
       required:
         - name
         - email
@@ -8433,6 +9932,7 @@ components:
             - 'null'
     OnDemandSubscriptionReq:
       type: object
+      title: On Demand Subscription Request
       required:
         - mandate_only
       properties:
@@ -8476,6 +9976,7 @@ components:
             For example, to charge $1.00, pass `100`.
     OneTimePrice:
       type: object
+      title: One Time Price
       required:
         - price
         - currency
@@ -8486,8 +9987,8 @@ components:
           $ref: '#/components/schemas/Currency'
           description: The currency in which the payment is made.
         discount:
-          type: number
-          format: float
+          type: integer
+          format: int64
           description: Discount applied to the price, represented as a percentage (0 to 100).
         pay_what_you_want:
           type: boolean
@@ -8523,6 +10024,7 @@ components:
           description: Indicates if the price is tax inclusive.
     OneTimeProductCartItemReq:
       type: object
+      title: One-Time Product Cart Item
       required:
         - product_id
         - quantity
@@ -8544,6 +10046,7 @@ components:
           minimum: 0
     OneTimeProductCartItemResponse:
       type: object
+      title: One-Time Product Cart Item Response
       required:
         - product_id
         - quantity
@@ -8716,6 +10219,7 @@ components:
             - 'null'
     PatchDigitalProductDeliveryRequest:
       type: object
+      title: Patch Digital Product Delivery Request
       properties:
         external_url:
           type:
@@ -9328,8 +10832,22 @@ components:
                     - recurring_price
           title: Recurring Price
           description: Recurring price details.
+        - allOf:
+            - $ref: '#/components/schemas/UsageBasedPrice'
+              description: Usage Based price details.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - usage_based_price
+          title: Usage Based Price
+          description: Usage Based price details.
     ProductItemReq:
       type: object
+      title: Product Item Request
       required:
         - product_id
         - quantity
@@ -9363,12 +10881,14 @@ components:
           minimum: 0
     ProrationBillingMode:
       type: string
+      title: Proration Billing Mode
       enum:
         - prorated_immediately
         - full_immediately
         - difference_immediately
     RecurringPrice:
       type: object
+      title: Recurring Price
       required:
         - price
         - currency
@@ -9383,8 +10903,8 @@ components:
           $ref: '#/components/schemas/Currency'
           description: The currency in which the payment is made.
         discount:
-          type: number
-          format: float
+          type: integer
+          format: int64
           description: Discount applied to the price, represented as a percentage (0 to 100).
         payment_frequency_count:
           type: integer
@@ -9482,6 +11002,7 @@ components:
         - review
     SubscriptionData:
       type: object
+      title: Subscription Data
       properties:
         on_demand:
           oneOf:
@@ -9832,6 +11353,92 @@ components:
           format: uuid
         url:
           type: string
+    UsageBasedPrice:
+      type: object
+      title: Usage Based Price
+      required:
+        - fixed_price
+        - currency
+        - discount
+        - purchasing_power_parity
+        - payment_frequency_count
+        - payment_frequency_interval
+        - subscription_period_count
+        - subscription_period_interval
+      properties:
+        currency:
+          $ref: '#/components/schemas/Currency'
+          description: The currency in which the payment is made.
+        discount:
+          type: integer
+          format: int64
+          description: Discount applied to the price, represented as a percentage (0 to 100).
+        fixed_price:
+          type: integer
+          format: int32
+          description: >-
+            The fixed payment amount. Represented in the lowest denomination of the currency (e.g., cents for
+            USD).
+
+            For example, to charge $1.00, pass `100`.
+        meters:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/AddMeterToPrice'
+        payment_frequency_count:
+          type: integer
+          format: int32
+          description: >-
+            Number of units for the payment frequency.
+
+            For example, a value of `1` with a `payment_frequency_interval` of `month` represents monthly
+            payments.
+        payment_frequency_interval:
+          $ref: '#/components/schemas/TimeInterval'
+          description: The time interval for the payment frequency (e.g., day, month, year).
+        purchasing_power_parity:
+          type: boolean
+          description: |-
+            Indicates if purchasing power parity adjustments are applied to the price.
+            Purchasing power parity feature is not available as of now
+        subscription_period_count:
+          type: integer
+          format: int32
+          description: >-
+            Number of units for the subscription period.
+
+            For example, a value of `12` with a `subscription_period_interval` of `month` represents a
+            one-year subscription.
+        subscription_period_interval:
+          $ref: '#/components/schemas/TimeInterval'
+          description: The time interval for the subscription period (e.g., day, month, year).
+        tax_inclusive:
+          type:
+            - boolean
+            - 'null'
+          description: Indicates if the price is tax inclusive
+    UsageHistoryItem:
+      type: object
+      required:
+        - start_date
+        - end_date
+        - meters
+      properties:
+        end_date:
+          type: string
+          format: date-time
+          description: End date of the billing period
+        meters:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeterUsageItem'
+          description: List of meters and their usage for this billing period
+        start_date:
+          type: string
+          format: date-time
+          description: Start date of the billing period
     ValidateLicenseKeyRequest:
       type: object
       required:
@@ -9855,6 +11462,7 @@ components:
           example: true
     WebhookDetails:
       type: object
+      title: Webhook Details
       required:
         - description
         - id
@@ -9912,6 +11520,7 @@ components:
           description: Url endpoint of the webhook
     WebhookHeadersReq:
       type: object
+      title: Webhook Headers Request
       required:
         - headers
       properties:
