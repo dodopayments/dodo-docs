@@ -60,11 +60,35 @@ Always use Convex environment variables for sensitive information. Never commit 
 
 ## Component Setup Examples
 
+<Steps>
+<Step title="Create Internal Query">
+First, create an internal query to fetch users from your database. This will be used in the payment functions to identify customers.
+
+```typescript
+// convex/users.ts
+import { internalQuery } from "./_generated/server";
+import { v } from "convex/values";
+
+// Internal query to fetch user by auth ID
+export const getByAuthId = internalQuery({
+  args: { authId: v.string() },
+  handler: async (ctx, { authId }) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_auth_id", (q) => q.eq("authId", authId))
+      .first();
+  },
+});
+```
+</Step>
+
+<Step title="Create Payment Functions">
  <CodeGroup>
   ```typescript Convex Component Setup expandable
  // convex/dodo.ts
 import { DodoPayments } from "@dodopayments/convex";
 import { components } from "./_generated/api";
+import { internal } from "./_generated/api";
 
 export const dodo = new DodoPayments(components.dodopayments, {
   // This function maps your Convex user to a Dodo Payments customer
@@ -75,21 +99,18 @@ export const dodo = new DodoPayments(components.dodopayments, {
       return null; // User is not logged in
     }
     
-    // Lookup user from your database
-    const user = await ctx.db.query("users")
-       .withIndex("by_auth_id", (q) => q.eq("authId", identity.subject))
-       .first();
-     if (!user) {
-       return null; // User not found in database
-     }
-     
-     return {
-       dodoCustomerId: user.dodoCustomerId, // Use stored dodoCustomerId
-       customerData: {
-         name: user.name,
-         email: user.email,
-       },
-     };
+    // Use ctx.runQuery() to lookup user from your database
+    const user = await ctx.runQuery(internal.users.getByAuthId, {
+      authId: identity.subject,
+    });
+    
+    if (!user) {
+      return null; // User not found in database
+    }
+    
+    return {
+      dodoCustomerId: user.dodoCustomerId, // Replace user.dodoCustomerId with your field storing Dodo Payments customer ID
+    };
   },
   apiKey: process.env.DODO_PAYMENTS_API_KEY!,
   environment: process.env.DODO_PAYMENTS_ENVIRONMENT as "test_mode" | "live_mode",
@@ -99,6 +120,8 @@ export const dodo = new DodoPayments(components.dodopayments, {
 export const { checkout, customerPortal } = dodo.api();
   ```
   </CodeGroup>
+</Step>
+</Steps>
 
 <Tabs>
 <Tab title="Checkout Function Setup">
@@ -178,13 +201,14 @@ export const { checkout, customerPortal } = dodo.api();
 </Tab>
 <Tab title="Webhook Handler Setup">
   <Info>
-  Use this handler to receive and process Dodo Payments webhook events securely in your Convex app.
+  Use this handler to receive and process Dodo Payments webhook events securely in your Convex app. All webhook handlers receive the Convex `ActionCtx` as the first parameter, allowing you to use `ctx.runQuery()` and `ctx.runMutation()` to interact with your database.
   </Info>
   <CodeGroup>
   ```typescript Convex HTTP Action expandable
   // convex/http.ts
   import { createDodoWebhookHandler } from "@dodopayments/convex";
   import { httpRouter } from "convex/server";
+  import { internal } from "./_generated/api";
 
   const http = httpRouter();
 
@@ -192,13 +216,24 @@ export const { checkout, customerPortal } = dodo.api();
     path: "/dodopayments-webhook",
     method: "POST",
     handler: createDodoWebhookHandler({
-      onPaymentSucceeded: async (payload) => {
+      onPaymentSucceeded: async (ctx, payload) => {
         console.log("Payment succeeded:", payload.data.payment_id);
-        // Add your logic here to handle the successful payment
+        // Update order status in your database
+        await ctx.runMutation(internal.orders.markAsPaid, {
+          orderId: payload.data.metadata.orderId,
+          paymentId: payload.data.payment_id,
+          amount: payload.data.amount,
+        });
       },
-      onSubscriptionActive: async (payload) => {
+
+      onSubscriptionActive: async (ctx, payload) => {
         console.log("Subscription activated:", payload.data.subscription_id);
-        // Add your logic here
+        // Create or update subscription record in your database
+        await ctx.runMutation(internal.subscriptions.createOrUpdate, {
+          subscriptionId: payload.data.subscription_id,
+          customerId: payload.data.customer_id,
+          status: "active",
+        });
       },
       // Add other event handlers as needed
     }),
@@ -254,7 +289,7 @@ If set to <code>true</code>, sends an email to the customer with the portal link
 </ParamField>
 
 <Info>
-The customer is automatically identified using the `identify` function configured in your DodoPayments setup. This function should return the customer's `dodoCustomerId` and optional `customerData`.
+The customer is automatically identified using the `identify` function configured in your DodoPayments setup. This function should return the customer's `dodoCustomerId`.
 </Info>
 
 ## Webhook Handler
@@ -271,28 +306,28 @@ The customer is automatically identified using the `identify` function configure
 ### Supported Webhook Event Handlers
 <CodeGroup>
 ```typescript Typescript expandable
-onPayload?: (payload: WebhookPayload) => Promise<void>;
-onPaymentSucceeded?: (payload: WebhookPayload) => Promise<void>;
-onPaymentFailed?: (payload: WebhookPayload) => Promise<void>;
-onPaymentProcessing?: (payload: WebhookPayload) => Promise<void>;
-onPaymentCancelled?: (payload: WebhookPayload) => Promise<void>;
-onRefundSucceeded?: (payload: WebhookPayload) => Promise<void>;
-onRefundFailed?: (payload: WebhookPayload) => Promise<void>;
-onDisputeOpened?: (payload: WebhookPayload) => Promise<void>;
-onDisputeExpired?: (payload: WebhookPayload) => Promise<void>;
-onDisputeAccepted?: (payload: WebhookPayload) => Promise<void>;
-onDisputeCancelled?: (payload: WebhookPayload) => Promise<void>;
-onDisputeChallenged?: (payload: WebhookPayload) => Promise<void>;
-onDisputeWon?: (payload: WebhookPayload) => Promise<void>;
-onDisputeLost?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionActive?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionOnHold?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionRenewed?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionPlanChanged?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionCancelled?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionFailed?: (payload: WebhookPayload) => Promise<void>;
-onSubscriptionExpired?: (payload: WebhookPayload) => Promise<void>;
-onLicenseKeyCreated?: (payload: WebhookPayload) => Promise<void>;
+onPayload?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onPaymentSucceeded?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onPaymentFailed?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onPaymentProcessing?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onPaymentCancelled?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onRefundSucceeded?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onRefundFailed?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeOpened?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeExpired?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeAccepted?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeCancelled?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeChallenged?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeWon?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onDisputeLost?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionActive?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionOnHold?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionRenewed?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionPlanChanged?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionCancelled?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionFailed?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onSubscriptionExpired?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
+onLicenseKeyCreated?: (ctx: GenericActionCtx, payload: WebhookPayload) => Promise<void>;
 ```
 </CodeGroup>
 
@@ -405,11 +440,29 @@ npx convex dashboard
 
 Then add the required environment variables (e.g., DODO_PAYMENTS_API_KEY, DODO_PAYMENTS_ENVIRONMENT, DODO_PAYMENTS_WEBHOOK_SECRET) in **Settings → Environment Variables**. Do not use .env files for backend functions.
 
-Step 3: Create your payment functions file.
+Step 3: Create an internal query to fetch users from your database.
+
+// convex/users.ts
+import { internalQuery } from "./_generated/server";
+import { v } from "convex/values";
+
+// Internal query to fetch user by auth ID
+export const getByAuthId = internalQuery({
+  args: { authId: v.string() },
+  handler: async (ctx, { authId }) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_auth_id", (q) => q.eq("authId", authId))
+      .first();
+  },
+});
+
+Step 4: Create your payment functions file.
 
 // convex/dodo.ts
 import { DodoPayments } from "@dodopayments/convex";
 import { components } from "./_generated/api";
+import { internal } from "./_generated/api";
 
 export const dodo = new DodoPayments(components.dodopayments, {
   // This function maps your Convex user to a Dodo Payments customer
@@ -420,21 +473,18 @@ export const dodo = new DodoPayments(components.dodopayments, {
       return null; // User is not logged in
     }
     
-    // Lookup user from your database
-    const user = await ctx.db.query("users")
-       .withIndex("by_auth_id", (q) => q.eq("authId", identity.subject))
-       .first();
-     if (!user) {
-       return null; // User not found in database
-     }
-     
-     return {
-       dodoCustomerId: user.dodoCustomerId, // Use stored dodoCustomerId
-       customerData: {
-         name: user.name,
-         email: user.email,
-       },
-     };
+    // Use ctx.runQuery() to lookup user from your database
+    const user = await ctx.runQuery(internal.users.getByAuthId, {
+      authId: identity.subject,
+    });
+    
+    if (!user) {
+      return null; // User not found in database
+    }
+    
+    return {
+      dodoCustomerId: user.dodoCustomerId, // Replace user.dodoCustomerId with your field storing Dodo Payments customer ID
+    };
   },
   apiKey: process.env.DODO_PAYMENTS_API_KEY!,
   environment: process.env.DODO_PAYMENTS_ENVIRONMENT as "test_mode" | "live_mode",
@@ -443,7 +493,7 @@ export const dodo = new DodoPayments(components.dodopayments, {
 // Export the API methods for use in your app
 export const { checkout, customerPortal } = dodo.api();
 
-Step 4: Create actions that use the checkout function.
+Step 5: Create actions that use the checkout function.
 
 // convex/payments.ts
 import { action } from "./_generated/server";
@@ -473,7 +523,7 @@ export const createCheckout = action({
   },
 });
 
-Step 5: Use in your frontend.
+Step 6: Use in your frontend.
 
 // Your frontend component
 import { useAction } from "convex/react";
@@ -508,9 +558,9 @@ Purpose: This function allows customers to manage their subscriptions and paymen
 
 Integration Steps:
 
-Follow Steps 1-3 from the Checkout Function section, then:
+Follow Steps 1-4 from the Checkout Function section, then:
 
-Step 4: Create a customer portal action.
+Step 5: Create a customer portal action.
 
 // convex/payments.ts (add to existing file)
 import { action } from "./_generated/server";
@@ -535,7 +585,7 @@ export const getCustomerPortal = action({
   },
 });
 
-Step 5: Use in your frontend.
+Step 6: Use in your frontend.
 
 // Your frontend component
 import { useAction } from "convex/react";
@@ -580,6 +630,7 @@ Step 2: Create a file `convex/http.ts`:
 // convex/http.ts
 import { httpRouter } from "convex/server";
 import { createDodoWebhookHandler } from "@dodopayments/convex";
+import { internal } from "./_generated/api";
 
 const http = httpRouter();
 
@@ -587,13 +638,22 @@ http.route({
   path: "/dodopayments-webhook",
   method: "POST",
   handler: createDodoWebhookHandler({
-    onPaymentSucceeded: async (payload) => {
+    onPaymentSucceeded: async (ctx, payload) => {
       console.log("Payment succeeded:", payload.data.payment_id);
-      // Add your logic here to handle the successful payment
+      // Update order status in your database
+      await ctx.runMutation(internal.orders.markAsPaid, {
+        orderId: payload.data.metadata.orderId,
+        paymentId: payload.data.payment_id,
+      });
     },
-    onSubscriptionActive: async (payload) => {
+
+    onSubscriptionActive: async (ctx, payload) => {
       console.log("Subscription activated:", payload.data.subscription_id);
-      // Add your logic here
+      // Use ctx to create or update subscription records
+      await ctx.runMutation(internal.subscriptions.createOrUpdate, {
+        subscriptionId: payload.data.subscription_id,
+        customerId: payload.data.customer_id,
+      });
     },
     // Add other event handlers as needed
   }),
