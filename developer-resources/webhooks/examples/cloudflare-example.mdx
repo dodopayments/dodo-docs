@@ -1,0 +1,514 @@
+---
+title: 'Cloudflare Workers'
+description: 'Deploy DodoPayments webhooks to Cloudflare Workers'
+icon: 'cloud'
+---
+
+<Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/cloud-functions/tree/main/cloudflare">
+  Complete source code and setup guide
+</Card>
+
+## Quick Setup
+
+### 1. Prerequisites
+- [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- [Neon database](https://neon.tech) account
+- DodoPayments webhook key from [dashboard](https://app.dodopayments.com/developer/webhooks)
+
+### 2. Install & Deploy
+
+```bash
+npm install -g wrangler
+wrangler login
+git clone https://github.com/dodopayments/cloud-functions.git
+cd cloud-functions/cloudflare
+npm install
+```
+
+### 3. Database Setup
+
+1. Sign up for [Neon](https://neon.tech)
+2. Create a new project
+3. Open the SQL Editor
+4. Copy and paste the contents of [`schema.sql`](#database-schema)
+5. Run the query
+6. Get your connection string from Neon → Connection Details
+
+### 4. Configure Secrets
+
+```bash
+# Set your Neon database URL
+wrangler secret put DATABASE_URL
+
+# Set your webhook signing key
+wrangler secret put DODO_PAYMENTS_WEBHOOK_KEY
+```
+
+### 5. Update wrangler.toml
+
+Edit `wrangler.toml` and set your worker name:
+
+```toml
+name = "my-dodo-webhook"
+```
+
+### 6. Deploy
+
+```bash
+npm run deploy
+```
+
+**Webhook URL:** `https://[worker-name].[subdomain].workers.dev`
+
+## What It Does
+
+Processes subscription events and stores them in PostgreSQL:
+- **subscription.active** - Creates/updates customer and subscription records
+- **subscription.cancelled** - Marks subscription as cancelled
+- **subscription.renewed** - Updates next billing date
+
+## Key Features
+
+✅ **Signature verification** - Using standardwebhooks library  
+✅ **Idempotency** - Prevents duplicate processing with webhook IDs  
+✅ **Event logging** - Complete audit trail in `webhook_events` table  
+✅ **Error handling** - Logged and retryable
+
+## Configuration Files
+
+<CodeGroup>
+  ```json package.json
+  {
+    "name": "dodo-webhook-cloudflare",
+    "version": "1.0.0",
+    "type": "module",
+    "description": "DodoPayments Webhook Handler for Cloudflare Workers",
+    "main": "worker.ts",
+    "scripts": {
+      "dev": "wrangler dev",
+      "deploy": "wrangler deploy",
+      "tail": "wrangler tail"
+    },
+    "dependencies": {
+      "@neondatabase/serverless": "^1.0.2",
+      "standardwebhooks": "^1.0.0"
+    },
+    "devDependencies": {
+      "@cloudflare/workers-types": "^4.0.0",
+      "typescript": "^5.9.3",
+      "wrangler": "^4.43.0"
+    }
+  }
+  ```
+
+  ```toml wrangler.toml expandable
+  # Cloudflare Workers Configuration
+  name = "dodo-webhook"
+  main = "worker.ts"
+  compatibility_date = "2025-10-20"
+
+  [observability]
+  [observability.logs]
+  enabled = true
+  head_sampling_rate = 1
+  invocation_logs = true
+  persist = true
+  ```
+
+  ```json tsconfig.json
+  {
+    "compilerOptions": {
+      "target": "ES2022",
+      "module": "ES2022",
+      "lib": ["ES2022"],
+      "moduleResolution": "bundler",
+      "types": ["@cloudflare/workers-types"],
+      "esModuleInterop": true,
+      "strict": true,
+      "skipLibCheck": true,
+      "resolveJsonModule": true,
+      "allowSyntheticDefaultImports": true,
+      "forceConsistentCasingInFileNames": true,
+      "isolatedModules": true
+    },
+    "include": ["*.ts"],
+    "exclude": ["node_modules"]
+  }
+  ```
+</CodeGroup>
+
+## Database Schema
+
+<CodeGroup>
+  ```sql schema.sql expandable
+  -- DodoPayments Webhook Database Schema
+  -- Compatible with PostgreSQL (Supabase, Neon, etc.)
+
+  -- Enable UUID extension (if not already enabled)
+  CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+  -- Customers table
+  CREATE TABLE IF NOT EXISTS customers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email TEXT NOT NULL,
+    name TEXT,
+    dodo_customer_id TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+
+  -- Subscriptions table
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    customer_id UUID REFERENCES customers(id) ON DELETE CASCADE,
+    dodo_subscription_id TEXT UNIQUE NOT NULL,
+    product_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'cancelled', 'expired', 'paused')),
+    billing_interval TEXT CHECK (billing_interval IN ('day', 'week', 'month', 'year')),
+    amount NUMERIC(10, 2),
+    currency TEXT DEFAULT 'USD',
+    next_billing_date TIMESTAMP WITH TIME ZONE,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  );
+
+  -- Webhook events log
+  CREATE TABLE IF NOT EXISTS webhook_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    webhook_id TEXT UNIQUE,
+    event_type TEXT NOT NULL,
+    data JSONB NOT NULL,
+    processed BOOLEAN DEFAULT FALSE,
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    processed_at TIMESTAMP WITH TIME ZONE,
+    attempts INTEGER DEFAULT 0
+  );
+
+  -- Indexes for better query performance
+  CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+  CREATE INDEX IF NOT EXISTS idx_customers_dodo_id ON customers(dodo_customer_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_dodo_id ON subscriptions(dodo_subscription_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_id ON subscriptions(customer_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+  CREATE INDEX IF NOT EXISTS idx_webhook_events_processed ON webhook_events(processed, created_at);
+  CREATE INDEX IF NOT EXISTS idx_webhook_events_type ON webhook_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_webhook_events_created_at ON webhook_events(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_webhook_events_webhook_id ON webhook_events(webhook_id);
+
+  -- Function to automatically update updated_at timestamp
+  CREATE OR REPLACE FUNCTION update_updated_at_column()
+  RETURNS TRIGGER AS $$
+  BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  -- Triggers to automatically update updated_at
+  CREATE TRIGGER update_customers_updated_at
+    BEFORE UPDATE ON customers
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+  CREATE TRIGGER update_subscriptions_updated_at
+    BEFORE UPDATE ON subscriptions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+  -- Comments for documentation
+  COMMENT ON TABLE customers IS 'Stores customer information from DodoPayments';
+  COMMENT ON TABLE subscriptions IS 'Stores subscription data from DodoPayments';
+  COMMENT ON TABLE webhook_events IS 'Logs all incoming webhook events for audit and retry purposes';
+
+  COMMENT ON COLUMN customers.dodo_customer_id IS 'Unique customer ID from DodoPayments';
+  COMMENT ON COLUMN subscriptions.dodo_subscription_id IS 'Unique subscription ID from DodoPayments';
+  COMMENT ON COLUMN webhook_events.attempts IS 'Number of processing attempts for failed webhooks';
+  COMMENT ON COLUMN webhook_events.data IS 'Full webhook payload as JSON';
+
+  -- Sample queries for monitoring
+  COMMENT ON TABLE webhook_events IS 'Query unprocessed events: SELECT * FROM webhook_events WHERE processed = false ORDER BY created_at DESC;';
+  COMMENT ON TABLE subscriptions IS 'Query active subscriptions: SELECT s.*, c.email FROM subscriptions s JOIN customers c ON s.customer_id = c.id WHERE s.status = ''active'';';
+  ```
+</CodeGroup>
+
+## How It Works
+
+The webhook handler:
+1. **Verifies the signature** - Ensures the request is from DodoPayments using HMAC-SHA256
+2. **Checks for duplicates** - Uses webhook ID to prevent processing the same event twice
+3. **Logs the event** - Stores raw webhook in `webhook_events` table for audit trail
+4. **Processes the event** - Creates or updates customers and subscriptions
+5. **Handles errors** - Logs failures and marks event as unprocessed for retry
+
+## Implementation Code
+
+<CodeGroup>
+```typescript worker.ts expandable
+import { Webhook } from 'standardwebhooks';
+
+interface Env {
+  DATABASE_URL: string;
+  DODO_PAYMENTS_WEBHOOK_KEY?: string;
+}
+
+interface WebhookPayload {
+  business_id: string;
+  type: string;
+  timestamp: string;
+  data: {
+    payload_type: "Subscription" | "Refund" | "Dispute" | "LicenseKey";
+    subscription_id?: string;
+    customer?: {
+      customer_id: string;
+      email: string;
+      name: string;
+    };
+    product_id?: string;
+    status?: string;
+    recurring_pre_tax_amount?: number;
+    payment_frequency_interval?: string;
+    next_billing_date?: string;
+    cancelled_at?: string;
+    currency?: string;
+  };
+}
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, webhook-id, webhook-signature, webhook-timestamp',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
+
+// Initialize Neon SQL client (do this once at module level for better performance)
+let sqlClient: any = null;
+
+async function getSqlClient(env: Env) {
+  if (!sqlClient) {
+    const { neon } = await import('@neondatabase/serverless');
+    sqlClient = neon(env.DATABASE_URL);
+  }
+  return sqlClient;
+}
+
+async function handleSubscriptionEvent(env: Env, data: any, status: string) {
+  if (!data.customer?.customer_id || !data.subscription_id) {
+    throw new Error('Missing required fields: customer_id or subscription_id');
+  }
+
+  console.log('🔄 Processing subscription event:', JSON.stringify(data, null, 2));
+
+  const customer = data.customer;
+  const sql = await getSqlClient(env);
+
+  // Upsert customer (create if doesn't exist, otherwise use existing)
+  const customerResult = await sql`
+    INSERT INTO customers (email, name, dodo_customer_id, created_at)
+    VALUES (${customer.email}, ${customer.name || customer.email}, ${customer.customer_id}, ${new Date().toISOString()})
+    ON CONFLICT (dodo_customer_id) 
+    DO UPDATE SET 
+      email = EXCLUDED.email,
+      name = EXCLUDED.name,
+      updated_at = ${new Date().toISOString()}
+    RETURNING id
+  `;
+
+  const customerId = customerResult[0].id;
+  console.log(`✅ Customer upserted with ID: ${customerId}`);
+
+  // Upsert subscription
+  await sql`
+    INSERT INTO subscriptions (
+      customer_id, dodo_subscription_id, product_id, status, 
+      billing_interval, amount, currency, next_billing_date, cancelled_at, updated_at
+    )
+    VALUES (
+      ${customerId}, ${data.subscription_id},
+      ${data.product_id || 'unknown'}, ${status},
+      ${data.payment_frequency_interval?.toLowerCase() || 'month'}, ${data.recurring_pre_tax_amount || 0},
+      ${data.currency || 'USD'}, ${data.next_billing_date || null},
+      ${data.cancelled_at || null}, ${new Date().toISOString()}
+    )
+    ON CONFLICT (dodo_subscription_id) 
+    DO UPDATE SET 
+      status = EXCLUDED.status,
+      next_billing_date = EXCLUDED.next_billing_date,
+      cancelled_at = EXCLUDED.cancelled_at,
+      updated_at = EXCLUDED.updated_at
+  `;
+
+  console.log(`✅ Subscription upserted with ${status} status`)
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response('ok', { headers: corsHeaders });
+    }
+
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    try {
+      const rawBody = await request.text();
+      console.log('📨 Webhook received');
+
+      const sql = await getSqlClient(env);
+
+      // Verify webhook signature (required for security)
+      if (!env.DODO_PAYMENTS_WEBHOOK_KEY) {
+        console.error('❌ DODO_PAYMENTS_WEBHOOK_KEY is not configured');
+        return new Response(
+          JSON.stringify({ error: 'Webhook verification key not configured' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const webhookHeaders = {
+        'webhook-id': request.headers.get('webhook-id') || '',
+        'webhook-signature': request.headers.get('webhook-signature') || '',
+        'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+      };
+
+      try {
+        const wh = new Webhook(env.DODO_PAYMENTS_WEBHOOK_KEY);
+        await wh.verify(rawBody, webhookHeaders);
+        console.log('✅ Webhook signature verified');
+      } catch (error) {
+        console.error('❌ Webhook verification failed:', error);
+        return new Response(
+          JSON.stringify({ error: 'Webhook verification failed' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const payload: WebhookPayload = JSON.parse(rawBody);
+      const eventType = payload.type;
+      const eventData = payload.data;
+      const webhookId = request.headers.get('webhook-id') || '';
+
+      console.log(`📋 Webhook payload:`, JSON.stringify(payload, null, 2));
+
+      // Check for duplicate webhook-id (idempotency)
+      if (webhookId) {
+        const existingEvent = await sql`
+          SELECT id FROM webhook_events WHERE webhook_id = ${webhookId}
+        `;
+
+        if (existingEvent.length > 0) {
+          console.log(`⚠️ Webhook ${webhookId} already processed, skipping (idempotency)`);
+          return new Response(
+            JSON.stringify({ success: true, message: 'Webhook already processed' }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
+      // Log webhook event with webhook_id for idempotency
+      const logResult = await sql`
+        INSERT INTO webhook_events (webhook_id, event_type, data, processed, created_at)
+        VALUES (${webhookId || null}, ${eventType}, ${JSON.stringify(eventData)}, ${false}, ${new Date().toISOString()})
+        RETURNING id
+      `;
+
+      const loggedEventId = logResult[0].id;
+      console.log('📝 Webhook event logged with ID:', loggedEventId);
+
+      console.log(`🔄 Processing: ${eventType} (${eventData.payload_type || 'unknown payload type'})`);
+
+      try {
+        switch (eventType) {
+          case 'subscription.active':
+            await handleSubscriptionEvent(env, eventData, 'active');
+            break;
+          case 'subscription.cancelled':
+            await handleSubscriptionEvent(env, eventData, 'cancelled');
+            break;
+          case 'subscription.renewed':
+            console.log('🔄 Subscription renewed - keeping active status and updating billing date');
+            await handleSubscriptionEvent(env, eventData, 'active');
+            break;
+          default:
+            console.log(`ℹ️ Event ${eventType} logged but not processed (no handler available)`);
+        }
+
+        await sql`
+          UPDATE webhook_events 
+          SET processed = ${true}, processed_at = ${new Date().toISOString()}
+          WHERE id = ${loggedEventId}
+        `;
+
+        console.log('✅ Webhook marked as processed');
+      } catch (processingError) {
+        console.error('❌ Error processing webhook event:', processingError);
+
+        await sql`
+          UPDATE webhook_events 
+          SET processed = ${false}, 
+              error_message = ${processingError instanceof Error ? processingError.message : 'Unknown error'},
+              processed_at = ${new Date().toISOString()}
+          WHERE id = ${loggedEventId}
+        `;
+
+        throw processingError;
+      }
+
+      console.log('✅ Webhook processed successfully');
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          event_type: eventType,
+          event_id: loggedEventId
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+
+    } catch (error) {
+      console.error('❌ Webhook processing failed:', error);
+      return new Response(
+        JSON.stringify({
+          error: 'Webhook processing failed',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+  }
+};
+```
+</CodeGroup>
+
+## Testing
+
+**Local development:**
+```bash
+npm run dev  # Available at http://localhost:8787
+```
+
+**Configure in DodoPayments Dashboard:**
+1. Go to Developers → Webhooks
+2. Add endpoint with your Worker URL
+3. Enable: subscription.active, subscription.cancelled, subscription.renewed
+
+## Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| Verification failed | Check webhook key is correct from DodoPayments dashboard |
+| Database connection error | Verify Neon connection string |
+| Worker not deploying | Run `npm install`, check `wrangler.toml` syntax |
+
+## Resources
+
+- [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
+- [Neon Docs](https://neon.tech/docs/)
+- [Webhook Events Guide](/developer-resources/webhooks/intents/webhook-events-guide)
+- [GitHub Repo](https://github.com/dodopayments/cloud-functions/tree/main/cloudflare)
