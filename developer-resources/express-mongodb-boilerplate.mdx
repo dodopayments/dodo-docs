@@ -4,6 +4,10 @@ description: Production-ready starter to integrate Dodo Payments with Express an
 icon: "server"
 ---
 
+<Tip>
+Prefer starting from the ready-to-use template repository: <a href="https://github.com/yashranaway/express-dodo">yashranaway/express-dodo</a>
+</Tip>
+
 <CardGroup cols={2}>
 <Card title="Dodo Payments SDKs" icon="puzzle-piece" href="/developer-resources/dodo-payments-sdks">
   Install official SDKs for Node, Python, and Go.
@@ -12,13 +16,16 @@ icon: "server"
 <Card title="Webhook Events Guide" icon="bolt" href="/developer-resources/webhooks/intents/webhook-events-guide">
   Learn webhook delivery, retries, and verification.
 </Card>
+<Card title="GitHub Template Repo" icon="github" href="https://github.com/yashranaway/express-dodo">
+  Fork and start coding instantly.
+</Card>
 </CardGroup>
 
 ## Overview
 
 This boilerplate shows how to build an Express server with MongoDB and integrate Dodo Payments end-to-end:
 - Create subscriptions and one-time payments
-- Verify and handle webhooks using Standard Webhooks (`standardwebhooks`)
+- Verify and handle webhooks using `dodopayments-webhooks`
 - Persist customers, payments, and subscription states in MongoDB
 - Expose secure endpoints with environment-driven configuration
 
@@ -50,7 +57,7 @@ express-dodo/
 
 ```bash
 npm init -y
-npm install express mongoose cors dotenv dodopayments standardwebhooks
+npm install express mongoose cors dotenv dodopayments dodopayments-webhooks
 npm install -D typescript ts-node @types/express @types/node @types/cors
 npx tsc --init
 ```
@@ -138,11 +145,13 @@ import webhooksRouter from './routes/webhooks';
 
 const app = express();
 app.use(cors());
-// Only parse JSON for API routes; do not parse JSON for the webhook path
+// Parse JSON for API routes; webhook route will also use express.json()
 app.use('/api', express.json());
 
 async function bootstrap() {
-  await connectDB(process.env.MONGODB_URI!);
+  if (process.env.MONGODB_URI) {
+    await connectDB(process.env.MONGODB_URI);
+  }
 
   app.use('/api/payments', paymentsRouter);
   app.use('/api/subscriptions', subsRouter);
@@ -186,11 +195,13 @@ Both approaches are valid; the rest of this guide uses default imports with `esM
 import { Router } from 'express';
 import DodoPayments from 'dodopayments';
 
-const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
 const router = Router();
 
 router.post('/', async (req, res) => {
   try {
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'DODO_PAYMENTS_API_KEY is not set' });
+    const client = new DodoPayments({ bearerToken: apiKey });
     const {
       billing,
       customer,
@@ -237,10 +248,12 @@ import { Router } from 'express';
 import DodoPayments from 'dodopayments';
 
 const router = Router();
-const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
 
 router.post('/', async (req, res) => {
   try {
+    const apiKey = process.env.DODO_PAYMENTS_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'DODO_PAYMENTS_API_KEY is not set' });
+    const client = new DodoPayments({ bearerToken: apiKey });
     const {
       billing,
       customer,
@@ -286,36 +299,22 @@ export default router;
 ```ts
 // src/routes/webhooks.ts
 import { Router } from 'express';
-import { raw } from 'express';
+import express from 'express';
 import { Subscription, Payment } from '../db/models';
-import { Webhook, type WebhookUnbrandedRequiredHeaders } from 'standardwebhooks';
+import { DodopaymentsHandler } from 'dodopayments-webhooks';
 
 const router = Router();
 
-// Use Standard Webhooks with your secret
-const webhook = new Webhook(process.env.DODO_WEBHOOK_SECRET as string);
-
-// Use raw body for signature verification (must not be pre-parsed by express.json())
-router.post('/', raw({ type: '*/*' }), async (req, res) => {
+router.post('/', express.json(), async (req, res) => {
   try {
-    const rawBody = req.body.toString('utf8');
+    const secret = process.env.DODO_WEBHOOK_SECRET;
+    if (!secret) return res.status(500).json({ error: 'DODO_WEBHOOK_SECRET is not set' });
+    const handler = new DodopaymentsHandler({ signing_key: secret });
+    const event = await handler.handle(req);
 
-    const headers: WebhookUnbrandedRequiredHeaders = {
-      'webhook-id': (req.header('webhook-id') || '') as string,
-      'webhook-signature': (req.header('webhook-signature') || '') as string,
-      'webhook-timestamp': (req.header('webhook-timestamp') || '') as string,
-    };
-
-    await webhook.verify(rawBody, headers);
-
-    const payload = JSON.parse(rawBody) as {
-      type: string;
-      data: any;
-    };
-
-    switch (payload.type) {
+    switch (event.type) {
       case 'subscription.active': {
-        const data = payload.data;
+        const data = event.data as any;
         await Subscription.updateOne(
           { subscriptionId: data.subscription_id },
           {
@@ -331,7 +330,7 @@ router.post('/', raw({ type: '*/*' }), async (req, res) => {
         break;
       }
       case 'subscription.on_hold': {
-        const data = payload.data;
+        const data = event.data as any;
         await Subscription.updateOne(
           { subscriptionId: data.subscription_id },
           { status: 'on_hold' }
@@ -339,7 +338,7 @@ router.post('/', raw({ type: '*/*' }), async (req, res) => {
         break;
       }
       case 'payment.succeeded': {
-        const p = payload.data;
+        const p = event.data as any;
         await Payment.updateOne(
           { paymentId: p.payment_id },
           {
@@ -355,7 +354,7 @@ router.post('/', raw({ type: '*/*' }), async (req, res) => {
         break;
       }
       case 'payment.failed': {
-        const p = payload.data;
+        const p = event.data as any;
         await Payment.updateOne(
           { paymentId: p.payment_id },
           { status: 'failed' }
@@ -363,22 +362,21 @@ router.post('/', raw({ type: '*/*' }), async (req, res) => {
         break;
       }
       default:
-        // ignore unknown events
         break;
     }
 
     return res.json({ received: true });
   } catch (err: any) {
-    return res.status(400).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
 export default router;
 ```
 
-<Warning>
-Ensure your Express app does not use `express.json()` on the webhook route, as it must read the raw body for signature verification.
-</Warning>
+<Tip>
+Prefer using the community `dodopayments-webhooks` library for verified parsing and strong types. It works with standard `express.json()` and simplifies signature handling. See the repo: <a href="https://github.com/sancho1952007/dodopayments-webhooks">dodopayments-webhooks</a>.
+</Tip>
 
 ## Deploy Notes
 
