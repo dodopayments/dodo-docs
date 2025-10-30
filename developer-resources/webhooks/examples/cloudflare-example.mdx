@@ -13,7 +13,7 @@ icon: 'cloud'
 ### 1. Prerequisites
 - [Cloudflare account](https://dash.cloudflare.com/sign-up)
 - [Neon database](https://neon.tech) account
-- DodoPayments webhook key from [dashboard](https://app.dodopayments.com/developer/webhooks)
+- DodoPayments API key and webhook key from [dashboard](https://app.dodopayments.com/)
 
 ### 2. Install & Deploy
 
@@ -39,6 +39,9 @@ npm install
 ```bash
 # Set your Neon database URL
 wrangler secret put DATABASE_URL
+
+# Set your API key
+wrangler secret put DODO_PAYMENTS_API_KEY
 
 # Set your webhook signing key
 wrangler secret put DODO_PAYMENTS_WEBHOOK_KEY
@@ -69,7 +72,7 @@ Processes subscription events and stores them in PostgreSQL:
 
 ## Key Features
 
-✅ **Signature verification** - Using the standardwebhooks library  
+✅ **Signature verification** - Using the dodopayments library  
 ✅ **Idempotency** - Prevents duplicate processing with webhook IDs  
 ✅ **Event logging** - Complete audit trail in `webhook_events` table  
 ✅ **Error handling** - Logged and retryable
@@ -91,7 +94,7 @@ Processes subscription events and stores them in PostgreSQL:
     },
     "dependencies": {
       "@neondatabase/serverless": "^1.0.2",
-      "standardwebhooks": "^1.0.0"
+      "dodopayments": "^2.4.0"
     },
     "devDependencies": {
       "@cloudflare/workers-types": "^4.0.0",
@@ -242,11 +245,12 @@ Processes subscription events and stores them in PostgreSQL:
 
 <CodeGroup>
 ```typescript worker.ts expandable
-import { Webhook } from 'standardwebhooks';
+import { DodoPayments } from 'dodopayments';
 
 interface Env {
   DATABASE_URL: string;
-  DODO_PAYMENTS_WEBHOOK_KEY?: string;
+  DODO_PAYMENTS_API_KEY: string;
+  DODO_PAYMENTS_WEBHOOK_KEY: string;
 }
 
 interface WebhookPayload {
@@ -358,6 +362,15 @@ export default {
 
       const sql = await getSqlClient(env);
 
+      // Verify required environment variables
+      if (!env.DODO_PAYMENTS_API_KEY) {
+        console.error('❌ DODO_PAYMENTS_API_KEY is not configured');
+        return new Response(
+          JSON.stringify({ error: 'API key not configured' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
       // Verify webhook signature (required for security)
       if (!env.DODO_PAYMENTS_WEBHOOK_KEY) {
         console.error('❌ DODO_PAYMENTS_WEBHOOK_KEY is not configured');
@@ -374,8 +387,12 @@ export default {
       };
 
       try {
-        const wh = new Webhook(env.DODO_PAYMENTS_WEBHOOK_KEY);
-        await wh.verify(rawBody, webhookHeaders);
+        const dodoPaymentsClient = new DodoPayments({
+          bearerToken: env.DODO_PAYMENTS_API_KEY,
+          webhookKey: env.DODO_PAYMENTS_WEBHOOK_KEY,
+        });
+        const unwrappedWebhook = dodoPaymentsClient.webhooks.unwrap(rawBody, {headers: webhookHeaders});
+        console.log('Unwrapped webhook:', unwrappedWebhook);
         console.log('✅ Webhook signature verified');
       } catch (error) {
         console.error('❌ Webhook verification failed:', error);

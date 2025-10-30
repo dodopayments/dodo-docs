@@ -13,7 +13,7 @@ icon: 'diamond'
 ### 1. Prerequisites
 - [Netlify account](https://app.netlify.com/signup)
 - [Neon database](https://neon.tech) account
-- DodoPayments webhook key from [dashboard](https://app.dodopayments.com/developer/webhooks)
+- DodoPayments API key and webhook key from [dashboard](https://app.dodopayments.com/)
 
 ### 2. Install & Deploy
 
@@ -38,6 +38,7 @@ npm install
 
 ```bash
 netlify env:set DATABASE_URL "your-neon-connection-string"
+netlify env:set DODO_PAYMENTS_API_KEY "your-api-key"
 netlify env:set DODO_PAYMENTS_WEBHOOK_KEY "your-webhook-key"
 ```
 
@@ -61,7 +62,7 @@ Processes subscription events and stores them in PostgreSQL:
 
 ## Key Features
 
-✅ **Signature verification** - Using the standardwebhooks library  
+✅ **Signature verification** - Using the dodopayments library  
 ✅ **Idempotency** - Prevents duplicate processing with webhook IDs  
 ✅ **Event logging** - Complete audit trail in `webhook_events` table  
 ✅ **Error handling** - Logged and retryable
@@ -81,7 +82,7 @@ Processes subscription events and stores them in PostgreSQL:
     },
     "dependencies": {
       "@neondatabase/serverless": "^1.0.2",
-      "standardwebhooks": "^1.0.0"
+      "dodopayments": "^2.4.1"
     },
     "devDependencies": {
       "@netlify/functions": "^5.0.0",
@@ -228,7 +229,7 @@ Processes subscription events and stores them in PostgreSQL:
 ```typescript functions/webhook.ts expandable
 import { Handler, HandlerEvent, HandlerContext } from '@netlify/functions';
 import { neon } from '@neondatabase/serverless';
-import { Webhook } from 'standardwebhooks';
+import { DodoPayments } from 'dodopayments';
 
 interface WebhookPayload {
   business_id: string;
@@ -329,6 +330,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     console.log('📨 Webhook received');
 
     const DATABASE_URL = process.env.DATABASE_URL;
+    const API_KEY = process.env.DODO_PAYMENTS_API_KEY;
     const WEBHOOK_KEY = process.env.DODO_PAYMENTS_WEBHOOK_KEY;
 
     if (!DATABASE_URL) {
@@ -342,6 +344,16 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
 
     // Initialize Neon client
     const sql = neon(DATABASE_URL);
+
+    // Verify required environment variables
+    if (!API_KEY) {
+      console.error('❌ DODO_PAYMENTS_API_KEY is not configured');
+      return {
+        statusCode: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'API key not configured' })
+      };
+    }
 
     // Verify webhook signature (required for security)
     if (!WEBHOOK_KEY) {
@@ -360,8 +372,12 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     };
 
     try {
-      const wh = new Webhook(WEBHOOK_KEY);
-      await wh.verify(rawBody, webhookHeaders);
+      const dodoPaymentsClient = new DodoPayments({
+        bearerToken: API_KEY,
+        webhookKey: WEBHOOK_KEY,
+      });
+      const unwrappedWebhook = dodoPaymentsClient.webhooks.unwrap(rawBody, {headers: webhookHeaders});
+      console.log('Unwrapped webhook:', unwrappedWebhook);
       console.log('✅ Webhook signature verified');
     } catch (error) {
       console.error('❌ Webhook verification failed:', error);
