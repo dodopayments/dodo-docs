@@ -21,7 +21,7 @@ icon: 'bolt'
 ### 1. Prerequisites
 - [Supabase account](https://supabase.com/dashboard)
 - A Supabase project created
-- DodoPayments API key and webhook key from [dashboard](https://app.dodopayments.com/)
+- DodoPayments API key from [dashboard](https://app.dodopayments.com/)
 
 ### 2. Authenticate & Link
 
@@ -42,16 +42,15 @@ Get your project ref from [Supabase Dashboard](https://supabase.com/dashboard) �
 4. Copy and paste the entire contents of [`schema.sql`](#database-schema)
 5. Run the query
 
-### 4. Set Environment Variables
+### 4. Set Initial Secrets
 
 Supabase automatically provides `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` at runtime.
 
-Set your webhook key and API key:
-
 ```bash
 npx supabase secrets set DODO_PAYMENTS_API_KEY=your-api-key
-npx supabase secrets set DODO_PAYMENTS_WEBHOOK_KEY=your-webhook-key
 ```
+
+> **Note:** We'll set `DODO_PAYMENTS_WEBHOOK_KEY` after deployment once you have your webhook URL.
 
 ### 5. Deploy
 
@@ -61,7 +60,30 @@ The function is already set up in `functions/webhook/index.ts` - just deploy it:
 npm run deploy
 ```
 
-**Webhook URL:** `https://[project-ref].supabase.co/functions/v1/webhook`
+### 6. Get Your Webhook URL
+
+Your webhook URL is:
+```
+https://[project-ref].supabase.co/functions/v1/webhook
+```
+
+### 7. Register Webhook in DodoPayments Dashboard
+
+1. Go to [DodoPayments Dashboard](https://app.dodopayments.com) → Developer → Webhooks
+2. Create a new webhook endpoint
+3. Configure your webhook URL as the endpoint
+4. Enable these subscription events:
+   - `subscription.active`
+   - `subscription.cancelled`
+   - `subscription.renewed`
+5. Copy the **Signing Secret**
+
+### 8. Set Webhook Key & Redeploy
+
+```bash
+npx supabase secrets set DODO_PAYMENTS_WEBHOOK_KEY=your-webhook-signing-key
+npm run deploy
+```
 
 ## What It Does
 
@@ -76,6 +98,8 @@ Processes subscription events and stores them in Supabase PostgreSQL:
 ✅ **Idempotency** - Prevents duplicate processing with webhook IDs  
 ✅ **Event logging** - Complete audit trail in `webhook_events` table  
 ✅ **Error handling** - Logged and retryable
+
+> **Note:** This implementation demonstrates handling three core subscription events (`subscription.active`, `subscription.cancelled`, `subscription.renewed`) with minimal fields. You can easily extend it to support additional event types and fields based on your requirements.
 
 ## Configuration Files
 
@@ -128,7 +152,7 @@ Processes subscription events and stores them in Supabase PostgreSQL:
   CREATE TABLE IF NOT EXISTS customers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT NOT NULL,
-    name TEXT,
+    name TEXT NOT NULL,
     dodo_customer_id TEXT UNIQUE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -140,13 +164,13 @@ Processes subscription events and stores them in Supabase PostgreSQL:
     customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     dodo_subscription_id TEXT UNIQUE NOT NULL,
     product_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'cancelled', 'expired', 'paused')),
-    billing_interval TEXT CHECK (billing_interval IN ('day', 'week', 'month', 'year')),
-    amount NUMERIC(10, 2),
-    currency TEXT DEFAULT 'USD',
-    next_billing_date TIMESTAMP WITH TIME ZONE,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'on_hold', 'cancelled', 'failed', 'expired')),
+    billing_interval TEXT NOT NULL CHECK (billing_interval IN ('day', 'week', 'month', 'year')),
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    next_billing_date TIMESTAMP WITH TIME ZONE NOT NULL,
     cancelled_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
   );
 
@@ -201,6 +225,8 @@ Processes subscription events and stores them in Supabase PostgreSQL:
 
   COMMENT ON COLUMN customers.dodo_customer_id IS 'Unique customer ID from DodoPayments';
   COMMENT ON COLUMN subscriptions.dodo_subscription_id IS 'Unique subscription ID from DodoPayments';
+  COMMENT ON COLUMN subscriptions.amount IS 'Amount in smallest currency unit (e.g., cents)';
+  COMMENT ON COLUMN subscriptions.currency IS 'Currency used for the subscription payments (e.g., USD, EUR, INR)';
   COMMENT ON COLUMN webhook_events.attempts IS 'Number of processing attempts for failed webhooks';
   COMMENT ON COLUMN webhook_events.data IS 'Full webhook payload as JSON';
   ```
@@ -230,20 +256,21 @@ interface WebhookPayload {
   type: string;
   timestamp: string;
   data: {
-    payload_type: "Subscription" | "Refund" | "Dispute" | "LicenseKey";
-    subscription_id?: string;
+    payload_type: "Payment" | "Subscription" | "Refund" | "Dispute" | "LicenseKey";
+    subscription_id: string;
     customer: {
       customer_id: string;
       email: string;
       name: string;
     };
-    product_id?: string;
-    status?: string;
-    recurring_pre_tax_amount?: number;
-    payment_frequency_interval?: string;
-    next_billing_date?: string;
-    cancelled_at?: string;
-    currency?: string;
+    product_id: string;
+    status: string;
+    recurring_pre_tax_amount: number;
+    payment_frequency_interval: string;
+    created_at: string;
+    next_billing_date: string;
+    cancelled_at?: string | null;
+    currency: string;
   };
 }
 
@@ -263,7 +290,7 @@ async function handleSubscriptionEvent(supabase: SupabaseClient, payload: Webhoo
       .from('customers')
       .upsert({
         email: customer.email,
-        name: customer.name || customer.email,
+        name: customer.name,
         dodo_customer_id: customer.customer_id
       }, {
         onConflict: 'dodo_customer_id',
@@ -286,13 +313,14 @@ async function handleSubscriptionEvent(supabase: SupabaseClient, payload: Webhoo
       .upsert({
         customer_id: customerId,
         dodo_subscription_id: payload.data.subscription_id,
-        product_id: payload.data.product_id || 'unknown',
+        product_id: payload.data.product_id,
         status,
-        billing_interval: payload.data.payment_frequency_interval?.toLowerCase() || 'month',
-        amount: payload.data.recurring_pre_tax_amount || 0,
-        currency: payload.data.currency || 'USD',
-        next_billing_date: payload.data.next_billing_date || null,
-        cancelled_at: payload.data.cancelled_at || null,
+        billing_interval: payload.data.payment_frequency_interval.toLowerCase(),
+        amount: payload.data.recurring_pre_tax_amount,
+        currency: payload.data.currency,
+        created_at: payload.data.created_at,
+        next_billing_date: payload.data.next_billing_date,
+        cancelled_at: payload.data.cancelled_at ?? null,
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'dodo_subscription_id',
@@ -335,7 +363,6 @@ serve(async (req: Request) => {
     const rawBody = await req.text();
     console.log('📨 Webhook received');
 
-    // Verify webhook signature (required for security)
     const apiKey = Deno.env.get('DODO_PAYMENTS_API_KEY');
     const webhookKey = Deno.env.get('DODO_PAYMENTS_WEBHOOK_KEY');
 
@@ -355,6 +382,7 @@ serve(async (req: Request) => {
       );
     }
 
+    // Verify webhook signature (required for security)
     const webhookHeaders = {
       'webhook-id': req.headers.get('webhook-id') || '',
       'webhook-signature': req.headers.get('webhook-signature') || '',
@@ -366,7 +394,7 @@ serve(async (req: Request) => {
         bearerToken: apiKey,
         webhookKey: webhookKey,
       });
-      const unwrappedWebhook = dodoPaymentsClient.webhooks.unwrap(rawBody, {headers: webhookHeaders});
+      const unwrappedWebhook = dodoPaymentsClient.webhooks.unwrap(rawBody, { headers: webhookHeaders });
       console.log('Unwrapped webhook:', unwrappedWebhook);
       console.log('✅ Webhook signature verified');
     } catch (error) {
