@@ -1,0 +1,746 @@
+---
+title: サブスクリプションのアップグレード / ダウングレードガイド
+description: 顧客のサブスクリプションプランを変更し、日割り計算とウェブフックを確実に処理する方法を解説します。
+icon: "arrows-rotate"
+---
+
+<CardGroup cols={2}>
+<Card title="Change Plan API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
+  サブスクリプションプラン変更の完全な API ドキュメント。インタラクティブにリクエストを試せます。
+</Card>
+
+<Card title="Subscription Integration Guide" icon="book" href="/developer-resources/subscription-integration-guide">
+  サブスクリプションをゼロから作成・管理する手順を総合ガイドで学べます。
+</Card>
+</CardGroup>
+
+
+## アップグレード / ダウングレードとは
+
+プラン変更は、顧客を別の料金階層や数量に移行する操作です。以下に使います。
+- 利用量や機能に合わせて料金を調整
+- 月額 ⇄ 年額など課金周期を切り替え
+- 席数ベース商品の数量を調整
+
+<Info>
+選択する日割りモードによっては即時課金が発生します。
+</Info>
+
+## プラン変更を使うタイミング
+
+- 追加の機能・利用量・席数が必要なときはアップグレード
+- 利用が減ったらダウングレード
+- サブスクリプションを解約させずに新しい商品・価格へ移行
+
+## 前提条件
+
+実装前に次を準備してください。
+
+- 有効なサブスクリプション商品を持つ Dodo Payments マーチャントアカウント
+- ダッシュボードで発行した API キーと Webhook シークレット
+- 変更対象となるアクティブなサブスクリプション
+- サブスクリプションイベントを受ける Webhook エンドポイント
+
+<Info>
+詳細なセットアップ手順は [Integration Guide](/developer-resources/integration-guide#dashboard-setup) を参照してください。
+</Info>
+
+## 実装手順ガイド
+
+以下の手順でプラン変更をアプリに実装します。
+
+<Steps>
+<Step title="Understand Plan Change Requirements">
+実装前に整理します:
+- どのサブスクリプション商品を何へ変更可能か
+- ビジネスモデルに合う日割りモード
+- 失敗時のハンドリング方針
+- 状態管理で監視すべき Webhook イベント
+
+<Tip>
+本番投入前にテストモードで十分に検証してください。
+</Tip>
+</Step>
+
+<Step title="Choose Your Proration Strategy">
+ビジネスに合う課金方式を選びます。
+
+<Tabs>
+<Tab title="prorated_immediately">
+最適: 未使用期間を公平に精算したい SaaS
+- 残り期間に基づき正確に日割り計算
+- 未使用分を考慮した請求
+- 顧客に透明な課金を提供
+</Tab>
+
+<Tab title="difference_immediately">
+最適: シンプルなアップ/ダウングレード
+- アップグレード: 価格差を即時請求（例: $30→$80 なら $50 請求）
+- ダウングレード: 差額を将来の請求にクレジット
+- 課金ロジックと顧客説明を簡素化
+</Tab>
+
+<Tab title="full_immediately">
+最適: 請求サイクルをリセットしたい場合
+- 新プランの全額を即時請求
+- 旧プランの残期間は無視
+- 年額→月額の切替などに有用
+</Tab>
+</Tabs>
+</Step>
+
+<Step title="Implement the Change Plan API">
+Change Plan API でサブスクリプションを更新します。
+
+<ParamField path="subscription_id" type="string" required>
+変更対象のアクティブなサブスクリプション ID。
+</ParamField>
+
+<ParamField path="product_id" type="string" required>
+切り替え先の新しい product_id。
+</ParamField>
+
+<ParamField path="quantity" type="integer" default="1">
+新プランの数量（席数ベース商品向け）。
+</ParamField>
+
+<ParamField path="proration_billing_mode" type="string" required>
+即時課金の扱い: `prorated_immediately`, `full_immediately`, `difference_immediately`。
+</ParamField>
+
+<ParamField path="addons" type="array">
+新プランに付与するアドオン配列。空にすると既存アドオンを除去。
+</ParamField>
+</Step>
+
+<Step title="Handle Webhook Events">
+プラン変更結果を追跡する Webhook を処理します。
+
+- `subscription.active`: 変更成功・更新完了
+- `subscription.plan_changed`: プランが変更（アップ/ダウン/アドオン更新）
+- `subscription.on_hold`: 変更課金が失敗し保留
+- `payment.succeeded`: 変更に伴う即時課金が成功
+- `payment.failed`: 即時課金が失敗
+
+<Warning>
+必ず署名検証を行い、冪等処理を実装してください。
+</Warning>
+</Step>
+
+<Step title="Update Your Application State">
+Webhook に基づきアプリ状態を更新します。
+- 新プランに応じて機能付与/剥奪
+- 顧客ダッシュボードのプラン情報を更新
+- プラン変更の確認メールを送信
+- 監査用に課金変更を記録
+</Step>
+
+<Step title="Test and Monitor">
+徹底的にテストします。
+- 全日割りモードを様々なシナリオで検証
+- Webhook 処理を確認
+- プラン変更成功率をモニタリング
+- 失敗時のアラートを設定
+
+<Check>
+これでサブスクリプションのプラン変更実装を本番に投入する準備が整いました。
+</Check>
+</Step>
+</Steps>
+
+## Change Plan API
+
+Change Plan API を使って、アクティブなサブスクリプションの商品・数量・日割り設定を変更します。
+
+### Quick start examples
+
+<Tabs>
+  <Tab title="Node.js SDK">
+    ```javascript
+    import DodoPayments from 'dodopayments';
+
+    const client = new DodoPayments({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+    });
+
+    async function changePlan() {
+      const result = await client.subscriptions.changePlan('sub_123', {
+        product_id: 'prod_new',
+        quantity: 3,
+        proration_billing_mode: 'prorated_immediately',
+      });
+      console.log(result.status, result.invoice_id, result.payment_id);
+    }
+
+    changePlan();
+    ```
+  </Tab>
+  <Tab title="Python SDK">
+    ```python
+    import os
+    from dodopayments import DodoPayments
+
+    client = DodoPayments(bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"))
+
+    result = client.subscriptions.change_plan(
+        subscription_id="sub_123",
+        product_id="prod_new",
+        quantity=3,
+        proration_billing_mode="prorated_immediately",
+    )
+    print(result.status, result.get("invoice_id"), result.get("payment_id"))
+    ```
+  </Tab>
+  <Tab title="Go SDK">
+    ```go
+    package main
+
+    import (
+      "context"
+      "fmt"
+      "github.com/dodopayments/dodopayments-go"
+      "github.com/dodopayments/dodopayments-go/option"
+    )
+
+    func main() {
+      client := dodopayments.NewClient(option.WithBearerToken("YOUR_TOKEN"))
+      res, err := client.Subscriptions.ChangePlan(context.TODO(), dodopayments.SubscriptionChangePlanParams{
+        SubscriptionID: dodopayments.F("sub_123"),
+        ProductID:             dodopayments.F("prod_new"),
+        Quantity:              dodopayments.F(int64(3)),
+        ProrationBillingMode:  dodopayments.F(dodopayments.SubscriptionChangePlanParamsProrationBillingModeProratedImmediately),
+      })
+      if err != nil { panic(err) }
+      fmt.Println(res.Status, res.InvoiceID, res.PaymentID)
+    }
+    ```
+  </Tab>
+  <Tab title="HTTP">
+    ```bash
+    curl -X POST "$DODO_API_BASE/subscriptions/sub_123/change-plan" \
+      -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "product_id": "prod_new",
+        "quantity": 3,
+        "proration_billing_mode": "prorated_immediately"
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+```json Success
+{
+  "status": "processing",
+  "subscription_id": "sub_123",
+  "invoice_id": "inv_789",
+  "payment_id": "pay_456",
+  "proration_billing_mode": "prorated_immediately"
+}
+```
+<Note>
+<code>invoice_id</code> や <code>payment_id</code> はプラン変更で即時課金や請求書が作成された場合のみ返されます。結果確認は必ず Webhook（<code>payment.succeeded</code> や <code>subscription.plan_changed</code> など）を参照してください。
+</Note>
+
+
+<Warning>
+即時課金が失敗すると、支払い完了までサブスクリプションが `subscription.on_hold` になる場合があります。
+</Warning>
+
+## Managing Addons
+
+プラン変更時にアドオンも更新できます。
+
+```javascript
+// Add addons to the new plan
+await client.subscriptions.changePlan('sub_123', {
+  product_id: 'prod_new',
+  quantity: 1,
+  proration_billing_mode: 'difference_immediately',
+  addons: [
+    { addon_id: 'addon_123', quantity: 2 }
+  ]
+});
+
+// Remove all existing addons
+await client.subscriptions.changePlan('sub_123', {
+  product_id: 'prod_new',
+  quantity: 1,
+  proration_billing_mode: 'difference_immediately',
+  addons: [] // Empty array removes all existing addons
+});
+```
+
+<Info>
+アドオンは日割り計算に含まれ、選択した日割りモードで課金されます。
+</Info>
+
+## Proration modes
+
+プラン変更時の課金方法を選択します。
+
+#### `prorated_immediately`
+- 現サイクル残期間に応じて差額を日割り課金
+- トライアル中でも即時課金し新プランへ移行
+- ダウングレードでは日割りクレジットが将来更新に充当される場合あり
+
+#### `full_immediately`
+- 新プランの全額を即時課金
+- 旧プランの残期間は考慮しない
+
+<Info>
+<code>difference_immediately</code> で発生するダウングレードクレジットはサブスクリプション単位で、<a href="/features/customer-credit">Customer Credits</a> とは別物です。同じサブスクリプションの将来更新に自動適用され、他サブスクリプションへは移せません。
+</Info>
+
+#### `difference_immediately`
+- アップグレード: 旧プランとの差額を即時課金
+- ダウングレード: 残価をサブスクリプションクレジットとして付与し、更新時に自動充当
+
+### Example scenarios
+
+<AccordionGroup>
+  <Accordion title="Upgrade: Basic ($30) → Pro ($80) with difference_immediately">
+    ```javascript
+    await client.subscriptions.changePlan('sub_123', {
+      product_id: 'prod_pro',
+      quantity: 1,
+      proration_billing_mode: 'difference_immediately'
+    })
+    // Immediate charge: $50
+    ```
+  </Accordion>
+  <Accordion title="Downgrade: Plus ($50) → Starter ($20) with difference_immediately">
+    ```javascript
+    await client.subscriptions.changePlan('sub_123', {
+      product_id: 'prod_starter',
+      quantity: 1,
+      proration_billing_mode: 'difference_immediately'
+    })
+    // Credit added: $30 (auto-applied to future renewals for this subscription)
+    ```
+  </Accordion>
+  <Accordion title="Upgrade mid-cycle with prorated_immediately">
+    ```javascript
+    await client.subscriptions.changePlan('sub_123', {
+      product_id: 'prod_new',
+      quantity: 1,
+      proration_billing_mode: 'prorated_immediately'
+    })
+    // Immediate prorated charge based on remaining days in cycle
+    ```
+  </Accordion>
+  <Accordion title="Reset billing with full_immediately">
+    ```javascript
+    await client.subscriptions.changePlan('sub_123', {
+      product_id: 'prod_new',
+      quantity: 1,
+      proration_billing_mode: 'full_immediately'
+    })
+    // Immediate full charge for new plan; no credits calculated
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+時間に比例した精算なら `prorated_immediately`、サイクルをリセットしたいなら `full_immediately`、シンプルな差額精算とダウングレードの自動クレジットなら `difference_immediately` を選びましょう。
+</Tip>
+
+## Webhook の扱い
+
+プラン変更や支払いを Webhook で確認し、サブスクリプション状態を追跡します。
+
+### 処理すべきイベント
+- `subscription.active`: サブスクリプションがアクティブ化
+- `subscription.plan_changed`: プラン変更（アップ/ダウン/アドオン変更）
+- `subscription.on_hold`: 課金失敗で保留
+- `subscription.renewed`: 更新成功
+- `payment.succeeded`: プラン変更または更新の支払い成功
+- `payment.failed`: 支払い失敗
+
+<Info>
+ビジネスロジックはサブスクリプションイベントを主とし、支払いイベントは確認と突合に使うことを推奨します。
+</Info>
+
+### 署名検証と intent 処理
+
+<Tabs>
+  <Tab title="Next.js Route Handler">
+    ```javascript
+    import { NextRequest, NextResponse } from 'next/server';
+    
+    export async function POST(req) {
+      const webhookId = req.headers.get('webhook-id');
+      const webhookSignature = req.headers.get('webhook-signature');
+      const webhookTimestamp = req.headers.get('webhook-timestamp');
+      const secret = process.env.DODO_WEBHOOK_SECRET;
+    
+      const payload = await req.text();
+      // verifySignature is a placeholder – in production, use a Standard Webhooks library
+      const { valid, event } = await verifySignature(
+        payload,
+        { id: webhookId, signature: webhookSignature, timestamp: webhookTimestamp },
+        secret
+      );
+      if (!valid) return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+    
+      switch (event.type) {
+        case 'subscription.active':
+          // mark subscription active in your DB
+          break;
+        case 'subscription.plan_changed':
+          // refresh entitlements and reflect the new plan in your UI
+          break;
+        case 'subscription.on_hold':
+          // notify user to update payment method
+          break;
+        case 'subscription.renewed':
+          // extend access window
+          break;
+        case 'payment.succeeded':
+          // reconcile payment for plan change
+          break;
+        case 'payment.failed':
+          // log and alert
+          break;
+        default:
+          // ignore unknown events
+          break;
+      }
+    
+      return NextResponse.json({ received: true });
+    }
+    ```
+  </Tab>
+  <Tab title="Express.js">
+    ```javascript
+    import express from 'express';
+    
+    const app = express();
+    app.post('/webhooks/dodo', express.raw({ type: 'application/json' }), async (req, res) => {
+      const webhookId = req.header('webhook-id');
+      const webhookSignature = req.header('webhook-signature');
+      const webhookTimestamp = req.header('webhook-timestamp');
+      const secret = process.env.DODO_WEBHOOK_SECRET;
+      const payload = req.body.toString('utf8');
+    
+      const { valid, event } = await verifySignature(
+        payload,
+        { id: webhookId, signature: webhookSignature, timestamp: webhookTimestamp },
+        secret
+      );
+      if (!valid) return res.status(400).send('Invalid signature');
+    
+      // handle events like above
+      res.json({ received: true });
+    });
+    
+    app.listen(3000);
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+詳細なペイロードスキーマは <a href="/developer-resources/webhooks/intents/subscription">Subscription webhook payloads</a> と <a href="/developer-resources/webhooks/intents/payment">Payment webhook payloads</a> を参照してください。
+</Note>
+
+## ベストプラクティス
+
+信頼性高くプラン変更を運用するための推奨事項です。
+
+### プラン変更戦略
+- **十分にテストする**: 本番前に必ずテストモードで検証
+- **日割りを適切に選ぶ**: ビジネスモデルに合う日割りモードを選択
+- **失敗時の処理を整える**: エラー処理とリトライを実装
+- **成功率を監視する**: 成功/失敗率を追跡し問題を調査
+
+### Webhook 実装
+- **署名検証**: 常に Webhook 署名を検証して真正性を確認
+- **冪等性**: 重複イベントを安全に処理
+- **非同期処理**: 重い処理で Webhook レスポンスをブロックしない
+- **ログ管理**: デバッグと監査のため詳細なログを保持
+
+### ユーザー体験
+- **明確な案内**: 課金変更とタイミングを顧客に通知
+- **確認の提供**: プラン変更成功時に確認メールを送信
+- **エッジケース対応**: トライアル、日割り、決済失敗を考慮
+- **即時 UI 反映**: アプリの表示にすぐ反映
+
+## よくある課題と対処法
+
+プラン変更で起こりやすい問題と解決策です。
+
+<AccordionGroup>
+<Accordion title="課金は作成されたがサブスクリプションが更新されない">
+**症状**: API が成功してもサブスクリプションが旧プランのまま
+
+**主な原因**:
+- Webhook 処理の失敗・遅延
+- Webhook 受信後にアプリの状態を更新していない
+- 状態更新時の DB トランザクション問題
+
+**解決策**:
+- リトライ付きの堅牢な Webhook 処理を実装
+- 状態更新は冪等にする
+- Webhook 取りこぼし検知の監視・アラートを追加
+- Webhook エンドポイントの疎通と応答を確認
+</Accordion>
+
+<Accordion title="ダウングレード後にクレジットが反映されない">
+**症状**: ダウングレード後にクレジット残高が見えない
+
+**主な原因**:
+- 日割りモードの想定違い: `difference_immediately` は差額を全額クレジット、`prorated_immediately` は残期間に応じた日割りクレジット
+- クレジットはサブスクリプション単位で他へ移せない
+- 顧客ダッシュボードにクレジット表示がない
+
+**解決策**:
+- 自動クレジットを期待する場合はダウングレードに `difference_immediately` を使用
+- 同一サブスクリプションの将来更新に適用されることを案内
+- クレジット残高を表示するカスタマーポータルを実装
+- 次回請求書プレビューで適用状況を確認
+</Accordion>
+
+<Accordion title="Webhook の署名検証に失敗する">
+**症状**: シグネチャ無効で Webhook が拒否される
+
+**主な原因**:
+- Webhook シークレットが誤っている
+- 署名検証前にリクエストボディを変換している
+- 検証アルゴリズムの誤り
+
+**解決策**:
+- ダッシュボードの `DODO_WEBHOOK_SECRET` が正しいか確認
+- JSON パース前の生ボディで検証する
+- プラットフォームの標準 Webhook 検証ライブラリを使う
+- 開発環境で署名検証をテスト
+</Accordion>
+
+<Accordion title="プラン変更が 422 エラーで失敗する">
+**症状**: API が 422 Unprocessable Entity を返す
+
+**主な原因**:
+- サブスクリプション ID / product ID が不正
+- サブスクリプションがアクティブでない
+- 必須パラメータ不足
+- プラン変更不可の商品
+
+**解決策**:
+- サブスクリプションの存在とアクティブ状態を確認
+- product ID が有効か確認
+- 必須パラメータをすべて送る
+- API ドキュメントで要件を再確認
+</Accordion>
+
+<Accordion title="プラン変更時の即時課金が失敗する">
+**症状**: プラン変更を開始したが即時課金が失敗
+
+**主な原因**:
+- 顧客の支払い手段の残高不足
+- 支払い手段の期限切れ・無効
+- 銀行による拒否
+- 不正検知によるブロック
+
+**解決策**:
+- `payment.failed` Webhook を適切に処理
+- 支払い手段更新を顧客に通知
+- 一時的失敗に備えてリトライを実装
+- 即時課金失敗でもプラン変更を許容するか検討
+</Accordion>
+
+<Accordion title="プラン変更後に on_hold になる">
+**症状**: プラン変更課金が失敗し `on_hold` 状態になる
+
+**起きること**:
+プラン変更課金が失敗するとサブスクリプションは自動で `on_hold` になります。支払い手段を更新するまで自動更新されません。
+
+**解決策**: 支払い手段を更新して再有効化する
+
+`on_hold` から再有効化する手順:
+
+1. **支払い手段を更新**（Update Payment Method API を使用）
+2. **自動課金作成**: 未収分に対する課金が自動作成される
+3. **請求書生成**: 課金に対して請求書が生成される
+4. **支払い処理**: 新しい支払い手段で決済
+5. **再有効化**: 支払い成功後にサブスクリプションが `active` に戻る
+
+<CodeGroup>
+```javascript Node.js
+// Reactivate subscription from on_hold after failed plan change
+async function reactivateAfterFailedPlanChange(subscriptionId) {
+  // Update payment method - automatically creates charge for remaining dues
+  const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
+    type: 'new',
+    return_url: 'https://example.com/return'
+  });
+  
+  if (response.payment_id) {
+    console.log('Charge created for remaining dues:', response.payment_id);
+    console.log('Payment link:', response.payment_link);
+    
+    // Redirect customer to payment_link to complete payment
+    // Monitor webhooks for:
+    // 1. payment.succeeded - charge succeeded
+    // 2. subscription.active - subscription reactivated
+  }
+  
+  return response;
+}
+
+// Or use existing payment method if available
+async function reactivateWithExistingPaymentMethod(subscriptionId, paymentMethodId) {
+  const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
+    type: 'existing',
+    payment_method_id: paymentMethodId
+  });
+  
+  // Monitor webhooks for payment.succeeded and subscription.active
+  return response;
+}
+```
+
+```python Python
+# Reactivate subscription from on_hold after failed plan change
+def reactivate_after_failed_plan_change(subscription_id):
+    # Update payment method - automatically creates charge for remaining dues
+    response = client.subscriptions.update_payment_method(
+        subscription_id=subscription_id,
+        type="new",
+        return_url="https://example.com/return"
+    )
+    
+    if response.payment_id:
+        print("Charge created for remaining dues:", response.payment_id)
+        print("Payment link:", response.payment_link)
+        
+        # Redirect customer to payment_link to complete payment
+        # Monitor webhooks for:
+        # 1. payment.succeeded - charge succeeded
+        # 2. subscription.active - subscription reactivated
+    
+    return response
+
+# Or use existing payment method if available
+def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
+    response = client.subscriptions.update_payment_method(
+        subscription_id=subscription_id,
+        type="existing",
+        payment_method_id=payment_method_id
+    )
+    
+    # Monitor webhooks for payment.succeeded and subscription.active
+    return response
+```
+</CodeGroup>
+
+**監視すべき Webhook**:
+- `subscription.on_hold`: プラン変更課金失敗で保留になった通知
+- `payment.succeeded`: 未収分の支払い成功（支払い手段更新後）
+- `subscription.active`: 支払い成功後に再有効化
+
+**ベストプラクティス**:
+- プラン変更課金が失敗したら即座に顧客へ通知
+- 支払い手段更新の手順を明確に案内
+- Webhook で再有効化状況を監視
+- 一時的な決済失敗に備えて自動リトライを検討
+
+<Card title="Update Payment Method API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
+支払い手段更新と再有効化の完全な API ドキュメントを参照できます。
+</Card>
+</Accordion>
+</AccordionGroup>
+
+## 実装テスト
+
+プラン変更実装を徹底的に検証する手順です。
+
+<Steps>
+<Step title="テスト環境を用意">
+- テスト API キーとテスト商品を使用
+- 複数タイプのテストサブスクリプションを作成
+- テスト用 Webhook エンドポイントを設定
+- 監視とログを用意
+</Step>
+
+<Step title="日割りモードを検証">
+- 請求サイクルのタイミングを変えて `prorated_immediately` をテスト
+- アップ/ダウングレードで `difference_immediately` をテスト
+- サイクルリセットとして `full_immediately` をテスト
+- クレジット計算が正しいか検証
+</Step>
+
+<Step title="Webhook 処理をテスト">
+- すべての関連 Webhook が受信できるか確認
+- Webhook 署名検証をテスト
+- 重複 Webhook を安全に処理できるか確認
+- Webhook 処理失敗シナリオをテスト
+</Step>
+
+<Step title="エラーシナリオをテスト">
+- 不正なサブスクリプション ID
+- 期限切れの支払い手段
+- ネットワーク障害やタイムアウト
+- 残高不足
+</Step>
+
+<Step title="本番監視">
+- プラン変更失敗のアラートを設定
+- Webhook 処理時間を監視
+- プラン変更の成功率をトラッキング
+- サポートチケットから課題を把握
+</Step>
+</Steps>
+
+## エラーハンドリング
+
+一般的な API エラーを丁寧に処理します。
+
+### HTTP ステータスコード
+
+<AccordionGroup>
+<Accordion title="200 OK">
+プラン変更リクエストが処理され、サブスクリプション更新と支払い処理が開始。
+</Accordion>
+
+<Accordion title="400 Bad Request">
+リクエストパラメータが不正。必須項目やフォーマットを確認。
+</Accordion>
+
+<Accordion title="401 Unauthorized">
+API キーが無効または欠如。`DODO_PAYMENTS_API_KEY` を確認。
+</Accordion>
+
+<Accordion title="404 Not Found">
+サブスクリプション ID が存在しない、またはアカウントに属さない。
+</Accordion>
+
+<Accordion title="422 Unprocessable Entity">
+サブスクリプションを変更できない状態（例: 既に解約、対象外の商品など）。
+</Accordion>
+
+<Accordion title="500 Internal Server Error">
+サーバーエラー。少し待ってからリトライ。
+</Accordion>
+</AccordionGroup>
+
+### エラーレスポンス形式
+```json
+{
+  "error": {
+    "code": "subscription_not_found",
+    "message": "The subscription with ID 'sub_123' was not found",
+    "details": {
+      "subscription_id": "sub_123"
+    }
+  }
+}
+```
+
+## 次のステップ
+
+- <a href="/api-reference/subscriptions/change-plan">Change Plan API</a> を確認
+- <a href="/features/customer-credit">Customer Credits</a> を参照
+- `subscription.on_hold` のアラートを実装
+- <a href="/developer-resources/webhooks">Webhook Integration Guide</a> をチェック
+
+
+

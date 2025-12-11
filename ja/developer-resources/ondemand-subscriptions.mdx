@@ -1,0 +1,450 @@
+---
+title: オンデマンドサブスクリプション
+description: マンダテの承認、変動料金の作成、Webhookの処理、安全なリトライポリシーの実装によって、オンデマンドサブスクリプションを統合します。
+icon: bolt
+---
+
+## 概要
+
+オンデマンドサブスクリプションを使用すると、顧客の支払い方法を一度承認し、その後必要に応じて変動額を請求できます。固定スケジュールではなく、必要なときに請求できます。
+
+<Info>
+この機能は、アカウントで有効にする必要がある場合があります。ダッシュボードに表示されない場合は、サポートにお問い合わせください。
+</Info>
+
+このガイドを使用して:
+- オンデマンドサブスクリプションを作成する（オプションの初期価格でマンダテを承認）
+- カスタム金額での後続の請求をトリガーする
+- Webhookを使用して結果を追跡する
+
+一般的なサブスクリプションの設定については、[サブスクリプション統合ガイド](/developer-resources/subscription-integration-guide)を参照してください。
+
+## 前提条件
+
+- Dodo PaymentsのマーチャントアカウントとAPIキー
+- Webhookシークレットが設定され、イベントを受信するエンドポイント
+- カタログにサブスクリプション商品があること
+
+<Tip>
+顧客にホストされたチェックアウトを介してマンダテを承認させたい場合は、`payment_link: true`を設定し、`return_url`を提供してください。
+</Tip>
+
+## オンデマンドの仕組み
+
+1. `on_demand`オブジェクトを使用して支払い方法を承認し、オプションで初期料金を収集するサブスクリプションを作成します。
+2. 後で、専用の請求エンドポイントを使用して、そのサブスクリプションに対してカスタム金額で請求を作成します。
+3. Webhook（例: `payment.succeeded`, `payment.failed`）をリッスンしてシステムを更新します。
+
+## オンデマンドサブスクリプションの作成
+
+エンドポイント: [POST /subscriptions](/api-reference/subscriptions/post-subscriptions)
+
+リクエストの主要フィールド（ボディ）:
+
+<AccordionGroup>
+<Accordion title="リクエストボディパラメータ">
+  <ParamField body="product_id" type="string" required>
+    サブスクリプションの製品ID。
+  </ParamField>
+
+  <ParamField body="quantity" type="integer" required>
+    ユニット数。最小1。
+  </ParamField>
+
+  <ParamField body="billing" type="object" required>
+    顧客の請求先住所。
+  </ParamField>
+
+  <ParamField body="customer" type="object" required>
+    既存の顧客を添付するか、顧客の詳細を提供します。
+  </ParamField>
+
+  <ParamField body="payment_link" type="boolean" default="false">
+    trueの場合、マンダテの承認とオプションの初期支払いのためのホストされたチェックアウトリンクを作成します。
+  </ParamField>
+
+  <ParamField body="return_url" type="string">
+    ホストされたチェックアウトを完了した後に顧客をリダイレクトする場所。
+  </ParamField>
+
+  <ParamField body="on_demand.mandate_only" type="boolean" required>
+    trueの場合、作成中に顧客に請求せずに支払い方法を承認します。
+  </ParamField>
+
+  <ParamField body="on_demand.product_price" type="integer">
+    初期請求額（最小通貨単位で）。指定した場合、この値は製品作成時に設定された元の価格を上書きします。省略した場合、製品の保存された価格が使用されます。例: $1.00を請求するには、<code>100</code>を渡します。
+  </ParamField>
+
+  <ParamField body="on_demand.product_currency" type="string">
+    初期請求のためのオプションの通貨上書き。製品の通貨がデフォルトです。
+  </ParamField>
+
+  <ParamField body="on_demand.product_description" type="string">
+    請求およびラインアイテムのためのオプションの説明上書き。
+  </ParamField>
+
+  <ParamField body="on_demand.adaptive_currency_fees_inclusive" type="boolean">
+    trueの場合、<code>product_price</code>に適応通貨手数料を含めます。falseの場合、手数料は上乗せされます。適応価格設定が無効な場合は無視されます。
+  </ParamField>
+</Accordion>
+</AccordionGroup>
+
+### オンデマンドサブスクリプションの作成
+
+<Tabs>
+<Tab title="Node.js SDK">
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+});
+
+async function main() {
+  const subscription = await client.subscriptions.create({
+    billing: { city: 'SF', country: 'US', state: 'CA', street: '1 Market St', zipcode: '94105' },
+    customer: { customer_id: 'customer_123' },
+    product_id: 'prod_sub_123',
+    quantity: 1,
+    payment_link: true,
+    return_url: 'https://example.com/billing/success',
+    on_demand: {
+      mandate_only: true, // set false to collect an initial charge
+      // product_price: 1000, // optional: charge $10.00 now if mandate_only is false
+      // product_currency: 'USD',
+      // product_description: 'Custom initial charge',
+      // adaptive_currency_fees_inclusive: false,
+    },
+  });
+
+  // If payment_link was true, redirect the customer to authorize the mandate
+  console.log(subscription.payment_link);
+}
+
+main().catch(console.error);
+```
+
+</Tab>
+<Tab title="Python SDK">
+
+```python
+import os
+from dodopayments import DodoPayments
+
+client = DodoPayments(bearer_token=os.environ.get('DODO_PAYMENTS_API_KEY'))
+
+subscription = client.subscriptions.create(
+    billing={
+        "city": "SF",
+        "country": "US",
+        "state": "CA",
+        "street": "1 Market St",
+        "zipcode": "94105",
+    },
+    customer={"customer_id": "customer_123"},
+    product_id="prod_sub_123",
+    quantity=1,
+    payment_link=True,
+    return_url="https://example.com/billing/success",
+    on_demand={
+        "mandate_only": True,
+        # "product_price": 1000,
+        # "product_currency": "USD",
+        # "product_description": "Custom initial charge",
+        # "adaptive_currency_fees_inclusive": False,
+    },
+)
+
+print(subscription.payment_link)
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+  "context"
+  "fmt"
+  "github.com/dodopayments/dodopayments-go"
+  "github.com/dodopayments/dodopayments-go/option"
+)
+
+func main() {
+  client := dodopayments.NewClient(
+    option.WithBearerToken("YOUR_API_KEY"),
+  )
+  subscription, err := client.Subscriptions.New(context.TODO(), dodopayments.SubscriptionNewParams{
+    Billing: dodopayments.F(dodopayments.BillingAddressParam{
+      City:    dodopayments.F("SF"),
+      Country: dodopayments.F(dodopayments.CountryCodeUs),
+      State:   dodopayments.F("CA"),
+      Street:  dodopayments.F("1 Market St"),
+      Zipcode: dodopayments.F("94105"),
+    }),
+    Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](dodopayments.AttachExistingCustomerParam{
+      CustomerID: dodopayments.F("customer_123"),
+    }),
+    ProductID:  dodopayments.F("prod_sub_123"),
+    Quantity:   dodopayments.F(int64(1)),
+    PaymentLink: dodopayments.F(true),
+    ReturnURL:   dodopayments.F("https://example.com/billing/success"),
+    OnDemand: dodopayments.F(dodopayments.OnDemandSubscriptionReqParam{
+      MandateOnly: dodopayments.F(true),
+      // ProductPrice: dodopayments.F(int64(1000)),
+      // ProductCurrency: dodopayments.F(dodopayments.CurrencyUsd),
+      // ProductDescription: dodopayments.F("Custom initial charge"),
+      // AdaptiveCurrencyFeesInclusive: dodopayments.F(false),
+    }),
+  })
+  if err != nil { panic(err) }
+  fmt.Println(subscription.PaymentLink)
+}
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "$DODO_API/subscriptions" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "billing": {"city": "SF", "country": "US", "state": "CA", "street": "1 Market St", "zipcode": "94105"},
+    "customer": {"customer_id": "customer_123"},
+    "product_id": "prod_sub_123",
+    "quantity": 1,
+    "payment_link": true,
+    "return_url": "https://example.com/billing/success",
+    "on_demand": {
+      "mandate_only": true
+    }
+  }'
+```
+
+</Tab>
+</Tabs>
+
+<Check>
+`payment_link: true`を設定し、顧客を`payment_link`にリダイレクトしてマンダテの承認を完了させます。
+</Check>
+
+```json Success
+{
+  "subscription_id": "sub_123",
+  "payment_link": "https://pay.dodopayments.com/checkout/...",
+  "customer": { "customer_id": "customer_123", "email": "alex@example.com", "name": "Alex Doe" },
+  "metadata": {},
+  "recurring_pre_tax_amount": 0,
+  "addons": []
+}
+```
+
+## オンデマンドサブスクリプションの請求
+
+マンダテが承認された後、必要に応じて請求を作成します。
+
+エンドポイント: [POST /subscriptions/\{subscription_id\}/charge](/api-reference/subscriptions/create-charge)
+
+リクエストの主要フィールド（ボディ）:
+
+<AccordionGroup>
+  <Accordion title="請求リクエストボディパラメータ">
+    <ParamField body="product_price" type="integer" required>
+      請求額（最小通貨単位で）。例: $25.00を請求するには、<code>2500</code>を渡します。
+    </ParamField>
+
+    <ParamField body="product_currency" type="string">
+      請求のためのオプションの通貨上書き。
+    </ParamField>
+
+    <ParamField body="product_description" type="string">
+      この請求のためのオプションの説明上書き。
+    </ParamField>
+
+    <ParamField body="adaptive_currency_fees_inclusive" type="boolean">
+      trueの場合、<code>product_price</code>に適応通貨手数料を含めます。falseの場合、手数料は上乗せされます。
+    </ParamField>
+
+    <ParamField body="metadata" type="object">
+      支払いのための追加メタデータ。省略した場合、サブスクリプションのメタデータが使用されます。
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+<Tabs>
+<Tab title="Node.js SDK">
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+async function chargeNow(subscriptionId) {
+  const res = await client.subscriptions.charge(subscriptionId, { product_price: 2500 });
+  console.log(res.payment_id);
+}
+
+chargeNow('sub_123').catch(console.error);
+```
+
+</Tab>
+<Tab title="Python SDK">
+
+```python
+import os
+from dodopayments import DodoPayments
+
+client = DodoPayments(bearer_token=os.environ.get('DODO_PAYMENTS_API_KEY'))
+
+response = client.subscriptions.charge(
+    subscription_id="sub_123",
+    product_price=2500,
+)
+
+print(response.payment_id)
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+  "context"
+  "fmt"
+  "github.com/dodopayments/dodopayments-go"
+  "github.com/dodopayments/dodopayments-go/option"
+)
+
+func main() {
+  client := dodopayments.NewClient(option.WithBearerToken("YOUR_API_KEY"))
+  res, err := client.Subscriptions.Charge(context.TODO(), "sub_123", dodopayments.SubscriptionChargeParams{
+    ProductPrice: dodopayments.F(int64(2500)),
+  })
+  if err != nil { panic(err) }
+  fmt.Println(res.PaymentID)
+}
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product_price": 2500,
+    "product_description": "Extra usage for March"
+  }'
+```
+
+</Tab>
+</Tabs>
+
+```json Success
+{ "payment_id": "pay_abc123" }
+```
+
+<Warning>
+オンデマンドでないサブスクリプションの請求は失敗する可能性があります。請求する前に、サブスクリプションの詳細に`on_demand: true`が含まれていることを確認してください。
+</Warning>
+
+## 支払いのリトライ
+
+当社の不正検出システムは、攻撃的なリトライパターンをブロックする場合があります（これを潜在的なカードテストとしてフラグ付けすることがあります）。安全なリトライポリシーに従ってください。
+
+<Warning>
+バーストリトライパターンは、不正または疑わしいカードテストとして当社のリスクシステムやプロセッサーによってフラグ付けされる可能性があります。クラスター化されたリトライを避け、以下のバックオフスケジュールと時間調整ガイダンスに従ってください。
+</Warning>
+
+### 安全なリトライポリシーの原則
+
+- **バックオフメカニズム**: リトライ間に指数バックオフを使用します。
+- **リトライ制限**: 総リトライを制限します（最大3〜4回の試行）。
+- **インテリジェントフィルタリング**: リトライ可能な失敗（例: ネットワーク/発行者エラー、資金不足）のみをリトライします。ハード拒否はリトライしないでください。
+- **カードテスト防止**: `DO_NOT_HONOR`、`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`、`AUTHENTICATION_FAILURE`のような失敗をリトライしないでください。
+- **メタデータの変更（オプション）**: 独自のリトライシステムを維持する場合、メタデータを介してリトライを区別します（例: `retry_attempt`）。
+
+### リトライスケジュールの提案（サブスクリプション）
+
+- **1回目の試行**: 請求を作成したときに即時
+- **2回目の試行**: 3日後
+- **3回目の試行**: さらに7日後（合計10日）
+- **4回目の試行（最終）**: さらに7日後（合計17日）
+
+最終ステップ: まだ未払いの場合は、サブスクリプションを未払いとしてマークするか、ポリシーに基づいてキャンセルします。顧客に支払い方法を更新するよう通知します。
+
+### バーストリトライを避け、承認時間に合わせる
+
+- リトライを元の承認タイムスタンプに固定して、ポートフォリオ全体で「バースト」動作を避けます。
+- 例: 顧客が今日の午後1時10分にトライアルまたはマンダテを開始した場合、バックオフに従って次のリトライを午後1時10分にスケジュールします（例: +3日→午後1時10分、+7日→午後1時10分）。
+- あるいは、最後の成功した支払い時間を保存している場合は、`T`で次の試行をスケジュールし、時間帯の整合性を保ちます。
+
+<Note>
+タイムゾーンとDST: スケジュールのために一貫した時間基準を使用し、表示のためにのみ変換して間隔を維持します。
+</Note>
+
+### リトライすべきでない拒否コード
+
+- `STOLEN_CARD`
+- `DO_NOT_HONOR`
+- `FRAUDULENT`
+- `PICKUP_CARD`
+- `AUTHENTICATION_FAILURE`
+- `LOST_CARD`
+
+<Note>
+拒否理由の包括的なリストと、それがユーザーによって修正可能かどうかについては、[トランザクションの失敗](/api-reference/transaction-failures)のドキュメントを参照してください。
+</Note>
+
+<Tip>
+ソフト/一時的な問題（例: `insufficient_funds`、`issuer_unavailable`、`processing_error`、ネットワークタイムアウト）でのみリトライしてください。同じ拒否が繰り返される場合は、さらなるリトライを一時停止してください。
+</Tip>
+
+### 実装ガイドライン（コードなし）
+
+- 正確なタイムスタンプを保持するスケジューラ/キューを使用し、次の試行を正確な時間帯オフセットで計算します（例: `T + 3 days`を同じHH:MMで）。
+- 最後の成功した支払いタイムスタンプ`T`を維持し、次の試行を計算します。複数のサブスクリプションを同時にバンチしないでください。
+- 最後の拒否理由を常に評価し、上記のスキップリストにあるハード拒否のリトライを停止します。
+- 顧客ごとおよびアカウントごとに同時リトライを制限して、偶発的な急増を防ぎます。
+- プロアクティブにコミュニケーションを行い、次の予定された試行の前に顧客に支払い方法を更新するようにメール/SMSで通知します。
+- メタデータは観測可能性のためのみに使用します（例: `retry_attempt`）。無関係なフィールドを回転させて不正/リスクシステムを「回避」しようとしないでください。
+
+## Webhookで結果を追跡する
+
+Webhook処理を実装して顧客の旅を追跡します。詳細は[Webhookの実装](/developer-resources/integration-guide#implementing-webhooks)を参照してください。
+
+- **subscription.active**: マンダテが承認され、サブスクリプションがアクティブ化されました
+- **subscription.failed**: 作成に失敗しました（例: マンダテの失敗）
+- **subscription.on_hold**: サブスクリプションが保留中です（例: 未払い状態）
+- **payment.succeeded**: 請求が成功しました
+- **payment.failed**: 請求が失敗しました
+
+<Tip>
+オンデマンドフローの場合、`payment.succeeded`と`payment.failed`に焦点を当てて、使用ベースの請求を調整します。
+</Tip>
+
+## テストと次のステップ
+
+<Steps>
+<Step title="テストモードで作成">
+テストAPIキーを使用して、`payment_link: true`でサブスクリプションを作成し、リンクを開いてマンダテを完了します。
+</Step>
+<Step title="請求をトリガー">
+小さな`product_price`（例: `100`）を使用して請求エンドポイントを呼び出し、`payment.succeeded`を受け取ることを確認します。
+</Step>
+<Step title="本番環境に移行">
+イベントと内部状態の更新を検証した後、ライブAPIキーに切り替えます。
+</Step>
+</Steps>
+
+## トラブルシューティング
+
+- **422 無効なリクエスト**: 作成時に`on_demand.mandate_only`が提供され、請求時に`product_price`が提供されていることを確認してください。
+- **通貨エラー**: `product_currency`を上書きする場合は、アカウントと顧客に対してサポートされていることを確認してください。
+- **Webhookが受信されない**: Webhook URLとシグネチャシークレットの設定を確認してください.

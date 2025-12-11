@@ -1,0 +1,200 @@
+---
+title: API Gateway Blueprint
+description: APIコールとゲートウェイレベルの使用状況を追跡して請求します。高ボリュームのリクエスト追跡を行うAPI-as-a-serviceプラットフォームに最適です。
+icon: cloud
+---
+
+## ユースケース
+
+API Gateway Blueprintがサポートする一般的なシナリオを探ります：
+
+<CardGroup cols={2}>
+<Card title="API-as-a-Service" icon="server">
+APIプラットフォームごとに顧客の使用状況を追跡し、コール数に基づいて請求します。
+</Card>
+<Card title="レート制限" icon="gauge">
+APIの使用パターンを監視し、使用に基づくレート制限を実装します。
+</Card>
+<Card title="パフォーマンスモニタリング" icon="chart-line">
+請求データとともに応答時間とエラーレートを追跡します。
+</Card>
+<Card title="マルチテナントSaaS" icon="users">
+異なるエンドポイントにわたるAPI消費に基づいて顧客に請求します。
+</Card>
+</CardGroup>
+
+<Info>
+APIエンドポイントの使用状況を追跡し、レート制限を実施し、使用に基づくAPI請求を行うのに最適です。
+</Info>
+
+## クイックスタート
+
+ゲートウェイレベルでAPIコールを追跡し、高ボリュームのシナリオに対して自動バッチ処理を行います：
+
+<Steps>
+<Step title="SDKをインストール">
+
+```bash
+npm install @dodopayments/ingestion-blueprints
+```
+
+</Step>
+
+<Step title="APIキーを取得">
+- **Dodo Payments APIキー**: [Dodo Payments Dashboard](https://app.dodopayments.com/developer/api-keys)から取得します。
+</Step>
+
+<Step title="メーターを作成">
+あなたの[Dodo Payments Dashboard](https://app.dodopayments.com/)でメーターを作成します：
+- **イベント名**: `api_call`（またはお好みの名前）
+- **集約タイプ**: `count` コール数を追跡するため
+- 応答時間、ステータスコードなどのメタデータを追跡する場合は、追加のプロパティを設定します。
+</Step>
+
+<Step title="APIコールを追跡">
+<CodeGroup>
+
+```javascript Single API Call
+import { Ingestion, trackAPICall } from '@dodopayments/ingestion-blueprints';
+
+const ingestion = new Ingestion({
+  apiKey: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'test_mode',
+  eventName: 'api_call'
+});
+
+// Track a single API call
+await trackAPICall(ingestion, {
+  customerId: 'customer_123',
+  metadata: {
+    endpoint: '/api/v1/users',
+    method: 'GET',
+    status_code: 200,
+    response_time_ms: 45
+  }
+});
+```
+
+```javascript High-Volume with Batching
+import { Ingestion, createBatch } from '@dodopayments/ingestion-blueprints';
+
+const ingestion = new Ingestion({
+  apiKey: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'live_mode',
+  eventName: 'api_call'
+});
+
+// Create batch for high-volume tracking
+const batch = createBatch(ingestion, {
+  maxSize: 100,      // Flush after 100 events
+  flushInterval: 5000 // Or flush every 5 seconds
+});
+
+// Add API calls to batch
+batch.add({
+  customerId: 'customer_123',
+  metadata: {
+    endpoint: '/api/v1/products',
+    method: 'GET',
+    status_code: 200
+  }
+});
+
+// Clean up when done
+await batch.cleanup();
+```
+
+```javascript Express.js Middleware
+import express from 'express';
+import { Ingestion, createBatch } from '@dodopayments/ingestion-blueprints';
+
+const app = express();
+
+const ingestion = new Ingestion({
+  apiKey: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'live_mode',
+  eventName: 'api_call'
+});
+
+const batch = createBatch(ingestion, {
+  maxSize: 50,
+  flushInterval: 10000
+});
+
+// Middleware to track all API calls
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  
+  res.on('finish', () => {
+    const responseTime = Date.now() - startTime;
+    
+    batch.add({
+      customerId: req.user?.id || 'anonymous',
+      metadata: {
+        endpoint: req.path,
+        method: req.method,
+        status_code: res.statusCode,
+        response_time_ms: responseTime
+      }
+    });
+  });
+  
+  next();
+});
+
+// Cleanup on shutdown
+process.on('SIGTERM', async () => {
+  await batch.cleanup();
+  process.exit(0);
+});
+```
+
+</CodeGroup>
+</Step>
+</Steps>
+
+## 設定
+
+### 取り込み設定
+
+<ParamField path="apiKey" type="string" required>
+ダッシュボードからのDodo Payments APIキー。
+</ParamField>
+
+<ParamField path="environment" type="string" required>
+環境モード：`test_mode`または`live_mode`。
+</ParamField>
+
+<ParamField path="eventName" type="string" required>
+メーター設定に一致するイベント名。
+</ParamField>
+
+### APIコールオプションの追跡
+
+<ParamField path="customerId" type="string" required>
+請求の帰属のための顧客ID。
+</ParamField>
+
+<ParamField path="metadata" type="object">
+エンドポイント、メソッド、ステータスコード、応答時間などのAPIコールに関するオプションのメタデータ。
+</ParamField>
+
+### バッチ設定
+
+<ParamField path="maxSize" type="number">
+自動フラッシュ前の最大イベント数。デフォルト：`100`。
+</ParamField>
+
+<ParamField path="flushInterval" type="number">
+ミリ秒単位の自動フラッシュ間隔。デフォルト：`5000`（5秒）。
+</ParamField>
+
+## ベストプラクティス
+
+<Tip>
+**高ボリューム用のバッチ処理を使用**: 1秒あたり10リクエスト以上を処理するアプリケーションでは、`createBatch()`を使用してオーバーヘッドを削減し、パフォーマンスを向上させます。
+</Tip>
+
+<Warning>
+**常にバッチをクリーンアップ**: アプリケーションのシャットダウン時に`batch.cleanup()`を呼び出して、保留中のイベントをフラッシュし、データ損失を防ぎます。
+</Warning>

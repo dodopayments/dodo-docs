@@ -1,0 +1,709 @@
+---
+title: Erstellen Sie einen KI-Bildgenerator mit nutzungsbasierter Abrechnung
+description: Folgen Sie uns, während wir PixelGen AI - einen
+  KI-Bildgenerierungsdienst mit nutzungsbasierter Abrechnung - erstellen
+icon: code
+---
+
+In diesem Tutorial erstellen Sie **PixelGen AI** - einen Beispiel-KI-Bildgenerierungsdienst, der die nutzungsbasierte Abrechnung demonstriert. Wir werden alles von Grund auf neu erstellen: den Abrechnungszähler, die Produktkonfiguration und den Beispielanwendungscode, der Bilder generiert und die Nutzung in Echtzeit verfolgt.
+
+<Note>
+Dieses Tutorial bietet Beispielimplementierungscode für eine terminalbasierte Anwendung. Sie können diesen Code für Ihr spezifisches Framework (React, Vue, Angular usw.) anpassen und die Methode zur Benutzereingabe gemäß den Anforderungen Ihrer Anwendung anpassen.
+</Note>
+
+Am Ende dieses Tutorials haben Sie einen funktionierenden Beispielservice, der:
+- Bilder mit der DALL-E API von OpenAI generiert  
+- Jede Bildgenerierung zur Abrechnung verfolgt
+- Kunden automatisch basierend auf der Nutzung belastet
+- Verschiedene Qualitätsstufen (Standard vs. HD) behandelt
+
+## Was wir bauen
+
+Lassen Sie uns zunächst unseren PixelGen AI-Dienst verstehen:
+
+- **Dienst**: KI-Bildgenerierung mit der DALL-E API von OpenAI
+- **Preismodell**: Abrechnung pro Bild (0,05 $ pro Bild)
+- **Kostenloses Kontingent**: 10 kostenlose Bilder pro Kunde und Monat
+- **Qualitätsoptionen**: Standard- und HD-Bilder (zum Zweck der Einfachheit zum gleichen Preis)
+
+<Info>
+Bevor wir beginnen, stellen Sie sicher, dass Sie:
+- Ein Dodo Payments-Konto haben
+- Zugriff auf die API von OpenAI haben
+- Grundkenntnisse in TypeScript/Node.js haben
+</Info>
+
+## Schritt 1: Erstellen Sie Ihren Nutzungsmesser
+
+Wir beginnen damit, einen Zähler in Ihrem Dodo Payments-Dashboard zu erstellen, der jede Bildgenerierung unseres Dienstes verfolgt. Denken Sie daran, dass dies der "Zähler" ist, der abrechnungsfähige Ereignisse verfolgt.
+
+<Frame>
+  <img src="/images/usage-based/UBB-2.png" alt="" />
+</Frame>
+
+<Tip>
+**Was wir bauen**: Ein Zähler mit dem Namen "Bildgenerierungszähler", der jedes Mal zählt, wenn jemand ein Bild mit unserem Dienst generiert.
+</Tip>
+
+<Steps>
+<Step title="Öffnen Sie den Abschnitt Zähler">
+1. Melden Sie sich in Ihrem Dodo Payments-Dashboard an
+2. Klicken Sie in der linken Seitenleiste auf **Zähler**
+3. Klicken Sie auf die Schaltfläche **Zähler erstellen**
+
+Sie sollten ein Formular sehen, in dem wir unser Bildgenerierungs-Tracking konfigurieren.
+</Step>
+
+<Step title="Füllen Sie die grundlegenden Zählerinformationen aus">
+Jetzt geben wir die spezifischen Details für unseren PixelGen AI-Dienst ein:
+
+**Zählername**: Kopieren Sie dies genau → `Image Generation Meter`
+
+**Beschreibung**: Kopieren Sie dies → `Tracks each AI image generation request made by customers using our DALL-E powered service`
+
+**Ereignisname**: Dies ist entscheidend - kopieren Sie genau → `image.generated`
+
+<Warning>
+Der Ereignisname `image.generated` muss genau mit dem übereinstimmen, was wir später aus unserem Anwendungscode senden werden. Ereignisnamen sind groß- und kleinschreibungssensitiv!
+</Warning>
+</Step>
+
+<Step title="Konfigurieren Sie, wie wir Bilder zählen">
+Richten Sie die Aggregation ein (wie der Zähler unsere Ereignisse zählt):
+
+**Aggregationstyp**: Wählen Sie **Zählen** aus dem Dropdown-Menü
+
+**Maßeinheit**: Geben Sie ein → `images`
+
+<Info>
+Wir verwenden "Zählen", weil wir pro generiertem Bild abrechnen möchten, nicht nach Größe oder Generierungszeit. Jedes erfolgreiche Bild = 1 abrechnungsfähige Einheit.
+</Info>
+</Step>
+
+<Step title="Fügen Sie eine Qualitätsfilterung hinzu">
+
+<Frame>
+  <img src="/images/usage-based/UBB-3.png" alt="" />
+</Frame>
+
+Wir möchten sicherstellen, dass wir nur legitime Bilder zählen (keine Testläufe oder Fehler):
+
+1. **Ereignisfilterung aktivieren**: Schalten Sie dies **EIN**
+2. **Filterlogik**: Wählen Sie **ODER** (das bedeutet "zählen, wenn EINE dieser Bedingungen wahr ist")
+3. **Fügen Sie die erste Bedingung hinzu**:
+   - Eigenschaftsschlüssel: `quality`
+   - Vergleichsoperator: `equals`  
+   - Wert: `standard`
+4. **Klicken Sie auf "Bedingung hinzufügen"** für die zweite:
+   - Eigenschaftsschlüssel: `quality`
+   - Vergleichsoperator: `equals`
+   - Wert: `hd`
+
+<Tip>
+Diese Einrichtung bedeutet, dass wir nur Ereignisse zählen, bei denen die Qualität entweder "Standard" ODER "HD" ist - und somit Testereignisse oder fehlerhafte Anfragen herausfiltern.
+</Tip>
+</Step>
+
+<Step title="Erstellen Sie Ihren Zähler">
+1. Überprüfen Sie, ob alle Ihre Einstellungen mit den oben genannten Werten übereinstimmen
+2. Klicken Sie auf **Zähler erstellen**
+
+<Check>
+**Zähler erstellt!** Ihr "Bildgenerierungszähler" ist jetzt bereit, Bildgenerierungen zu zählen. Als Nächstes verbinden wir ihn mit einem Abrechnungsprodukt.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 2: Erstellen Sie Ihr Abrechnungsprodukt
+
+Jetzt müssen wir ein Produkt erstellen, das unsere Preisgestaltung definiert (0,05 $ pro Bild mit 10 kostenlosen Bildern). Dies verbindet unseren Zähler mit der tatsächlichen Abrechnung.
+
+<Tip>
+**Was wir bauen**: Ein Produkt namens "PixelGen AI - Bildgenerierung", das nach den ersten 10 kostenlosen Bildern pro Monat 0,05 $ pro Bild berechnet.
+</Tip>
+
+<Steps>
+<Step title="Navigieren Sie zu Produkten">
+1. Klicken Sie in Ihrem Dodo Payments-Dashboard auf **Produkte** in der linken Seitenleiste
+2. Klicken Sie auf **Produkt erstellen**
+3. Wählen Sie **Nutzungsbasiert** als Produkttyp aus
+
+Dies teilt Dodo Payments mit, dass die Abrechnung auf der Nutzung des Zählers basiert, nicht auf einem festen Abonnement.
+</Step>
+
+<Step title="Geben Sie Produktdetails ein">
+Füllen Sie diese genauen Werte für unseren PixelGen AI-Dienst aus:
+
+**Produktname**: Kopieren Sie dies → `PixelGen AI - Image Generation`
+
+**Beschreibung**: Kopieren Sie dies → `AI-powered image generation service with pay-per-use billing`
+
+**Produktbild**: Laden Sie ein klares, relevantes Bild hoch.
+
+<Info>
+Diese werden auf den Rechnungen der Kunden angezeigt, also machen Sie sie klar und professionell.
+</Info>
+</Step>
+
+<Step title="Verbinden Sie Ihren Zähler">
+
+<Frame>
+  <img src="/images/usage-based/UBB-5.png" alt="" />
+</Frame>
+
+Bevor Sie Ihren Zähler verbinden, stellen Sie sicher, dass Sie **Nutzungsbasierte Abrechnung** als Preisart für Ihr Produkt ausgewählt haben.
+
+Zusätzlich setzen Sie den **Festpreis** auf `0`, um sicherzustellen, dass Kunden nur basierend auf ihrer Nutzung belastet werden, ohne Grundgebühr.
+
+Jetzt verknüpfen Sie den Zähler, den Sie gerade erstellt haben:
+
+1. Scrollen Sie nach unten zum Abschnitt **Zugeordneter Zähler**
+2. Klicken Sie auf **Zähler hinzufügen**
+3. Wählen Sie im Dropdown **"Bildgenerierungszähler"** (den, den Sie zuvor erstellt haben)
+4. Bestätigen Sie, dass er in Ihrer Produktkonfiguration angezeigt wird
+
+<Check>
+Ihr Zähler ist jetzt erfolgreich mit diesem Produkt verbunden.
+</Check>
+</Step>
+
+<Step title="Legen Sie Ihre Preisgestaltung fest">
+Hier definieren wir unser Geschäftsmodell:
+
+<Frame>
+  <img src="/images/usage-based/UBB-4.png" alt="" />
+</Frame>
+
+**Preis pro Einheit**: Geben Sie ein → `0.05` (das sind 0,05 $ pro Bild)
+
+**Kostenlose Schwelle**: Geben Sie ein → `10` (Kunden erhalten 10 kostenlose Bilder pro Monat)
+
+<Tip>
+**Wie die Abrechnung funktioniert**: Wenn ein Kunde in einem Monat 25 Bilder generiert, wird er für 15 Bilder belastet (25 - 10 kostenlos) = 15 × 0,05 $ = 0,75 $
+</Tip>
+</Step>
+
+<Step title="Speichern Sie Ihr Produkt">
+1. Überprüfen Sie alle Ihre Einstellungen:
+   - Name: PixelGen AI - Bildgenerierung
+   - Zähler: Bildgenerierungszähler  
+   - Preis: 0,05 $ pro Bild
+   - Kostenloses Kontingent: 10 Bilder
+2. Klicken Sie auf **Änderungen speichern**
+
+<Check>
+**Produkt erstellt!** Ihre Abrechnung ist jetzt konfiguriert. Kunden werden automatisch basierend auf ihrer Nutzung der Bildgenerierung belastet.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 3: Machen Sie einen Testkauf
+
+Bevor wir mit der Erfassung von Nutzungsevents beginnen, müssen wir einen Testkauf tätigen.
+
+<Steps>
+<Step title="Holen Sie sich Ihren Zahlungslink">
+1. Gehen Sie in Ihrem Dodo Payments-Dashboard zu **Produkte**
+2. Suchen Sie Ihr Produkt "PixelGen AI - Bildgenerierung"
+3. Klicken Sie auf die Schaltfläche **Teilen** neben Ihrem Produkt
+4. Kopieren Sie den Zahlungslink, der erscheint
+
+Der Zahlungslink sieht ungefähr so aus: `https://test.checkout.dodopayments.com/buy/pdt_IgPWlRsfpbPd5jQKezzW1?quantity=1`
+</Step>
+
+<Step title="Schließen Sie einen Testkauf ab">
+1. Öffnen Sie den Zahlungslink in einem neuen Browser-Tab
+2. Geben Sie Test-Zahlungsdetails ein und schließen Sie den Kauf ab.
+
+<Check>
+Nach erfolgreicher Zahlung haben Sie eine Kunden-ID, die wir in unserem Anwendungscode verwenden werden.
+</Check>
+</Step>
+
+<Step title="Finden Sie Ihre Kunden-ID">
+1. Gehen Sie zurück zu Ihrem Dodo Payments-Dashboard
+2. Navigieren Sie zu **Kunden** in der linken Seitenleiste
+3. Suchen Sie den Kunden, den Sie gerade erstellt haben (mit der Test-E-Mail)
+4. Kopieren Sie die Kunden-ID - sie sieht aus wie `cus_abc123def456`
+
+<Note>
+Speichern Sie diese Kunden-ID - wir werden sie in unserem Beispielanwendungscode fest codieren, um sicherzustellen, dass die Ereignisse ordnungsgemäß verfolgt werden.
+</Note>
+</Step>
+</Steps>
+
+## Schritt 4: Erstellen Sie die Beispielanwendung
+
+Jetzt haben wir unsere Abrechnung eingerichtet und einen Testkunden erstellt. Lassen Sie uns die Beispielanwendung PixelGen AI erstellen, die Bilder generiert und automatisch die Nutzung zur Abrechnung verfolgt.
+
+<Steps>
+<Step title="Richten Sie Ihr Projekt ein">
+Erstellen Sie ein neues Verzeichnis und initialisieren Sie das Projekt:
+
+```bash
+mkdir pixelgen-ai
+cd pixelgen-ai
+npm init -y
+```
+
+</Step>
+
+<Step title="Installieren Sie Abhängigkeiten">
+Installieren Sie die benötigten Pakete:
+
+```bash
+npm install openai dotenv
+npm install -D typescript @types/node ts-node
+```
+
+</Step>
+
+<Step title="Erstellen Sie die Hauptanwendung">
+Erstellen Sie eine Datei mit dem Namen `index.ts` und kopieren Sie diesen vollständigen Anwendungscode:
+</Step>
+</Steps>
+
+Hier ist die vollständige PixelGen AI-Anwendung mit integrierter Abrechnung:
+
+<CodeGroup>
+
+```typescript index.ts expandable
+import 'dotenv/config';
+import OpenAI from 'openai';
+import * as readline from 'readline';
+import { randomUUID } from 'crypto';
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Dodo Payments configuration
+const DODO_PAYMENTS_CONFIG = {
+  apiKey: process.env.DODO_PAYMENTS_API_KEY,
+  baseUrl: 'https://test.dodopayments.com',
+  customerId: 'cus_FX5FAB43aShGyiHJGIqjB', // Replace with your actual customer ID from Step 3
+};
+
+// DALL-E 3 pricing (as of 2024-2025)
+const PRICING = {
+  'standard': 0.040, // $0.040 per image (1024×1024)
+  'hd': 0.080,       // $0.080 per image (1024×1024, HD quality)
+};
+
+interface ImageGenerationOptions {
+  prompt: string;
+  model?: 'dall-e-3' | 'dall-e-2';
+  quality?: 'standard' | 'hd';
+  size?: '1024x1024' | '1792x1024' | '1024x1792';
+  style?: 'vivid' | 'natural';
+}
+
+interface UsageEvent {
+  event_id: string;
+  customer_id: string;
+  event_name: string;
+  timestamp: string;
+  metadata: {
+    quality: string;
+  };
+}
+
+/**
+ * Send usage event to Dodo Payments for billing tracking
+ */
+async function sendUsageEvent(event: UsageEvent): Promise<void> {
+  try {
+    console.log('Sending usage event to Dodo Payments...');
+    console.log(`URL: ${DODO_PAYMENTS_CONFIG.baseUrl}/events/ingest`);
+    console.log(`API Key present: ${!!DODO_PAYMENTS_CONFIG.apiKey}`);
+    console.log(`API Key length: ${DODO_PAYMENTS_CONFIG.apiKey?.length || 0}`);
+    console.log(`Customer ID: ${DODO_PAYMENTS_CONFIG.customerId}`);
+    
+    const requestBody = {
+      events: [event]
+    };
+    console.log('Request body:', JSON.stringify(requestBody, null, 2));
+    
+    const headers = {
+      'Authorization': `Bearer ${DODO_PAYMENTS_CONFIG.apiKey}`,
+      'Content-Type': 'application/json',
+    }
+    console.log('Headers:', headers);
+    const response = await fetch(`${DODO_PAYMENTS_CONFIG.baseUrl}/events/ingest`, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(requestBody),
+    });
+
+    console.log(`Response status: ${response.status}`);
+    console.log(`Response headers:`, Object.fromEntries(response.headers.entries()));
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.log(`Error response body: ${errorData}`);
+      throw new Error(`HTTP ${response.status}: ${errorData}`);
+    }
+
+    const result = await response.json();
+    console.log('Usage event sent successfully');
+    console.log(`   • Event ID: ${event.event_id}`);
+    console.log(`   • Customer: ${event.customer_id}`);
+    console.log(`   • Quality: ${event.metadata.quality}`);
+    
+  } catch (error) {
+    console.error('Failed to send usage event:', error);
+    // In production, you might want to queue failed events for retry
+    throw error;
+  }
+}
+
+async function generateImage(options: ImageGenerationOptions) {
+  const startTime = Date.now();
+  const eventId = randomUUID();
+  
+  try {
+    console.log('Generating image...');
+    console.log(`Prompt: "${options.prompt}"`);
+    console.log(`Quality: ${options.quality || 'standard'}`);
+    console.log(`Size: ${options.size || '1024x1024'}`);
+    
+    const response = await openai.images.generate({
+      model: options.model || 'dall-e-3',
+      prompt: options.prompt,
+      n: 1,
+      size: options.size || '1024x1024',
+      quality: options.quality || 'standard',
+      style: options.style || 'vivid',
+    });
+
+    const endTime = Date.now();
+    const duration = (endTime - startTime) / 1000;
+    const cost = PRICING[options.quality || 'standard'];
+    
+    // Create usage event for Dodo Payments
+    const usageEvent: UsageEvent = {
+      event_id: eventId,
+      customer_id: DODO_PAYMENTS_CONFIG.customerId!,
+      event_name: 'image.generated',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        quality: options.quality || 'standard',
+      }
+    };
+
+    // Send usage event to Dodo Payments for billing
+    await sendUsageEvent(usageEvent);
+    
+    console.log('\nImage generated successfully!');
+    console.log(`Generation Stats:`);
+    console.log(`   • Duration: ${duration.toFixed(2)} seconds`);
+    console.log(`   • Quality: ${options.quality || 'standard'}`);
+    console.log(`   • Cost: $${cost.toFixed(3)}`);
+    console.log(`   • Image URL: ${response.data?.[0]?.url}`);
+    
+    if (response.data?.[0]?.revised_prompt) {
+      console.log(`   • Revised prompt: "${response.data[0].revised_prompt}"`);
+    }
+
+    return {
+      imageUrl: response.data?.[0].url,
+      revisedPrompt: response.data?.[0].revised_prompt,
+      cost: cost,
+      duration: duration,
+      eventId: eventId,
+    };
+
+  } catch (error) {
+    console.error('Error generating image:', error);
+    
+    // Send failure event for monitoring (optional)
+    try {
+      const failureEvent: UsageEvent = {
+        event_id: eventId,
+        customer_id: DODO_PAYMENTS_CONFIG.customerId!,
+        event_name: 'image.generation.failed',
+        timestamp: new Date().toISOString(),
+        metadata: {
+          quality: options.quality || 'standard',
+        }
+      };
+      
+      // Note: You might want to create a separate meter for failed attempts
+      // await sendUsageEvent(failureEvent);
+    } catch (eventError) {
+      console.error('Failed to send failure event:', eventError);
+    }
+    
+    throw error;
+  }
+}
+
+async function getUserInput(): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question('Enter your image prompt: ', (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+async function main() {
+  console.log('PixelGen AI - Image Generator with Usage Billing\n');
+  
+  // Validate environment variables
+  const requiredEnvVars = [
+    'OPENAI_API_KEY',
+    'DODO_PAYMENTS_API_KEY'
+  ];
+  
+  for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+      console.error(`Error: ${envVar} environment variable is not set.`);
+      console.log('Please set all required environment variables:');
+      console.log('export OPENAI_API_KEY="your-openai-key"');
+      console.log('export DODO_PAYMENTS_API_KEY="your-dodo-api-key"');
+      console.log('Note: Customer ID is hardcoded in the application');
+      process.exit(1);
+    }
+  }
+
+  try {
+    const prompt = await getUserInput();
+    
+    if (!prompt.trim()) {
+      console.log('No prompt provided. Exiting...');
+      return;
+    }
+
+    const result = await generateImage({
+      prompt: prompt.trim(),
+      quality: 'standard', // Change to 'hd' for higher quality (costs more)
+      size: '1024x1024',
+      style: 'vivid'
+    });
+
+    console.log('\nProcess completed successfully!');
+    console.log(`Billing Information:`);
+    console.log(`   • Total cost: $${result.cost.toFixed(3)}`);
+    console.log(`   • Event ID: ${result.eventId}`);
+    console.log(`   • Billing will be processed automatically via Dodo Payments`);
+    
+  } catch (error) {
+    console.error('Application error:', error);
+    process.exit(1);
+  }
+}
+
+// Run the application
+if (require.main === module) {
+  main().catch(console.error);
+}
+```
+
+```bash .env
+# Create .env file with your API keys
+OPENAI_API_KEY=your_openai_api_key_here
+DODO_PAYMENTS_API_KEY=your_DODO_PAYMENTS_payments_api_key_here
+# Note: Customer ID is hardcoded in the application code
+```
+
+```typescript package.json
+{
+  "name": "pixelgen-ai",
+  "version": "1.0.0",
+  "description": "AI Image Generation with Usage-Based Billing",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node index.ts",
+    "build": "tsc",
+    "dev": "ts-node --watch index.ts"
+  },
+  "dependencies": {
+    "openai": "^4.0.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  }
+}
+```
+
+</CodeGroup>
+
+## Schritt 5: Testen Sie Ihre Beispielanwendung
+
+Es ist Zeit, unseren Beispielservice PixelGen AI zu testen und die Abrechnung in Aktion zu sehen! Lassen Sie uns sicherstellen, dass alles von Anfang bis Ende funktioniert.
+
+<Tip>
+**Was wir testen**: Wir werden einige Bilder generieren, die Ereignisse überprüfen, die Dodo Payments erreichen, und die Abrechnungsberechnungen bestätigen.
+</Tip>
+
+<Steps>
+<Step title="Richten Sie Ihre Umgebung ein">
+Stellen Sie zunächst sicher, dass Sie alles konfiguriert haben:
+
+1. Erstellen Sie eine `.env` Datei in Ihrem `pixelgen-ai` Verzeichnis
+2. Fügen Sie Ihre tatsächlichen API-Schlüssel hinzu:
+
+```bash
+OPENAI_API_KEY=sk-your-actual-openai-key
+DODO_PAYMENTS_API_KEY=your-actual-dodo-api-key
+# Customer ID is hardcoded in the application
+```
+
+3. Installieren Sie Abhängigkeiten und führen Sie die App aus:
+
+```bash
+npm install
+npm start
+```
+
+<Warning>
+Stellen Sie sicher, dass Sie echte API-Schlüssel verwenden und die fest codierte Kunden-ID im Code mit Ihrer tatsächlichen Kunden-ID aus Schritt 3 aktualisieren!
+</Warning>
+</Step>
+
+<Step title="Generieren Sie Ihr erstes Testbild">
+Wenn die App startet, sehen Sie:
+
+```
+PixelGen AI - Image Generator with Usage Billing
+
+Enter your image prompt:
+```
+
+Versuchen Sie diesen Prompt: **"Ein süßer Roboter malt eine Landschaft"**
+
+Sie sollten eine Ausgabe wie diese sehen:
+
+```
+Generating image...
+Prompt: "A cute robot painting a landscape"
+Quality: standard
+Size: 1024x1024
+
+Sending usage event to Dodo Payments...
+Usage event sent successfully
+   • Event ID: 550e8400-e29b-41d4-a716-446655440000
+   • Customer: cus_atXa1lklCRRzMicTqfiw2
+   • Quality: standard
+
+Image generated successfully!
+Generation Stats:
+   • Duration: 8.45 seconds
+   • Quality: standard
+   • Cost: $0.040
+   • Image URL: https://oaidalleapi...
+```
+
+<Check>
+Wenn Sie "Nutzungsereignis erfolgreich gesendet" sehen, funktioniert Ihre Abrechnungsintegration!
+</Check>
+</Step>
+
+<Step title="Generieren Sie ein paar weitere Bilder">
+Lassen Sie uns 2-3 weitere Bilder generieren, um mehrere Ereignisse zu testen. Versuchen Sie diese Prompts:
+
+1. **"Ein Sonnenuntergang über Bergen mit lila Wolken"**
+2. **"Eine Steampunk-Kaffeemaschine in einer viktorianischen Küche"**
+3. **"Ein freundlicher Drache, der in einer Bibliothek ein Buch liest"**
+
+Achten Sie jedes Mal auf die Nachricht "Nutzungsereignis erfolgreich gesendet".
+</Step>
+
+<Step title="Überprüfen Sie Ihr Dodo Payments-Dashboard">
+Lassen Sie uns jetzt überprüfen, ob die Ereignisse empfangen werden:
+
+1. Öffnen Sie Ihr Dodo Payments-Dashboard
+2. Gehen Sie zu *Nutzungsabrechnung* → ***Zähler** → **Bildgenerierungszähler**
+3. Klicken Sie auf die Registerkarte **Ereignisse**
+4. Sie sollten Ihre Bildgenerierungsereignisse aufgelistet sehen
+
+**Worauf Sie achten sollten**:
+- Ereignisnamen: `image.generated`
+- Kunden-ID: Ihre Testkunden-ID
+
+<Check>
+Sie sollten ein Ereignis für jedes Bild sehen, das Sie generiert haben!
+</Check>
+</Step>
+
+<Step title="Überprüfen Sie die Abrechnungsberechnungen">
+Lassen Sie uns überprüfen, ob die Nutzungserfassung funktioniert:
+
+<Frame>
+  <img src="/images/usage-based/UBB-1.png" alt="" />
+</Frame>
+
+1. Gehen Sie in Ihrem Zähler zur Registerkarte **Kunden**
+2. Finden Sie Ihren Testkunden
+3. Überprüfen Sie die Spalte "Verbrauchte Einheiten"
+
+</Step>
+
+<Step title="Testen Sie die Abrechnungsschwelle">
+Lassen Sie uns die kostenlose Stufe überschreiten, um die Abrechnung in Aktion zu sehen:
+
+1. Generieren Sie 8 weitere Bilder (um insgesamt 12 zu erreichen)
+2. Überprüfen Sie Ihr Zähler-Dashboard erneut
+3. Sie sollten jetzt sehen:
+   - Verbrauchte Einheiten: 12
+   - Abrechnungsfähige Einheiten: 2 (12 - 10 kostenlos)
+   - Abrechnungsbetrag: 0,10 $
+
+<Check>
+**Erfolg!** Ihre nutzungsbasierte Abrechnung funktioniert perfekt. Kunden werden automatisch basierend auf ihrer tatsächlichen Nutzung der Bildgenerierung belastet.
+</Check>
+</Step>
+</Steps>
+
+## Fehlersuche
+
+Häufige Probleme und deren Lösungen:
+
+<AccordionGroup>
+<Accordion title="Ereignisse erscheinen nicht im Dashboard">
+**Mögliche Ursachen:**
+- Der Ereignisname stimmt nicht genau mit der Zählerkonfiguration überein
+- Die Kunden-ID existiert nicht in Ihrem Konto  
+- API-Schlüssel ist ungültig oder abgelaufen
+- Netzwerkverbindungsprobleme
+
+**Lösungen:**
+1. Überprüfen Sie, ob der Ereignisname genau mit der Zählerkonfiguration übereinstimmt (groß- und kleinschreibungssensitiv)
+2. Überprüfen Sie, ob die Kunden-ID in Dodo Payments existiert
+3. Testen Sie den API-Schlüssel mit einem einfachen API-Aufruf
+4. Überprüfen Sie die Netzwerkverbindung und die Firewall-Einstellungen
+</Accordion>
+
+</AccordionGroup>
+
+## Herzlichen Glückwunsch! Sie haben PixelGen AI erstellt
+
+Sie haben erfolgreich einen Snippet für die KI-Bildgenerierung mit nutzungsbasierter Abrechnung erstellt! Hier ist, was Sie erreicht haben:
+
+<CardGroup cols={2}>
+<Card title="Nutzungsmesser" icon="sliders">
+Erstellt "Bildgenerierungszähler", der jedes Bildgenerierungsereignis verfolgt
+</Card>
+
+<Card title="Abrechnungsprodukt" icon="credit-card">
+Preisgestaltung auf 0,05 $ pro Bild mit 10 kostenlosen Bildern pro Monat konfiguriert
+</Card>
+
+<Card title="KI-Anwendung" icon="robot">
+Eine funktionierende TypeScript-App erstellt, die Bilder mit der DALL-E API von OpenAI generiert
+</Card>
+
+<Card title="Automatisierte Abrechnung" icon="bolt">
+Echtzeit-Ereignisverfolgung integriert, die Kunden automatisch abrechnet
+</Card>
+</CardGroup>
