@@ -10,6 +10,7 @@
  *   node scripts/syncAllLanguages.ts --dry-run
  *   node scripts/syncAllLanguages.ts --skip-lingo
  *   node scripts/syncAllLanguages.ts --skip-addUpdate
+ *   node scripts/syncAllLanguages.ts --skip-broken-links
  *
  * Notes:
  * - This file intentionally uses CommonJS (require) so Node can run it directly.
@@ -42,15 +43,50 @@ function runCmd(cmd, args, cwd) {
   }
 }
 
+function tryRunBrokenLinks(cwd) {
+  // Team workflow: always use `mint` (not `mintlify`).
+  console.log('\n[broken-links] Running: npx --yes mint broken-links');
+
+  const res = spawnSync('npx', ['--yes', 'mint', 'broken-links'], {
+    cwd,
+    stdio: 'inherit',
+    shell: false,
+  });
+
+  if (res.error) throw res.error;
+
+  // `mint broken-links` typically exits non-zero when it *finds* broken links.
+  // That's not a "failed to run" situation; it's a failed check.
+  // We intentionally DO NOT throw here; we surface a clean message and let the caller decide how to fail the process.
+  if (typeof res.status === 'number' && res.status !== 0) {
+    console.error(
+      `\n[broken-links] Check returned non-zero exit (${res.status}). It may have found broken links or failed to run. See output above.`
+    );
+    return { ok: false, status: res.status };
+  }
+
+  // If the process terminated due to a signal, `status` can be null.
+  // Treat it as a failed check so callers can fail CI, but keep output readable.
+  if (res.status == null && res.signal) {
+    console.error(
+      `\n[broken-links] Check did not exit cleanly (signal: ${res.signal}). See output above.`
+    );
+    return { ok: false, status: 1, signal: res.signal };
+  }
+
+  return { ok: true, status: 0 };
+}
+
 function main() {
   const args = process.argv.slice(2);
 
   const dryRun = args.includes('--dry-run');
   const skipLingo = args.includes('--skip-lingo');
   const skipAddUpdate = args.includes('--skip-addUpdate');
+  const skipBrokenLinks = args.includes('--skip-broken-links');
 
   if (dryRun) {
-    console.log('\n[dry-run] Not running lingo.dev or addUpdateLanguage.');
+    console.log('\n[dry-run] Not running lingo.dev, addUpdateLanguage, or broken-links.');
     return;
   }
 
@@ -67,6 +103,16 @@ function main() {
     runCmd('node', [path.join('scripts', 'addUpdateLanguage.ts'), ...langs], ROOT);
   } else {
     console.log('\n[addUpdateLanguage] Skipped (--skip-addUpdate).');
+  }
+
+  if (!skipBrokenLinks) {
+    const bl = tryRunBrokenLinks(ROOT);
+    if (bl && bl.ok === false) {
+      // Preserve non-zero status for CI, but avoid crashing with an exception stack.
+      process.exitCode = typeof bl.status === 'number' ? bl.status : 1;
+    }
+  } else {
+    console.log('\n[broken-links] Skipped (--skip-broken-links).');
   }
 }
 
