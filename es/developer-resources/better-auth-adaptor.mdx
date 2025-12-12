@@ -12,6 +12,7 @@ El <b>Adaptador Better Auth</b> para Dodo Payments proporciona:
 - Creación automática de clientes al registrarse
 - Sesiones de pago (preferido) con mapeo de slug de producto
 - Portal de clientes de autoservicio
+- Puntos finales de ingestión y reporte de uso medido para facturación basada en el uso
 - Procesamiento de eventos de webhook en tiempo real con verificación de firma
 - Soporte completo para TypeScript
 
@@ -69,6 +70,7 @@ import {
   checkout,
   portal,
   webhooks,
+  usage,
 } from "@dodopayments/better-auth";
 import DodoPayments from "dodopayments";
 
@@ -100,6 +102,7 @@ export const { auth, endpoints, client } = BetterAuth({
             console.log("Received webhook:", payload.event_type);
           },
         }),
+        usage(),
       ],
     }),
   ],
@@ -268,16 +271,66 @@ const { data: payments, error } =
   });
 ```
 
+## Seguimiento del Uso Medido
+
+Habilita el plugin <code>usage()</code> en el servidor para capturar eventos medidos y permitir que los clientes inspeccionen su facturación basada en el uso.
+
+- <code>authClient.dodopayments.usage.ingest</code> ingesta eventos para el usuario autenticado y verificado por correo electrónico.
+- <code>authClient.dodopayments.usage.meters.list</code> lista el uso reciente de los medidores vinculados a las suscripciones de ese cliente.
+
+```typescript expandable
+// Record a metered event (e.g., an API request)
+const { error: ingestError } = await authClient.dodopayments.usage.ingest({
+  event_id: crypto.randomUUID(),
+  event_name: "api_request",
+  metadata: {
+    route: "/reports",
+    method: "GET",
+  },
+  // Optional Date; defaults to now if omitted
+  timestamp: new Date(),
+});
+
+if (ingestError) {
+  console.error("Failed to record usage", ingestError);
+}
+
+// List recent usage for the current customer
+const { data: usage, error: usageError } =
+  await authClient.dodopayments.usage.meters.list({
+    query: {
+      page_size: 20,
+      meter_id: "mtr_yourMeterId", // optional
+    },
+  });
+
+if (usage?.items) {
+  usage.items.forEach((event) => {
+    console.log(event.event_name, event.timestamp, event.metadata);
+  });
+}
+```
+
+<Tip>
+  Las marcas de tiempo más antiguas de una hora o más de cinco minutos en el futuro son
+  rechazadas al ingerir el uso.
+</Tip>
+<Tip>
+  Si omites <code>meter_id</code> al listar los medidores de uso, se devuelven todos los medidores 
+  vinculados a las suscripciones del cliente.
+</Tip>
+
 # Webhooks
 
 <Info>
   El plugin de webhooks procesa eventos de pago en tiempo real de Dodo Payments con
-  verificación de firma segura. El endpoint predeterminado es <code>/api/auth/dodopayments/webhooks</code>.
+  verificación de firma segura. El punto final predeterminado es{" "}
+  <code>/api/auth/dodopayments/webhooks</code>.
 </Info>
 
 <Steps>
-<Step title="Generar y establecer secreto de webhook">
-Genera un secreto de webhook para tu URL de endpoint (por ejemplo, <code>https://&lt;tu-dominio&gt;/api/auth/dodopayments/webhooks</code>) en el panel de Dodo Payments y configúralo en tu archivo <code>.env</code>:
+<Step title="Generar y establecer el secreto del webhook">
+Genera un secreto de webhook para tu URL de punto final (por ejemplo, <code>https://&lt;tu-dominio&gt;/api/auth/dodopayments/webhooks</code>) en el Panel de Dodo Payments y configúralo en tu archivo <code>.env</code>:
 
 ```env
 DODO_PAYMENTS_WEBHOOK_SECRET=your_webhook_secret_here
@@ -286,7 +339,7 @@ DODO_PAYMENTS_WEBHOOK_SECRET=your_webhook_secret_here
 </Step>
 
 <Step title="Manejar eventos de webhook">
-Ejemplo de manejador:
+Ejemplo de controlador:
 
 ```typescript expandable
 webhooks({
@@ -300,7 +353,7 @@ webhooks({
 </Step>
 </Steps>
 
-### Manejadores de Eventos de Webhook Soportados
+### Controladores de Eventos de Webhook Soportados
 
 <CodeGroup>
 
@@ -337,11 +390,11 @@ onLicenseKeyCreated?: (payload: WebhookPayload) => Promise<void>;
   <Accordion title="Opciones del Plugin">
     - <b>client</b> (requerido): Instancia del cliente DodoPayments -{" "}
     <b>createCustomerOnSignUp</b> (opcional): Crear clientes automáticamente al registrarse - <b>use</b> (requerido): Array de plugins a habilitar (checkout,
-    portal, webhooks)
+    portal, usage, webhooks)
   </Accordion>
-  <Accordion title="Opciones del Plugin de Pago">
+  <Accordion title="Opciones del Plugin de Checkout">
     - <b>products</b>: Array de productos o función asíncrona que devuelve productos -{" "}
-    <b>successUrl</b>: URL a redirigir después de un pago exitoso -{" "}
+    <b>successUrl</b>: URL para redirigir después de un pago exitoso -{" "}
     <b>authenticatedUsersOnly</b>: Requiere autenticación de usuario (predeterminado: false)
   </Accordion>
 </AccordionGroup>
@@ -350,19 +403,22 @@ onLicenseKeyCreated?: (payload: WebhookPayload) => Promise<void>;
 
 <AccordionGroup>
   <Accordion title="Problemas Comunes">
-    - <b>Clave API inválida</b>: Verifica tu <code>DODO_PAYMENTS_API_KEY</code> en <code>.env</code>. -{" "}
-    <b>Desajuste de firma de webhook</b>: Asegúrate de que el secreto de webhook coincida con el que
-    se estableció en el panel de Dodo Payments. - <b>Cliente no creado</b>: Confirma que <code>createCustomerOnSignUp</code> esté configurado como <code>true</code>.
+    - <b>Clave API inválida</b>: Verifica tu{" "}
+    <code>DODO_PAYMENTS_API_KEY</code> en <code>.env</code>. -{" "}
+    <b>Desajuste de firma del webhook</b>: Asegúrate de que el secreto del webhook coincida con el que
+    se estableció en el Panel de Dodo Payments. - <b>Cliente no creado</b>: Confirma{" "}
+    <code>createCustomerOnSignUp</code> está configurado en <code>true</code>.
   </Accordion>
   <Accordion title="Mejores Prácticas">
-    - Usa variables de entorno para todos los secretos y claves. - Prueba en <code>test_mode</code> antes de cambiar a <code>live_mode</code>. - Registra
+    - Usa variables de entorno para todos los secretos y claves. - Prueba en{" "}
+    <code>test_mode</code> antes de cambiar a <code>live_mode</code>. - Registra
     eventos de webhook para depuración y auditoría.
   </Accordion>
 </AccordionGroup>
 
-# Solicitud para LLM
+# Solicitud para LLMs
 
-```
+```text expandable
 You are a skilled developer helping to integrate the @dodopayments/better-auth adapter into a typescript web application with better-auth. This adapter enables seamless payment processing through Dodo Payments with automatic customer management, checkout flows, and webhook handling.
 STAGE 1: BASIC SETUP
 This stage covers the foundational setup needed before implementing any plugins. Complete this stage first.
@@ -426,9 +482,10 @@ Before implementing any plugins, ask the user which plugins they want to impleme
 "Which plugins would you like to implement? You can choose any combination of:
 1. CHECKOUT - Enables secure payment processing and checkout flows
 2. PORTAL - Provides customer self-service portal for subscriptions and payments
-3. WEBHOOKS - Handles real-time payment events from Dodo Payments
-Please specify which plugins you want (e.g., 'checkout and webhooks', 'all three', 'just portal', etc.)"
-If the user doesn't respond or you cannot prompt the user, implement all three plugins by default.
+3. USAGE - Tracks metered events and exposes usage history for billing beyond included allowances
+4. WEBHOOKS - Handles real-time payment events from Dodo Payments
+Please specify which plugins you want (e.g., 'checkout and usage', 'all four', 'just portal', etc.)"
+If the user doesn't respond or you cannot prompt the user, implement all four plugins by default.
 Based on the user's selection, implement only the requested plugins from the sections below:
 CHECKOUT PLUGIN
 Purpose: Enables secure payment processing using Checkout Sessions (preferred) with product slug mapping. A legacy checkout endpoint is also exposed for backward compatibility but is deprecated.
@@ -523,6 +580,69 @@ const { data: payments, error } = await authClient.dodopayments.customer.payment
   },
 });
 Note: All portal methods require user authentication.
+
+USAGE PLUGIN (METERED BILLING)
+Purpose: Records metered events (like API requests) for usage-based plans and surfaces recent usage history per customer.
+
+SETUP TODO LIST FOR USER:
+1. Create or identify usage meters in the Dodo Payments Dashboard:
+   - Dashboard > Usage > Meters
+   - Copy the meter IDs (prefixed with <code>mtr_</code>) used by your usage-based plans
+2. Decide which event names and metadata you will capture (e.g., <code>api_request</code>, route, method)
+3. Ensure BetterAuth users verify their email addresses (the plugin enforces this before ingesting usage)
+
+Configuration:
+Add usage to your imports in <code>src/lib/auth.ts</code>:
+    import { dodopayments, usage } from "@dodopayments/better-auth";
+
+Add the plugin to the <code>use</code> array:
+    use: [
+      usage(),
+    ],
+
+Usage Examples:
+
+    // Record a metered event for the signed-in customer
+    const { error: ingestError } = await authClient.dodopayments.usage.ingest({
+      event_id: crypto.randomUUID(),
+      event_name: "api_request",
+      metadata: {
+        route: "/reports",
+        method: "GET",
+      },
+      // Optional Date or ISO string; defaults to now
+      timestamp: new Date(),
+    });
+
+    if (ingestError) {
+      console.error("Failed to record usage", ingestError);
+    }
+
+    // List recent usage for the current customer
+    const { data: usage, error: usageError } =
+      await authClient.dodopayments.usage.meters.list({
+        query: {
+          page_size: 20,
+          meter_id: "mtr_yourMeterId", // optional filter
+        },
+      });
+
+    if (usage?.items) {
+      usage.items.forEach((event) => {
+        console.log(event.event_name, event.timestamp, event.metadata);
+      });
+    }
+
+<Tip>
+  The plugin exposes <code>authClient.dodopayments.usage.ingest</code> and
+  <code>authClient.dodopayments.usage.meters.list</code>. Timestamps older
+  than one hour or more than five minutes in the future are rejected.
+</Tip>
+<Tip>
+  If you do
+  not pass <code>meter_id</code> when listing usage meters, all meters tied to 
+  the customer’s active subscriptions are returned.
+</Tip>
 WEBHOOKS PLUGIN
 Purpose: Handles real-time payment events from Dodo Payments with secure signature verification.
 BEFORE CONFIGURATION - Setup Webhook URL:
@@ -652,48 +772,64 @@ Supported Webhook Event Handlers:
 - onSubscriptionExpired: Subscription expired
 - onLicenseKeyCreated: License key was created
 COMBINING SELECTED PLUGINS:
-After implementing the user's selected plugins, update your src/lib/auth.ts file to include all chosen plugins in the imports and use array:
-Example for all three plugins:
-import { dodopayments, checkout, portal, webhooks } from "@dodopayments/better-auth";
-use: [
-  checkout({
-    // checkout configuration
-  }),
-  portal(),
-  webhooks({
-    // webhook configuration
-  }),
-],
-Example for just checkout and portal:
-import { dodopayments, checkout, portal } from "@dodopayments/better-auth";
-use: [
-  checkout({
-    // checkout configuration
-  }),
-  portal(),
-],
+After implementing the user's selected plugins, update your <code>src/lib/auth.ts</code> file to include all chosen plugins in the imports and <code>use</code> array:
+
+Example for all four plugins:
+    import {
+      dodopayments,
+      checkout,
+      portal,
+      usage,
+      webhooks,
+    } from "@dodopayments/better-auth";
+
+    use: [
+      checkout({
+        // checkout configuration
+      }),
+      portal(),
+      usage(),
+      webhooks({
+        // webhook configuration
+      }),
+    ];
+
+Example for checkout + portal + usage:
+    import { dodopayments, checkout, portal, usage } from "@dodopayments/better-auth";
+
+    use: [
+      checkout({
+        // checkout configuration
+      }),
+      portal(),
+      usage(),
+    ];
+
 Example for just webhooks:
-import { dodopayments, webhooks } from "@dodopayments/better-auth";
-use: [
-  webhooks({
-    // webhook configuration
-  }),
-],
+    import { dodopayments, webhooks } from "@dodopayments/better-auth";
+
+    use: [
+      webhooks({
+        // webhook configuration
+      }),
+    ];
 IMPORTANT NOTES:
 1. Complete Stage 1 before implementing any plugins
-2. Ask the user which plugins they want to implement, or implement all three if no response
+2. Ask the user which plugins they want to implement, or implement all four if no response
 3. Only implement the plugins the user specifically requested
 4. ALWAYS provide TODO lists for external actions the user needs to complete:
    - API key generation and environment variable setup
    - Product creation in Dodo Payments dashboard (for checkout plugin)
+   - Usage meter configuration and API event definition (for usage plugin)
    - Webhook setup in Dodo Payments dashboard (for webhooks plugin)
    - Domain name collection for webhook URL generation
-5. For webhook plugin: Ask for the user's domain name and generate the exact webhook URL: https://[domain]/api/auth/webhooks/dodopayments
-6. All client methods return { data, error } objects for proper error handling
-7. Use test_mode for development and live_mode for production
-8. The webhook endpoint is automatically created and secured with signature verification (if webhooks plugin is selected)
-9. Customer portal and subscription listing require user authentication (if portal plugin is selected)
-10. Handle errors appropriately and test webhook functionality in development before going live
-11. Present all external setup tasks as clear TODO lists with specific environment variable names
+5. For webhook plugin: Ask for the user's domain name and generate the exact webhook URL: https://[domain]/api/auth/dodopayments/webhooks
+6. The usage plugin requires the BetterAuth session user to exist and have a verified email before ingesting or listing usage
+7. All client methods return <code>{ data, error }</code> objects for proper error handling
+8. Use <code>test_mode</code> for development and <code>live_mode</code> for production
+9. The webhook endpoint is automatically created and secured with signature verification (if webhooks plugin is selected)
+10. Customer portal and subscription listing require user authentication (if portal plugin is selected)
+11. Handle errors appropriately and test webhook functionality in development before going live
+12. Present all external setup tasks as clear TODO lists with specific environment variable names
 
 ```
