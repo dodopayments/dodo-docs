@@ -157,6 +157,16 @@ This documentation is licensed under the GNU General Public License v3.0 (GPL-3.
 - [Developer Blog](https://blog.dodopayments.com)
 - [Changelog](https://docs.dodopayments.com/changelog/introduction)
 
+# Guidlines To Use It 
+1. Do not abuse it for illegial purposes
+2. Sell honestly in trade
+3. Be Transparent (Have Transparancy)
+4. Respect Customers
+5. Keep Promises
+6. Follow Laws and Legal Compliance
+7. Make Ethical Profits but not make profits by harming soceity welfare
+8. Truthful Advertising No Fake Claims 
+
 ---
 
 <div align="center">
