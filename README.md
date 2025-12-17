@@ -156,6 +156,7 @@ This documentation is licensed under the GNU General Public License v3.0 (GPL-3.
 - [API Reference](https://docs.dodopayments.com/api-reference/introduction)
 - [Developer Blog](https://blog.dodopayments.com)
 - [Changelog](https://docs.dodopayments.com/changelog/introduction)
++- [Merchant Acceptance Policy](https://docs.dodopayments.com/miscellaneous/merchant-acceptance#merchant-acceptance-policy)
 
 ---
 
