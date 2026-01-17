@@ -1,0 +1,276 @@
+---
+title: MailerLite
+description: Dodo Paymentsのイベントに基づいて、顧客をMailerLiteの購読者リストに自動的に追加し、メールの自動化をトリガーします。
+icon: /images/logos/mailerlite.svg
+---
+
+## はじめに
+
+支払いイベントが発生したときに、支払い顧客をMailerLiteの購読者リストに自動的に同期します。顧客を特定のグループに追加し、自動化ワークフローをトリガーし、実際の支払いデータでメールマーケティングリストを最新の状態に保ちます。
+
+MailerLiteは、ニュースレター、キャンペーン、および自動化のための強力なメールマーケティングプラットフォームです。この統合により、支払い活動に基づいて購読者を自動的に管理できます。これは、オンボーディングシーケンス、顧客セグメンテーション、およびターゲットマーケティングキャンペーンに最適です。
+
+<Info>
+この統合には、認証のためにMailerLite APIキーが必要です。あなたの[MailerLite統合ページ](https://dashboard.mailerlite.com/integrations/api)から生成できます。
+</Info>
+
+## 始め方
+
+<Steps>
+<Step title="Webhookセクションを開く">
+  Dodo Paymentsダッシュボードで、<b>Webhooks + Add Endpoint</b>に移動し、統合のドロップダウンを展開します。
+  <Frame>
+    <img src="/images/integrations/mailerlite.png" alt="Add Endpoint and integrations dropdown" />
+  </Frame>
+</Step>
+
+<Step title="MailerLiteを選択">
+  <b>MailerLite</b>統合カードを選択します。
+</Step>
+
+<Step title="APIキーを入力">
+  設定にMailerLite APIキーを提供します。
+</Step>
+
+<Step title="変換を設定">
+  MailerLiteのAPI用に購読者データをフォーマットするために変換コードを編集します。
+</Step>
+
+<Step title="テストと作成">
+  サンプルペイロードでテストし、<b>Create</b>をクリックして購読者の同期を有効にします。
+</Step>
+
+<Step title="完了！">
+  支払いイベントは、今後自動的に顧客をあなたのMailerLiteリストに同期します。
+</Step>
+</Steps>
+
+## 変換コードの例
+
+### 成功した支払い時に顧客を追加
+
+```javascript add_customer.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const p = webhook.payload.data;
+    webhook.url = "https://connect.mailerlite.com/api/subscribers";
+    webhook.payload = {
+      email: p.customer.email,
+      fields: {
+        name: p.customer.name,
+        company: p.customer.business_name || "",
+        last_name: ""
+      },
+      groups: ["your-group-id-here"],
+      status: "active"
+    };
+  }
+  return webhook;
+}
+```
+
+### 製品に基づいて複数のグループに購読者を追加
+
+```javascript product_segmentation.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const p = webhook.payload.data;
+    
+    // Determine groups based on product or amount
+    const groups = ["customers-group-id"];
+    
+    // Add to premium group if high-value purchase
+    if (p.total_amount >= 10000) { // $100+
+      groups.push("premium-customers-group-id");
+    }
+    
+    webhook.url = "https://connect.mailerlite.com/api/subscribers";
+    webhook.payload = {
+      email: p.customer.email,
+      fields: {
+        name: p.customer.name,
+        last_purchase_amount: (p.total_amount / 100).toFixed(2),
+        last_purchase_date: new Date(webhook.payload.timestamp).toISOString().split('T')[0],
+        payment_id: p.payment_id
+      },
+      groups: groups,
+      status: "active"
+    };
+  }
+  return webhook;
+}
+```
+
+### サブスクリプションのアクティベーション時に新しい購読者を追加
+
+```javascript subscription_subscriber.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "subscription.active") {
+    const s = webhook.payload.data;
+    webhook.url = "https://connect.mailerlite.com/api/subscribers";
+    webhook.payload = {
+      email: s.customer.email,
+      fields: {
+        name: s.customer.name,
+        subscription_plan: s.product_id,
+        subscription_amount: (s.recurring_pre_tax_amount / 100).toFixed(2),
+        billing_frequency: s.payment_frequency_interval,
+        subscription_start: new Date().toISOString().split('T')[0]
+      },
+      groups: ["subscribers-group-id", "active-subscriptions-group-id"],
+      status: "active"
+    };
+  }
+  return webhook;
+}
+```
+
+### サブスクリプションのキャンセル時に購読者を更新
+
+```javascript subscription_cancelled.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "subscription.cancelled") {
+    const s = webhook.payload.data;
+    // Use PUT to update existing subscriber
+    webhook.url = "https://connect.mailerlite.com/api/subscribers/" + encodeURIComponent(s.customer.email);
+    webhook.method = "PUT";
+    webhook.payload = {
+      fields: {
+        subscription_status: "cancelled",
+        cancellation_date: new Date().toISOString().split('T')[0]
+      },
+      groups: ["churned-customers-group-id"]
+    };
+  }
+  return webhook;
+}
+```
+
+### カスタムフィールドを持つ顧客を追加
+
+```javascript custom_fields.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const p = webhook.payload.data;
+    webhook.url = "https://connect.mailerlite.com/api/subscribers";
+    webhook.payload = {
+      email: p.customer.email,
+      fields: {
+        name: p.customer.name,
+        company: p.customer.business_name || "",
+        country: p.customer.country || "",
+        city: p.customer.city || "",
+        phone: p.customer.phone || "",
+        // Custom fields (must be created in MailerLite first)
+        total_spent: (p.total_amount / 100).toFixed(2),
+        customer_since: new Date().toISOString().split('T')[0],
+        payment_method: p.payment_method || "unknown",
+        currency: p.currency || "USD"
+      },
+      groups: ["paying-customers-group-id"],
+      status: "active",
+      subscribed_at: new Date().toISOString().replace('T', ' ').split('.')[0]
+    };
+  }
+  return webhook;
+}
+```
+
+### イベントを介して自動化をトリガー
+
+```javascript trigger_automation.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const p = webhook.payload.data;
+    
+    // First, ensure subscriber exists
+    webhook.url = "https://connect.mailerlite.com/api/subscribers";
+    webhook.payload = {
+      email: p.customer.email,
+      fields: {
+        name: p.customer.name,
+        // Add a trigger field that your automation watches
+        last_payment_trigger: new Date().toISOString(),
+        last_payment_amount: (p.total_amount / 100).toFixed(2)
+      },
+      status: "active"
+    };
+    
+    // Tip: Create an automation in MailerLite that triggers
+    // when 'last_payment_trigger' field is updated
+  }
+  return webhook;
+}
+```
+
+## ヒント
+
+- 変換で使用する前にMailerLiteでカスタムフィールドを作成してください
+- グループを使用して、製品、プランのティア、または購入行動によって顧客をセグメント化します
+- フィールドの更新時にトリガーされるMailerLiteの自動化ワークフローを設定します
+- 重複する購読者エラーを避けるために、upsert動作（/subscribersにPOST）を使用します
+- より良い顧客インサイトのために、カスタムフィールドに支払いメタデータを保存します
+- すべての支払いを有効にする前に、小さなグループでテストします
+
+## カスタムフィールドの設定
+
+カスタムフィールドを使用する前に、MailerLiteで作成する必要があります：
+
+1. MailerLiteダッシュボードに移動します
+2. **Subscribers Fields**に移動します
+3. **Create field**をクリックし、次のようなフィールドを追加します：
+   - `total_spent` (番号)
+   - `customer_since` (日付)
+   - `subscription_plan` (テキスト)
+   - `payment_method` (テキスト)
+   - `last_payment_amount` (番号)
+
+## トラブルシューティング
+
+<AccordionGroup>
+<Accordion title="購読者が追加されない">
+- APIキーが正しくアクティブであることを確認してください
+- メールアドレスが有効であることを確認してください（RFC 2821準拠）
+- グループIDが正しく、アカウントに存在することを確認してください
+- 注：購読解除、バウンス、または迷惑メールの購読者はAPIを介して再活性化できません
+</Accordion>
+
+<Accordion title="カスタムフィールドが更新されない">
+- 使用する前にMailerLiteにカスタムフィールドが存在することを確認してください
+- フィールド名が正確に一致することを確認してください（大文字と小文字を区別）
+- フィールド値が期待されるタイプ（テキスト、番号、日付）と一致することを確認してください
+</Accordion>
+
+<Accordion title="レート制限エラー">
+- MailerLite APIのレート制限は、1分あたり120リクエストです
+- 多くの購読者を処理する場合はバッチエンドポイントを使用してください
+- 高ボリュームのシナリオではバックオフ戦略を実装してください
+</Accordion>
+
+<Accordion title="グループ割り当てが機能しない">
+- グループIDが数値の文字列であることを確認してください
+- MailerLiteアカウントにグループが存在することを確認してください
+- 注：グループを使用してPUTを行うと、リストにないグループから購読者が削除されます
+</Accordion>
+</AccordionGroup>
+
+## APIリファレンス
+
+MailerLite購読者APIは、次の主要なパラメータを受け入れます：
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|----------|-------------|
+| `email` | string | はい | 有効なメールアドレス（RFC 2821） |
+| `fields` | object | いいえ | フィールド名/値ペアを持つオブジェクト |
+| `fields.name` | string | いいえ | 購読者の名 |
+| `fields.last_name` | string | いいえ | 購読者の姓 |
+| `fields.company` | string | いいえ | 会社名 |
+| `fields.country` | string | いいえ | 国 |
+| `fields.city` | string | いいえ | 市 |
+| `fields.phone` | string | いいえ | 電話番号 |
+| `groups` | array | いいえ | 購読者を追加するグループIDの配列 |
+| `status` | string | いいえ | 次のいずれか：active、unsubscribed、unconfirmed、bounced、junk |
+| `subscribed_at` | string | いいえ | フォーマット`yyyy-MM-dd HH:mm:ss`の日付 |
+| `ip_address` | string | いいえ | 購読者のIPアドレス |
+
+完全なAPIドキュメントについては、[MailerLite Developers](https://developers.mailerlite.com/docs/subscribers.html)を訪問してください。

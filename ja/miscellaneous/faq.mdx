@@ -493,15 +493,19 @@ This ensures merchants stay informed about failed transactions.
   - **Immediate cancellation**: The subscription.cancelled_at timestamp is set immediately and the subscription ends at that moment
   - **Scheduled cancellation**: Use the `cancel_at_next_billing_date` parameter in the subscription patch API to cancel at the end of the current billing period
 
+<Accordion title="Q65: 誰かがサブスクリプションを開始したとき、2つのWebhookイベントを受け取りますか？">
+  A: 最初のサブスクリプションの支払いが成功すると、トライアル期間がない場合、通常は次の3つのWebhookを受け取ります:
+  - `subscription.created` Webhook
+  - `payment.succeeded` Webhook
+  - `subscription.renewal` Webhook
 </Accordion>
 
 <Accordion title="Q66: When does a subscription get charged?">
   A: Dodo Payments charges the customer immediately upon subscription creation if the product does not have a trial period.
 
-  <Note>
-  For Indian cards and UPI subscriptions, recurring charges follow RBI regulations with a 48-hour processing delay. Charges are initiated on the scheduled date, but the actual deduction from the customer's account occurs 48 hours after initiation. This 48-hour window may extend up to 2-3 additional hours depending on bank API responses.
-  </Note>
-</Accordion>
+  キャンセルリクエストが行われたとき:
+  - **即時キャンセル**: subscription.cancelled_at タイムスタンプは即座に設定され、サブスクリプションはその時点で終了します。
+  - **スケジュールキャンセル**: 現在の請求期間の終了時にキャンセルするには、subscription patch APIで`cancel_at_next_billing_date`パラメータを使用します。
 
 <Accordion title="Q67: Why does the Change Plan API return an empty response?">
   A: The Change Plan API returns only a 200 status code with no response body, so the response will appear empty even though the plan change is successful.
@@ -746,17 +750,29 @@ A: You can refer to the official Dodo Payments documentation here: https://docs.
 <Accordion title="Q100: My webhook isn't receiving a POST request, only a GET. Why?">
 A: You're likely confusing the redirect URL with the webhook URL. A redirect URL is where the user is sent after a payment, and it may contain `?subscription_id=...&status=active` in a GET request. This is not your webhook.
 
-To receive structured POST payloads from Dodo Payments:
-- Set up a webhook under Dashboard → Developers → Webhooks
-- Ensure the URL accepts POST requests and verifies the signature
+<Accordion title="Q101: なぜ最初のサブスクリプションに対して`subscription.renewed` Webhookを使用するのですか？">
+  A: 最初の支払いが成功すると、サブスクリプションは最初の請求期間に入り、次の請求日が設定されます。
+  `subscription.renewed` Webhookは、請求期間が現在アクティブであり、次の請求サイクルがスケジュールされたことを示すために送信されます。
+  このWebhookは、最初の請求期間を含むすべての請求期間で使用されるため、請求ロジックを一貫して処理できます。
+</Accordion>
 
 <Note>
 You can have both a webhook and a redirect URL — they serve different purposes.
 </Note>
 </Accordion>
 
-<Accordion title="Q101: I get a 401 Unauthorized error using the Python SDK. Why?">
-A: You likely forgot to pass the correct environment when initializing the DodoPayments client.
+  ```python
+  from standardwebhooks.webhooks import Webhook
+  
+  wh = Webhook(webhook_secret_key)
+  payload = request.get_data(as_text=True)
+  headers = request.headers
+  
+  if not wh.verify(payload, headers):
+      return jsonify({'error': 'Invalid webhook signature'}), 401
+ 
+  Then parse the payload as needed.
+  ```
 
 <Check>
 **Fix:**
@@ -768,8 +784,8 @@ bearer_token="your_api_key",
 )
 ```
 
-</Check>
-</Accordion>
+<Accordion title="Q104: 私のWebhookはPOSTリクエストを受信せず、GETのみを受信しています。なぜですか？">
+A: リダイレクトURLとWebhook URLを混同している可能性があります。リダイレクトURLは、支払い後にユーザーが送信される場所であり、GETリクエストに`?subscription_id=...&status=active`を含む場合があります。これはあなたのWebhookではありません。
 
 <Accordion title="Q102: Is there a way to manually trigger a webhook event for testing?">
 A: You can do it through the webhook dashboard. Go to Dashboard -> Developers -> Webhooks
@@ -789,14 +805,12 @@ Use webhooks to automate things like DB updates, and redirects to show thank-you
 A: The payment.succeeded webhook event for subscription products does not include a product_id. Instead, it provides the `subscription_id` associated with the subscription, along with other relevant details.
 </Accordion>
 
-<Accordion title="Q105: How do I verify the webhooks I receive are actually from dodo payments and not from any malicious actors?">
-A: To verify that the webhooks you receive are genuinely from Dodo Payments and not from malicious actors, follow these steps:
-1. **Check the Signature**: Each webhook sent by Dodo Payments includes a unique signature in the **`webhook-signature`** header. This signature is generated using your webhook's secret key and the payload of the event.
-2. **Retrieve the Secret Key**: Ensure you have the secret key for your webhook, which can be found in your Dodo Payments dashboard under the Webhooks settings.
-3. **Recompute the Signature**: Use the same signing algorithm (HMAC-SHA256) as Dodo Payments to compute the signature on your server. Use the payload of the webhook and your webhook secret key.
-4. **Compare Signatures**: Compare the recomputed signature with the one provided in the **`webhook-signature`** header. If they match, the webhook is authentic; if not, it should be rejected.
-5. **Use HTTPS**: Ensure your webhook endpoint uses HTTPS to secure communication and prevent tampering during data transmission.
-By implementing these steps, you can confidently verify the authenticity of webhooks sent by Dodo Payments.
+```python
+client = DodoPayments(
+bearer_token="your_api_key",
+      environment="live_mode"  # or "test_mode"
+)
+```
 
 <Tip>We recommend using packages provided by StandardWebhooks to verify signature and not construct it by yourself.</Tip>
 </Accordion>
@@ -805,27 +819,34 @@ By implementing these steps, you can confidently verify the authenticity of webh
 A: For subscriptions, `subscription.renew` will be triggered whenever the subscription amount is deducted. So yes, this is expected behavior.
 </Accordion>
 
-<Accordion title="Q107: How can I test webhooks locally?">
-A: To test webhooks locally, you can follow these steps:
+<Accordion title="Q107: WebhookとリダイレクトURLの違いは何ですか？">
+A:
+- **Webhook URL**: ダッシュボードで設定されます。イベントに関するPOSTペイロードを受信します。
+- **リダイレクトURL**: 支払いAPIリクエストで送信されます。クエリパラメータ（`?status=success`）を使用してユーザーをアプリに戻します。
 
 1. **Use a Tunneling Tool**: Tools like [ngrok](https://ngrok.com/), [LocalTunnel](https://localtunnel.github.io/www/), or [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) can expose your local server to the internet. This provides a public URL that Dodo Payments can use to send webhook events to your local environment.
 2. **Set Up the Webhook Endpoint**: Create a webhook endpoint in your local application to handle incoming webhook events. Ensure it listens for HTTP POST requests.
 3. **Configure the Webhook in Dodo Payments**: Go to your Dodo Payments dashboard, navigate to the Webhooks settings, and update the webhook URL to the public URL generated by the tunneling tool.
 
+<Accordion title="Q108: サブスクリプション製品のpayment.succeeded Webhookで製品IDを受け取らなかったのはなぜですか？">
+A: サブスクリプション製品のpayment.succeeded Webhookイベントにはproduct_idが含まれていません。代わりに、サブスクリプションに関連付けられた`subscription_id`が提供され、他の関連詳細と共に提供されます。
 </Accordion>
 
-<Accordion title="Q108: Why is my webhook not being called after payment?">
-A: Check the following:
-- You did not confuse the webhook URL with redirect URL
-- The webhook is configured under Developers > Webhooks
-- Your URL accepts POST requests and responds with 2xx
-- Signature validation (if enabled) is implemented correctly
+<Accordion title="Q109: 受信したWebhookが本当にDodo Paymentsからのものであり、悪意のあるアクターからのものでないことを確認するにはどうすればよいですか？">
+A: 受信したWebhookがDodo Paymentsからのものであり、悪意のあるアクターからのものでないことを確認するには、次の手順に従ってください:
+1. **署名を確認**: Dodo Paymentsから送信される各Webhookには、**`webhook-signature`** ヘッダーに一意の署名が含まれています。この署名は、Webhookの秘密鍵とイベントのペイロードを使用して生成されます。
+2. **秘密鍵を取得**: Webhookの秘密鍵を持っていることを確認してください。これは、Dodo PaymentsダッシュボードのWebhook設定で見つけることができます。
+3. **署名を再計算**: Dodo Paymentsと同じ署名アルゴリズム（HMAC-SHA256）を使用して、サーバー上で署名を計算します。WebhookのペイロードとWebhookの秘密鍵を使用します。
+4. **署名を比較**: 再計算した署名を**`webhook-signature`** ヘッダーに提供された署名と比較します。一致すればWebhookは正当であり、一致しなければ拒否する必要があります。
+5. **HTTPSを使用**: WebhookエンドポイントがHTTPSを使用して通信を保護し、データ送信中の改ざんを防ぐことを確認してください。
+これらの手順を実施することで、Dodo Paymentsから送信されたWebhookの正当性を自信を持って確認できます。
 
 If you only see GETs with ?status=success, you are debugging the redirect URL, not the webhook.
 </Accordion>
 
-<Accordion title="Q109: Is it safe to rely on status=success in URL query params?">
-A: No. While it's a quick win, URL query params can be tampered with.
+<Accordion title="Q110: なぜ最初の月の支払いでもsubscription.renew Webhookを受信しているのですか？">
+A: サブスクリプションの場合、`subscription.renew`は、サブスクリプション金額が差し引かれるたびにトリガーされます。したがって、これは予期される動作です。
+</Accordion>
 
 If you're using redirect_url?status=success:
 - Double-validate the transaction with an API call
