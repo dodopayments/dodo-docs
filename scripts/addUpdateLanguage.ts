@@ -8,6 +8,7 @@
 // For each language, this script:
 // - Takes the English navigation (first language / "en")
 // - Prefixes all page paths with `${lang}/`
+// - Only includes pages that actually exist on disk
 // - Creates the language if it doesn't exist
 // - Updates the existing language if it already exists (no duplicates)
 
@@ -17,7 +18,8 @@ const fs = require('fs');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const path = require('path');
 
-const DOCS_PATH = path.join(__dirname, '..', 'docs.json');
+const ROOT = path.join(__dirname, '..');
+const DOCS_PATH = path.join(ROOT, 'docs.json');
 
 // Pages to exclude from translated navigation (these won't be prefixed with lang code)
 // These pages will be removed from non-English navigation entirely
@@ -35,11 +37,25 @@ function writeDocs(data) {
     fs.writeFileSync(DOCS_PATH, json + '\n', 'utf8');
 }
 
+/**
+ * Check if a page file exists for the given language
+ */
+function pageExists(pagePath, lang) {
+    // pagePath is like "features/checkout" or "developer-resources/webhooks"
+    // We need to check if {lang}/{pagePath}.mdx exists
+    const fullPath = path.join(ROOT, lang, pagePath + '.mdx');
+    return fs.existsSync(fullPath);
+}
+
 function prefixPages(value, lang) {
     // Mirrors the jq `prefix_pages` function.
     if (typeof value === 'string') {
         // Skip pages that are excluded from translation
         if (PAGES_TO_EXCLUDE_FROM_TRANSLATION.includes(value)) {
+            return null; // Will be filtered out
+        }
+        // Skip pages that don't exist for this language
+        if (!pageExists(value, lang)) {
             return null; // Will be filtered out
         }
         // Avoid double-prefixing if it already starts with `${lang}/`.
@@ -50,7 +66,7 @@ function prefixPages(value, lang) {
     if (Array.isArray(value)) {
         return value
             .map((item) => prefixPages(item, lang))
-            .filter((item) => item !== null); // Remove excluded pages
+            .filter((item) => item !== null); // Remove excluded/missing pages
     }
 
     if (value && typeof value === 'object') {
@@ -59,11 +75,19 @@ function prefixPages(value, lang) {
         if (Array.isArray(copy.pages)) {
             copy.pages = copy.pages
                 .map((p) => prefixPages(p, lang))
-                .filter((p) => p !== null); // Remove excluded pages
+                .filter((p) => p !== null); // Remove excluded/missing pages
         } else if (Array.isArray(copy.groups)) {
             copy.groups = copy.groups
                 .map((g) => prefixPages(g, lang))
-                .filter((g) => g !== null); // Remove excluded groups
+                .filter((g) => g !== null); // Remove excluded/missing groups
+        }
+
+        // If this group/object has no pages left, return null to remove it
+        if (Array.isArray(copy.pages) && copy.pages.length === 0) {
+            return null;
+        }
+        if (Array.isArray(copy.groups) && copy.groups.length === 0) {
+            return null;
         }
 
         return copy;
