@@ -19,6 +19,12 @@ const path = require('path');
 
 const DOCS_PATH = path.join(__dirname, '..', 'docs.json');
 
+// Pages to exclude from translated navigation (these won't be prefixed with lang code)
+// These pages will be removed from non-English navigation entirely
+const PAGES_TO_EXCLUDE_FROM_TRANSLATION = [
+    'miscellaneous/faq',
+];
+
 function readDocs() {
     const raw = fs.readFileSync(DOCS_PATH, 'utf8');
     return JSON.parse(raw);
@@ -32,22 +38,32 @@ function writeDocs(data) {
 function prefixPages(value, lang) {
     // Mirrors the jq `prefix_pages` function.
     if (typeof value === 'string') {
+        // Skip pages that are excluded from translation
+        if (PAGES_TO_EXCLUDE_FROM_TRANSLATION.includes(value)) {
+            return null; // Will be filtered out
+        }
         // Avoid double-prefixing if it already starts with `${lang}/`.
         if (value.startsWith(`${lang}/`)) return value;
         return `${lang}/${value}`;
     }
 
     if (Array.isArray(value)) {
-        return value.map((item) => prefixPages(item, lang));
+        return value
+            .map((item) => prefixPages(item, lang))
+            .filter((item) => item !== null); // Remove excluded pages
     }
 
     if (value && typeof value === 'object') {
         const copy = { ...value };
 
         if (Array.isArray(copy.pages)) {
-            copy.pages = copy.pages.map((p) => prefixPages(p, lang));
+            copy.pages = copy.pages
+                .map((p) => prefixPages(p, lang))
+                .filter((p) => p !== null); // Remove excluded pages
         } else if (Array.isArray(copy.groups)) {
-            copy.groups = copy.groups.map((g) => prefixPages(g, lang));
+            copy.groups = copy.groups
+                .map((g) => prefixPages(g, lang))
+                .filter((g) => g !== null); // Remove excluded groups
         }
 
         return copy;

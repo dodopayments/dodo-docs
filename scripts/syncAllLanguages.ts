@@ -59,6 +59,12 @@ const FILES_TO_MOVE = [
   'welcome.mdx',
 ];
 
+// Files to exclude from translation (relative paths from content root)
+// These files will be removed from target language folders after sync
+const FILES_TO_EXCLUDE_FROM_TRANSLATION = [
+  'miscellaneous/faq.mdx',
+];
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -220,6 +226,38 @@ function cleanupOrphanedFiles(langs) {
   }
 }
 
+/**
+ * Remove files that should not be translated from target language folders
+ */
+function removeExcludedFiles(langs) {
+  console.log('\n[exclude] Removing files excluded from translation...');
+  
+  let totalRemoved = 0;
+  
+  for (const lang of langs) {
+    const langFolder = path.join(ROOT, lang);
+    if (!fs.existsSync(langFolder)) continue;
+    
+    for (const excludedFile of FILES_TO_EXCLUDE_FROM_TRANSLATION) {
+      const filePath = path.join(langFolder, excludedFile);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`[exclude] Removed: ${lang}/${excludedFile}`);
+        totalRemoved++;
+      }
+    }
+    
+    // Clean up any empty directories left behind
+    removeEmptyDirs(langFolder);
+  }
+  
+  if (totalRemoved === 0) {
+    console.log('[exclude] No excluded files found to remove.');
+  } else {
+    console.log(`[exclude] Removed ${totalRemoved} excluded file(s).`);
+  }
+}
+
 function getTargetLanguagesFromI18n() {
   const cfg = readJson(I18N_PATH);
   const targets = cfg?.locale?.targets;
@@ -347,7 +385,10 @@ function main() {
       console.log('\n[cleanup] Skipped (--skip-cleanup).');
     }
 
-    // Step 5: Update docs.json with language navigation
+    // Step 5: Remove files excluded from translation (e.g., large FAQ files)
+    removeExcludedFiles(mintlifyLangs);
+
+    // Step 6: Update docs.json with language navigation
     if (!skipAddUpdate) {
       console.log(`\n[addUpdateLanguage] Updating docs.json languages: ${mintlifyLangs.join(', ')}`);
       runCmd('node', [path.join('scripts', 'addUpdateLanguage.ts'), ...mintlifyLangs], ROOT);
@@ -355,7 +396,7 @@ function main() {
       console.log('\n[addUpdateLanguage] Skipped (--skip-addUpdate).');
     }
   } finally {
-    // Step 6: Move content back from en folder
+    // Step 7: Move content back from en folder
     moveBackFromEnFolder();
   }
 }
