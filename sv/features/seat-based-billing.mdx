@@ -68,12 +68,12 @@ Dodo Payments implementerar sätebaserad fakturering med hjälp av **Tillägg**-
 
 ### Arkitekturöversikt
 
-En Team Pro-prenumeration kostar \$99/månad och inkluderar 5 säten. Om du har fler än 5 användare betalar du en extra \$15/månad för varje ytterligare säte.
+En Team Pro-prenumeration kostar $99/månad och inkluderar 5 platser. Om du har fler än 5 användare betalar du $15/månad för varje extra plats.
 
-Till exempel, om ditt team behöver 15 säten:
-- Basplan: \$99/månad (inkluderar 5 säten)
-- Tillägg: 10 extra säten × \$15/månad = \$150/månad
-- Total månadskostnad: \$99 + \$150 = \$249 för 15 säten
+Till exempel, om ditt team behöver 15 platser:
+- Grundplan: $99/månad (inkluderar 5 platser)
+- Tillägg: 10 extra platser × $15/månad = $150/månad
+- Total månadskostnad: $99 + $150 = $249 för 15 platser
 
 ### Nyckelkomponenter
 
@@ -308,20 +308,37 @@ await client.subscriptions.changePlan('sub_123', {
 
 När kunder lägger till eller tar bort säten mitt under cykeln, avgör proportionering hur de faktureras.
 
-### Proportioneringslägen
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
+
+### Avräkningslägen
 
 | Läge | Lägga till platser | Ta bort platser |
-|------|------------------|----------------|
-| `prorated_immediately` | Debitering för återstående dagar i cykeln | Kredit för oanvända dagar |
-| `difference_immediately` | Debitering av full platspris | Kredit tillämpas på framtida förnyelser |
-| `full_immediately` | Debitering av full platspris, återställ faktureringscykel | Ingen kredit |
+|------|----------------|----------------|
+| `prorated_immediately` | Avgift för återstående dagar i cykeln | Kredit för oanvända dagar |
+| `difference_immediately` | Avgift för full platspris | Kredit som tillämpas på framtida förnyelser |
+| `full_immediately` | Avgift för full platspris, återställ faktureringscykel | Ingen kredit |
 
-### Proportioneringsexempel
+### Exempel på avräkning
 
-**Scenario: 15-dagars faktureringscykel kvar, lägger till 5 säten för $10/säte**
+**Scenario: 15-dagars faktureringscykel kvar, lägga till 5 platser för $10/plats**
 
 <Tabs>
-<Tab title="proportionerad_omedelbart">
+<Tab title="prorated_immediately">
 
 ```
 Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
@@ -329,32 +346,53 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-Kunden betalar \$25 nu, sedan \$50/månad vid förnyelse.
+Kunden betalar $25 nu, sedan $50/månad vid förnyelse.
 </Tab>
 
-<Tab title="skillnad_omedelbart">
+<Tab title="difference_immediately">
 
 ```
 Immediate charge = $10 × 5 seats = $50
 ```
 
-Kunden betalar fullt $50 nu, oavsett cykelposition.
+Kunden betalar fulla $50 nu, oavsett cykelns position.
 </Tab>
 
-<Tab title="full_omedelbart">
+<Tab title="full_immediately">
 
 ```
 Immediate charge = Full subscription + add-ons
 Billing cycle resets to today
 ```
 
-Kunden betalar fullt belopp, ny faktureringscykel börjar.
+Kunden betalar full summa, ny faktureringscykel börjar.
 </Tab>
 </Tabs>
 
-### Förhandsgranska Innan Ändringar
+**Scenario: Ta bort 3 platser mitt i cykeln med prorated_immediately**
 
-Förhandsgranska alltid proportioneringen innan du gör ändringar:
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**Välja ett avräkningsläge för platsändringar**: Använd `prorated_immediately` för rättvis dagbaserad fakturering när team ofta justerar platser. Använd `difference_immediately` för enklare matematik som tar ut eller kredit av fulla platspriser. Se [Avräkningsguide](/developer-resources/subscription-upgrade-downgrade#proration-modes) för detaljerade jämförelser.
+</Tip>
+
+### Förhandsgranska innan ändringar
+
+Förhandsvisa alltid avräkningen innan du gör ändringar:
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -370,20 +408,20 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Spåra Säten med Webhooks
+## Spåra platser med Webhooks
 
-Övervaka sätesändringar genom att lyssna på prenumerationswebhooks:
+Övervaka platsändringar genom att lyssna på prenumerationswebhooks:
 
-### Relevanta Händelser
+### Relevanta händelser
 
-| Händelse | När utlöses | Användningsfall |
-|---------|--------------|----------------|
+| Händelse | När den utlöses | Användningsfall |
+|-------|----------------|----------|
 | `subscription.active` | Ny prenumeration aktiverad | Tillhandahålla initiala platser |
-| `subscription.plan_changed` | Platser tillagda/avlägsnade | Uppdatera platsantal i din app |
+| `subscription.plan_changed` | Platser tillagda/ytagna | Uppdatera platsantal i din app |
 | `subscription.renewed` | Prenumeration förnyad | Bekräfta att platsantalet är oförändrat |
-| `subscription.cancelled` | Prenumeration avbruten | Avaktivera alla platser |
+| `subscription.cancelled` | Prenumeration avbruten | Ta bort alla platser |
 
-### Exempel på Webhook-hanterare
+### Exempel på Webhook-handler
 
 ```typescript
 app.post('/webhooks/dodo', async (req, res) => {
@@ -422,15 +460,15 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## Tillämpa Sätesgränser
+## Genomdriva platsgränser
 
-Din applikation måste tillämpa sätesgränser. Dodo Payments spårar faktureringen, men du kontrollerar åtkomsten.
+Din applikation måste genomdriva platsgränser. Dodo Payments spårar faktureringen, men du kontrollerar åtkomsten.
 
-### Tillämpningsstrategier
+### Strategier för genomdrivande
 
 <Tabs>
-<Tab title="Hård Gräns">
-Förhindra strikt att lägga till användare utöver sätesantalet.
+<Tab title="Hård gräns">
+Förhindra strikt att lägga till användare utöver platsantalet.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -449,8 +487,8 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Mjuk Gräns med Varning">
-Tillåt överskridande med en varning och en övergångsperiod.
+<Tab title="Mjuk gräns med varning">
+Tillåt överskridande med en varning och räntefrist.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -469,8 +507,8 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Auto-Uppgradering">
-Lägg automatiskt till säten när gränsen nås.
+<Tab title="Automatisk uppgradering">
+Lägg automatiskt till platser när gränsen nås.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -498,11 +536,11 @@ async function inviteUser(teamId: string, email: string) {
 
 ---
 
-## Avancerade Mönster
+## Avancerade mönster
 
-### Olika Sätetyper
+### Olika platstyper
 
-Erbjud olika sätetyper med olika prissättning:
+Erbjud olika platstyper med olika prissättning:
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -510,7 +548,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**Implementering:** Skapa separata tillägg för varje sätetyp.
+**Implementering:** Skapa separata tillägg för varje platstyp.
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -526,9 +564,9 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Årliga Sätesrabatter
+### Årliga rabatter på platser
 
-Erbjud rabatterad årlig sätesprissättning:
+Erbjud rabatterad årlig platsprissättning:
 
 ```
 Monthly: $15/seat/month
@@ -537,9 +575,9 @@ Annual: $12/seat/month (20% savings)
 
 **Implementering:** Skapa separata produkter för månatliga och årliga planer med olika tilläggspriser.
 
-### Minimiantal Säten
+### Minimiantal platser
 
-Kräv ett minimiantal säten för vissa planer:
+Kräv ett minimiantal platser för vissa planer:
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -557,91 +595,91 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ---
 
-## Bästa Praxis
+## Bästa metoder
 
-### Prissättnings Bästa Praxis
+### Prissättnings bästa metoder
 
-- **Tydlig Kommunikation**: Visa per-säte prissättning tydligt på din prissättningssida
-- **Inkluderade Säten**: Överväg att inkludera några säten i baspriset för att minska friktion
-- **Volymrabatter**: Erbjud lägre per-säte priser för större team för att vinna företagsavtal
-- **Årliga Incitament**: Rabattera årliga planer för att förbättra kassaflödet och retentionen
+- **Tydlig kommunikation**: Visa per-platspriser tydligt på din prissättningssida
+- **Inkluderade platser**: Överväg att inkludera några platser i grundpriset för att minska friktion
+- **Volymrabatter**: Erbjud lägre per-platspriser för större team för att vinna företagsavtal
+- **Årliga incitament**: Rabattera årliga planer för att förbättra kassaflödet och retention
 
-### Tekniska Bästa Praxis
+### Tekniska bästa metoder
 
-- **Cachea Sätesantal**: Cachea prenumerationssätesantal lokalt för att undvika API-anrop vid varje begäran
-- **Synkronisera Regelbundet**: Synkronisera periodiskt ditt lokala sätesantal med Dodo Payments via API
-- **Hantera Misslyckanden**: Om en sätesändring misslyckas, visa tydliga felmeddelanden och alternativ för att försöka igen
-- **Revisionsspår**: Logga alla sätesändringar för faktureringsdispyter och efterlevnad
+- **Cachea platsantal**: Cachea prenumerationsplatsantal lokalt för att undvika API-anrop vid varje begäran
+- **Synkronisera regelbundet**: Synkronisera ditt lokala platsantal med Dodo Payments via API periodiskt
+- **Hanterar fel**: Om en platsändring misslyckas, visa tydliga felmeddelanden och alternativ för att försöka igen
+- **Revisionsspår**: Logga alla platsändringar för faktureringsdispyter och efterlevnad
 
-### Användarupplevelse Bästa Praxis
+### Användarupplevelse Bästa metoder
 
-- **Real-Tids Feedback**: Visa omedelbar kostnadseffekt när säten justeras
+- **Real-tidsåterkoppling**: Visa omedelbar kostnadseffekt när du justerar platser
 - **Bekräftelsesteg**: Kräva bekräftelse innan faktureringsändringar
-- **Proportionerings Transparens**: Förklara tydligt proportionerade avgifter innan de tillämpas
-- **Enkla Nedgraderingar**: Gör det inte svårt att minska säten (det bygger förtroende)
+- **Avräkningsöppenhet**: Förklara tydligt avräkningsavgifter innan tillämpning
+- **Lätt nedgraderingar**: Gör det inte svårt att minska platser (det bygger förtroende)
 
 ---
 
 ## Felsökning
 
 <AccordionGroup>
-<Accordion title="Säteantal mismatch mellan app och fakturering">
-**Symptom**: Din app visar ett annat säteantal än prenumerationen.
+<Accordion title="Oöverensstämmelse med platsantal mellan app och fakturering">
+**Symptom**: Din app visar ett annat platsantal än prenumerationen.
 
 **Orsaker**:
-- Webhook mottagen eller bearbetad
-- Tävlingstillstånd under sätesändring
-- Cachad data uppdaterades inte
+- Webhook har inte mottagits eller behandlats
+- Tidskonflikt under platsändring
+- Cachad data har inte uppdaterats
 
 **Lösningar**:
-1. Implementera webhook-hanterare för `subscription.plan_changed`
+1. Implementera webhook-handlare för `subscription.plan_changed`
 2. Lägg till en "Synkronisera med fakturering"-knapp som hämtar aktuell prenumeration
-3. Ställ in cache TTL för att säkerställa regelbunden uppdatering
+3. Ställ in cache TTL för att säkerställa regelbundna uppdateringar
 </Accordion>
 
-<Accordion title="Proportioneringsavgifter oväntade">
-**Symptom**: Kunder förvirrade av beloppet för avgiften mitt under cykeln.
+<Accordion title="Avräkningsavgifter oväntade">
+**Symptom**: Kunden förvirrad över avgiftsbeloppet mitt i cykeln.
 
 **Orsaker**:
-- Proportioneringsläge kommunicerades inte tydligt
-- Kunden såg inte förhandsgranskningen innan bekräftelse
+- Avräkningsläge kommunicerades inte tydligt
+- Kunden såg inte förhandsvisningen innan bekräftelse
 
 **Lösningar**:
 1. Använd alltid `previewChangePlan` innan du gör ändringar
-2. Visa tydlig uppdelning: "Lägga till X platser = $Y idag (proportionerligt för Z dagar)"
-3. Dokumentera din proportioneringspolicy i hjälpcentret
+2. Visa tydlig uppdelning: "Lägga till X platser = $Y idag (avräknad för Z dagar)"
+3. Dokumentera din avräkningspolicy i hjälpcentret
 </Accordion>
 
-<Accordion title="Tillägg visas inte i kassan">
-**Symptom**: Sätes-tillägget är inte tillgängligt under kassan.
+<Accordion title="Tillägg syns inte i kassan">
+**Symptom**: Platstillägg är inte tillgängligt under kassan.
 
 **Orsaker**:
-- Tillägget är inte kopplat till produkten
-- Tillägget arkiverat eller raderat
-- Valuta mismatch mellan produkt och tillägg
+- Tillägg är inte kopplade till produkten
+- Tillägg är arkiverat eller borttaget
+- Valutaöverensstämmelse mellan produkt och tillägg
 
 **Lösningar**:
 1. Verifiera att tillägget är kopplat i produktinställningarna
-2. Kontrollera tilläggets status i Tilläggs-instrumentpanelen
-3. Säkerställ att valutor matchar exakt
+2. Kontrollera tilläggets status i Tilläggsdashboard
+3. Se till att valutor stämmer exakt
 </Accordion>
 
-<Accordion title="Kan inte minska säten under nuvarande användning">
-**Symptom**: Kunden vill minska säten men har användare tilldelade.
+<Accordion title="Kan inte minska platser under nuvarande användning">
+**Symptom**: Kunden vill minska platser men har användare tilldelade.
 
 **Lösningar**:
-1. Visa vilka användare som måste tas bort innan säten kan minskas
-2. Implementera ett arbetsflöde: Ta bort användare → Minska säten
-3. Överväg en övergångsperiod innan du tillämpar minskningen av säten
+1. Visa vilka användare som måste tas bort innan platser kan minskas
+2. Implementera ett arbetsflöde: Ta bort användare → Minska platser
+3. Överväg en räntefrist innan genomdrivande av platsminskning
 </Accordion>
 </AccordionGroup>
 
 ---
 
-## Relaterad Dokumentation
+## Relaterad dokumentation
 
 <CardGroup cols={2}>
-<Card title="Sätebaserad Prissättningshandledning" icon="code" href="/developer-resources/seat-based-pricing">
+<Card title="Platsbaserad prissättning handledning" icon="code" href="/developer-resources/seat-based-pricing">
   Komplett implementeringsguide med kod.
 </Card>
 
@@ -649,11 +687,11 @@ async function validateSeatCount(planId: string, seatCount: number) {
   Förstå tilläggssystemet på djupet.
 </Card>
 
-<Card title="Planändringar & Proportionering" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+<Card title="Planändringar & Avräkning" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
   Hantera prenumerationsmodifieringar.
 </Card>
 
 <Card title="Prenumerationswebhooks" icon="bell" href="/developer-resources/webhooks/intents/subscription">
-  Spåra prenumerationsevenemang.
+  Spåra prenumerationsevent.
 </Card>
 </CardGroup>

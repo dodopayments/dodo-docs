@@ -102,7 +102,7 @@ Les essais permettent aux clients d'accéder aux abonnements sans paiement immé
 
 ### Configuration des Essais
 
-Définissez **Jours de période d'essai** dans la section de tarification du produit (utilisez `0` pour désactiver). Vous pouvez remplacer cela lors de la création d'abonnements :
+Définissez les **Jours de Période d'Essai** dans la section de tarification du produit (utilisez `0` pour désactiver). Vous pouvez remplacer cela lors de la création d'abonnements :
 
 ```typescript
 // Via subscription creation
@@ -153,7 +153,7 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Warning>
-Vous ne pouvez pas définir `next_billing_date` à un moment passé. La date doit être dans le futur.
+Vous ne pouvez pas définir `next_billing_date` sur un moment passé. La date doit être dans le futur.
 </Warning>
 
 ## Changements de Plan d'Abonnement
@@ -164,12 +164,48 @@ Les changements de plan vous permettent de mettre à niveau ou de rétrograder d
 Vous pouvez changer de plan d'abonnement et mettre à jour la date de facturation suivante directement depuis le tableau de bord Dodo Payments. Cela fournit un moyen rapide d'ajuster les abonnements pour les demandes de support client, les mises à niveau promotionnelles ou les migrations de plan sans effectuer d'appels API.
 </Tip>
 
-### Modes de prorata
+<Tip>
+**Activer les modifications de plan en libre-service :** Vous souhaitez que les clients puissent mettre à niveau ou rétrograder leurs propres abonnements via le portail client ? Ajoutez vos produits d'abonnement à une Collection de Produits et activez "Autoriser les mises à jour d'abonnement" dans vos paramètres d'abonnement.
+</Tip>
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo Payments
+    C->>A: Request plan change
+    A->>D: Preview change (optional)
+    D-->>A: Charge breakdown
+    A->>C: Show cost
+    C->>A: Confirm
+    A->>D: changePlan API
+    D->>D: Prorate & charge
+    D-->>A: Result
+    D->>A: Webhook: plan_changed
+    A->>C: Access updated
+```
+
+<Card title="Collections de Produits" icon="layer-group" href="/features/product-collections">
+  Regroupez des produits liés en collections pour permettre des chemins de mise à niveau/rétrogradation fluides dans le portail client.
+</Card>
+
+### Modes de Prorata
 
 Choisissez comment les clients sont facturés lors du changement de plans :
 
+<Info>
+**Comparaison rapide des trois modes de prorata :**
+
+| | `prorated_immediately` | `difference_immediately` | `full_immediately` |
+|---|---|---|---|
+| **Mise à Niveau** | Charge prorata pour les jours restants | Différence de prix totale facturée | Montant total du nouveau plan facturé |
+| **Rétrogradation** | Crédit prorata pour les jours restants | Différence de prix totale en crédit | Pas de crédit, charge totale |
+| **Cycle de facturation** | Reste le même | Reste le même | Réinitialise à aujourd'hui |
+| **Idéal pour** | Facturation équitable basée sur le temps | Changements de niveaux simples | Réinitialise les cycles de facturation |
+</Info>
+
 #### `prorated_immediately`
-Facture un montant proratisé basé sur le temps restant dans le cycle de facturation actuel. Idéal pour une facturation équitable qui prend en compte le temps non utilisé.
+Facture un montant prorata basé sur le temps restant dans le cycle de facturation actuel. Idéal pour une facturation équitable qui prend en compte le temps inutilisé.
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -180,7 +216,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 #### `difference_immediately`
-Facture immédiatement la différence de prix (mise à niveau) ou ajoute un crédit pour les renouvellements futurs (baisse de plan). Idéal pour des scénarios de mise à niveau/baisse simples.
+Facture la différence de prix immédiatement (mise à niveau) ou ajoute un crédit pour des renouvellements futurs (rétrogradation). Idéal pour des scénarios de mise à niveau/rétrogradation simples.
 
 ```typescript
 // Upgrade: charges $50 (difference between $30 and $80)
@@ -193,8 +229,21 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Les crédits provenant des baisses de plan utilisant `difference_immediately` sont limités à l'abonnement et s'appliquent automatiquement aux renouvellements futurs. Ils sont distincts des <a href="/features/customer-credit">Crédits Client</a>.
+Les crédits provenant des rétrogradations utilisant `difference_immediately` sont à portée d'abonnement et sont automatiquement appliqués aux renouvellements futurs. Ils sont distincts des <a href="/features/customer-credit">Crédits Client</a>.
 </Info>
+
+Lorsqu'un client rétrograde avec `difference_immediately`, la valeur inutilisée devient un crédit à portée d'abonnement qui compense automatiquement les renouvellements futurs :
+
+```mermaid
+flowchart LR
+    A[Downgrade] --> B[Calculate Credit]
+    B --> C[Credit Added]
+    C --> D[Next Renewal]
+    D --> E{Credit Left?}
+    E -->|Yes| F[Apply to invoice]
+    F --> D
+    E -->|No| G[Full price charged]
+```
 
 #### `full_immediately`
 Facture immédiatement le montant total du nouveau plan, en ignorant le temps restant. Idéal pour réinitialiser les cycles de facturation.
@@ -207,9 +256,49 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Changement de plans avec des options supplémentaires
+<AccordionGroup>
+<Accordion title="Exemple : Calcul de mise à niveau prorata">
 
-Modifiez les options supplémentaires lors du changement de plans. Les options supplémentaires sont incluses dans les calculs de prorata :
+**Scénario** : Un client passe de Basic (30$/mois) à Pro (80$/mois) le jour 16 d'un cycle de 30 jours en utilisant `prorated_immediately`.
+
+```
+Unused credit from Basic = $30 × (15 remaining / 30 total) = $15.00
+Prorated cost of Pro     = $80 × (15 remaining / 30 total) = $40.00
+────────────────────────────────────────────────────────────────────
+Immediate charge         = $40.00 − $15.00 = $25.00
+```
+
+Prochain renouvellement à la date de facturation d'origine : **80,00$/mois**.
+
+<Tip>
+Pour des exemples de calculs plus détaillés et des cas particuliers, consultez notre [Guide sur les Mises à Niveau et Rétrogradations](/developer-resources/subscription-upgrade-downgrade).
+</Tip>
+
+</Accordion>
+<Accordion title="Exemple : Calcul de crédit de rétrogradation">
+
+**Scénario** : Un client passe de Pro (80$/mois) à Starter (20$/mois) en utilisant `difference_immediately`.
+
+```
+Credit = Old plan − New plan = $80 − $20 = $60.00
+```
+
+Le crédit de 60 $ s'applique automatiquement aux renouvellements futurs :
+- Renouvellement 1 : 20 $ − 20 $ (crédit) = **0,00 $** (40 $ de crédit restant)
+- Renouvellement 2 : 20 $ − 20 $ (crédit) = **0,00 $** (20 $ de crédit restant)
+- Renouvellement 3 : 20 $ − 20 $ (crédit) = **0,00 $** (crédit épuisé)
+- Renouvellement 4 : **20,00 $** (prix plein)
+
+<Info>
+Apprenez-en davantage sur la gestion des crédits dans le [Guide sur les Mises à Niveau et Rétrogradations](/developer-resources/subscription-upgrade-downgrade).
+</Info>
+
+</Accordion>
+</AccordionGroup>
+
+### Changement de Plans avec Add-ons
+
+Modifiez les add-ons lors du changement de plans. Les add-ons sont inclus dans les calculs de prorata :
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -222,12 +311,12 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Les changements de plan déclenchent des frais immédiats. Les frais échoués peuvent déplacer l'abonnement vers le statut `on_hold`. Suivez les changements via les événements webhook `subscription.plan_changed`.
+Les changements de plan déclenchent des charges immédiates. Les charges échouées peuvent déplacer l'abonnement à l'état `on_hold`. Suivez les changements via les événements webhook `subscription.plan_changed`.
 </Info>
 
-### Prévisualisation des changements de plan
+### Prévisualisation des Changements de Plan
 
-Avant de vous engager dans un changement de plan, prévisualisez le montant exact de la facturation et l'abonnement résultant :
+Avant de vous engager à un changement de plan, prévisualisez la charge exacte et l'abonnement résultant :
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -240,40 +329,40 @@ const preview = await client.subscriptions.previewChangePlan('sub_123', {
 console.log('You will be charged:', preview.immediate_charge.summary);
 ```
 
-<Card title="Prévisualiser l'API de changement de plan" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
-  Prévisualisez les changements de plan avant de vous y engager.
+<Card title="API de Prévisualisation du Changement de Plan" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
+  Prévisualisez les changements de plan avant de vous engager.
 </Card>
 
-## États des abonnements
+## États d'Abonnement
 
-Les abonnements peuvent être dans différents états tout au long de leur cycle de vie :
+Les abonnements peuvent se trouver dans différents états tout au long de leur cycle de vie :
 
 - **`active`** : L'abonnement est actif et se renouvellera automatiquement
-- **`on_hold`** : L'abonnement est en pause en raison d'un paiement échoué. Une mise à jour du mode de paiement est requise pour réactiver
+- **`on_hold`** : L'abonnement est suspendu en raison d'un paiement échoué. Une mise à jour du mode de paiement est requise pour le réactiver
 - **`cancelled`** : L'abonnement est annulé et ne se renouvellera pas
-- **`expired`** : L'abonnement a atteint sa date de fin
+- **`expired`** : L'abonnement a atteint sa date d'échéance
 - **`pending`** : L'abonnement est en cours de création ou de traitement
 
-### État en attente
+### État en Attente
 
 Un abonnement entre dans l'état `on_hold` lorsque :
 
 - Un paiement de renouvellement échoue (fonds insuffisants, carte expirée, etc.)
-- Un frais de changement de plan échoue
+- Un changement de plan échoue
 - L'autorisation du mode de paiement échoue
 
 <Warning>
 Lorsque l'abonnement est dans l'état `on_hold`, il ne se renouvellera pas automatiquement. Vous devez mettre à jour le mode de paiement pour réactiver l'abonnement.
 </Warning>
 
-### Réactivation depuis l'état en attente
+### Réactivation depuis l'État de Suspension
 
-Pour réactiver un abonnement depuis l'état `on_hold`, mettez à jour le mode de paiement. Cela :
+Pour réactiver un abonnement depuis l'état `on_hold`, mettez à jour le mode de paiement. Cela effectuera automatiquement :
 
-1. Crée un frais pour les montants dus restants
+1. Crée une charge pour les dues restantes
 2. Génère une facture
 3. Traite le paiement en utilisant le nouveau mode de paiement
-4. Réactive l'abonnement à l'état `active` après un paiement réussi
+4. Réactive l'abonnement à l'état `active` après le paiement réussi
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -291,14 +380,14 @@ if (response.payment_id) {
 ```
 
 <Info>
-Après avoir mis à jour avec succès le mode de paiement pour un abonnement `on_hold`, vous recevrez `payment.succeeded` suivi par les événements webhook `subscription.active`.
+Après la mise à jour réussie du mode de paiement pour un abonnement `on_hold`, vous recevrez les événements webhook `payment.succeeded` suivis des événements `subscription.active`.
 </Info>
 
 ## Gestion de l'API
 
 <AccordionGroup>
 <Accordion title="Créer des abonnements">
-Utilisez `POST /subscriptions` pour créer des abonnements de manière programmatique à partir de produits, avec des essais et des options supplémentaires facultatifs.
+Utilisez `POST /subscriptions` pour créer des abonnements de manière programmatique à partir de produits, avec des essais et des add-ons facultatifs.
 
 <Card title="Référence API" icon="code" href="/api-reference/subscriptions/post-subscriptions">
 Voir l'API de création d'abonnement.
@@ -306,10 +395,10 @@ Voir l'API de création d'abonnement.
 </Accordion>
 
 <Accordion title="Mettre à jour des abonnements">
-Utilisez `PATCH /subscriptions/{id}` pour mettre à jour les quantités, annuler à la fin de la période ou modifier les métadonnées.
+Utilisez `PATCH /subscriptions/{id}` pour mettre à jour les quantités, annuler à la prochaine date de facturation ou modifier les métadonnées.
 
 <Card title="Référence API" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Apprenez à mettre à jour les détails de l'abonnement.
+Découvrez comment mettre à jour les détails de l'abonnement.
 </Card>
 </Accordion>
 
@@ -321,7 +410,7 @@ Examinez les options de changement de plan.
 </Card>
 </Accordion>
 
-<Accordion title="Frais à la demande">
+<Accordion title="Charges à la demande">
 Pour les abonnements à la demande, facturez des montants spécifiques à la demande.
 
 <Card title="Référence API" icon="code" href="/api-reference/subscriptions/create-charge">
@@ -333,7 +422,7 @@ Facturez un abonnement à la demande.
 Utilisez `GET /subscriptions` pour lister tous les abonnements et `GET /subscriptions/{id}` pour en récupérer un.
 
 <Card title="Référence API" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Parcourez les API de listing et de récupération.
+Parcourez les APIs de listing et de récupération.
 </Card>
 </Accordion>
 
@@ -346,25 +435,25 @@ Voir l'API d'historique d'utilisation.
 </Accordion>
 
 <Accordion title="Mettre à jour le mode de paiement">
-Mettez à jour le mode de paiement pour un abonnement. Pour les abonnements actifs, cela met à jour le mode de paiement pour les renouvellements futurs. Pour les abonnements dans l'état `on_hold`, cela réactive l'abonnement en créant un frais pour les montants dus restants.
+Mettez à jour le mode de paiement pour un abonnement. Pour les abonnements actifs, cela met à jour le mode de paiement pour les renouvellements futurs. Pour les abonnements dans l'état `on_hold`, cela réactive l'abonnement en créant une charge pour les dues restantes.
 
 <Card title="Référence API" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Apprenez à mettre à jour les modes de paiement et à réactiver les abonnements.
+Découvrez comment mettre à jour les modes de paiement et réactiver des abonnements.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Cas d'utilisation courants
+## Cas d'Utilisation Communs
 
-- **SaaS et APIs** : Accès par niveaux avec options supplémentaires pour les sièges ou l'utilisation
-- **Contenu et médias** : Accès mensuel avec essais d'introduction
-- **Plans de support B2B** : Contrats annuels avec options de support premium
+- **SaaS et APIs** : Accès par niveaux avec des add-ons pour sièges ou utilisation
+- **Contenu et médias** : Accès mensuel avec des essais d'introduction
+- **Plans de soutien B2B** : Contrats annuels avec des add-ons de soutien premium
 - **Outils et plugins** : Clés de licence et versions publiées
 
-## Exemples d'intégration
+## Exemples d'Intégration
 
-### Sessions de paiement (abonnements)
-Lors de la création de sessions de paiement, incluez votre produit d'abonnement et des options supplémentaires facultatives :
+### Sessions de Check-out (abonnements)
+Lors de la création de sessions de check-out, incluez votre produit d'abonnement et des add-ons facultatifs :
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -378,7 +467,7 @@ const session = await client.checkoutSessions.create({
 ```
 
 ### Changements de plan avec prorata
-Mettez à niveau ou baissez un abonnement et contrôlez le comportement de prorata :
+Mettez à niveau ou rétrogradez un abonnement et contrôlez le comportement de prorata :
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -388,12 +477,12 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Annuler à la fin de la période
-Planifiez une annulation sans résiliation immédiate de l'accès :
+### Annuler à la prochaine date de facturation
+Programmez une annulation qui prend effet à la fin de la période de facturation actuelle :
 
 ```typescript
 await client.subscriptions.update('sub_123', {
-  cancel_at_period_end: true
+  cancel_at_next_billing_date: true
 });
 ```
 
@@ -432,7 +521,7 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 ```
 
 ### Réactiver un abonnement depuis l'état en attente
-Réactivez un abonnement qui a été mis en attente en raison d'un paiement échoué :
+Réactivez un abonnement qui est passé en attente en raison d'un paiement échoué :
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -448,76 +537,68 @@ if (response.payment_id) {
 }
 ```
 
-## Abonnements avec mandats conformes à la RBI
+## Abonnements avec Mandats Conformes RBI
 
-  Les abonnements UPI et par carte indienne fonctionnent sous les réglementations de la RBI (Reserve Bank of India) avec des exigences spécifiques en matière de mandat :
+  Les abonnements par UPI et carte indienne fonctionnent selon les réglementations RBI (Réserve Bank of India) avec des exigences spécifiques en matière de mandats :
 
-  ### Limites de mandat
+  ### Limites de Mandat
 
-  Le type et le montant du mandat dépendent de la charge récurrente de votre abonnement :
+  Le type de mandat et le montant dépendent de la charge récurrente de votre abonnement :
 
-  - **Frais inférieurs à Rs 15,000 :** Nous créons un mandat à la demande pour Rs 15,000 INR. Le montant de l'abonnement est facturé périodiquement selon la fréquence de votre abonnement, jusqu'à la limite du mandat.
-  - **Frais de Rs 15,000 ou plus :** Nous créons un mandat d'abonnement (ou mandat à la demande) pour le montant exact de l'abonnement.
+  - **Charges inférieures à 15 000 Rs :** Nous créons un mandat à la demande pour 15 000 INR. Le montant de l'abonnement est facturé périodiquement selon la fréquence de votre abonnement, jusqu'à la limite du mandat.
+  - **Charges de 15 000 Rs ou plus :** Nous créons un mandat d'abonnement (ou un mandat à la demande) pour le montant exact de l'abonnement.
 
-  ### Considérations de mise à niveau et de baisse
+Pour des informations détaillées sur les mandats conformes RBI pour les méthodes de paiement indiennes, consultez la page <a href="/features/payment-methods/india">Méthodes de Paiement en Inde</a>.
 
-  **Important :** Lors de la mise à niveau ou de la baisse des abonnements, considérez attentivement les limites de mandat :
+  ### Considérations sur les Mises à Niveau et Rétrogradations
 
-  - Si une mise à niveau ou une baisse entraîne un montant de frais qui dépasse Rs 15,000 et dépasse la limite de paiement à la demande existante, le frais de transaction peut échouer.
-  - Dans de tels cas, le client peut avoir besoin de mettre à jour son mode de paiement ou de changer à nouveau l'abonnement pour établir un nouveau mandat avec la limite correcte.
+  **Important :** Lorsque vous mettez à niveau ou rétrogradez des abonnements, considérez soigneusement les limites de mandat :
 
-  ### Autorisation pour des frais de grande valeur
+  - Si une mise à niveau/rétrogradation entraîne un montant de charge qui dépasse 15 000 Rs et va au-delà de la limite de paiement à la demande existante, la charge de transaction peut échouer.
+  - Dans de tels cas, le client peut avoir besoin de mettre à jour son mode de paiement ou de changer l'abonnement à nouveau pour établir un nouveau mandat avec la limite correcte.
 
-  Pour les frais d'abonnement de Rs 15,000 ou plus :
+  ### Autorisation pour Charges de Haute Valeur
+
+  Pour les charges d'abonnement de 15 000 Rs ou plus :
 
   - Le client sera invité par sa banque à autoriser la transaction.
-  - Si le client ne parvient pas à autoriser la transaction, celle-ci échouera et l'abonnement sera mis en attente.
+  - Si le client échoue à autoriser la transaction, celle-ci échouera et l'abonnement sera mis en attente.
 
-  ### Délai de traitement de 48 heures
+  ### Délai de Traitement de 48 Heures
 
-  **Chronologie de traitement :** Les frais récurrents sur les cartes indiennes et les abonnements UPI suivent un modèle de traitement unique :
+  **Calendrier de Traitement :** Les charges récurrentes sur les cartes indiennes et les abonnements UPI suivent un modèle de traitement unique :
 
-  - Les frais sont **initiés** à la date prévue selon la fréquence de votre abonnement.
-  - La **décote** réelle du compte du client n'a lieu qu'après **48 heures** à partir de l'initiation du paiement.
-  - Cette fenêtre de 48 heures peut s'étendre jusqu'à **2-3 heures supplémentaires** en fonction des réponses de l'API de la banque.
+  - Les charges sont **initiées** à la date prévue selon la fréquence de votre abonnement.
+  - La **décote** réelle du compte du client se produit uniquement après **48 heures** à partir de l'initiation du paiement.
+  - Cette fenêtre de 48 heures peut être prolongée jusqu'à **2-3 heures supplémentaires** en fonction des réponses de l'API bancaire.
 
-  ### Fenêtre d'annulation de mandat
+  ### Fenêtre d'Annulation de Mandat
 
   Pendant la fenêtre de traitement de 48 heures :
 
   - Les clients peuvent annuler le mandat via leurs applications bancaires.
-  - Si un client annule le mandat pendant cette période, l'abonnement restera **actif** (c'est un cas particulier spécifique aux abonnements par carte indienne et UPI AutoPay).
+  - Si un client annule le mandat pendant cette période, l'abonnement restera **actif** (c'est un cas particulier spécifique aux abonnements indiens par carte et par UPI AutoPay).
   - Cependant, la décote réelle peut échouer, et dans ce cas, nous mettrons l'abonnement **en attente**.
 
-  **Gestion des cas particuliers :** Si vous fournissez des avantages, des crédits ou une utilisation d'abonnement aux clients immédiatement après l'initiation du frais, vous devez gérer cette fenêtre de 48 heures de manière appropriée dans votre application. Considérez :
+  **Gestion des Cas Particuliers :** Si vous fournissez des avantages, des crédits ou une utilisation d'abonnement aux clients immédiatement après l'initialisation de la charge, vous devez gérer correctement cette fenêtre de 48 heures dans votre application. Envisagez de :
 
   - Retarder l'activation des avantages jusqu'à la confirmation du paiement
-  - Mettre en œuvre des périodes de grâce ou un accès temporaire
-  - Surveiller l'état de l'abonnement pour les annulations de mandat
-  - Gérer les états d'attente d'abonnement dans la logique de votre application
+  - Implémenter des périodes de grâce ou un accès temporaire
+  - Surveiller l'état des abonnements pour les annulations de mandat
+  - Gérer les états de mise en attente d'abonnement dans la logique de votre application
 
   <Tip>
   Surveillez les webhooks d'abonnement pour suivre les changements d'état de paiement et gérer les cas particuliers où les mandats sont annulés pendant la fenêtre de 48 heures.
   </Tip>
 
-## Meilleures pratiques
+## Meilleures Pratiques
 
-- **Commencez par des niveaux clairs** : 2 à 3 plans avec des différences évidentes
-- **Communiquez les prix** : Montrez les totaux, le prorata et le prochain renouvellement
-- **Utilisez les essais de manière réfléchie** : Convertissez avec l'intégration, pas seulement le temps
-- **Exploitez les options supplémentaires** : Gardez les plans de base simples et vendez des extras
+- **Commencez avec des niveaux clairs** : 2–3 plans avec des différences évidentes
+- **Communiquez les prix** : Affichez les totaux, le prorata et le prochain renouvellement
+- **Utilisez les essais avec réflexion** : Convertissez par l'intégration, pas seulement par le temps
+- **Exploitez les add-ons** : Gardez les plans de base simples et vendez des extras
 - **Testez les changements** : Validez les changements de plan et le prorata en mode test
 
 <Info>
-Les abonnements sont une base flexible pour les revenus récurrents. Commencez simplement, testez minutieusement et itérez en fonction des métriques d'adoption, de désabonnement et d'expansion.
-</Info>
-
-- **Commencez avec des niveaux clairs** : 2 à 3 plans avec des différences évidentes
-- **Communiquez les prix** : Affichez les totaux, le prorata et le prochain renouvellement
-- **Utilisez les essais judicieusement** : Convertissez avec l'intégration, pas seulement avec le temps
-- **Exploitez les options supplémentaires** : Gardez les plans de base simples et vendez des extras
-- **Testez les changements** : Validez les modifications de plan et le prorata en mode test
-
-<Info>
-Les abonnements constituent une base flexible pour les revenus récurrents. Commencez simplement, testez de manière approfondie et itérez en fonction des mesures d'adoption, de désabonnement et d'expansion.
+Les abonnements sont une base flexible pour un revenu récurrent. Commencez simple, testez minutieusement et itérez en fonction de l'adoption, du churn et des métriques d'expansion.
 </Info>

@@ -71,9 +71,9 @@ Dodo Payments implémente la facturation par siège en utilisant le système **A
 Un abonnement Team Pro coûte 99 $/mois et inclut 5 sièges. Si vous avez plus de 5 utilisateurs, vous payez un supplément de 15 $/mois pour chaque siège supplémentaire.
 
 Par exemple, si votre équipe a besoin de 15 sièges :
-- Plan de Base : 99 $/mois (inclut 5 sièges)
-- Add-ons : 10 sièges supplémentaires × 15 $/mois = 150 $/mois
-- Coût total mensuel : 99 $ + 150 $ = 249 $ pour 15 sièges
+- Plan de base : 99 $/mois (inclut 5 sièges)
+- Suppléments : 10 sièges supplémentaires × 15 $/mois = 150 $/mois
+- Coût mensuel total : 99 $ + 150 $ = 249 $ pour 15 sièges
 
 ### Composants Clés
 
@@ -308,15 +308,32 @@ await client.subscriptions.changePlan('sub_123', {
 
 Lorsque les clients ajoutent ou retirent des sièges en cours de cycle, la proratisation détermine comment ils sont facturés.
 
-### Modes de Proratisation
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
+
+### Modes de proratisation
 
 | Mode | Ajout de sièges | Suppression de sièges |
-|------|----------------|--------------------|
+|------|-------------|----------------|
 | `prorated_immediately` | Facturer les jours restants dans le cycle | Crédit pour les jours non utilisés |
 | `difference_immediately` | Facturer le prix complet du siège | Crédit appliqué aux renouvellements futurs |
 | `full_immediately` | Facturer le prix complet du siège, réinitialiser le cycle de facturation | Aucun crédit |
 
-### Exemples de Proratisation
+### Exemples de proratisation
 
 **Scénario : 15 jours de cycle de facturation restants, ajout de 5 sièges à 10 $/siège**
 
@@ -329,7 +346,7 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-Le client paie 25 $ maintenant, puis 50 $/mois lors du renouvellement.
+Le client paie 25 $ maintenant, puis 50 $/mois à la date de renouvellement.
 </Tab>
 
 <Tab title="difference_immediately">
@@ -338,7 +355,7 @@ Le client paie 25 $ maintenant, puis 50 $/mois lors du renouvellement.
 Immediate charge = $10 × 5 seats = $50
 ```
 
-Le client paie le montant total de 50 $ maintenant, quel que soit l'emplacement dans le cycle.
+Le client paie le montant total de 50 $ maintenant, peu importe la position dans le cycle.
 </Tab>
 
 <Tab title="full_immediately">
@@ -352,9 +369,30 @@ Le client paie le montant total, un nouveau cycle de facturation commence.
 </Tab>
 </Tabs>
 
-### Prévisualisation Avant Changement
+**Scénario : Suppression de 3 sièges en milieu de cycle avec proratisation immédiate**
 
-Toujours prévisualiser la proratisation avant de faire des changements :
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**Choisir un mode de proratisation pour les changements de sièges** : Utilisez `prorated_immediately` pour une facturation équitable basée sur les jours lorsque les équipes ajustent fréquemment les sièges. Utilisez `difference_immediately` pour des calculs plus simples qui facturent ou créditent le prix complet du siège. Consultez le [Guide de proratisation](/developer-resources/subscription-upgrade-downgrade#proration-modes) pour des comparaisons détaillées.
+</Tip>
+
+### Aperçu avant de modifier
+
+Aperçu toujours la proratisation avant de faire des changements :
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -370,20 +408,20 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Suivi des Sièges avec les Webhooks
+## Suivi des sièges avec des Webhooks
 
-Surveillez les changements de sièges en écoutant les webhooks d'abonnement :
+Surveillez les changements de sièges en écoutant les webhooks de souscription :
 
-### Événements Pertinents
+### Événements pertinents
 
-| Événement | Quand déclenché | Cas d'utilisation |
-|-----------|----------------|------------------|
+| Événement | Lorsqu'il est déclenché | Cas d'utilisation |
+|-------|----------------|----------|
 | `subscription.active` | Nouvelle souscription activée | Provisionner les sièges initiaux |
 | `subscription.plan_changed` | Sièges ajoutés/supprimés | Mettre à jour le nombre de sièges dans votre application |
 | `subscription.renewed` | Souscription renouvelée | Confirmer que le nombre de sièges est inchangé |
 | `subscription.cancelled` | Souscription annulée | Déprovisionner tous les sièges |
 
-### Exemple de Gestionnaire de Webhook
+### Exemple de gestionnaire de Webhook
 
 ```typescript
 app.post('/webhooks/dodo', async (req, res) => {
@@ -422,14 +460,14 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## Application des Limites de Sièges
+## Application des limites de sièges
 
 Votre application doit appliquer des limites de sièges. Dodo Payments suit la facturation, mais vous contrôlez l'accès.
 
-### Stratégies d'Application
+### Stratégies d'application
 
 <Tabs>
-<Tab title="Limite Stricte">
+<Tab title="Limite stricte">
 Empêchez strictement l'ajout d'utilisateurs au-delà du nombre de sièges.
 
 ```typescript
@@ -449,7 +487,7 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Limite Souple avec Avertissement">
+<Tab title="Limite douce avec avertissement">
 Autorisez le dépassement avec un avertissement et une période de grâce.
 
 ```typescript
@@ -469,7 +507,7 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Mise à Niveau Automatique">
+<Tab title="Auto-Mise à Niveau">
 Ajoutez automatiquement des sièges lorsque la limite est atteinte.
 
 ```typescript
@@ -498,9 +536,9 @@ async function inviteUser(teamId: string, email: string) {
 
 ---
 
-## Modèles Avancés
+## Modèles avancés
 
-### Différents Types de Sièges
+### Différents types de sièges
 
 Offrez différents types de sièges avec des prix différents :
 
@@ -510,7 +548,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**Implémentation :** Créez des add-ons séparés pour chaque type de siège.
+**Mise en œuvre :** Créez des suppléments séparés pour chaque type de siège.
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -526,18 +564,18 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Remises sur les Sièges Annuels
+### Remises sur les sièges annuels
 
-Offrez des prix de sièges annuels à prix réduit :
+Offrez un tarif réduit pour les sièges annuels :
 
 ```
 Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**Implémentation :** Créez des produits séparés pour les plans mensuels et annuels avec des prix d'add-ons différents.
+**Mise en œuvre :** Créez des produits séparés pour les plans mensuels et annuels avec différents prix de suppléments.
 
-### Exigences Minimales de Sièges
+### Exigences de sièges minimum
 
 Exigez un nombre minimum de sièges pour certains plans :
 
@@ -557,28 +595,28 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ---
 
-## Meilleures Pratiques
+## Meilleures pratiques
 
-### Meilleures Pratiques de Tarification
+### Meilleures pratiques de tarification
 
-- **Communication Claire** : Affichez la tarification par siège de manière proéminente sur votre page de tarification
-- **Sièges Inclus** : Envisagez d'inclure quelques sièges dans le prix de base pour réduire les frictions
-- **Remises sur Volume** : Offrez des tarifs par siège plus bas pour les équipes plus importantes afin de remporter des contrats d'entreprise
-- **Incitations Annuelles** : Réduisez les plans annuels pour améliorer le flux de trésorerie et la rétention
+- **Communication claire :** Affichez les prix par siège de manière évidente sur votre page de tarification
+- **Sièges inclus :** Envisagez d'inclure quelques sièges dans le prix de base afin de réduire les frictions
+- **Remises sur volume :** Offrez des taux par siège inférieurs pour les équipes plus importantes afin de gagner des contrats d'entreprise
+- **Incitations annuelles :** Remisez les plans annuels pour améliorer les flux de trésorerie et la fidélisation
 
-### Meilleures Pratiques Techniques
+### Meilleures pratiques techniques
 
-- **Mettre en Cache les Comptes de Sièges** : Mettez en cache les comptes de sièges d'abonnement localement pour éviter les appels API à chaque demande
-- **Synchroniser Régulièrement** : Synchronisez périodiquement votre compte de sièges local avec Dodo Payments via l'API
-- **Gérer les Échecs** : Si un changement de siège échoue, affichez des messages d'erreur clairs et des options de réessai
-- **Trace de Vérification** : Enregistrez tous les changements de sièges pour les litiges de facturation et la conformité
+- **Mettre en cache le nombre de sièges :** Mettez en cache les nombres de sièges des souscriptions localement pour éviter les appels API à chaque demande
+- **Synchroniser régulièrement :** Synchronisez périodiquement votre nombre de sièges local avec Dodo Payments via API
+- **Gérer les échecs :** Si un changement de siège échoue, affichez des messages d'erreur clairs et des options de réessai
+- **Traçabilité :** Journalisez tous les changements de sièges pour des litiges de facturation et des conformités
 
-### Meilleures Pratiques d'Expérience Utilisateur
+### Meilleures pratiques d'expérience utilisateur
 
-- **Retour d'Information en Temps Réel** : Affichez l'impact immédiat sur le coût lors de l'ajustement des sièges
-- **Étapes de Confirmation** : Exigez une confirmation avant les changements de facturation
-- **Transparence de la Proratisation** : Expliquez clairement les frais proratisés avant de les appliquer
-- **Facilité de Rétrogradation** : Ne rendez pas difficile la réduction des sièges (cela renforce la confiance)
+- **Retour d'information en temps réel :** Montrez l'impact immédiat sur le coût lors de l'ajustement des sièges
+- **Étapes de confirmation :** Exigez une confirmation avant les changements de facturation
+- **Transparence de la proratisation :** Expliquez clairement les charges proratisées avant de les appliquer
+- **Facile à rétrograder :** Ne compliquez pas la réduction des sièges (cela crée de la confiance)
 
 ---
 
@@ -586,74 +624,74 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 <AccordionGroup>
 <Accordion title="Incohérence du nombre de sièges entre l'application et la facturation">
-**Symptôme** : Votre application affiche un nombre de sièges différent de l'abonnement.
+**Symptôme :** Votre application affiche un nombre de sièges différent de la souscription.
 
-**Causes** :
+**Causes :**
 - Webhook non reçu ou non traité
-- Condition de concurrence lors du changement de siège
+- Condition de concurrence pendant le changement de siège
 - Données mises en cache non mises à jour
 
-**Solutions**:
+**Solutions :**
 1. Implémentez des gestionnaires de webhook pour `subscription.plan_changed`
 2. Ajoutez un bouton "Synchroniser avec la facturation" qui récupère l'abonnement actuel
-3. Définissez le TTL du cache pour garantir un rafraîchissement régulier
+3. Définissez un TTL de cache pour garantir un rafraîchissement régulier
 </Accordion>
 
-<Accordion title="Frais de proratisation inattendus">
-**Symptôme** : Le client est confus par le montant de la charge en cours de cycle.
+<Accordion title="Charges proratisées inattendues">
+**Symptôme :** Le client se sent confus par le montant de la charge en milieu de cycle.
 
-**Causes** :
+**Causes :**
 - Mode de proratisation non communiqué clairement
-- Le client n'a pas vu la prévisualisation avant de confirmer
+- Le client n'a pas vu l'aperçu avant de confirmer
 
-**Solutions**:
-1. Utilisez toujours `previewChangePlan` avant d'apporter des modifications
-2. Affichez une répartition claire : "Ajout de X sièges = $Y aujourd'hui (au prorata pour Z jours)"
-3. Documentez votre politique de prorata dans le centre d'aide
+**Solutions :**
+1. Utilisez toujours `previewChangePlan` avant de faire des changements
+2. Affichez une ventilation claire : "Ajouter X sièges = Y $ aujourd'hui (proratisé pour Z jours)"
+3. Documentez votre politique de proratisation dans le centre d'aide
 </Accordion>
 
-<Accordion title="Add-on n'apparaissant pas lors du paiement">
-**Symptôme** : L'add-on de siège n'est pas disponible lors du paiement.
+<Accordion title="Supplément non apparaissant au paiement">
+**Symptôme :** Le supplément de siège n'est pas disponible lors du paiement.
 
-**Causes** :
-- Add-on non attaché au produit
-- Add-on archivé ou supprimé
-- Incohérence de devise entre le produit et l'add-on
+**Causes :**
+- Supplément non attaché au produit
+- Supplément archivé ou supprimé
+- Mismatch de devise entre le produit et le supplément
 
-**Solutions** :
-1. Vérifiez que l'add-on est attaché dans les paramètres du produit
-2. Vérifiez l'état de l'add-on dans le tableau de bord des Add-Ons
+**Solutions :**
+1. Vérifiez que le supplément est attaché dans les paramètres du produit
+2. Vérifiez le statut du supplément dans le tableau de bord des Suppléments
 3. Assurez-vous que les devises correspondent exactement
 </Accordion>
 
 <Accordion title="Impossible de réduire les sièges en dessous de l'utilisation actuelle">
-**Symptôme** : Le client souhaite réduire les sièges mais a des utilisateurs assignés.
+**Symptôme :** Le client souhaite réduire les sièges mais a des utilisateurs assignés.
 
-**Solutions** :
-1. Montrez quels utilisateurs doivent être retirés avant de réduire les sièges
-2. Implémentez un flux de travail : Retirer les utilisateurs → Réduire les sièges
+**Solutions :**
+1. Montrez quels utilisateurs doivent être supprimés avant de réduire les sièges
+2. Implémentez un flux de travail : Supprimer des utilisateurs → Réduire des sièges
 3. Envisagez une période de grâce avant d'appliquer la réduction des sièges
 </Accordion>
 </AccordionGroup>
 
 ---
 
-## Documentation Connexe
+## Documentation connexe
 
 <CardGroup cols={2}>
-<Card title="Tutoriel de Tarification par Siège" icon="code" href="/developer-resources/seat-based-pricing">
-  Guide d'implémentation complet avec code.
+<Card title="Tutoriel de tarification basée sur les sièges" icon="code" href="/developer-resources/seat-based-pricing">
+  Guide de mise en œuvre complet avec code.
 </Card>
 
-<Card title="Add-ons" icon="puzzle" href="/features/addons">
-  Comprenez en profondeur le système d'add-ons.
+<Card title="Suppléments" icon="puzzle" href="/features/addons">
+  Comprendre en profondeur le système de suppléments.
 </Card>
 
-<Card title="Changements de Plan & Proratisation" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
-  Gérez les modifications d'abonnement.
+<Card title="Changements de plan & Proratisation" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+  Gérer les modifications d'abonnements.
 </Card>
 
-<Card title="Webhooks d'Abonnement" icon="bell" href="/developer-resources/webhooks/intents/subscription">
-  Suivez les événements d'abonnement.
+<Card title="Webhooks de souscription" icon="bell" href="/developer-resources/webhooks/intents/subscription">
+  Suivre les événements de souscription.
 </Card>
 </CardGroup>

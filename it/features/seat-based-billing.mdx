@@ -68,12 +68,12 @@ Dodo Payments implementa la fatturazione basata sui posti utilizzando il sistema
 
 ### Panoramica dell'Architettura
 
-Un abbonamento Team Pro costa \$99/mese e include 5 posti. Se hai più di 5 utenti, paghi un ulteriore \$15/mese per ogni posto extra.
+Un abbonamento Team Pro costa $99/mese e include 5 posti. Se hai più di 5 utenti, paghi un supplemento di $15/mese per ogni posto aggiuntivo.
 
 Ad esempio, se il tuo team ha bisogno di 15 posti:
-- Piano Base: \$99/mese (include 5 posti)
-- Add-on: 10 posti extra × \$15/mese = \$150/mese
-- Costo totale mensile: \$99 + \$150 = \$249 per 15 posti
+- Piano Base: $99/mese (incluse 5 posti)
+- Add-ons: 10 posti extra × $15/mese = $150/mese
+- Costo totale mensile: $99 + $150 = $249 per 15 posti
 
 ### Componenti Chiave
 
@@ -308,17 +308,34 @@ await client.subscriptions.changePlan('sub_123', {
 
 Quando i clienti aggiungono o rimuovono posti a metà ciclo, la ripartizione determina come vengono fatturati.
 
-### Modalità di Ripartizione
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
 
-| Modalità | Aggiunta di Posti | Rimozione di Posti |
+### Modalità di Prorata
+
+| Modalità | Aggiunta Posti | Rimozione Posti |
 |------|-------------|----------------|
 | `prorated_immediately` | Addebito per i giorni rimanenti nel ciclo | Credito per i giorni non utilizzati |
-| `difference_immediately` | Addebito del prezzo intero del posto | Credito applicato ai rinnovi futuri |
-| `full_immediately` | Addebito del prezzo intero del posto, ripristina il ciclo di fatturazione | Nessun credito |
+| `difference_immediately` | Addebito del prezzo completo del posto | Credito applicato per rinnovi futuri |
+| `full_immediately` | Addebito del prezzo completo del posto, ripristino del ciclo di fatturazione | Nessun credito |
 
-### Esempi di Ripartizione
+### Esempi di Prorata
 
-**Scenario: 15 giorni di ciclo di fatturazione rimanenti, aggiunta di 5 posti a $10/posto**
+**Scenario: 15 giorni rimanenti nel ciclo di fatturazione, aggiunta di 5 posti a $10/posto**
 
 <Tabs>
 <Tab title="prorated_immediately">
@@ -329,7 +346,7 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-Il cliente paga \$25 ora, poi \$50/mese al rinnovo.
+Il cliente paga $25 ora, poi $50/mese al rinnovo.
 </Tab>
 
 <Tab title="difference_immediately">
@@ -338,7 +355,7 @@ Il cliente paga \$25 ora, poi \$50/mese al rinnovo.
 Immediate charge = $10 × 5 seats = $50
 ```
 
-Il cliente paga l'intero $50 ora, indipendentemente dalla posizione del ciclo.
+Il cliente paga l'intero importo di $50 ora, indipendentemente dalla posizione nel ciclo.
 </Tab>
 
 <Tab title="full_immediately">
@@ -352,9 +369,30 @@ Il cliente paga l'importo totale, inizia un nuovo ciclo di fatturazione.
 </Tab>
 </Tabs>
 
-### Anteprima Prima di Cambiare
+**Scenario: Rimozione di 3 posti a metà ciclo con prorated_immediately**
 
-Visualizza sempre la ripartizione prima di apportare modifiche:
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**Scelta di una modalità di prorata per le modifiche ai posti**: Usa `prorated_immediately` per una fatturazione equa basata sui giorni quando i team modificano frequentemente i posti. Usa `difference_immediately` per un calcolo più semplice che addebita o accredita il prezzo completo del posto. Vedi la [Guida sulla Prorata](/developer-resources/subscription-upgrade-downgrade#proration-modes) per confronti dettagliati.
+</Tip>
+
+### Anteprima Prima delle Modifiche
+
+Controlla sempre la prorata prima di effettuare modifiche:
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -370,18 +408,18 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Monitorare i Posti con i Webhook
+## Monitoraggio dei Posti con i Webhook
 
-Monitora le modifiche ai posti ascoltando i webhook per gli abbonamenti:
+Monitora le modifiche ai posti ascoltando i webhook delle sottoscrizioni:
 
 ### Eventi Rilevanti
 
-| Evento | Quando Attivato | Caso d'Uso |
+| Evento | Quando Attivato | Caso d'uso |
 |-------|----------------|----------|
-| `subscription.active` | Nuova sottoscrizione attivata | Provisiona posti iniziali |
+| `subscription.active` | Nuova sottoscrizione attivata | Provisiona i posti iniziali |
 | `subscription.plan_changed` | Posti aggiunti/rimossi | Aggiorna il conteggio dei posti nella tua app |
-| `subscription.renewed` | Sottoscrizione rinnovata | Conferma che il conteggio dei posti non è cambiato |
-| `subscription.cancelled` | Sottoscrizione annullata | Deprovisiona tutti i posti |
+| `subscription.renewed` | Sottoscrizione rinnovata | Conferma che il conteggio dei posti non sia cambiato |
+| `subscription.cancelled` | Sottoscrizione annullata | Deprovvisionare tutti i posti |
 
 ### Esempio di Gestore Webhook
 
@@ -422,15 +460,15 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## Applicare i Limiti ai Posti
+## Esecuzione dei Limiti di Posti
 
-La tua applicazione deve applicare i limiti ai posti. Dodo Payments tiene traccia della fatturazione, ma tu controlli l'accesso.
+La tua applicazione deve eseguire i limiti di posti. Dodo Payments tiene traccia della fatturazione, ma tu controlli l'accesso.
 
-### Strategie di Applicazione
+### Strategie di Esecuzione
 
 <Tabs>
 <Tab title="Limite Rigido">
-Impedisci rigorosamente l'aggiunta di utenti oltre il numero di posti.
+Previeni rigorosamente l'aggiunta di utenti oltre il numero di posti.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -469,8 +507,8 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Aggiornamento Automatico">
-Aggiungi automaticamente posti quando viene raggiunto il limite.
+<Tab title="Auto-Aggiornamento">
+Aggiungi automaticamente posti quando si raggiunge il limite.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -500,9 +538,9 @@ async function inviteUser(teamId: string, email: string) {
 
 ## Modelli Avanzati
 
-### Tipi di Posti Diversi
+### Tipi di Posti Differenti
 
-Offri diversi tipi di posti con prezzi diversi:
+Offri diversi tipi di posti con diversi prezzi:
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -510,7 +548,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**Implementazione:** Crea add-on separati per ciascun tipo di posto.
+**Implementazione:** Crea add-ons separati per ciascun tipo di posto.
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -528,18 +566,18 @@ const session = await client.checkoutSessions.create({
 
 ### Sconti per Posti Annuali
 
-Offri prezzi scontati per posti annuali:
+Offri un prezzo scontato per i posti annuali:
 
 ```
 Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**Implementazione:** Crea prodotti separati per piani mensili e annuali con prezzi di add-on diversi.
+**Implementazione:** Crea prodotti separati per piani mensili e annuali con prezzi add-on diversi.
 
 ### Requisiti Minimi di Posti
 
-Richiedi un numero minimo di posti per determinati piani:
+Richiedi un numero minimo di posti per alcuni piani:
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -561,24 +599,24 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ### Migliori Pratiche di Prezzo
 
-- **Comunicazione Chiara**: Mostra il prezzo per posto in modo prominente sulla tua pagina di prezzo
+- **Comunicazione Chiara**: Mostra il prezzo per posto in modo evidente sulla tua pagina dei prezzi
 - **Posti Inclusi**: Considera di includere alcuni posti nel prezzo base per ridurre l'attrito
-- **Sconti per Volume**: Offri tariffe per posto più basse per team più grandi per vincere affari aziendali
-- **Incentivi Annuali**: Sconta i piani annuali per migliorare il flusso di cassa e la retention
+- **Sconti per Volume**: Offri tariffe inferiori per posto per team più grandi per vincere contratti aziendali
+- **Incentivi Annuali**: Sconta i piani annuali per migliorare il flusso di cassa e la fidelizzazione
 
 ### Migliori Pratiche Tecniche
 
-- **Memorizza i Conteggi dei Posti**: Memorizza localmente i conteggi dei posti degli abbonamenti per evitare chiamate API a ogni richiesta
-- **Sincronizza Regolarmente**: Sincronizza periodicamente il tuo conteggio dei posti locale con Dodo Payments tramite API
-- **Gestisci i Fallimenti**: Se un cambiamento di posto fallisce, mostra messaggi di errore chiari e opzioni di ripetizione
+- **Memorizza in Cache i Conteggi dei Posti**: Memorizza in cache i conteggi dei posti della sottoscrizione localmente per evitare chiamate API a ogni richiesta
+- **Sincronizzazione Regolare**: Sincronizza periodicamente il tuo conteggio locale dei posti con Dodo Payments tramite API
+- **Gestione dei Fallimenti**: Se un cambiamento del posto fallisce, mostra messaggi di errore chiari e opzioni di ripetizione
 - **Audit Trail**: Registra tutte le modifiche ai posti per controversie di fatturazione e conformità
 
 ### Migliori Pratiche per l'Esperienza Utente
 
-- **Feedback in Tempo Reale**: Mostra l'impatto immediato sui costi quando si modificano i posti
-- **Passaggi di Conferma**: Richiedi conferma prima delle modifiche di fatturazione
-- **Trasparenza nella Ripartizione**: Spiega chiaramente le spese ripartite prima di applicarle
-- **Facili Downgrade**: Non rendere difficile ridurre i posti (costruisce fiducia)
+- **Feedback in Tempo Reale**: Mostra immediatamente l'impatto sui costi quando si modificano i posti
+- **Passaggi di Conferma**: Richiedi conferma prima di apportare modifiche alla fatturazione
+- **Trasparenza nella Prorata**: Spiega chiaramente le spese prorate prima di applicarle
+- **Facilità nei Declassamenti**: Non rendere difficile ridurre i posti (costruisce fiducia)
 
 ---
 
@@ -586,47 +624,47 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 <AccordionGroup>
 <Accordion title="Discrepanza nel conteggio dei posti tra app e fatturazione">
-**Sintomo**: La tua app mostra un conteggio dei posti diverso dall'abbonamento.
+**Sintomo**: La tua app mostra un conteggio dei posti diverso rispetto alla sottoscrizione.
 
 **Cause**:
 - Webhook non ricevuto o elaborato
-- Condizione di gara durante il cambiamento dei posti
-- Dati memorizzati non aggiornati
+- Condizione di gara durante il cambiamento del posto
+- Dati memorizzati in cache non aggiornati
 
 **Soluzioni**:
-1. Implementa gestori di webhook per `subscription.plan_changed`
-2. Aggiungi un pulsante "Sincronizza con la fatturazione" che recupera la sottoscrizione attuale
-3. Imposta il TTL della cache per garantire un aggiornamento regolare
+1. Implementa gestori webhook per `subscription.plan_changed`
+2. Aggiungi un pulsante "Sincronizza con la fatturazione" che recupera la sottoscrizione corrente
+3. Imposta un TTL per la cache per garantire un aggiornamento regolare
 </Accordion>
 
-<Accordion title="Addebiti di ripartizione inaspettati">
-**Sintomo**: Il cliente è confuso dall'importo dell'addebito a metà ciclo.
+<Accordion title="Spese di prorata inaspettate">
+**Sintomo**: Il cliente è confuso riguardo all'importo dell'addebito a metà ciclo.
 
 **Cause**:
-- Modalità di ripartizione non comunicata chiaramente
+- Modalità di prorata non comunicata chiaramente
 - Il cliente non ha visto l'anteprima prima di confermare
 
 **Soluzioni**:
-1. Utilizza sempre `previewChangePlan` prima di apportare modifiche
+1. Usa sempre `previewChangePlan` prima di apportare modifiche
 2. Mostra una chiara suddivisione: "Aggiunta di X posti = $Y oggi (prorata per Z giorni)"
 3. Documenta la tua politica di prorata nel centro assistenza
 </Accordion>
 
 <Accordion title="Add-on non appare nel checkout">
-**Sintomo**: L'add-on per posto non è disponibile durante il checkout.
+**Sintomo**: L'add-on per i posti non è disponibile durante il checkout.
 
 **Cause**:
-- Add-on non allegato al prodotto
+- Add-on non collegato al prodotto
 - Add-on archiviato o eliminato
-- Discrepanza di valuta tra prodotto e add-on
+- Differenza di valuta tra prodotto e add-on
 
 **Soluzioni**:
-1. Verifica che l'add-on sia allegato nelle impostazioni del prodotto
-2. Controlla lo stato dell'add-on nel dashboard degli Add-On
+1. Verifica che l'add-on sia collegato nelle impostazioni del prodotto
+2. Controlla lo stato dell'add-on nel cruscotto degli Add-Ons
 3. Assicurati che le valute corrispondano esattamente
 </Accordion>
 
-<Accordion title="Impossibile ridurre i posti al di sotto dell'uso attuale">
+<Accordion title="Impossibile ridurre i posti al di sotto dell'uso corrente">
 **Sintomo**: Il cliente desidera ridurre i posti ma ha utenti assegnati.
 
 **Soluzioni**:
@@ -641,19 +679,19 @@ async function validateSeatCount(planId: string, seatCount: number) {
 ## Documentazione Correlata
 
 <CardGroup cols={2}>
-<Card title="Guida alla Tariffazione Basata sui Posti" icon="code" href="/developer-resources/seat-based-pricing">
+<Card title="Tutorial di Prezzi Basati sui Posti" icon="code" href="/developer-resources/seat-based-pricing">
   Guida completa all'implementazione con codice.
 </Card>
 
-<Card title="Add-on" icon="puzzle" href="/features/addons">
-  Comprendi a fondo il sistema di add-on.
+<Card title="Add-ons" icon="puzzle" href="/features/addons">
+  Comprendi il sistema di add-on in dettaglio.
 </Card>
 
-<Card title="Modifiche ai Piani & Ripartizione" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
-  Gestisci le modifiche agli abbonamenti.
+<Card title="Modifiche ai Piani & Prorata" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+  Gestisci le modifiche alla sottoscrizione.
 </Card>
 
-<Card title="Webhook per Abbonamenti" icon="bell" href="/developer-resources/webhooks/intents/subscription">
-  Monitora gli eventi degli abbonamenti.
+<Card title="Webhook per le Sottoscrizioni" icon="bell" href="/developer-resources/webhooks/intents/subscription">
+  Tieni traccia degli eventi di sottoscrizione.
 </Card>
 </CardGroup>

@@ -22,11 +22,11 @@ Esta integración requiere una cuenta de Dub con el seguimiento de conversiones 
 
 Dub rastrea a los visitantes a través de un ID de clic único (`dub_id`) almacenado en una cookie cuando los usuarios hacen clic en tus enlaces cortos de Dub. Para atribuir ventas a tus enlaces, necesitas:
 
-1. **Capturar el ID de clic de Dub** de la cookie `dub_id` al crear sesiones de pago
-2. **Almacenar el ID de clic** en los metadatos de tu pago junto con el ID externo del cliente
-3. **Enviar datos de venta a Dub** cuando los pagos sean exitosos utilizando su API de seguimiento
+Dub rastrea a los visitantes a través de un ID de clic único (`dub_id`) almacenado en una cookie cuando los usuarios hacen clic en tus enlaces cortos de Dub. Para atribuir ventas a tus enlaces, necesitas:
 
-Esto permite que Dub asocie las ventas exitosas con el clic original del enlace, dándote una atribución completa de la conversión.
+1. **Capturar el ID de clic de Dub** de la cookie `dub_id` al crear sesiones de pago
+2. **Almacenar el ID de clic** en tus metadatos de pago junto con el ID externo del cliente
+3. **Enviar datos de venta a Dub** cuando los pagos tengan éxito utilizando su API Track
 
 ## Requisitos Previos
 
@@ -50,10 +50,8 @@ Antes de configurar esta integración, asegúrate de tener:
 <Step title="Obtén tu Clave API de Dub">
   Navega a tu [panel de Dub](https://app.dub.co) → Configuración → Claves API y crea una nueva clave API con el alcance `conversions.write`.
 
-  <Warning>
-  Mantén tu clave API segura y nunca la expongas en código del lado del cliente.
-  </Warning>
-</Step>
+<Paso title="Obtén tu clave API de Dub">
+  Navega a tu [tablero de Dub](https://app.dub.co) → Configuración → Claves API y crea una nueva clave API con el alcance `conversions.write`.
 
 <Step title="Capturar ID de Clic en el Pago">
   Al crear una sesión de pago, captura el ID de clic de Dub de la cookie y agrégalo a los metadatos de tu pago.
@@ -75,6 +73,39 @@ Antes de configurar esta integración, asegúrate de tener:
 Al crear una sesión de pago, captura el ID de clic de Dub de la cookie e inclúyelo en los metadatos de tu pago junto con el ID externo de tu cliente.
 
 <CodeGroup>
+
+```typescript Next.js
+import { cookies } from 'next/headers';
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, customerId: string) {
+  // Capture Dub click ID from cookie
+  const dubClickId = cookies().get('dub_id')?.value;
+
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_id: productId,
+    metadata: {
+      dub_click_id: dubClickId,           // Store Dub click ID
+      dub_external_id: customerId,        // Store your customer's unique ID
+    },
+  });
+
+  return payment;
+}
+```
 
 ```typescript Next.js
 import { cookies } from 'next/headers';
@@ -212,8 +243,6 @@ func createCheckout(dubClickId, customerId, productId string) (*dodopayments.Pay
 }
 ```
 
-</CodeGroup>
-
 ### Paso 2: Enviar Datos de Venta a Dub
 
 Configura un endpoint de webhook para enviar datos de venta a la API de seguimiento de Dub cuando los pagos sean exitosos.
@@ -281,7 +310,34 @@ function handler(webhook) {
 }
 ```
 
-### Rastrear Ventas de Suscripción
+```javascript basic_sale.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const payment = webhook.payload.data;
+
+    // Only send to Dub if click ID exists in metadata
+    if (payment.metadata && payment.metadata.dub_click_id) {
+      webhook.payload = {
+        clickId: payment.metadata.dub_click_id,
+        externalId: payment.metadata.dub_external_id || payment.customer.customer_id,
+        amount: payment.total_amount, // Ensure the amount is in cents
+        currency: payment.currency || "USD",
+        paymentProcessor: "dodo",
+        invoiceId: payment.payment_id,
+        metadata: {
+          customer_email: payment.customer.email,
+          customer_name: payment.customer.name,
+          product_id: payment.product_cart ? payment.product_cart.map(product => product.product_id).join(', ') : undefined,
+        },
+      };
+    } else {
+      // Cancel dispatch if no click ID (organic traffic)
+      webhook.cancel = true;
+    }
+  }
+  return webhook;
+}
+```
 
 Rastrea tanto las suscripciones iniciales como los pagos recurrentes:
 
@@ -340,7 +396,60 @@ function handler(webhook) {
 }
 ```
 
-### Rastrear Ventas con Exclusión de Impuestos
+```javascript subscription_sale.js icon="js" expandable
+function handler(webhook) {
+  const data = webhook.payload.data;
+
+  // Track initial subscription activation
+  if (webhook.eventType === "subscription.active") {
+    if (data.metadata && data.metadata.dub_click_id) {
+      webhook.payload = {
+        clickId: data.metadata.dub_click_id,
+        externalId: data.metadata.dub_external_id || data.customer.customer_id,
+        amount: data.recurring_pre_tax_amount, // Amount in cents
+        currency: data.currency || "USD",
+        paymentProcessor: "dodo",
+        invoiceId: data.subscription_id,
+        eventName: "Subscription Started",
+        metadata: {
+          subscription_id: data.subscription_id,
+          product_id: data.product_id,
+          billing_interval: data.payment_frequency_interval,
+          customer_email: data.customer.email,
+        },
+      };
+    } else {
+      // Cancel dispatch if no click ID (organic traffic)
+      webhook.cancel = true;
+    }
+  }
+
+  // Track recurring subscription payments
+  if (webhook.eventType === "subscription.renewed") {
+    if (data.metadata && data.metadata.dub_click_id) {
+      webhook.payload = {
+        clickId: data.metadata.dub_click_id,
+        externalId: data.metadata.dub_external_id || data.customer.customer_id,
+        amount: data.recurring_pre_tax_amount,
+        currency: data.currency || "USD",
+        paymentProcessor: "dodo",
+        invoiceId: `${data.subscription_id}_${Date.now()}`,
+        eventName: "Subscription Renewed",
+        metadata: {
+          subscription_id: data.subscription_id,
+          product_id: data.product_id,
+          customer_email: data.customer.email,
+        },
+      };
+    } else {
+      // Cancel dispatch if no click ID (organic traffic)
+      webhook.cancel = true;
+    }
+  }
+
+  return webhook;
+}
+```
 
 Envía solo el monto antes de impuestos a Dub para un seguimiento preciso de los ingresos:
 
@@ -375,7 +484,36 @@ function handler(webhook) {
 }
 ```
 
-### Rastrear Ventas con Nombres de Eventos Personalizados
+```javascript sale_without_tax.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const payment = webhook.payload.data;
+
+    if (payment.metadata && payment.metadata.dub_click_id) {
+      // Calculate pre-tax amount (total minus tax)
+      const preTaxAmount = payment.total_amount - (payment.tax || 0);
+
+      webhook.payload = {
+        clickId: payment.metadata.dub_click_id,
+        externalId: payment.metadata.dub_external_id || payment.customer.customer_id,
+        amount: preTaxAmount, // Pre-tax amount in cents
+        currency: payment.currency || "USD",
+        paymentProcessor: "dodo",
+        invoiceId: payment.payment_id,
+        metadata: {
+          total_amount: payment.total_amount,
+          tax_amount: payment.tax || 0,
+          customer_email: payment.customer.email,
+        },
+      };
+    } else {
+      // Cancel dispatch if no click ID (organic traffic)
+      webhook.cancel = true;
+    }
+  }
+  return webhook;
+}
+```
 
 Usa nombres de eventos personalizados para categorizar diferentes tipos de ventas:
 
@@ -415,11 +553,70 @@ function handler(webhook) {
 }
 ```
 
-## Alternativa: Implementación del Lado del Cliente
+```javascript custom_events.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType === "payment.succeeded") {
+    const payment = webhook.payload.data;
+
+    if (payment.metadata && payment.metadata.dub_click_id) {
+      // Determine event name based on payment type
+      let eventName = "Purchase";
+      if (payment.subscription_id) {
+        eventName = "Subscription Purchase";
+      } else if (payment.metadata && payment.metadata.is_upgrade) {
+        eventName = "Plan Upgrade";
+      }
+
+      webhook.payload = {
+        clickId: payment.metadata.dub_click_id,
+        externalId: payment.metadata.dub_external_id || payment.customer.customer_id,
+        amount: payment.total_amount,
+        currency: payment.currency || "USD",
+        paymentProcessor: "dodo",
+        invoiceId: payment.payment_id,
+        eventName: eventName,
+        metadata: {
+          product_id: payment.product_cart ? payment.product_cart.map(product => product.product_id).join(', ') : undefined,
+          customer_email: payment.customer.email,
+        },
+      };
+    } else {
+      // Cancel dispatch if no click ID (organic traffic)
+      webhook.cancel = true;
+    }
+  }
+  return webhook;
+}
+```
 
 Si prefieres rastrear ventas desde tu servidor en lugar de usar webhooks, puedes llamar a la API de Seguimiento de Dub directamente después de un pago exitoso:
 
 <CodeGroup>
+
+```typescript Next.js (Server Action)
+'use server';
+
+import { Dub } from 'dub';
+
+const dub = new Dub();
+
+export async function trackSale(
+  paymentId: string,
+  clickId: string,
+  customerId: string,
+  amount: number,
+  currency: string
+) {
+  await dub.track.sale({
+    clickId: clickId,
+    externalId: customerId,
+    amount: amount,
+    currency: currency,
+    paymentProcessor: 'dodo',
+    invoiceId: paymentId,
+  });
+}
+```
 
 ```typescript Next.js (Server Action)
 'use server';
@@ -465,8 +662,6 @@ async function trackSale(payment) {
 }
 ```
 
-</CodeGroup>
-
 ## Mejores Prácticas
 
 <Tip>
@@ -479,7 +674,11 @@ async function trackSale(payment) {
 - **Prueba con pagos de muestra**: Verifica que la integración funcione correctamente antes de activarla
 - **Monitorea tu panel de Dub**: Verifica que las ventas aparezcan correctamente con la atribución adecuada
 
-## Notas Importantes
+- **Siempre incluye el ID de clic en los metadatos**: Sin el ID de clic, Dub no puede atribuir ingresos a tus enlaces
+- **Usa IDs externos de manera consistente**: Pasa el mismo ID de cliente que usas en tu sistema para una analítica precisa a nivel de cliente
+- **Maneja el tráfico orgánico con gracia**: Establece `webhook.cancel = true` cuando no haya ID de clic para evitar llamadas a la API innecesarias
+- **Prueba con pagos de muestra**: Verifica que la integración funcione correctamente antes de lanzarla en producción
+- **Monitorea tu tablero de Dub**: Verifica que las ventas aparezcan correctamente con la atribución adecuada
 
 <Note>
 - **Formato de monto**: Dub espera montos en centavos (por ejemplo, $10.00 = 1000)
@@ -499,29 +698,36 @@ async function trackSale(payment) {
 - Confirma que el seguimiento de conversiones esté habilitado para tus enlaces de Dub
 </Accordion>
 
+<AccordionGroup>
+<Accordion title="Las ventas no aparecen en Dub">
+- Verifica que tu clave API de Dub sea correcta y tenga el alcance `conversions.write`
+- Asegúrate de que se esté capturando y almacenando el `dub_click_id` en los metadatos de pago
+- Asegúrate de que la transformación del webhook esté formateando correctamente la carga útil
+- Verifica que el webhook se esté activando en eventos `payment.succeeded`
+- Confirma que el seguimiento de conversiones esté habilitado para tus enlaces de Dub
+</Accordion>
+
 <Accordion title="La atribución de ingresos no funciona">
-- Confirma que los usuarios estén haciendo clic en tus enlaces cortos de Dub antes del pago
-- Verifica que la cookie `dub_id` se esté configurando correctamente en tu dominio
-- Asegúrate de que los IDs de clic coincidan entre la creación del pago y la finalización del pago
-- Asegúrate de estar capturando el ID de clic antes de crear la sesión de pago
+- Confirma que los usuarios estén haciendo clic en tus enlaces cortos de Dub antes de realizar el pago
+- Verifica que la cookie `dub_id` se esté estableciendo correctamente en tu dominio
+- Comprueba que los IDs de clic coincidan entre la creación del checkout y la finalización del pago
+- Asegúrate de que estés capturando el ID de clic antes de crear la sesión de checkout
 </Accordion>
 
 <Accordion title="Errores de transformación">
-- Valida que la estructura JSON coincida con el formato de la API de Seguimiento de Ventas de Dub
+- Valida que la estructura JSON coincida con el formato de la API Track Sale de Dub
 - Verifica que todos los campos requeridos (`clickId`, `externalId`, `amount`) estén presentes
 - Asegúrate de que el monto esté en centavos (entero, no decimal)
 - Verifica que la URL del endpoint de la API sea correcta: `https://api.dub.co/track/sale`
 - Prueba la transformación con cargas útiles de webhook de muestra
 </Accordion>
 
-<Accordion title="Ventas duplicadas siendo rastreadas">
+<Accordion title="Se están rastreando ventas duplicadas">
 - Asegúrate de que solo estás rastreando en eventos `payment.succeeded`, no en `payment.processing`
-- Usa valores únicos `invoiceId` para cada venta
-- Para suscripciones, agrega marcas de tiempo o períodos de facturación para evitar duplicados en renovaciones
+- Usa valores `invoiceId` únicos para cada venta
+- Para suscripciones, agrega marcas de tiempo o período de facturación para evitar duplicados en las renovaciones
 </Accordion>
 </AccordionGroup>
-
-## Recursos Adicionales
 
 <CardGroup cols={2}>
 <Card title="Documentación de Conversiones de Dub" icon="book" href="https://dub.co/docs/conversions/quickstart">

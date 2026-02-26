@@ -101,7 +101,7 @@ Testes permitem que os clientes acessem assinaturas sem pagamento imediato. A pr
 
 ### Configurando Testes
 
-Defina **Dias do Período de Teste** na seção de preços do produto (use `0` para desativar). Você pode substituir isso ao criar assinaturas:
+Defina **Dias de Período de Experiência** na seção de preços do produto (use `0` para desativar). Você pode substituir isso ao criar assinaturas:
 
 ```typescript
 // Via subscription creation
@@ -143,7 +143,7 @@ const isInTrial = payments.items.length === 1 &&
 
 ### Atualizando o Período de Teste
 
-Estenda o teste atualizando `next_billing_date`:
+Estenda o período de experiência atualizando `next_billing_date`:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -163,12 +163,48 @@ Mudanças de plano permitem que você atualize ou rebaixe assinaturas, ajuste qu
 Você pode mudar os planos de assinatura e atualizar a próxima data de cobrança diretamente do painel de pagamentos do Dodo. Isso fornece uma maneira rápida de ajustar assinaturas para solicitações de suporte ao cliente, upgrades promocionais ou migrações de plano sem fazer chamadas de API.
 </Tip>
 
+<Tip>
+**Ativar alterações de planos pelo próprio usuário:** Deseja que os clientes atualizem ou diminuam suas próprias assinaturas no Portal do Cliente? Adicione seus produtos de assinatura a uma Coleção de Produtos e habilite "Permitir Atualizações de Assinatura" nas Configurações de Assinatura.
+</Tip>
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo Payments
+    C->>A: Request plan change
+    A->>D: Preview change (optional)
+    D-->>A: Charge breakdown
+    A->>C: Show cost
+    C->>A: Confirm
+    A->>D: changePlan API
+    D->>D: Prorate & charge
+    D-->>A: Result
+    D->>A: Webhook: plan_changed
+    A->>C: Access updated
+```
+
+<Card title="Coleções de Produtos" icon="layer-group" href="/features/product-collections">
+  Agrupe produtos relacionados em coleções para permitir caminhos de upgrade/downgrade sem interrupções no Portal do Cliente.
+</Card>
+
 ### Modos de Prorrata
 
-Escolha como os clientes são cobrados ao mudar de planos:
+Escolha como os clientes serão cobrados ao mudar de planos:
+
+<Info>
+**Comparação rápida dos três modos de prorrata:**
+
+| | `prorated_immediately` | `difference_immediately` | `full_immediately` |
+|---|---|---|---|
+| **Upgrade** | Cobrança prorrata pelos dias restantes | Diferença total de preço cobrada | Preço total do novo plano cobrado |
+| **Downgrade** | Crédito prorrata pelos dias restantes | Diferença total de preço como crédito | Sem crédito, cobrança total |
+| **Ciclo de cobrança** | Fica o mesmo | Fica o mesmo | Reinicia para hoje |
+| **Melhor para** | Cobrança justa baseada no tempo | Mudanças simples de tier | Reinícios de ciclo de cobrança |
+</Info>
 
 #### `prorated_immediately`
-Cobra um valor proporcional com base no tempo restante no ciclo de cobrança atual. Melhor para uma cobrança justa que considera o tempo não utilizado.
+Cobranças prorrateadas com base no tempo restante no ciclo de cobrança atual. Melhor para uma cobrança justa que considera o tempo não utilizado.
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -192,8 +228,21 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Créditos de downgrades usando `difference_immediately` são limitados à assinatura e aplicados automaticamente a renovações futuras. Eles são distintos de <a href="/features/customer-credit">Créditos de Cliente</a>.
+Créditos de downgrades usando `difference_immediately` são escopados por assinatura e são aplicados automaticamente às renovações futuras. Eles são distintos de <a href="/features/customer-credit">Créditos de Cliente</a>.
 </Info>
+
+Quando um cliente faz downgrade usando `difference_immediately`, o valor não utilizado se torna um crédito escopado por assinatura que automaticamente compensa renovações futuras:
+
+```mermaid
+flowchart LR
+    A[Downgrade] --> B[Calculate Credit]
+    B --> C[Credit Added]
+    C --> D[Next Renewal]
+    D --> E{Credit Left?}
+    E -->|Yes| F[Apply to invoice]
+    F --> D
+    E -->|No| G[Full price charged]
+```
 
 #### `full_immediately`
 Cobra o valor total do novo plano imediatamente, ignorando o tempo restante. Melhor para redefinir ciclos de cobrança.
@@ -206,9 +255,49 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
+<AccordionGroup>
+<Accordion title="Exemplo: Cálculo prorrata de upgrade">
+
+**Cenário**: Cliente no Plano Básico ($30/mês) faz upgrade para Pro ($80/mês) no dia 16 de um ciclo de 30 dias usando `prorated_immediately`.
+
+```
+Unused credit from Basic = $30 × (15 remaining / 30 total) = $15.00
+Prorated cost of Pro     = $80 × (15 remaining / 30 total) = $40.00
+────────────────────────────────────────────────────────────────────
+Immediate charge         = $40.00 − $15.00 = $25.00
+```
+
+Próxima renovação na data original de cobrança: **$80,00/mês**.
+
+<Tip>
+Para exemplos de cálculos mais detalhados e casos extremos, veja nosso guia completo de [Upgrade & Downgrade](/developer-resources/subscription-upgrade-downgrade).
+</Tip>
+
+</Accordion>
+<Accordion title="Exemplo: Cálculo de crédito de downgrade">
+
+**Cenário**: Cliente no Plano Pro ($80/mês) faz downgrade para Starter ($20/mês) usando `difference_immediately`.
+
+```
+Credit = Old plan − New plan = $80 − $20 = $60.00
+```
+
+O crédito de $60 é aplicado automaticamente às renovações futuras:
+- Renovação 1: $20 − $20 (crédito) = **$0,00** (crédito restante de $40)
+- Renovação 2: $20 − $20 (crédito) = **$0,00** (crédito restante de $20)  
+- Renovação 3: $20 − $20 (crédito) = **$0,00** (crédito esgotado)
+- Renovação 4: **$20,00** (preço total)
+
+<Info>
+Saiba mais sobre como os créditos são gerenciados no [Guia de Upgrade & Downgrade](/developer-resources/subscription-upgrade-downgrade).
+</Info>
+
+</Accordion>
+</AccordionGroup>
+
 ### Mudando Planos com Adicionais
 
-Modifique os adicionais ao mudar de planos. Os adicionais estão incluídos nos cálculos de prorrata:
+Modifique adicionais ao mudar de planos. Adicionais estão incluídos nos cálculos de prorrata:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -221,12 +310,12 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Mudanças de plano acionam cobranças imediatas. Cobranças falhadas podem mover a assinatura para o status `on_hold`. Acompanhe as mudanças através dos eventos de webhook `subscription.plan_changed`.
+Mudanças de plano acionam cobranças imediatas. Cobranças falhadas podem mover a assinatura para o status `on_hold`. Acompanhe as mudanças via eventos de webhook `subscription.plan_changed`.
 </Info>
 
 ### Visualizando Mudanças de Plano
 
-Antes de se comprometer com uma mudança de plano, visualize a cobrança exata e a assinatura resultante:
+Antes de confirmar uma mudança de plano, visualize a cobrança exata e a assinatura resultante:
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -239,21 +328,21 @@ const preview = await client.subscriptions.previewChangePlan('sub_123', {
 console.log('You will be charged:', preview.immediate_charge.summary);
 ```
 
-<Card title="Visualizar API de Mudança de Plano" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
-  Visualize as mudanças de plano antes de se comprometer com elas.
+<Card title="API de Visualização de Mudança de Plano" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
+  Visualize mudanças de plano antes de se comprometer com elas.
 </Card>
 
-## Estados de Assinatura
+## Estados da Assinatura
 
 As assinaturas podem estar em diferentes estados ao longo de seu ciclo de vida:
 
 - **`active`**: A assinatura está ativa e será renovada automaticamente
-- **`on_hold`**: A assinatura está pausada devido a falha no pagamento. Atualização do método de pagamento necessária para reativar
+- **`on_hold`**: A assinatura está pausada devido a pagamento falhado. Atualização do método de pagamento é necessária para reativar
 - **`cancelled`**: A assinatura está cancelada e não será renovada
-- **`expired`**: A assinatura atingiu sua data de término
+- **`expired`**: A assinatura alcançou sua data de término
 - **`pending`**: A assinatura está sendo criada ou processada
 
-### Estado Em Espera
+### Estado em Espera
 
 Uma assinatura entra no estado `on_hold` quando:
 
@@ -265,11 +354,11 @@ Uma assinatura entra no estado `on_hold` quando:
 Quando uma assinatura está no estado `on_hold`, ela não será renovada automaticamente. Você deve atualizar o método de pagamento para reativar a assinatura.
 </Warning>
 
-### Reativando de Em Espera
+### Reativando de Espera
 
 Para reativar uma assinatura do estado `on_hold`, atualize o método de pagamento. Isso automaticamente:
 
-1. Cria uma cobrança para as pendências restantes
+1. Cria uma cobrança pelos valores devidos
 2. Gera uma fatura
 3. Processa o pagamento usando o novo método de pagamento
 4. Reativa a assinatura para o estado `active` após o pagamento bem-sucedido
@@ -290,7 +379,7 @@ if (response.payment_id) {
 ```
 
 <Info>
-Após atualizar com sucesso o método de pagamento para uma assinatura `on_hold`, você receberá os eventos de webhook `payment.succeeded` seguidos por `subscription.active`.
+Após a atualização bem-sucedida do método de pagamento para uma assinatura `on_hold`, você receberá eventos de webhook `payment.succeeded` seguidos de `subscription.active`.
 </Info>
 
 ## Gerenciamento de API
@@ -300,12 +389,12 @@ Após atualizar com sucesso o método de pagamento para uma assinatura `on_hold`
 Use `POST /subscriptions` para criar assinaturas programaticamente a partir de produtos, com testes e adicionais opcionais.
 
 <Card title="Referência da API" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Veja a API de criação de assinatura.
+Veja a API de criar assinatura.
 </Card>
 </Accordion>
 
 <Accordion title="Atualizar assinaturas">
-Use `PATCH /subscriptions/{id}` para atualizar quantidades, cancelar no final do período ou modificar metadados.
+Use `PATCH /subscriptions/{id}` para atualizar quantidades, cancelar na próxima data de cobrança ou modificar metadados.
 
 <Card title="Referência da API" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Saiba como atualizar os detalhes da assinatura.
@@ -313,7 +402,7 @@ Saiba como atualizar os detalhes da assinatura.
 </Accordion>
 
 <Accordion title="Mudar planos (prorrata)">
-Mude o produto ativo e as quantidades com controles de prorrata.
+Mude o produto ativo e quantidades com controles de prorrata.
 
 <Card title="Referência da API" icon="code" href="/api-reference/subscriptions/change-plan">
 Revise as opções de mudança de plano.
@@ -345,7 +434,7 @@ Veja a API de histórico de uso.
 </Accordion>
 
 <Accordion title="Atualizar método de pagamento">
-Atualize o método de pagamento para uma assinatura. Para assinaturas ativas, isso atualiza o método de pagamento para renovações futuras. Para assinaturas no estado `on_hold`, isso reativa a assinatura criando uma cobrança para as pendências restantes.
+Atualize o método de pagamento para uma assinatura. Para assinaturas ativas, isso atualiza o método de pagamento para renovações futuras. Para assinaturas no estado `on_hold`, isso reativa a assinatura criando uma cobrança pelos valores devidos.
 
 <Card title="Referência da API" icon="code" href="/api-reference/subscriptions/update-payment-method">
 Saiba como atualizar métodos de pagamento e reativar assinaturas.
@@ -355,7 +444,7 @@ Saiba como atualizar métodos de pagamento e reativar assinaturas.
 
 ## Casos de Uso Comuns
 
-- **SaaS e APIs**: Acesso em camadas com adicionais para assentos ou uso
+- **SaaS e APIs**: Acesso por camadas com adicionais para assentos ou uso
 - **Conteúdo e mídia**: Acesso mensal com testes introdutórios
 - **Planos de suporte B2B**: Contratos anuais com adicionais de suporte premium
 - **Ferramentas e plugins**: Chaves de licença e lançamentos versionados
@@ -377,7 +466,7 @@ const session = await client.checkoutSessions.create({
 ```
 
 ### Mudanças de plano com prorrata
-Atualize ou faça downgrade de uma assinatura e controle o comportamento de prorrata:
+Faça upgrade ou downgrade de uma assinatura e controle o comportamento de prorrata:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -387,12 +476,12 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancelar no final do período
-Agende um cancelamento sem a rescisão imediata do acesso:
+### Cancelar na próxima data de cobrança
+Agende um cancelamento que entrará em vigor no final do período de cobrança atual:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
-  cancel_at_period_end: true
+  cancel_at_next_billing_date: true
 });
 ```
 
@@ -430,8 +519,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reativar assinatura de em_espera
-Reative uma assinatura que foi colocada em espera devido a falha no pagamento:
+### Reativar assinatura de on_hold
+Reative uma assinatura que foi pausada devido a pagamento falhado:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -449,20 +538,22 @@ if (response.payment_id) {
 
 ## Assinaturas com Mandatos em Conformidade com o RBI
 
-  Assinaturas UPI e de cartões indianos operam sob as regulamentações do RBI (Banco Central da Índia) com requisitos específicos de mandato:
+  Assinaturas por UPI e cartões indianos operam sob as regulamentações do RBI (Reserve Bank of India) com requisitos específicos de mandato:
 
   ### Limites de Mandato
 
-  O tipo e o valor do mandato dependem da cobrança recorrente da sua assinatura:
+  O tipo e a quantidade de mandato dependem da cobrança recorrente da sua assinatura:
 
-  - **Cobranças abaixo de Rs 15.000:** Criamos um mandato sob demanda para Rs 15.000 INR. O valor da assinatura é cobrado periodicamente de acordo com a frequência da sua assinatura, até o limite do mandato.
+  - **Cobranças abaixo de Rs 15.000:** Criamos um mandato sob demanda de Rs 15.000 INR. O valor da assinatura é cobrado periodicamente de acordo com a frequência da sua assinatura, até o limite do mandato.
   - **Cobranças de Rs 15.000 ou mais:** Criamos um mandato de assinatura (ou mandato sob demanda) para o valor exato da assinatura.
 
-  ### Considerações de Upgrade e Downgrade
+Para informações detalhadas sobre mandatos em conformidade com o RBI para métodos de pagamento indianos, veja a página <a href="/features/payment-methods/india">Métodos de Pagamento da Índia</a>.
 
-  **Importante:** Ao fazer upgrade ou downgrade de assinaturas, considere cuidadosamente os limites do mandato:
+  ### Considerações sobre Upgrade e Downgrade
 
-  - Se um upgrade/downgrade resultar em um valor de cobrança que excede Rs 15.000 e ultrapassa o limite de pagamento sob demanda existente, a cobrança pode falhar.
+  **Importante:** Ao fazer upgrades ou downgrades nas assinaturas, considere cuidadosamente os limites de mandato:
+
+  - Se um upgrade/downgrade resultar em uma cobrança que excede Rs 15.000 e vai além do limite de pagamento sob demanda existente, a cobrança pode falhar.
   - Nesses casos, o cliente pode precisar atualizar seu método de pagamento ou mudar a assinatura novamente para estabelecer um novo mandato com o limite correto.
 
   ### Autorização para Cobranças de Alto Valor
@@ -470,53 +561,43 @@ if (response.payment_id) {
   Para cobranças de assinatura de Rs 15.000 ou mais:
 
   - O cliente será solicitado pelo seu banco a autorizar a transação.
-  - Se o cliente não autorizar a transação, a transação falhará e a assinatura será colocada em espera.
+  - Se o cliente não autorizar a transação, esta falhará e a assinatura será colocada em espera.
 
-  ### Atraso de Processamento de 48 Horas
+  ### Atraso na Processamento de 48 Horas
 
   **Cronograma de Processamento:** Cobranças recorrentes em cartões indianos e assinaturas UPI seguem um padrão de processamento único:
 
-  - As cobranças são **iniciadas** na data programada de acordo com a frequência da sua assinatura.
-  - A **dedução** real da conta do cliente ocorre apenas após **48 horas** da iniciação do pagamento.
-  - Esta janela de 48 horas pode se estender por até **2-3 horas adicionais** dependendo das respostas da API do banco.
+  - As cobranças são **iniciadas** na data programada de acordo com sua frequência de assinatura.
+  - A **dedução** real da conta do cliente ocorre apenas após **48 horas** a partir da iniciação do pagamento.
+  - Esse intervalo de 48 horas pode se estender até **2-3 horas adicionais** dependendo das respostas da API do banco.
 
   ### Janela de Cancelamento de Mandato
 
   Durante a janela de processamento de 48 horas:
 
   - Os clientes podem cancelar o mandato através de seus aplicativos bancários.
-  - Se um cliente cancelar o mandato durante este período, a assinatura permanecerá **ativa** (este é um caso específico para assinaturas de AutoPay de cartões indianos e UPI).
+  - Se um cliente cancelar o mandato durante esse período, a assinatura permanecerá **ativa** (este é um caso extremo específico para assinaturas de cartão indiano e AutoPay UPI).
   - No entanto, a dedução real pode falhar e, nesse caso, colocaremos a assinatura **em espera**.
 
-  **Tratamento de Casos Especiais:** Se você fornecer benefícios, créditos ou uso de assinatura aos clientes imediatamente após a iniciação da cobrança, você precisa lidar com essa janela de 48 horas de forma apropriada em sua aplicação. Considere:
+  **Tratamento de Casos Extremos:** Se você fornecer benefícios, créditos ou uso de assinatura aos clientes imediatamente após a iniciação da cobrança, você precisará gerenciar essa janela de 48 horas de forma adequada em sua aplicação. Considere:
 
   - Atrasar a ativação de benefícios até a confirmação do pagamento
   - Implementar períodos de carência ou acesso temporário
   - Monitorar o status da assinatura para cancelamentos de mandato
-  - Lidar com estados de espera de assinatura na lógica da sua aplicação
+  - Gerenciar estados de espera da assinatura em sua lógica de aplicação
 
   <Tip>
-  Monitore os webhooks de assinatura para rastrear mudanças no status de pagamento e lidar com casos especiais onde os mandatos são cancelados durante a janela de 48 horas.
+  Monitore os webhooks de assinatura para acompanhar mudanças no status do pagamento e lidar com casos extremos onde os mandatos são cancelados durante a janela de 48 horas.
   </Tip>
 
 ## Melhores Práticas
 
-- **Comece com níveis claros**: 2–3 planos com diferenças óbvias
-- **Comunique preços**: Mostre totais, prorrata e próxima renovação
-- **Use testes de forma consciente**: Converta com integração, não apenas tempo
-- **Aproveite os adicionais**: Mantenha os planos base simples e venda extras
-- **Teste mudanças**: Valide mudanças de plano e prorrata em modo de teste
-
-<Info>
-Assinaturas são uma base flexível para receita recorrente. Comece simples, teste minuciosamente e itere com base em métricas de adoção, churn e expansão.
-</Info>
-
 - **Comece com camadas claras**: 2–3 planos com diferenças óbvias
-- **Comunique preços**: Mostre totais, prorrata e próximo renovação
-- **Use testes de forma consciente**: Converta com integração, não apenas com tempo
-- **Aproveite complementos**: Mantenha os planos básicos simples e ofereça extras
-- **Teste as mudanças**: Valide alterações de plano e prorrata em modo de teste
+- **Comunique preços**: Mostre totais, prorrata e próxima renovação
+- **Use testes de forma inteligente**: Converta com integração, não apenas tempo
+- **Aproveite os adicionais**: Mantenha planos base simples e faça upsell de extras
+- **Teste mudanças**: Valide mudanças de planos e prorrata em modo de teste
 
 <Info>
-Assinaturas são uma base flexível para a receita recorrente. Comece simples, teste minuciosamente e itere com base em métricas de adoção, churn e expansão.
+Assinaturas são uma base flexível para receita recorrente. Comece simples, teste minuciosamente e itere com base na adoção, churn e métricas de expansão.
 </Info>

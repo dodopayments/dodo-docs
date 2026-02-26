@@ -118,7 +118,7 @@ const session = await client.checkoutSessions.create({
 ```
 
 <Warning>
-`trial_period_days` 值必须在 0 到 10,000 天之间。
+`trial_period_days` 的值必须在 0 和 10,000 天之间。
 </Warning>
 
 ### 检测试用状态
@@ -151,7 +151,7 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Warning>
-您不能将 `next_billing_date` 设置为过去的时间。日期必须在未来。
+您无法将 `next_billing_date` 设置为过去的时间。日期必须是未来的。
 </Warning>
 
 ## 订阅计划变更
@@ -162,12 +162,48 @@ await client.subscriptions.update('sub_123', {
 您可以直接从 Dodo Payments 仪表板更改订阅计划并更新下一个账单日期。这为调整客户支持请求、促销升级或计划迁移提供了一种快速的方法，而无需进行 API 调用。
 </Tip>
 
-### 按比例计费模式
+<Tip>
+**启用自助服务计划更改：** 想让客户通过客户门户自行升级或降级他们的订阅吗？将您的订阅产品添加到产品集合，并在订阅设置中启用“允许订阅更新”。
+</Tip>
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo Payments
+    C->>A: Request plan change
+    A->>D: Preview change (optional)
+    D-->>A: Charge breakdown
+    A->>C: Show cost
+    C->>A: Confirm
+    A->>D: changePlan API
+    D->>D: Prorate & charge
+    D-->>A: Result
+    D->>A: Webhook: plan_changed
+    A->>C: Access updated
+```
+
+<Card title="产品集合" icon="layer-group" href="/features/product-collections">
+  将相关产品分组到集合中，以便在客户门户中实现无缝的升级/降级路径。
+</Card>
+
+### 分摊模式
 
 选择客户更改计划时的计费方式：
 
+<Info>
+**三种分摊模式的快速比较：**
+
+| | `prorated_immediately` | `difference_immediately` | `full_immediately` |
+|---|---|---|---|
+| **升级** | 剩余天数按比例收费 | 收取全额差价 | 收取全新计划的全额费用 |
+| **降级** | 剩余天数按比例抵扣 | 全额差价作为抵扣 | 无抵扣，按全额收费 |
+| **计费周期** | 保持不变 | 保持不变 | 重置为今天 |
+| **适合** | 公平基于时间的计费 | 简单的级别更改 | 计费周期重置 |
+</Info>
+
 #### `prorated_immediately`
-根据当前计费周期剩余时间按比例收取费用。最适合公平计费，考虑未使用的时间。
+根据当前计费周期的剩余时间收取按比例金额。最适合公平计费，考虑未使用的时间。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -178,7 +214,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 #### `difference_immediately`
-立即收取价格差（升级）或为未来续订添加信用（降级）。最适合简单的升级/降级场景。
+立即收取价格差（升级）或为未来续订添加抵扣（降级）。最适合简单的升级/降级场景。
 
 ```typescript
 // Upgrade: charges $50 (difference between $30 and $80)
@@ -191,11 +227,24 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-使用 `difference_immediately` 降级所获得的信用是订阅范围内的，并会自动应用于未来的续订。它们与 <a href="/features/customer-credit">客户信用</a> 不同。
+使用 `difference_immediately` 降级时获得的抵扣是订阅范围内的并会自动应用于未来续订。与 <a href="/features/customer-credit">客户抵扣</a> 是不同的。
 </Info>
 
+当客户使用 `difference_immediately` 降级时，未使用的价值会成为一个订阅范围内的抵扣，自动抵消未来的续订：
+
+```mermaid
+flowchart LR
+    A[Downgrade] --> B[Calculate Credit]
+    B --> C[Credit Added]
+    C --> D[Next Renewal]
+    D --> E{Credit Left?}
+    E -->|Yes| F[Apply to invoice]
+    F --> D
+    E -->|No| G[Full price charged]
+```
+
 #### `full_immediately`
-立即收取全新计划的费用，忽略剩余时间。最适合重置计费周期。
+立即收取全新计划的全额费用，忽略剩余时间。最适合重置计费周期。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -205,9 +254,49 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### 更改带附加组件的计划
+<AccordionGroup>
+<Accordion title="示例：按比例升级计算">
 
-更改计划时修改附加组件。附加组件包含在按比例计费计算中：
+**场景**：客户在一个 30 天的周期的第 16 天从基础计划（$30/月）升级到专业计划（$80/月），使用 `prorated_immediately`。
+
+```
+Unused credit from Basic = $30 × (15 remaining / 30 total) = $15.00
+Prorated cost of Pro     = $80 × (15 remaining / 30 total) = $40.00
+────────────────────────────────────────────────────────────────────
+Immediate charge         = $40.00 − $15.00 = $25.00
+```
+
+下一次续订在原始计费日期： **$80.00/月**。
+
+<Tip>
+有关详细的计算示例和边缘情况，请参阅我们的完整 [升级与降级指南](/developer-resources/subscription-upgrade-downgrade)。
+</Tip>
+
+</Accordion>
+<Accordion title="示例：降级抵扣计算">
+
+**场景**：客户从专业计划（$80/月）降级到入门计划（$20/月），使用 `difference_immediately`。
+
+```
+Credit = Old plan − New plan = $80 − $20 = $60.00
+```
+
+$60的抵扣自动适用于未来的续订：
+- 续订 1：$20 − $20（抵扣） = **$0.00**（残余 $40 抵扣）
+- 续订 2：$20 − $20（抵扣） = **$0.00**（残余 $20 抵扣）  
+- 续订 3：$20 − $20（抵扣） = **$0.00**（抵扣用尽）
+- 续订 4： **$20.00**（全价）
+
+<Info>
+了解更多关于抵扣如何管理的信息，请参见 [升级与降级指南](/developer-resources/subscription-upgrade-downgrade)。
+</Info>
+
+</Accordion>
+</AccordionGroup>
+
+### 更改带附加项的计划
+
+更改计划时修改附加项。附加项包括在分摊计算中：
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -220,12 +309,12 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-计划变更会触发立即收费。收费失败可能会将订阅移至 `on_hold` 状态。通过 `subscription.plan_changed` webhook 事件跟踪更改。
+计划更改将触发立即收费。收费失败可能会使订阅状态变为 `on_hold`。通过 `subscription.plan_changed` webhook 事件跟踪更改。
 </Info>
 
 ### 预览计划更改
 
-在提交计划更改之前，预览确切的费用和结果订阅：
+在确认计划更改之前，预览确切的收费和结果订阅：
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -239,29 +328,29 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 ```
 
 <Card title="预览更改计划 API" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
-  提交之前预览计划更改。
+  在确认之前预览计划更改。
 </Card>
 
 ## 订阅状态
 
-订阅在其生命周期中可以处于不同状态：
+订阅在整个生命周期中可以处于不同状态：
 
-- **`active`**: 订阅处于活动状态并将自动续订
-- **`on_hold`**: 由于支付失败，订阅已暂停。需要更新支付方式以重新激活
-- **`cancelled`**: 订阅已取消，将不再续订
-- **`expired`**: 订阅已达到结束日期
-- **`pending`**: 订阅正在创建或处理
+- **`active`**：订阅处于活动状态并将自动续订
+- **`on_hold`**：因支付失败而暂停的订阅。需要更新支付方式以重新激活
+- **`cancelled`**：订阅已取消，将不再续订
+- **`expired`**：订阅已达到截止日期
+- **`pending`**：订阅正在创建或处理
 
 ### 暂停状态
 
-当订阅进入 `on_hold` 状态时：
+当订阅处于 `on_hold` 状态时：
 
 - 续订付款失败（资金不足、卡过期等）
 - 更改计划收费失败
-- 付款方式授权失败
+- 支付方式授权失败
 
 <Warning>
-当订阅处于 `on_hold` 状态时，它将不会自动续订。您必须更新支付方式以重新激活订阅。
+当订阅处于 `on_hold` 状态时，将无法自动续订。您必须更新支付方式以重新激活订阅。
 </Warning>
 
 ### 从暂停状态重新激活
@@ -289,30 +378,30 @@ if (response.payment_id) {
 ```
 
 <Info>
-在成功更新 `on_hold` 订阅的支付方式后，您将收到 `payment.succeeded`，随后是 `subscription.active` webhook 事件。
+成功更新 `on_hold` 订阅的支付方式后，您将收到 `payment.succeeded`，然后是 `subscription.active` webhook 事件。
 </Info>
 
 ## API 管理
 
 <AccordionGroup>
 <Accordion title="创建订阅">
-使用 `POST /subscriptions` 从产品程序化创建订阅，支持可选的试用和附加功能。
+使用 `POST /subscriptions` 从产品以编程方式创建订阅，支持可选的试用和附加项。
 
 <Card title="API 参考" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-查看创建订阅 API。
+查看创建订阅的 API。
 </Card>
 </Accordion>
 
 <Accordion title="更新订阅">
-使用 `PATCH /subscriptions/{id}` 更新数量、在周期结束时取消或修改元数据。
+使用 `PATCH /subscriptions/{id}` 更新数量，取消下一个计费日期，或修改元数据。
 
 <Card title="API 参考" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 了解如何更新订阅详细信息。
 </Card>
 </Accordion>
 
-<Accordion title="更改计划（按比例计费）">
-更改活动产品和数量，并控制按比例计费。
+<Accordion title="更改计划（分摊）">
+使用分摊控制更改活动产品和数量。
 
 <Card title="API 参考" icon="code" href="/api-reference/subscriptions/change-plan">
 查看计划更改选项。
@@ -328,10 +417,10 @@ if (response.payment_id) {
 </Accordion>
 
 <Accordion title="列出和检索">
-使用 `GET /subscriptions` 列出所有订阅，使用 `GET /subscriptions/{id}` 检索单个订阅。
+使用 `GET /subscriptions` 列出所有订阅，使用 `GET /subscriptions/{id}` 检索一条。
 
 <Card title="API 参考" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-浏览列出和检索 API。
+浏览列出和检索的 API。
 </Card>
 </Accordion>
 
@@ -344,25 +433,25 @@ if (response.payment_id) {
 </Accordion>
 
 <Accordion title="更新支付方式">
-更新订阅的支付方式。对于活动订阅，这将更新未来续订的支付方式。对于处于 `on_hold` 状态的订阅，这将通过创建剩余欠款的收费来重新激活订阅。
+更新订阅的支付方式。对于活动订阅，此操作将更新未来续订的支付方式。对于处于 `on_hold` 状态的订阅，此操作通过创建剩余欠款的收费将订阅重新激活。
 
 <Card title="API 参考" icon="code" href="/api-reference/subscriptions/update-payment-method">
-了解如何更新付款方式并重新激活订阅。
+了解如何更新支付方式并重新激活订阅。
 </Card>
 </Accordion>
 </AccordionGroup>
 
 ## 常见用例
 
-- **SaaS 和 API**: 具有附加组件的分层访问
-- **内容和媒体**: 每月访问和试用
-- **B2B 支持计划**: 带有高级支持附加组件的年度合同
-- **工具和插件**: 许可证密钥和版本发布
+- **SaaS 和 API**：分层访问和附加座位或使用
+- **内容和媒体**：每月访问并提供试用
+- **B2B 支持计划**：年合同和高级支持附加项
+- **工具和插件**：许可证密钥和版本发布
 
 ## 集成示例
 
-### 结账会话（订阅）
-创建结账会话时，包含您的订阅产品和可选附加组件：
+### 结帐会话（订阅）
+创建结帐会话时，包含您的订阅产品和可选附加项：
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -375,8 +464,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### 按比例计费的计划更改
-升级或降级订阅并控制按比例计费行为：
+### 更改计划与分摊
+升级或降级订阅并控制分摊行为：
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -386,17 +475,17 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### 在周期结束时取消
-安排取消而不立即终止访问：
+### 下一个计费日期取消
+安排取消，取消在当前计费周期结束时生效：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
-  cancel_at_period_end: true
+  cancel_at_next_billing_date: true
 });
 ```
 
 ### 按需订阅
-创建按需订阅并在需要时收费：
+创建按需订阅并在需要时稍后收费：
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -412,8 +501,8 @@ await client.subscriptions.createCharge(onDemand.id, {
 });
 ```
 
-### 更新活动订阅的付款方式
-更新活动订阅的付款方式：
+### 更新活动订阅的支付方式
+更新活动订阅的支付方式：
 
 ```typescript
 // Update with new payment method
@@ -430,7 +519,7 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 ```
 
 ### 从暂停状态重新激活订阅
-重新激活因付款失败而暂停的订阅：
+重新激活因支付失败而暂停的订阅：
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -446,76 +535,68 @@ if (response.payment_id) {
 }
 ```
 
-## 符合 RBI 合规要求的订阅
+## 带有 RBI 合规要求的订阅
 
-  UPI 和印度卡订阅在 RBI（印度储备银行）法规下运营，具有特定的授权要求：
+UPI 和印度卡订阅根据 RBI（印度储备银行）规定运作，并具有特定的授权要求：
 
-  ### 授权限制
+### 授权限制
 
-  授权类型和金额取决于您的订阅的定期收费：
+授权类型和金额取决于您的订阅的经常性收费：
 
-  - **收费低于 15,000 卢比**: 我们为 15,000 印度卢比创建按需授权。订阅金额根据您的订阅频率定期收费，最高不超过授权限制。
-  - **收费 15,000 卢比或以上**: 我们为确切的订阅金额创建订阅授权（或按需授权）。
+- **费用低于 ₹15,000：** 我们为 ₹15,000 创建按需授权。订阅金额根据您的订阅频率按期收费，直到授权限额。
+- **费用 ₹15,000 或以上：** 我们为确切的订阅金额创建订阅授权（或按需授权）。
 
-  ### 升级和降级注意事项
+有关印度支付方式的 RBI 合规授权的详细信息，请参见 <a href="/features/payment-methods/india">印度支付方式</a> 页面。
 
-  **重要**: 在升级或降级订阅时，请仔细考虑授权限制：
+### 升级和降级的考虑事项
 
-  - 如果升级/降级导致收费金额超过 15,000 卢比并超出现有的按需付款限制，则交易收费可能会失败。
-  - 在这种情况下，客户可能需要更新其付款方式或再次更改订阅以建立具有正确限制的新授权。
+**重要：** 升级或降级订阅时，请仔细考虑授信限制：
 
-  ### 高价值收费的授权
+- 如果升级/降级导致收取超过 ₹15,000 的费用，并且超过现有的按需支付限额，则交易收费可能会失败。
+- 在这种情况下，客户可能需要更新其支付方式或再次更改订阅，以建立具有正确限额的新授权。
 
-  对于 15,000 卢比或以上的订阅收费：
+### 高价值收费的授权
 
-  - 客户将被其银行提示授权交易。
-  - 如果客户未能授权交易，则交易将失败，订阅将被暂停。
+对于 ₹15,000 或以上的订阅收费：
 
-  ### 48 小时处理延迟
+- 客户将被其银行提示授权交易。
+- 如果客户未能授权交易，则交易将失败，订阅将暂停。
 
-  **处理时间表**: 印度卡和 UPI 订阅的定期收费遵循独特的处理模式：
+### 48 小时处理延迟
 
-  - 收费在您订阅频率的预定日期**启动**。
-  - 实际从客户账户**扣除**的时间仅在付款启动后**48 小时**。
-  - 这个 48 小时的窗口可能会根据银行 API 响应延长至**2-3 小时**。
+**处理时间线：** 印度卡和 UPI 订阅的经常性收费遵循独特的处理模式：
 
-  ### 授权取消窗口
+- 收费在根据您的订阅频率预定日期 **启动**。
+- 实际从客户账户 **扣除** 只发生在从支付启动 **48 小时** 后。
+- 这 48 小时的窗口可能延长到 **额外的 2-3 小时**，具体取决于银行 API 响应。
 
-  在 48 小时的处理窗口期间：
+### 授权取消窗口
 
-  - 客户可以通过其银行应用程序取消授权。
-  - 如果客户在此期间取消授权，订阅将保持**活动**（这是特定于印度卡和 UPI 自动支付订阅的边缘情况）。
-  - 但是，实际扣款可能会失败，在这种情况下，我们将把订阅**暂停**。
+在 48 小时处理窗口内：
 
-  **边缘情况处理**: 如果您在收费启动时立即向客户提供福利、信用或订阅使用，您需要在应用程序中适当地处理这个 48 小时的窗口。考虑：
+- 客户可以通过其银行应用程序取消授权。
+- 如果客户在此期间取消授权，订阅将保持 **活动**（这是一种特定于印度卡和 UPI 自动支付订阅的边缘情况）。
+- 但是，实际扣款可能失败，在这种情况下，我们将把订阅 **暂停**。
 
-  - 在付款确认之前延迟福利激活
-  - 实施宽限期或临时访问
-  - 监控订阅状态以应对授权取消
-  - 在应用程序逻辑中处理订阅暂停状态
+**边缘情况处理：** 如果您在收费启动时立即向客户提供好处、抵扣或订阅使用情况，需要在应用程序中适当处理这 48 小时窗口。考虑：
 
-  <Tip>
-  监控订阅 webhook 以跟踪付款状态变化，并处理在 48 小时窗口期间取消的授权的边缘情况。
-  </Tip>
+- 在确认支付之前延迟福利激活
+- 实施宽限期或临时访问
+- 监控订阅状态以获取授权取消情况
+- 在应用程序逻辑中处理订阅暂停状态
+
+<Tip>
+监控订阅 webhook 以跟踪支付状态变化，并处理在 48 小时窗口期间取消授权的边缘情况。
+</Tip>
 
 ## 最佳实践
 
-- **从清晰的层级开始**: 2-3 个具有明显差异的计划
-- **沟通定价**: 显示总额、按比例计费和下次续订
-- **明智地使用试用**: 通过入职转化，而不仅仅是时间
-- **利用附加组件**: 保持基础计划简单并推销额外服务
-- **测试更改**: 在测试模式下验证计划更改和按比例计费
+- **从清晰的分层开始**：2-3 种计划，具有明显的差异
+- **沟通定价**：显示总额、分摊和下一个续订
+- **合理使用试用**：通过入门培训转化，而不仅仅是时间
+- **利用附加项**：保持基本计划简单并销售额外服务
+- **测试更改**：在测试模式中验证计划更改和分摊
 
 <Info>
-订阅是经常性收入的灵活基础。简单开始，彻底测试，并根据采用、流失和扩展指标进行迭代。
-</Info>
-
-- **明确的层级**：2–3个计划，具有明显的区别
-- **传达定价**：展示总价、按比例分配和下次续订
-- **明智地使用试用**：通过入职培训转化，而不仅仅是时间
-- **利用附加选项**：保持基础计划简单，并销售额外服务
-- **测试变化**：在测试模式中验证计划变更和按比例分配
-
-<Info>
-订阅是经常性收入的灵活基础。简单开始，彻底测试，并根据采用率、流失率和扩展指标进行迭代。
+订阅是经常性收入的灵活基础。开始时保持简单，进行彻底的测试，并根据采纳率、流失率和扩展指标进行迭代。
 </Info>

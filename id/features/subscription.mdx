@@ -102,7 +102,7 @@ Percobaan memungkinkan pelanggan mengakses langganan tanpa pembayaran segera. Bi
 
 ### Mengonfigurasi Percobaan
 
-Atur **Hari Periode Percobaan** di bagian penetapan harga produk (gunakan `0` untuk menonaktifkan). Anda dapat menimpa ini saat membuat langganan:
+Set **Hari Percobaan** di bagian harga produk (gunakan `0` untuk menonaktifkan). Anda dapat menimpa ini saat membuat langganan:
 
 ```typescript
 // Via subscription creation
@@ -164,12 +164,48 @@ Perubahan rencana memungkinkan Anda untuk meningkatkan atau menurunkan langganan
 Anda dapat mengubah rencana langganan dan memperbarui tanggal penagihan berikutnya langsung dari dasbor Dodo Payments. Ini memberikan cara cepat untuk menyesuaikan langganan untuk permintaan dukungan pelanggan, peningkatan promosi, atau migrasi rencana tanpa melakukan panggilan API.
 </Tip>
 
-### Mode Prorasi
+<Tip>
+**Aktifkan perubahan rencana swakelola:** Ingin pelanggan dapat meningkatkan atau menurunkan langganan mereka sendiri melalui Portal Pelanggan? Tambahkan produk langganan Anda ke Koleksi Produk dan aktifkan "Izinkan Pembaruan Langganan" di Pengaturan Langganan Anda.
+</Tip>
 
-Pilih bagaimana pelanggan dikenakan biaya saat mengubah rencana:
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo Payments
+    C->>A: Request plan change
+    A->>D: Preview change (optional)
+    D-->>A: Charge breakdown
+    A->>C: Show cost
+    C->>A: Confirm
+    A->>D: changePlan API
+    D->>D: Prorate & charge
+    D-->>A: Result
+    D->>A: Webhook: plan_changed
+    A->>C: Access updated
+```
+
+<Card title="Koleksi Produk" icon="layer-group" href="/features/product-collections">
+  Kelompokkan produk terkait ke dalam koleksi untuk memungkinkan jalan upgrade/downgrade yang mulus di Portal Pelanggan.
+</Card>
+
+### Mode Prorata
+
+Pilih bagaimana pelanggan akan ditagih saat mengganti rencana:
+
+<Info>
+**Perbandingan cepat dari tiga mode prorata:**
+
+| | `prorated_immediately` | `difference_immediately` | `full_immediately` |
+|---|---|---|---|
+| **Upgrade** | Biaya prorata untuk sisa hari | Selisih harga penuh dikenakan | Harga rencana baru penuh dikenakan |
+| **Downgrade** | Kredit prorata untuk sisa hari | Selisih harga penuh sebagai kredit | Tidak ada kredit, biaya penuh |
+| **Siklus penagihan** | Tetap sama | Tetap sama | Direset ke hari ini |
+| **Terbaik untuk** | Penagihan yang adil berdasarkan waktu | Perubahan tier yang sederhana | Reset siklus penagihan |
+</Info>
 
 #### `prorated_immediately`
-Biaya prorata berdasarkan waktu yang tersisa dalam siklus penagihan saat ini. Terbaik untuk penagihan yang adil yang memperhitungkan waktu yang tidak terpakai.
+Menggunakan jumlah prorata berdasarkan waktu yang tersisa dalam siklus penagihan saat ini. Terbaik untuk penagihan yang adil yang mempertimbangkan waktu yang tidak terpakai.
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -180,7 +216,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 #### `difference_immediately`
-Biaya selisih harga segera (upgrade) atau menambahkan kredit untuk pembaruan mendatang (downgrade). Terbaik untuk skenario upgrade/downgrade yang sederhana.
+Biaya selisih harga segera (upgrade) atau menambahkan kredit untuk perpanjangan di masa mendatang (downgrade). Terbaik untuk skenario upgrade/downgrade yang sederhana.
 
 ```typescript
 // Upgrade: charges $50 (difference between $30 and $80)
@@ -193,11 +229,24 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Kredit dari downgrade menggunakan `difference_immediately` bersifat terikat pada langganan dan diterapkan secara otomatis pada pembaruan mendatang. Mereka berbeda dari <a href="/features/customer-credit">Kredit Pelanggan</a>.
+Kredit dari downgrade menggunakan `difference_immediately` bersifat terfokus pada langganan dan secara otomatis diterapkan pada perpanjangan di masa mendatang. Mereka berbeda dari <a href="/features/customer-credit">Kredit Pelanggan</a>.
 </Info>
 
+Ketika seorang pelanggan menurunkan pilihan dengan `difference_immediately`, nilai yang tidak terpakai menjadi kredit terfokus pada langganan yang secara otomatis mengimbangi perpanjangan di masa mendatang:
+
+```mermaid
+flowchart LR
+    A[Downgrade] --> B[Calculate Credit]
+    B --> C[Credit Added]
+    C --> D[Next Renewal]
+    D --> E{Credit Left?}
+    E -->|Yes| F[Apply to invoice]
+    F --> D
+    E -->|No| G[Full price charged]
+```
+
 #### `full_immediately`
-Biaya jumlah rencana baru secara penuh segera, mengabaikan waktu yang tersisa. Terbaik untuk mereset siklus penagihan.
+Menghitung jumlah penuh berdasarkan rencana baru segera, mengabaikan waktu yang tersisa. Terbaik untuk mereset siklus penagihan.
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -207,9 +256,49 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Mengubah Rencana dengan Add-on
+<AccordionGroup>
+<Accordion title="Contoh: Perhitungan upgrade prorata">
 
-Modifikasi add-on saat mengubah rencana. Add-on termasuk dalam perhitungan prorasi:
+**Skenario**: Pelanggan pada Basic ($30/bulan) meningkatkan ke Pro ($80/bulan) pada hari ke-16 dari siklus 30 hari menggunakan `prorated_immediately`.
+
+```
+Unused credit from Basic = $30 × (15 remaining / 30 total) = $15.00
+Prorated cost of Pro     = $80 × (15 remaining / 30 total) = $40.00
+────────────────────────────────────────────────────────────────────
+Immediate charge         = $40.00 − $15.00 = $25.00
+```
+
+Perpanjangan berikutnya pada tanggal penagihan asli: **$80.00/bulan**.
+
+<Tip>
+Untuk lebih banyak contoh perhitungan dan kasus tepi yang lebih mendetail, lihat panduan lengkap kami [Panduan Upgrade & Downgrade](/developer-resources/subscription-upgrade-downgrade).
+</Tip>
+
+</Accordion>
+<Accordion title="Contoh: Perhitungan kredit downgrade">
+
+**Skenario**: Pelanggan pada Pro ($80/bulan) menurunkan ke Starter ($20/bulan) menggunakan `difference_immediately`.
+
+```
+Credit = Old plan − New plan = $80 − $20 = $60.00
+```
+
+Kredit $60 secara otomatis diterapkan pada perpanjangan yang akan datang:
+- Perpanjangan 1: $20 − $20 (kredit) = **$0.00** ($40 kredit tersisa)
+- Perpanjangan 2: $20 − $20 (kredit) = **$0.00** ($20 kredit tersisa)  
+- Perpanjangan 3: $20 − $20 (kredit) = **$0.00** (kredit habis)
+- Perpanjangan 4: **$20.00** (harga penuh)
+
+<Info>
+Pelajari lebih lanjut tentang bagaimana kredit dikelola dalam [Panduan Upgrade & Downgrade](/developer-resources/subscription-upgrade-downgrade).
+</Info>
+
+</Accordion>
+</AccordionGroup>
+
+### Mengubah Rencana dengan Tambahan
+
+Sesuaikan tambahan saat mengubah rencana. Tambahan termasuk dalam perhitungan prorata:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -222,7 +311,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Perubahan rencana memicu biaya segera. Biaya yang gagal dapat memindahkan langganan ke status `on_hold`. Lacak perubahan melalui peristiwa webhook `subscription.plan_changed`.
+Perubahan rencana memicu biaya langsung. Biaya yang gagal dapat memindahkan langganan ke status `on_hold`. Lacak perubahan melalui peristiwa webhook `subscription.plan_changed`.
 </Info>
 
 ### Prabaca Perubahan Rencana
@@ -241,39 +330,39 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 ```
 
 <Card title="Prabaca API Perubahan Rencana" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
-  Prabaca perubahan rencana sebelum berkomitmen pada mereka.
+  Prabaca perubahan rencana sebelum berkomitmen.
 </Card>
 
 ## Status Langganan
 
-Langganan dapat berada dalam berbagai status sepanjang siklus hidupnya:
+Langganan dapat berada dalam berbagai status selama siklus hidupnya:
 
-- **`active`**: Langganan aktif dan akan diperbarui secara otomatis
+- **`active`**: Langganan aktif dan akan diperpanjang secara otomatis
 - **`on_hold`**: Langganan ditangguhkan karena pembayaran gagal. Pembaruan metode pembayaran diperlukan untuk mengaktifkan kembali
-- **`cancelled`**: Langganan dibatalkan dan tidak akan diperbarui
-- **`expired`**: Langganan telah mencapai tanggal berakhirnya
+- **`cancelled`**: Langganan dibatalkan dan tidak akan diperpanjang
+- **`expired`**: Langganan telah mencapai tanggal berakhir
 - **`pending`**: Langganan sedang dibuat atau diproses
 
-### Status Ditangguhkan
+### Status Tangguh
 
-Sebuah langganan memasuki status `on_hold` ketika:
+Langganan memasuki status `on_hold` ketika:
 
-- Pembayaran pembaruan gagal (dana tidak mencukupi, kartu kadaluarsa, dll.)
+- Pembayaran perpanjangan gagal (dana tidak mencukupi, kartu kadaluarsa, dll.)
 - Biaya perubahan rencana gagal
 - Otorisasi metode pembayaran gagal
 
 <Warning>
-Ketika langganan berada dalam status `on_hold`, itu tidak akan diperbarui secara otomatis. Anda harus memperbarui metode pembayaran untuk mengaktifkan kembali langganan.
+Ketika langganan berada dalam status `on_hold`, itu tidak akan diperpanjang secara otomatis. Anda harus memperbarui metode pembayaran untuk mengaktifkan kembali langganan.
 </Warning>
 
-### Mengaktifkan Kembali dari Ditangguhkan
+### Mengaktifkan Kembali dari Status Tangguh
 
 Untuk mengaktifkan kembali langganan dari status `on_hold`, perbarui metode pembayaran. Ini secara otomatis:
 
-1. Membuat biaya untuk tunggakan yang tersisa
+1. Membuat biaya untuk penyelesaian yang tersisa
 2. Menghasilkan faktur
 3. Memproses pembayaran menggunakan metode pembayaran baru
-4. Mengaktifkan kembali langganan ke status `active` setelah pembayaran berhasil
+4. Mengaktifkan kembali langganan menuju status `active` setelah pembayaran berhasil
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -291,14 +380,14 @@ if (response.payment_id) {
 ```
 
 <Info>
-Setelah berhasil memperbarui metode pembayaran untuk langganan `on_hold`, Anda akan menerima `payment.succeeded` diikuti oleh peristiwa webhook `subscription.active`.
+Setelah berhasil memperbarui metode pembayaran untuk langganan `on_hold`, Anda akan menerima `payment.succeeded` diikuti dengan peristiwa webhook `subscription.active`.
 </Info>
 
 ## Manajemen API
 
 <AccordionGroup>
 <Accordion title="Buat langganan">
-Gunakan `POST /subscriptions` untuk membuat langganan secara programatis dari produk, dengan percobaan dan add-on opsional.
+Gunakan `POST /subscriptions` untuk membuat langganan secara programatis dari produk, dengan percobaan dan tambahan opsional.
 
 <Card title="Referensi API" icon="code" href="/api-reference/subscriptions/post-subscriptions">
 Lihat API pembuatan langganan.
@@ -306,15 +395,15 @@ Lihat API pembuatan langganan.
 </Accordion>
 
 <Accordion title="Perbarui langganan">
-Gunakan `PATCH /subscriptions/{id}` untuk memperbarui jumlah, membatalkan di akhir periode, atau memodifikasi metadata.
+Gunakan `PATCH /subscriptions/{id}` untuk memperbarui kuantitas, membatalkan pada tanggal penagihan berikutnya, atau memodifikasi metadata.
 
 <Card title="Referensi API" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Pelajari cara memperbarui detail langganan.
 </Card>
 </Accordion>
 
-<Accordion title="Ubah rencana (prorasi)">
-Ubah produk aktif dan jumlah dengan kontrol prorasi.
+<Accordion title="Ubah rencana (prorata)">
+Ubah produk aktif dan kuantitas dengan kontrol prorata.
 
 <Card title="Referensi API" icon="code" href="/api-reference/subscriptions/change-plan">
 Tinjau opsi perubahan rencana.
@@ -322,10 +411,10 @@ Tinjau opsi perubahan rencana.
 </Accordion>
 
 <Accordion title="Biaya sesuai permintaan">
-Untuk langganan sesuai permintaan, kenakan biaya jumlah tertentu sesuai permintaan.
+Untuk langganan sesuai permintaan, tagihkan jumlah tertentu sesuai kebutuhan.
 
 <Card title="Referensi API" icon="code" href="/api-reference/subscriptions/create-charge">
-Kenakan biaya untuk langganan sesuai permintaan.
+Tagih langganan sesuai permintaan.
 </Card>
 </Accordion>
 
@@ -346,7 +435,7 @@ Lihat API riwayat penggunaan.
 </Accordion>
 
 <Accordion title="Perbarui metode pembayaran">
-Perbarui metode pembayaran untuk langganan. Untuk langganan aktif, ini memperbarui metode pembayaran untuk pembaruan mendatang. Untuk langganan dalam status `on_hold`, ini mengaktifkan kembali langganan dengan membuat biaya untuk tunggakan yang tersisa.
+Perbarui metode pembayaran untuk langganan. Untuk langganan aktif, ini memperbarui metode pembayaran untuk perpanjangan di masa mendatang. Untuk langganan dalam status `on_hold`, ini mengaktifkan kembali langganan dengan membuat biaya untuk penyelesaian yang tersisa.
 
 <Card title="Referensi API" icon="code" href="/api-reference/subscriptions/update-payment-method">
 Pelajari cara memperbarui metode pembayaran dan mengaktifkan kembali langganan.
@@ -356,15 +445,15 @@ Pelajari cara memperbarui metode pembayaran dan mengaktifkan kembali langganan.
 
 ## Kasus Penggunaan Umum
 
-- **SaaS dan API**: Akses bertingkat dengan add-on untuk kursi atau penggunaan
-- **Konten dan media**: Akses bulanan dengan percobaan pengantar
-- **Rencana dukungan B2B**: Kontrak tahunan dengan add-on dukungan premium
+- **SaaS dan API**: Akses bertingkat dengan tambahan untuk kursi atau penggunaan
+- **Konten dan media**: Akses bulanan dengan percobaan pengenalan
+- **Rencana dukungan B2B**: Kontrak tahunan dengan tambahan dukungan premium
 - **Alat dan plugin**: Kunci lisensi dan rilis versi
 
 ## Contoh Integrasi
 
 ### Sesi Checkout (langganan)
-Saat membuat sesi checkout, sertakan produk langganan Anda dan add-on opsional:
+Saat membuat sesi checkout, sertakan produk langganan Anda dan tambahan opsional:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -377,8 +466,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Perubahan rencana dengan prorasi
-Upgrade atau downgrade langganan dan kontrol perilaku prorasi:
+### Perubahan rencana dengan prorata
+Tingkatkan atau turunkan langganan dan kontrol perilaku prorata:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -388,17 +477,17 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Batalkan di akhir periode
-Jadwalkan pembatalan tanpa penghentian akses segera:
+### Batalkan pada tanggal penagihan berikutnya
+Jadwalkan pembatalan yang berlaku di akhir periode penagihan saat ini:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
-  cancel_at_period_end: true
+  cancel_at_next_billing_date: true
 });
 ```
 
 ### Langganan sesuai permintaan
-Buat langganan sesuai permintaan dan kenakan biaya nanti sesuai kebutuhan:
+Buat langganan sesuai permintaan dan tagih nanti sesuai kebutuhan:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -450,23 +539,25 @@ if (response.payment_id) {
 
 ## Langganan dengan Mandat Sesuai RBI
 
-  Langganan UPI dan kartu India beroperasi di bawah regulasi RBI (Reserve Bank of India) dengan persyaratan mandat tertentu:
+  Langganan UPI dan kartu India beroperasi di bawah peraturan RBI (Reserve Bank of India) dengan persyaratan mandat tertentu:
 
   ### Batas Mandat
 
   Jenis dan jumlah mandat tergantung pada biaya berulang langganan Anda:
 
-  - **Biaya di bawah Rs 15.000:** Kami membuat mandat sesuai permintaan untuk Rs 15.000 INR. Jumlah langganan dikenakan biaya secara berkala sesuai dengan frekuensi langganan Anda, hingga batas mandat.
+  - **Biaya di bawah Rs 15.000:** Kami membuat mandat sesuai permintaan untuk Rs 15.000 INR. Jumlah langganan dikenakan secara berkala sesuai dengan frekuensi langganan Anda, hingga batas mandat.
   - **Biaya Rs 15.000 atau lebih:** Kami membuat mandat langganan (atau mandat sesuai permintaan) untuk jumlah langganan yang tepat.
+
+Untuk informasi terperinci tentang mandat yang sesuai dengan RBI untuk metode pembayaran India, lihat halaman <a href="/features/payment-methods/india">Metode Pembayaran India</a>.
 
   ### Pertimbangan Upgrade dan Downgrade
 
-  **Penting:** Saat meningkatkan atau menurunkan langganan, pertimbangkan batas mandat dengan hati-hati:
+  **Penting:** Saat melakukan upgrade atau downgrade langganan, pertimbangkan batas mandat dengan cermat:
 
-  - Jika upgrade/downgrade menghasilkan jumlah biaya yang melebihi Rs 15.000 dan melampaui batas pembayaran sesuai permintaan yang ada, biaya transaksi mungkin gagal.
-  - Dalam kasus seperti itu, pelanggan mungkin perlu memperbarui metode pembayaran mereka atau mengubah langganan lagi untuk menetapkan mandat baru dengan batas yang benar.
+  - Jika upgrade/downgrade menghasilkan jumlah biaya yang melebihi Rs 15.000 dan melewati batas pembayaran sesuai permintaan yang ada, biaya transaksi mungkin gagal.
+  - Dalam kasus tersebut, pelanggan mungkin perlu memperbarui metode pembayaran mereka atau mengubah langganan lagi untuk menetapkan mandat baru dengan batas yang benar.
 
-  ### Otorisasi untuk Biaya Nilai Tinggi
+  ### Otorisasi untuk Biaya Berharga Tinggi
 
   Untuk biaya langganan sebesar Rs 15.000 atau lebih:
 
@@ -478,16 +569,16 @@ if (response.payment_id) {
   **Jadwal Pemrosesan:** Biaya berulang pada kartu India dan langganan UPI mengikuti pola pemrosesan yang unik:
 
   - Biaya **dimulai** pada tanggal yang dijadwalkan sesuai dengan frekuensi langganan Anda.
-  - **Pengurangan** aktual dari akun pelanggan hanya terjadi setelah **48 jam** dari inisiasi pembayaran.
-  - Jendela 48 jam ini dapat diperpanjang hingga **2-3 jam tambahan** tergantung pada respons API bank.
+  - **Pengurangan** sebenarnya dari akun pelanggan terjadi hanya setelah **48 jam** dari inisiasi pembayaran.
+  - Jendela 48 jam ini mungkin diperpanjang hingga **2-3 jam tambahan** tergantung pada respons API bank.
 
   ### Jendela Pembatalan Mandat
 
   Selama jendela pemrosesan 48 jam:
 
   - Pelanggan dapat membatalkan mandat melalui aplikasi perbankan mereka.
-  - Jika pelanggan membatalkan mandat selama periode ini, langganan akan tetap **aktif** (ini adalah kasus tepi khusus untuk langganan AutoPay kartu India dan UPI).
-  - Namun, pengurangan aktual mungkin gagal, dan dalam hal itu, kami akan menempatkan langganan **ditangguhkan**.
+  - Jika seorang pelanggan membatalkan mandat selama periode ini, langganan akan tetap **aktif** (ini adalah kasus tepi yang spesifik untuk langganan otomatis kartu India dan UPI).
+  - Namun, pengurangan sebenarnya mungkin gagal, dan dalam hal tersebut, kami akan menempatkan langganan **dalam status ditangguhkan**.
 
   **Penanganan Kasus Tepi:** Jika Anda memberikan manfaat, kredit, atau penggunaan langganan kepada pelanggan segera setelah inisiasi biaya, Anda perlu menangani jendela 48 jam ini dengan tepat dalam aplikasi Anda. Pertimbangkan:
 
@@ -502,22 +593,12 @@ if (response.payment_id) {
 
 ## Praktik Terbaik
 
-- **Mulailah dengan tier yang jelas**: 2–3 rencana dengan perbedaan yang jelas
-- **Komunikasikan harga**: Tampilkan total, prorasi, dan pembaruan berikutnya
-- **Gunakan percobaan dengan bijak**: Konversi dengan onboarding, bukan hanya waktu
-- **Manfaatkan add-on**: Pertahankan rencana dasar sederhana dan tawarkan ekstra
-- **Uji perubahan**: Validasi perubahan rencana dan prorasi dalam mode uji
-
-<Info>
-Langganan adalah fondasi yang fleksibel untuk pendapatan berulang. Mulailah dengan sederhana, uji secara menyeluruh, dan iterasi berdasarkan adopsi, churn, dan metrik ekspansi.
-</Info>
-
 - **Mulailah dengan tingkat yang jelas**: 2–3 rencana dengan perbedaan yang jelas
-- **Komunikasikan harga**: Tampilkan total, prorasi, dan pembaruan berikutnya
-- **Gunakan percobaan dengan bijaksana**: Konversi dengan onboarding, bukan hanya waktu
-- **Manfaatkan add‑ons**: Buat rencana dasar sederhana dan tawarkan tambahan
-- **Uji perubahan**: Validasi perubahan rencana dan prorasi dalam mode uji
+- **Komunikasikan harga**: Tampilkan total, prorata, dan perpanjangan berikutnya
+- **Gunakan percobaan dengan bijak**: Konversi dengan onboarding, tidak hanya berdasarkan waktu
+- **Manfaatkan tambahan**: Jaga rencana dasar tetap sederhana dan tawarkan ekstra
+- **Uji perubahan**: Validasi perubahan rencana dan prorata dalam mode pengujian
 
 <Info>
-Langganan adalah dasar fleksibel untuk pendapatan berulang. Mulailah dengan sederhana, uji secara menyeluruh, dan iterasi berdasarkan adopsi, churn, dan metrik ekspansi.
+Langganan adalah landasan fleksibel untuk pendapatan berulang. Mulailah sederhana, uji secara menyeluruh, dan iterasi berdasarkan adopsi, churn, dan metrik ekspansi.
 </Info>

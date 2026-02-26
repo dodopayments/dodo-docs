@@ -66,12 +66,12 @@ Dodo Payments使用**附加组件**系统实现基于座位的计费。以下是
 
 ### 架构概述
 
-团队专业版订阅费用为\$99/月，包括5个座位。如果您有超过5个用户，则每个额外座位需支付额外的\$15/月。
+团队专业版订阅费用为99美元/月，包含5个席位。如果您有超过5个用户，每增加一个席位需额外支付15美元/月。
 
-例如，如果您的团队需要15个座位：
-- 基本计划：\$99/月（包括5个座位）
-- 附加组件：10个额外座位 × \$15/月 = \$150/月
-- 每月总费用：\$99 + \$150 = \$249，适用于15个座位
+例如，如果您的团队需要15个席位：
+- 基础计划：99美元/月（包含5个席位）
+- 附加选项：10个额外席位 × 15美元/月 = 150美元/月
+- 每月总费用：99 + 150 = 249美元，适用于15个席位
 
 ### 关键组件
 
@@ -306,20 +306,37 @@ await client.subscriptions.changePlan('sub_123', {
 
 当客户在周期中添加或移除座位时，按比例计费决定他们的账单。
 
-### 按比例计费模式
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
 
-| 模式 | 添加座位 | 移除座位 |
+### 按比例收费模式
+
+| 模式 | 添加席位 | 移除席位 |
 |------|-------------|----------------|
-| `prorated_immediately` | 按照周期内剩余天数收费 | 对未使用天数进行信用抵扣 |
-| `difference_immediately` | 收取全额座位费用 | 信用抵扣到未来续订中 |
-| `full_immediately` | 收取全额座位费用，重置计费周期 | 无信用 |
+| `prorated_immediately` | 按周期剩余天数收费 | 对未使用天数进行信用返还 |
+| `difference_immediately` | 收取全额席位费用 | 对未来续费进行信用返还 |
+| `full_immediately` | 收取全额席位费用，重置计费周期 | 没有信用返还 |
 
-### 按比例计费示例
+### 按比例收费示例
 
-**场景：剩余15天的计费周期，添加5个座位，每个座位$10**
+**场景：剩余15天计费周期，添加5个席位，费用为每席10美元**
 
 <Tabs>
-<Tab title="立即按比例计费">
+<Tab title="立即按比例收费">
 
 ```
 Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
@@ -327,7 +344,7 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-客户现在支付\$25，然后在续订时支付\$50/月。
+客户现在支付25美元，续费时每月支付50美元。
 </Tab>
 
 <Tab title="立即差异">
@@ -336,7 +353,7 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
 Immediate charge = $10 × 5 seats = $50
 ```
 
-客户现在支付全额$50，无论周期位置如何。
+客户立即支付全额50美元，无论周期位置。
 </Tab>
 
 <Tab title="立即全额">
@@ -346,13 +363,34 @@ Immediate charge = Full subscription + add-ons
 Billing cycle resets to today
 ```
 
-客户支付全额，新计费周期开始。
+客户支付全额金额，新的计费周期开始。
 </Tab>
 </Tabs>
 
+**场景：在计费周期中期移除3个席位，使用立即按比例收费**
+
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**选择座位更改的按比例收费模式**：在团队经常调整席位时，使用 `prorated_immediately` 进行基于天数的公平计费。使用 `difference_immediately` 进行简单的数学计算，收费或抵免全额席位费用。有关详细比较，请参阅 [按比例收费指南](/developer-resources/subscription-upgrade-downgrade#proration-modes)。
+</Tip>
+
 ### 更改前预览
 
-在进行更改之前始终预览按比例计费：
+在进行更改之前，始终预览按比例收费：
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -368,20 +406,20 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## 使用Webhooks跟踪座位
+## 使用 Webhook 跟踪席位
 
-通过监听订阅webhooks监控座位变更：
+通过监听订阅 Webhook 监控席位更改：
 
 ### 相关事件
 
 | 事件 | 触发时间 | 用例 |
 |-------|----------------|----------|
-| `subscription.active` | 新订阅激活 | 提供初始座位 |
-| `subscription.plan_changed` | 添加/移除座位 | 更新应用中的座位数量 |
-| `subscription.renewed` | 订阅续订 | 确认座位数量未变 |
-| `subscription.cancelled` | 订阅取消 | 撤销所有座位 |
+| `subscription.active` | 新订阅激活 | 提供初始席位 |
+| `subscription.plan_changed` | 添加/移除席位 | 更新应用中的席位数 |
+| `subscription.renewed` | 订阅续费 | 确认席位数未改变 |
+| `subscription.cancelled` | 订阅已取消 | 撤销所有席位 |
 
-### Webhook处理程序示例
+### Webhook 处理示例
 
 ```typescript
 app.post('/webhooks/dodo', async (req, res) => {
@@ -420,15 +458,15 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## 强制座位限制
+## 强制执行席位限制
 
-您的应用程序必须强制执行座位限制。Dodo Payments跟踪计费，但您控制访问。
+您的应用程序必须强制执行席位限制。Dodo Payments 负责计费，但您控制访问。
 
-### 强制策略
+### 强制执行策略
 
 <Tabs>
 <Tab title="硬限制">
-严格防止添加超出座位数量的用户。
+严格防止添加超出席位数的用户。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -448,7 +486,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="软限制与警告">
-允许超出限制，但会发出警告并提供宽限期。
+允许超出席位数，提供警告和宽限期。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -468,7 +506,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="自动升级">
-当达到限制时自动添加座位。
+达到 ограничение 时自动添加席位。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -498,9 +536,9 @@ async function inviteUser(teamId: string, email: string) {
 
 ## 高级模式
 
-### 不同的座位类型
+### 不同的席位类型
 
-提供不同类型的座位，定价不同：
+提供不同类型的席位及不同定价：
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -508,7 +546,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**实施：** 为每种座位类型创建单独的附加组件。
+**实施**：为每种席位类型创建单独的附加选项。
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -524,20 +562,20 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### 年度座位折扣
+### 年度席位折扣
 
-提供折扣的年度座位定价：
+提供优惠的年度席位定价：
 
 ```
 Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**实施：** 为每月和每年的计划创建不同附加组件价格的单独产品。
+**实施**：为月度和年度计划创建不同的产品，附加选项有不同的定价。
 
-### 最低座位要求
+### 最低席位要求
 
-对某些计划要求最低座位数量：
+对于某些计划要求最低的席位数：
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -559,78 +597,78 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ### 定价最佳实践
 
-- **清晰沟通**：在您的定价页面上显著显示每座位定价
-- **包含座位**：考虑在基本价格中包含几个座位以减少摩擦
-- **批量折扣**：为大型团队提供较低的每座位费率，以赢得企业交易
-- **年度激励**：折扣年度计划以改善现金流和客户留存
+- **清晰的沟通**：在您的定价页面显著显示每席定价
+- **包含席位**：考虑将少数席位包含在基础价格中，以减少摩擦
+- **数量折扣**：为更大的团队提供较低的每席费用，以赢得企业交易
+- **年度激励**：对年度计划提供折扣，以改善现金流和客户保留
 
 ### 技术最佳实践
 
-- **缓存座位数量**：在本地缓存订阅座位数量，以避免每次请求时进行API调用
-- **定期同步**：通过API定期将您的本地座位数量与Dodo Payments同步
-- **处理失败**：如果座位变更失败，显示清晰的错误消息和重试选项
-- **审计跟踪**：记录所有座位变更以便于计费争议和合规性
+- **缓存席位数**：本地缓存订阅的席位数，以避免每次请求都调用API
+- **定期同步**：通过API定期同步您的本地席位数与Dodo Payments
+- **处理失败**：如果席位变更失败，显示清晰的错误信息和重试选项
+- **审计日志**：记录所有席位更改以备费用争议和合规
 
 ### 用户体验最佳实践
 
-- **实时反馈**：在调整座位时显示即时成本影响
-- **确认步骤**：在计费变更之前要求确认
-- **按比例计费透明度**：在应用之前清楚解释按比例计费的费用
-- **轻松降级**：不要让减少座位变得困难（这会建立信任）
+- **实时反馈**：在调整席位时显示即时的费用影响
+- **确认步骤**：在计费更改之前要求确认
+- **按比例收费透明**：在应用之前清晰解释按比例收费
+- **易于降级**：不要让减席位变得困难（这能建立信任）
 
 ---
 
 ## 故障排除
 
 <AccordionGroup>
-<Accordion title="应用与计费之间的座位数量不匹配">
-**症状**：您的应用显示的座位数量与订阅不同。
+<Accordion title="应用和计费之间的席位计数不匹配">
+**症状**：您的应用显示的席位计数与订阅不同。
 
 **原因**：
 - 未收到或处理Webhook
-- 座位变更期间的竞争条件
+- 在席位变更时发生竞争条件
 - 缓存数据未更新
 
-**解决方案**:
-1. 为 `subscription.plan_changed` 实现 webhook 处理程序
-2. 添加一个“与计费同步”按钮，以获取当前订阅
-3. 设置缓存 TTL 以确保定期刷新
+**解决方案**：
+1. 为 `subscription.plan_changed` 实现Webhook处理程序
+2. 添加一个“与计费同步”按钮，获取当前订阅
+3. 设置缓存TTL以确保定期刷新
 </Accordion>
 
-<Accordion title="按比例计费费用意外">
-**症状**：客户对周期中收费金额感到困惑。
+<Accordion title="按比例收费金额意外">
+**症状**：客户对中途收费金额感到困惑。
 
 **原因**：
-- 按比例计费模式未清晰传达
+- 按比例收费模式未明确传达
 - 客户在确认之前未看到预览
 
-**解决方案**:
+**解决方案**：
 1. 在进行更改之前始终使用 `previewChangePlan`
-2. 显示清晰的细分："添加 X 个座位 = $Y（按 Z 天按比例计算）"
-3. 在帮助中心记录您的按比例计算政策
+2. 显示清晰的细项：“添加X个席位 = $Y今天（按比例计算Z天）”
+3. 在帮助中心记录您的按比例收费政策
 </Accordion>
 
-<Accordion title="结账时附加组件未出现">
-**症状**：结账时未提供座位附加组件。
+<Accordion title="结账时附加选项未出现">
+**症状**：席位附加选项在结账时不可用。
 
 **原因**：
-- 附加组件未附加到产品
-- 附加组件已归档或删除
-- 产品与附加组件之间的货币不匹配
+- 附加选项未附加到产品
+- 附加选项已归档或删除
+- 产品与附加选项之间的货币不匹配
 
 **解决方案**：
-1. 验证附加组件在产品设置中已附加
-2. 检查附加组件在附加组件仪表板中的状态
+1. 验证附加选项已在产品设置中附加
+2. 检查附加选项在附加选项仪表盘中的状态
 3. 确保货币完全匹配
 </Accordion>
 
-<Accordion title="无法将座位减少到当前使用量以下">
-**症状**：客户希望减少座位，但已分配用户。
+<Accordion title="无法减少席位低于当前使用">
+**症状**：客户想减少席位但有用户已分配。
 
 **解决方案**：
-1. 显示必须在减少座位之前移除的用户
-2. 实施工作流程：移除用户 → 减少座位
-3. 考虑在强制座位减少之前提供宽限期
+1. 显示必须在减少席位之前移除的用户
+2. 实施工作流程：移除用户 → 减少席位
+3. 考虑在强制减少席位之前提供宽限期
 </Accordion>
 </AccordionGroup>
 
@@ -639,19 +677,19 @@ async function validateSeatCount(planId: string, seatCount: number) {
 ## 相关文档
 
 <CardGroup cols={2}>
-<Card title="基于座位的定价教程" icon="code" href="/developer-resources/seat-based-pricing">
+<Card title="基于席位的定价教程" icon="code" href="/developer-resources/seat-based-pricing">
   完整的实施指南和代码。
 </Card>
 
-<Card title="附加组件" icon="puzzle" href="/features/addons">
-  深入了解附加组件系统。
+<Card title="附加选项" icon="puzzle" href="/features/addons">
+  深入了解附加选项系统。
 </Card>
 
-<Card title="计划变更与按比例计费" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+<Card title="计划变更与按比例收费" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
   处理订阅修改。
 </Card>
 
-<Card title="订阅Webhooks" icon="bell" href="/developer-resources/webhooks/intents/subscription">
+<Card title="订阅 Webhook" icon="bell" href="/developer-resources/webhooks/intents/subscription">
   跟踪订阅事件。
 </Card>
 </CardGroup>

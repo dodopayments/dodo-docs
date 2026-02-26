@@ -67,12 +67,12 @@ Dodo Payments menerapkan penagihan berbasis kursi menggunakan sistem **Add-ons**
 
 ### Ikhtisar Arsitektur
 
-Langganan Tim Pro biaya \$99/bulan dan mencakup 5 kursi. Jika Anda memiliki lebih dari 5 pengguna, Anda membayar tambahan \$15/bulan untuk setiap kursi tambahan.
+Langganan Tim Pro biaya $99/bulan dan mencakup 5 kursi. Jika Anda memiliki lebih dari 5 pengguna, Anda membayar tambahan $15/bulan untuk setiap kursi tambahan.
 
-Sebagai contoh, jika tim Anda membutuhkan 15 kursi:
-- Rencana Dasar: \$99/bulan (mencakup 5 kursi)
-- Add-ons: 10 kursi tambahan × \$15/bulan = \$150/bulan
-- Total biaya bulanan: \$99 + \$150 = \$249 untuk 15 kursi
+Sebagai contoh, jika tim Anda memerlukan 15 kursi:
+- Rencana Dasar: $99/bulan (termasuk 5 kursi)
+- Tambahan: 10 kursi ekstra × $15/bulan = $150/bulan
+- Total biaya bulanan: $99 + $150 = $249 untuk 15 kursi
 
 ### Komponen Utama
 
@@ -307,17 +307,34 @@ await client.subscriptions.changePlan('sub_123', {
 
 Ketika pelanggan menambah atau menghapus kursi di tengah siklus, prorasi menentukan bagaimana mereka ditagih.
 
-### Mode Prorasi
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
 
-| Mode | Menambahkan Kursi | Menghapus Kursi |
-|------|------------------|----------------|
+### Mode Prorata
+
+| Mode | Menambah Kursi | Menghapus Kursi |
+|------|-------------|----------------|
 | `prorated_immediately` | Biaya untuk sisa hari dalam siklus | Kredit untuk hari yang tidak terpakai |
-| `difference_immediately` | Biaya harga kursi penuh | Kredit diterapkan untuk pembaruan di masa depan |
+| `difference_immediately` | Biaya harga kursi penuh | Kredit diterapkan pada pembaruan mendatang |
 | `full_immediately` | Biaya harga kursi penuh, reset siklus penagihan | Tidak ada kredit |
 
-### Contoh Prorasi
+### Contoh Prorata
 
-**Skenario: 15 hari siklus penagihan tersisa, menambah 5 kursi dengan harga $10/kursi**
+**Skenario: 15 hari siklus penagihan tersisa, menambah 5 kursi dengan $10/kursi**
 
 <Tabs>
 <Tab title="prorated_immediately">
@@ -328,7 +345,7 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-Pelanggan membayar \$25 sekarang, kemudian \$50/bulan saat pembaruan.
+Pelanggan membayar $25 sekarang, kemudian $50/bulan saat pembaruan.
 </Tab>
 
 <Tab title="difference_immediately">
@@ -351,9 +368,30 @@ Pelanggan membayar jumlah penuh, siklus penagihan baru dimulai.
 </Tab>
 </Tabs>
 
-### Pratinjau Sebelum Mengubah
+**Skenario: Menghapus 3 kursi di tengah siklus dengan prorated_immediately**
 
-Selalu pratinjau prorasi sebelum melakukan perubahan:
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**Memilih mode prorata untuk perubahan kursi**: Gunakan `prorated_immediately` untuk penagihan berbasis hari yang adil ketika tim sering menyesuaikan kursi. Gunakan `difference_immediately` untuk perhitungan yang lebih sederhana yang mengenakan atau mengkreditkan harga kursi penuh. Lihat [Panduan Prorata](/developer-resources/subscription-upgrade-downgrade#proration-modes) untuk perbandingan yang lebih mendetail.
+</Tip>
+
+### Prabuka Sebelum Mengubah
+
+Selalu tinjau prorata sebelum membuat perubahan:
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -369,18 +407,18 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Melacak Kursi dengan Webhooks
+## Melacak Kursi dengan Webhook
 
 Pantau perubahan kursi dengan mendengarkan webhook langganan:
 
 ### Peristiwa Terkait
 
-| Acara | Kapan Dipicu | Kasus Penggunaan |
-|-------|--------------|----------------|
+| Peristiwa | Ketika Dipicu | Kasus Penggunaan |
+|-------|----------------|----------|
 | `subscription.active` | Langganan baru diaktifkan | Menyediakan kursi awal |
-| `subscription.plan_changed` | Kursi ditambahkan/dihapus | Memperbarui jumlah kursi di aplikasi Anda |
-| `subscription.renewed` | Langganan diperpanjang | Mengonfirmasi jumlah kursi tidak berubah |
-| `subscription.cancelled` | Langganan dibatalkan | Menghapus semua kursi |
+| `subscription.plan_changed` | Kursi ditambah/dihapus | Perbarui jumlah kursi di aplikasi Anda |
+| `subscription.renewed` | Langganan diperbarui | Konfirmasi jumlah kursi tidak berubah |
+| `subscription.cancelled` | Langganan dibatalkan | Menonaktifkan semua kursi |
 
 ### Contoh Penangan Webhook
 
@@ -468,8 +506,8 @@ async function inviteUser(teamId: string, email: string) {
 
 </Tab>
 
-<Tab title="Peningkatan Otomatis">
-Secara otomatis tambahkan kursi saat batas tercapai.
+<Tab title="Pembaruan Otomatis">
+Secara otomatis menambah kursi ketika batas tercapai.
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -499,9 +537,9 @@ async function inviteUser(teamId: string, email: string) {
 
 ## Pola Lanjutan
 
-### Tipe Kursi yang Berbeda
+### Berbagai Tipe Kursi
 
-Tawarkan tipe kursi yang berbeda dengan harga yang berbeda:
+Tawarkan berbagai tipe kursi dengan harga yang berbeda:
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -509,7 +547,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**Implementasi:** Buat add-on terpisah untuk setiap tipe kursi.
+**Implementasi:** Buat tambahan terpisah untuk setiap tipe kursi.
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -534,11 +572,11 @@ Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**Implementasi:** Buat produk terpisah untuk rencana bulanan dan tahunan dengan harga add-on yang berbeda.
+**Implementasi:** Buat produk terpisah untuk rencana bulanan dan tahunan dengan harga tambahan yang berbeda.
 
 ### Persyaratan Minimum Kursi
 
-Mewajibkan jumlah minimum kursi untuk rencana tertentu:
+Memerlukan jumlah minimum kursi untuk rencana tertentu:
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -558,74 +596,74 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ## Praktik Terbaik
 
-### Praktik Terbaik Penetapan Harga
+### Praktik Terbaik Pen定harga
 
-- **Komunikasi yang Jelas**: Tampilkan harga per kursi secara mencolok di halaman harga Anda
+- **Komunikasi yang Jelas**: Tampilkan harga per-kursi dengan jelas di halaman harga Anda
 - **Kursi yang Termasuk**: Pertimbangkan untuk menyertakan beberapa kursi dalam harga dasar untuk mengurangi gesekan
-- **Diskon Volume**: Tawarkan tarif per kursi yang lebih rendah untuk tim yang lebih besar untuk memenangkan kesepakatan perusahaan
-- **Insentif Tahunan**: Diskon rencana tahunan untuk meningkatkan arus kas dan retensi
+- **Diskon Volume**: Tawarkan tarif per-kursi yang lebih rendah untuk tim besar untuk memenangkan kesepakatan perusahaan
+- **Insentif Tahunan**: Diskon untuk rencana tahunan untuk meningkatkan aliran kas dan retensi
 
 ### Praktik Terbaik Teknis
 
 - **Cache Jumlah Kursi**: Cache jumlah kursi langganan secara lokal untuk menghindari panggilan API pada setiap permintaan
-- **Sinkronisasi Secara Berkala**: Secara berkala sinkronkan jumlah kursi lokal Anda dengan Dodo Payments melalui API
-- **Tangani Kegagalan**: Jika perubahan kursi gagal, tampilkan pesan kesalahan yang jelas dan opsi untuk mencoba lagi
-- **Jejak Audit**: Catat semua perubahan kursi untuk sengketa penagihan dan kepatuhan
+- **Sinkronkan Secara Berkala**: Secara berkala sinkronkan jumlah kursi lokal Anda dengan Dodo Payments melalui API
+- **Tangani Kegagalan**: Jika perubahan kursi gagal, tampilkan pesan kesalahan yang jelas dan opsi untuk mencoba kembali
+- **Jejak Audit**: Catat semua perubahan kursi untuk perselisihan penagihan dan kepatuhan
 
 ### Praktik Terbaik Pengalaman Pengguna
 
 - **Umpan Balik Waktu Nyata**: Tampilkan dampak biaya segera saat menyesuaikan kursi
 - **Langkah Konfirmasi**: Minta konfirmasi sebelum perubahan penagihan
-- **Transparansi Prorasi**: Jelaskan dengan jelas biaya prorata sebelum diterapkan
-- **Pengurangan yang Mudah**: Jangan membuatnya sulit untuk mengurangi kursi (ini membangun kepercayaan)
+- **Transparansi Prorata**: Jelaskan dengan jelas biaya prorata sebelum menerapkan
+- **Pengurangan yang Mudah**: Jangan menyulitkan pengurangan kursi (ini membangun kepercayaan)
 
 ---
 
 ## Pemecahan Masalah
 
 <AccordionGroup>
-<Accordion title="Jumlah kursi tidak cocok antara aplikasi dan penagihan">
+<Accordion title="Ketidaksesuaian jumlah kursi antara aplikasi dan penagihan">
 **Gejala**: Aplikasi Anda menunjukkan jumlah kursi yang berbeda dari langganan.
 
 **Penyebab**:
 - Webhook tidak diterima atau diproses
 - Kondisi balapan selama perubahan kursi
-- Data yang di-cache tidak diperbarui
+- Data cached tidak diperbarui
 
 **Solusi**:
-1. Implementasikan pengelola webhook untuk `subscription.plan_changed`
-2. Tambahkan tombol "Sinkronisasi dengan penagihan" yang mengambil langganan saat ini
-3. Atur TTL cache untuk memastikan penyegaran secara teratur
+1. Implementasikan penangan webhook untuk `subscription.plan_changed`
+2. Tambahkan tombol "Sinkronkan dengan penagihan" yang mengambil langganan saat ini
+3. Atur cache TTL untuk memastikan pembaruan reguler
 </Accordion>
 
-<Accordion title="Biaya prorasi tidak terduga">
+<Accordion title="Biaya prorata tidak terduga">
 **Gejala**: Pelanggan bingung dengan jumlah biaya di tengah siklus.
 
 **Penyebab**:
-- Mode prorasi tidak dikomunikasikan dengan jelas
-- Pelanggan tidak melihat pratinjau sebelum mengonfirmasi
+- Mode prorata tidak dikomunikasikan dengan jelas
+- Pelanggan tidak melihat prabuka sebelum mengonfirmasi
 
 **Solusi**:
 1. Selalu gunakan `previewChangePlan` sebelum melakukan perubahan
-2. Tampilkan rincian yang jelas: "Menambahkan X kursi = $Y hari ini (pro-rata untuk Z hari)"
-3. Dokumentasikan kebijakan pro-rata Anda di pusat bantuan
+2. Tampilkan rincian yang jelas: "Menambahkan X kursi = $Y hari ini (pro rata untuk Z hari)"
+3. Dokumentasikan kebijakan prorata Anda di pusat bantuan
 </Accordion>
 
-<Accordion title="Add-on tidak muncul di checkout">
-**Gejala**: Add-on kursi tidak tersedia selama checkout.
+<Accordion title="Add-on tidak muncul dalam checkout">
+**Gejala**: Tambahan kursi tidak tersedia saat checkout.
 
 **Penyebab**:
-- Add-on tidak dilampirkan ke produk
-- Add-on diarsipkan atau dihapus
-- Ketidakcocokan mata uang antara produk dan add-on
+- Tambahan tidak terpasang pada produk
+- Tambahan diarsipkan atau dihapus
+- Ketidakcocokan mata uang antara produk dan tambahan
 
 **Solusi**:
-1. Verifikasi add-on terlampir dalam pengaturan produk
-2. Periksa status add-on di dasbor Add-Ons
-3. Pastikan mata uang cocok persis
+1. Verifikasi bahwa tambahan terpasang di pengaturan produk
+2. Periksa status tambahan di dasbor Add-Ons
+3. Pastikan mata uang cocok dengan tepat
 </Accordion>
 
-<Accordion title="Tidak dapat mengurangi kursi di bawah penggunaan saat ini">
+<Accordion title="Tidak bisa mengurangi kursi di bawah penggunaan saat ini">
 **Gejala**: Pelanggan ingin mengurangi kursi tetapi memiliki pengguna yang ditugaskan.
 
 **Solusi**:
@@ -648,7 +686,7 @@ async function validateSeatCount(planId: string, seatCount: number) {
   Pahami sistem add-on secara mendalam.
 </Card>
 
-<Card title="Perubahan Rencana & Prorasi" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+<Card title="Perubahan Rencana & Prorata" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
   Tangani modifikasi langganan.
 </Card>
 

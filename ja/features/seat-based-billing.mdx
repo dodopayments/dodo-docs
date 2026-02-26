@@ -66,12 +66,12 @@ Dodo Paymentsは、**アドオン**システムを使用してシートベース
 
 ### アーキテクチャの概要
 
-チームプロサブスクリプションは月額\$99で、5シートが含まれています。5人以上のユーザーがいる場合、追加のシートごとに月額\$15を支払います。
+チームプロのサブスクリプションは月額99ドルで、5つの席が含まれています。5人以上のユーザーがいる場合、追加の席ごとに月額15ドルがかかります。
 
-例えば、チームが15シートを必要とする場合：
-- 基本プラン: \$99/月（5シート含む）
-- アドオン: 10シート × \$15/月 = \$150/月
-- 合計月額費用: \$99 + \$150 = \$249（15シート分）
+例えば、あなたのチームが15席を必要とする場合:
+- 基本プラン: 月額99ドル（5つの席が含まれています）
+- アドオン: 10の追加席 × 月額15ドル = 月額150ドル
+- 合計月額費用: 99ドル + 150ドル = 15席で249ドル
 
 ### 主要コンポーネント
 
@@ -306,20 +306,37 @@ await client.subscriptions.changePlan('sub_123', {
 
 顧客がシートを追加または削除する際、按分が請求方法を決定します。
 
-### 按分モード
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant App as Your App
+    participant D as Dodo Payments
+    A->>App: Add/remove seats
+    App->>D: Preview change
+    D-->>App: Prorated charge preview
+    App->>A: Show cost details
+    A->>App: Confirm
+    App->>D: changePlan (new seat count)
+    D->>D: Prorate & charge/credit
+    D-->>App: Updated subscription
+    D->>App: Webhook: plan_changed
+    App->>A: Seats updated
+```
+
+### プロレートモード
 
 | モード | 席の追加 | 席の削除 |
 |------|-------------|----------------|
-| `prorated_immediately` | サイクル内の残り日数に対して課金 | 未使用の日数に対してクレジット |
+| `prorated_immediately` | サイクル内の残りの日数に対して課金 | 使用していない日のクレジット |
 | `difference_immediately` | フル席価格を課金 | 将来の更新に適用されるクレジット |
 | `full_immediately` | フル席価格を課金し、請求サイクルをリセット | クレジットなし |
 
-### 按分の例
+### プロレートの例
 
-**シナリオ: 残り15日の請求サイクルで、5シートを\$10/シートで追加**
+**シナリオ：残り15日間の請求サイクルで、5席を追加する場合（10ドル/席）**
 
 <Tabs>
-<Tab title="即時按分">
+<Tab title="プロレート直後">
 
 ```
 Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
@@ -327,19 +344,19 @@ Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $25 immediate charge
 ```
 
-顧客は今\$25を支払い、更新時に\$50/月を支払います。
+顧客は今すぐ25ドルを支払い、更新時に50ドル/月を支払います。
 </Tab>
 
-<Tab title="即時差額">
+<Tab title="差額直後">
 
 ```
 Immediate charge = $10 × 5 seats = $50
 ```
 
-顧客はサイクルの位置に関係なく、全額\$50を支払います。
+顧客はサイクルの位置に関係なく、今すぐフルの50ドルを支払います。
 </Tab>
 
-<Tab title="即時全額">
+<Tab title="フル直後">
 
 ```
 Immediate charge = Full subscription + add-ons
@@ -350,9 +367,30 @@ Billing cycle resets to today
 </Tab>
 </Tabs>
 
+**シナリオ：プロレート直後に3席をサイクルの途中で削除する場合**
+
+```
+Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
+Change: Remove 3 seats (10 → 7 extra seats) on day 20 of 30-day cycle
+Remaining: 10 days
+
+Credit for removed seats:
+  = ($10 × 3 seats) × (10 days / 30 days)
+  = $30 × 0.333
+  = $10.00 credit
+
+→ $10.00 credit added to subscription
+→ Next renewal: $99 + (7 × $10) = $169.00/month
+→ Credit auto-applies: $169.00 − $10.00 = $159.00 on next invoice
+```
+
+<Tip>
+**席変更のためのプロレートモードの選択**：チームが頻繁に席を調整する場合は、日数ベースの公正課金のために`prorated_immediately`を使用してください。計算を簡単にしたい場合は、フル席価格を請求またはクレジットするために`difference_immediately`を使用してください。詳細な比較については、[プロレートガイド](/developer-resources/subscription-upgrade-downgrade#proration-modes)を参照してください。
+</Tip>
+
 ### 変更前のプレビュー
 
-変更を行う前に、常に按分をプレビューしてください：
+変更を加える前に、常にプロレートをプレビューしてください：
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -368,18 +406,18 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Webhookでのシートの追跡
+## Webhookでの席の追跡
 
-サブスクリプションWebhookをリッスンしてシートの変更を監視します：
+サブスクリプションのWebhookをリッスンして席の変更を監視します：
 
 ### 関連イベント
 
-| イベント | トリガーされるタイミング | 使用例 |
+| イベント | トリガーされるタイミング | 使用ケース |
 |-------|----------------|----------|
-| `subscription.active` | 新しいサブスクリプションがアクティブ化される | 初期席をプロビジョニング |
-| `subscription.plan_changed` | 席が追加/削除される | アプリ内の席数を更新 |
-| `subscription.renewed` | サブスクリプションが更新される | 席数が変更されていないことを確認 |
-| `subscription.cancelled` | サブスクリプションがキャンセルされる | すべての席をデプロビジョニング |
+| `subscription.active` | 新しいサブスクリプションがアクティブになった | 初期席をプロビジョニング |
+| `subscription.plan_changed` | 席が追加/削除された | アプリ内の席数を更新 |
+| `subscription.renewed` | サブスクリプションが更新された | 席数が変わっていないことを確認 |
+| `subscription.cancelled` | サブスクリプションがキャンセルされた | すべての席を非プロビジョニング |
 
 ### Webhookハンドラーの例
 
@@ -420,15 +458,15 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## シート制限の強制
+## 席の制限の強制
 
-アプリケーションはシート制限を強制する必要があります。Dodo Paymentsは請求を追跡しますが、アクセスはあなたが制御します。
+アプリケーションは席の制限を強制する必要があります。Dodo Paymentsは請求を追跡しますが、アクセスはあなたが制御します。
 
 ### 強制戦略
 
 <Tabs>
 <Tab title="ハードリミット">
-シート数を超えてユーザーを追加することを厳格に防止します。
+ユーザーを席数以上に追加することを厳密に防ぎます。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -448,7 +486,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="警告付きソフトリミット">
-警告と猶予期間を設けて超過を許可します。
+警告と猶予期間付きで超えることを許可します。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -468,7 +506,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="自動アップグレード">
-制限に達したときに自動的にシートを追加します。
+制限に達した場合に、自動的に席を追加します。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -498,9 +536,9 @@ async function inviteUser(teamId: string, email: string) {
 
 ## 高度なパターン
 
-### 異なるシートタイプ
+### 異なる席の種類
 
-異なる価格設定の異なるシートタイプを提供します：
+異なる価格設定の異なる席の種類を提供します：
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -508,7 +546,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**実装:** 各シートタイプのために別々のアドオンを作成します。
+**実装**：各席の種類のために別々のアドオンを作成します。
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -524,20 +562,20 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### 年間シート割引
+### 年間席割引
 
-割引された年間シート価格を提供します：
+割引された年間席料金を提供します：
 
 ```
 Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**実装:** 月額プランと年間プランのために異なるアドオン価格で別々の製品を作成します。
+**実装**：月額プランと年間プランのために異なるアドオン価格で別々の製品を作成します。
 
-### 最低シート要件
+### 最小席数要件
 
-特定のプランに対して最低シート数を要求します：
+特定のプランに対して最小数の席を要求します：
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -559,64 +597,64 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ### 価格設定のベストプラクティス
 
-- **明確なコミュニケーション**: 価格ページにシートごとの価格を目立たせて表示
-- **含まれるシート**: 摩擦を減らすために基本価格にいくつかのシートを含めることを検討
-- **ボリュームディスカウント**: 大規模チームに対して低いシートごとの料金を提供し、エンタープライズ契約を獲得
-- **年間インセンティブ**: 年間プランを割引してキャッシュフローと保持率を改善
+- **明確なコミュニケーション**: 価格ページに1席あたりの価格を目立たせて表示
+- **含まれた席**: 摩擦を減らすために基本料金にいくつかの席を含めることを検討
+- **ボリュームディスカウント**: 大規模なチーム向けに1席あたりの料金を引き下げてエンタープライズの契約を勝ち取る
+- **年間インセンティブ**: キャッシュフローと保持を改善するために年間プランを割引
 
-### 技術的ベストプラクティス
+### 技術的なベストプラクティス
 
-- **シート数をキャッシュ**: API呼び出しを避けるためにサブスクリプションのシート数をローカルにキャッシュ
-- **定期的に同期**: 定期的にDodo Paymentsとローカルのシート数をAPI経由で同期
-- **失敗を処理**: シート変更が失敗した場合、明確なエラーメッセージと再試行オプションを表示
-- **監査トレイル**: 請求の争いとコンプライアンスのためにすべてのシート変更をログに記録
+- **席数をキャッシュ**: API呼び出しを避けるためにローカルでサブスクリプションの席数をキャッシュします
+- **定期的に同期**: Dodo PaymentsとAPIを介して定期的にローカル席数を同期します
+- **失敗を処理**: 席の変更が失敗した場合は、明確なエラーメッセージと再試行のオプションを表示します
+- **監査証跡**: 請求の不一致とコンプライアンスのためにすべての席の変更を記録します
 
 ### ユーザーエクスペリエンスのベストプラクティス
 
-- **リアルタイムフィードバック**: シートを調整した際のコストへの即時影響を表示
-- **確認ステップ**: 請求変更の前に確認を要求
-- **按分の透明性**: 適用前に按分料金を明確に説明
-- **簡単なダウングレード**: シートを減らすのを難しくしない（信頼を築く）
+- **リアルタイムフィードバック**: 席を調整するときに即座にコストの影響を見せます
+- **確認ステップ**: 請求の変更前に確認を必要とします
+- **プロレートの透明性**: 適用前にプロレート料金を明確に説明します
+- **簡単なダウングレード**: 席を減らすのを難しくしないでください（信頼が築けます）
 
 ---
 
 ## トラブルシューティング
 
 <AccordionGroup>
-<Accordion title="アプリと請求の間でシート数が不一致">
-**症状**: アプリがサブスクリプションと異なるシート数を表示しています。
+<Accordion title="アプリと請求の席数の不一致">
+**症状**: アプリがサブスクリプションと異なる席数を表示します。
 
 **原因**:
-- Webhookが受信または処理されていない
-- シート変更中のレースコンディション
+- Webhookが受信または処理されなかった
+- 席の変更中のレースコンディション
 - キャッシュデータが更新されていない
 
-**ソリューション**:
-1. `subscription.plan_changed` のためのウェブフックハンドラーを実装する
-2. 現在のサブスクリプションを取得する「請求と同期」ボタンを追加する
-3. 定期的な更新を保証するためにキャッシュTTLを設定する
+**解決策**:
+1. `subscription.plan_changed`のWebhookハンドラーを実装します
+2. 現在のサブスクリプションを取得する「請求と同期」ボタンを追加します
+3. 定期的な更新を確保するためのキャッシュTTLを設定します
 </Accordion>
 
-<Accordion title="按分料金が予期しない">
-**症状**: 顧客がサイクル中の請求額に混乱しています。
+<Accordion title="予期しないプロレート費用">
+**症状**: 顧客がサイクル途中の請求金額に困惑しています。
 
 **原因**:
-- 按分モードが明確に伝えられていない
+- プロレートモードが明確に伝達されていない
 - 顧客が確認前にプレビューを見ていない
 
-**ソリューション**:
-1. 変更を行う前に必ず `previewChangePlan` を使用する
-2. 明確な内訳を表示する: "X席の追加 = $Y（Z日分の按分）"
-3. ヘルプセンターに按分ポリシーを文書化する
+**解決策**:
+1. 変更を行う前に常に`previewChangePlan`を使用してください
+2. 明確な内訳を表示: 「X席の追加 = 今すぐYドル（Z日分にプロレート）」
+3. ヘルプセンターにプロレートポリシーを文書化します
 </Accordion>
 
-<Accordion title="チェックアウトにアドオンが表示されない">
-**症状**: チェックアウト中にシートアドオンが利用できません。
+<Accordion title="チェックアウトに表示されないアドオン">
+**症状**: チェックアウト中に席のアドオンが利用できない。
 
 **原因**:
 - アドオンが製品に添付されていない
 - アドオンがアーカイブまたは削除されている
-- 製品とアドオンの間で通貨が不一致
+- 製品とアドオン間で通貨が一致していない
 
 **解決策**:
 1. 製品設定でアドオンが添付されていることを確認します
@@ -624,30 +662,30 @@ async function validateSeatCount(planId: string, seatCount: number) {
 3. 通貨が正確に一致していることを確認します
 </Accordion>
 
-<Accordion title="現在の使用量を下回るシートを減らせない">
-**症状**: 顧客がシートを減らしたいが、ユーザーが割り当てられています。
+<Accordion title="現在の使用状況を下回る席の削減ができない">
+**症状**: 顧客は席を減らしたいが、ユーザーが割り当てられている。
 
 **解決策**:
-1. シートを減らす前に削除する必要があるユーザーを表示します
-2. ワークフローを実装します: ユーザーを削除 → シートを減らす
-3. シート削減を強制する前に猶予期間を考慮します
+1. 席を減らす前に削除しなければならないユーザーを示します
+2. ワークフローを実装: ユーザーを削除 → 席を減らす
+3. 席削減を強制する前に猶予期間を考慮してください
 </Accordion>
 </AccordionGroup>
 
 ---
 
-## 関連ドキュメント
+## 関連文書
 
 <CardGroup cols={2}>
-<Card title="シートベースの価格設定チュートリアル" icon="code" href="/developer-resources/seat-based-pricing">
-  コードを含む完全な実装ガイド。
+<Card title="席ベースの価格設定チュートリアル" icon="code" href="/developer-resources/seat-based-pricing">
+  コード付きの完全な実装ガイドです。
 </Card>
 
 <Card title="アドオン" icon="puzzle" href="/features/addons">
-  アドオンシステムを深く理解します。
+  アドオンシステムについて深く理解します。
 </Card>
 
-<Card title="プラン変更と按分" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+<Card title="プラン変更とプロレート" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
   サブスクリプションの変更を処理します。
 </Card>
 

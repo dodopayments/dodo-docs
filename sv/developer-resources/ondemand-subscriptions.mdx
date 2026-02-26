@@ -24,13 +24,13 @@ För en allmän prenumerationsinställning, se [Prenumerationsintegrationsguiden
 - En prenumerationsprodukt i din katalog
 
 <Tip>
-Om du vill att kunden ska godkänna mandatet via en värd-checkout, ställ in `payment_link: true` och tillhandahåll en `return_url`.
+Om du vill att kunden ska godkänna mandatet via hostad kassa, ställ in `payment_link: true` och tillhandahåll `return_url`.
 </Tip>
 
 ## Hur on-demand fungerar
 
-1. Du skapar en prenumeration med `on_demand` objektet för att auktorisera en betalningsmetod och eventuellt samla in en initial avgift.
-2. Senare skapar du avgifter mot den prenumerationen med anpassade belopp via den dedikerade avgifts-slutpunkten.
+1. Du skapar en prenumeration med `on_demand`-objektet för att godkänna en betalningsmetod och eventuellt samla in en initial avgift.
+2. Senare skapar du avgifter mot den prenumerationen med anpassade belopp genom den dedikerade avgifts-API:en.
 3. Du lyssnar på webhooks (t.ex. `payment.succeeded`, `payment.failed`) för att uppdatera ditt system.
 
 ## Skapa en on-demand-prenumeration
@@ -324,7 +324,7 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Att ta ut en avgift för en prenumeration som inte är on-demand kan misslyckas. Se till att prenumerationen har `on_demand: true` i sina detaljer innan du tar ut avgiften.
+Att ta betalt för en prenumeration som inte är on-demand kan misslyckas. Se till att prenumerationen har `on_demand: true` i sina detaljer före avgift.
 </Warning>
 
 ## Betalningsåterförsök
@@ -337,11 +337,11 @@ Burst-återförsöksmönster kan flaggas som bedrägliga eller misstänkt kortte
 
 ### Principer för säkra återförsökspolicys
 
-- **Nedtrappningsmekanism**: Använd exponentiell nedtrappning mellan återförsök.
-- **Återförsöksgränser**: Sätt en gräns för totala återförsök (3–4 försök max).
-- **Intelligent filtrering**: Återförsök endast vid återförbara fel (t.ex. nätverks-/utfärdarfel, otillräckliga medel); återförsök aldrig vid hårda avslag.
-- **Förhindra korttestning**: Återförsök inte vid avslag som `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Variera metadata (valfritt)**: Om du upprätthåller ditt eget återförsökssystem, differentiera återförsök via metadata (t.ex. `retry_attempt`).
+- **Backoff-mekanism**: Använd exponentiell backoff mellan omförsök.
+- **Omförsöksgränser**: Sätt en gräns för totala omförsök (3–4 försök max).
+- **Intelligent filtrering**: Återförsök endast vid omförsökliga fel (t.ex. nätverks-/utfärdarfel, otillräckliga medel); gör aldrig omförsök vid hårda avslag.
+- **Korttestningsförebyggande**: Gör inte omförsök för fel som `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Variera metadata (valfritt)**: Om du upprätthåller ditt eget omförsökssystem, särskilj omförsök via metadata (t.ex. `retry_attempt`).
 
 ### Föreslaget återförsökschema (prenumerationer)
 
@@ -354,9 +354,9 @@ Slutsteg: om fortfarande obetald, markera prenumerationen som obetald eller avbr
 
 ### Undvik burst-återförsök; anpassa till auktoriseringstid
 
-- Ankra återförsök till den ursprungliga auktoriseringstidsstämpeln för att undvika "burst"-beteende över din portfölj.
-- Exempel: Om kunden startar en provperiod eller mandat klockan 13:10 idag, schemalägg uppföljande återförsök klockan 13:10 på följande dagar enligt din nedtrappning (t.ex. +3 dagar → 13:10, +7 dagar → 13:10).
-- Alternativt, om du lagrar den senaste framgångsrika betalningstiden `T`, schemalägg nästa försök vid `T + X days` för att bevara tidsjusteringen.
+- Knyt omförsök till den ursprungliga auktorisationstidsstämpeln för att undvika "burst"-beteende över din portfölj.
+- Exempel: Om kunden startar en provperiod eller mandat klockan 13:10 idag, schemalägg uppföljningsomförsök klockan 13:10 under kommande dagar enligt din backoff (t.ex. +3 dagar → 13:10, +7 dagar → 13:10).
+- Alternativt, om du lagrar tiden för den senaste framgångsrika betalningen `T`, schemalägg nästa försök klockan `T + X days` för att bevara tid på dagen-anpassning.
 
 <Note>
 Tidszon och DST: använd en konsekvent tidsstandard för schemaläggning och konvertera endast för visning för att upprätthålla intervall.
@@ -377,17 +377,17 @@ För en omfattande lista över avslagsskäl och huruvida de kan rättas av anvä
 </Note>
 
 <Tip>
-Återförsök endast vid mjuka/temporära problem (t.ex. `insufficient_funds`, `issuer_unavailable`, `processing_error`, nätverksavbrott). Om samma avslag upprepas, pausa ytterligare återförsök.
+Gör endast omförsök vid mjuka/tillfälliga problem (t.ex. `insufficient_funds`, `issuer_unavailable`, `processing_error`, nätverksavbrott). Om samma avslag upprepas, pausa vidare omförsök.
 </Tip>
 
 ### Implementeringsriktlinjer (ingen kod)
 
-- Använd en schemaläggare/kö som bevarar exakta tidsstämplar; beräkna nästa försök vid exakt tidpunkt (t.ex. `T + 3 days` vid samma HH:MM).
-- Upprätthåll och referera till den senaste framgångsrika betalningstidsstämpeln `T` för att beräkna nästa försök; gruppera aldrig flera prenumerationer vid samma tillfälle.
-- Utvärdera alltid den senaste avslagsskäl; stoppa återförsök för hårda avslag i den ovanstående hoppa-listan.
-- Sätt en gräns för samtidiga återförsök per kund och per konto för att förhindra oavsiktliga toppar.
-- Kommunicera proaktivt: e-posta/SMS:a kunden för att uppdatera sin betalningsmetod innan nästa schemalagda försök.
-- Använd metadata endast för observabilitet (t.ex. `retry_attempt`); försök aldrig att "undvika" bedrägeri/risk-system genom att rotera oväsentliga fält.
+- Använd en schemaläggare/kö som sparar exakta tidsstämplar; beräkna nästa försök vid exakt tidpunkt (t.ex. `T + 3 days` vid samma HH:MM).
+- Underhåll och referera till den sista framgångsrika betalningstidsstämpeln `T` för att beräkna nästa försök; spara inte flera prenumerationer vid samma tidpunkt.
+- Utvärdera alltid den senaste avvisningsanledningen; stoppa omförsök för hårda avslag i ovanstående uteslutningslista.
+- Sätt en gräns för samtidiga omförsök per kund och per konto för att förhindra oavsiktliga toppar.
+- Kommunicera proaktivt: e-posta/SMS-a kunden för att uppdatera deras betalningsmetod före nästa planerade försök.
+- Använd metadata endast för observabilitet (t.ex. `retry_attempt`); försök aldrig "undkomma" bedrägerisystem/risk genom att rotera oväsentliga fält.
 
 ## Spåra resultat med webhooks
 
@@ -400,7 +400,7 @@ Implementera webhook-hantering för att spåra kundresan. Se [Implementera Webho
 - **payment.failed**: Avgift misslyckades
 
 <Tip>
-För on-demand-flöden, fokusera på `payment.succeeded` och `payment.failed` för att avstämma användningsbaserade avgifter.
+För on-demand-flöden, fokusera på `payment.succeeded` och `payment.failed` för att stämma av användningsbaserade avgifter.
 </Tip>
 
 ## Testning och nästa steg
@@ -410,15 +410,15 @@ För on-demand-flöden, fokusera på `payment.succeeded` och `payment.failed` f�
 Använd din test-API-nyckel för att skapa prenumerationen med `payment_link: true`, öppna sedan länken och slutför mandatet.
 </Step>
 <Step title="Utlösa en avgift">
-Anropa avgifts-slutpunkten med en liten `product_price` (t.ex. `100`) och verifiera att du får `payment.succeeded`.
+Anropa avgifts-API:en med ett litet `product_price` (t.ex. `100`) och verifiera att du får `payment.succeeded`.
 </Step>
 <Step title="Gå live">
-Byt till din live API-nyckel när du har validerat händelser och interna tillståndsuppdateringar.
+Byt till din live-API-nyckel när du har validerat händelser och interna tillståndsuppdateringar.
 </Step>
 </Steps>
 
 ## Felsökning
 
-- **422 Ogiltig begäran**: Se till att `on_demand.mandate_only` tillhandahålls vid skapande och `product_price` tillhandahålls för avgifter.
-- **Valuta fel**: Om du åsidosätter `product_currency`, bekräfta att den stöds för ditt konto och kund.
-- **Inga webhooks mottagna**: Verifiera din webhook-URL och signaturhemlighetskonfiguration.
+- **422 Ogiltig begäran**: Se till att `on_demand.mandate_only` ges vid skapande och `product_price` ges för avgifter.
+- **Valutafel**: Om du åsidosätter `product_currency`, bekräfta att den stöds för ditt konto och din kund.
+- **Inga webhooks mottagna**: Kontrollera din webhook-URL och signaturhemlighetskonfiguration.
