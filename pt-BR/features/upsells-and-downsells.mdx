@@ -1,0 +1,1271 @@
+---
+title: Upsells & Downsells
+description: Aumente a receita com compras de um clique usando métodos de
+  pagamento salvos para ofertas pós-compra, upgrades de assinatura e
+  cross-sells.
+icon: arrow-up-right-dots
+---
+
+<Info>
+Upsells e downsells permitem oferecer produtos adicionais ou mudanças de plano para os clientes usando seus métodos de pagamento salvos. Isso possibilita compras de um clique que ignoram a coleta de pagamento, melhorando drasticamente as taxas de conversão.
+</Info>
+
+<CardGroup cols={3}>
+<Card title="Post-Purchase Upsells" icon="cart-plus">
+  Ofereça produtos complementares imediatamente após o checkout com compras de um clique.
+</Card>
+
+<Card title="Subscription Upgrades" icon="arrow-up">
+  Mova clientes para níveis superiores com prorrateamento automático e faturamento instantâneo.
+</Card>
+
+<Card title="Cross-Sells" icon="grid-2-plus">
+  Adicione produtos relacionados a clientes existentes sem pedir novamente os dados de pagamento.
+</Card>
+</CardGroup>
+
+## Visão geral
+
+Upsells e downsells são estratégias poderosas de otimização de receita:
+
+- **Upsells**: Ofereça um produto de maior valor ou upgrade (ex.: plano Pro em vez de Basic)
+- **Downsells**: Ofereça uma alternativa de menor preço quando o cliente recusar ou fizer downgrade
+- **Cross-sells**: Sugira produtos complementares (ex.: add-ons, itens relacionados)
+
+A Dodo Payments habilita esses fluxos por meio do parâmetro `payment_method_id`, que permite cobrar o método de pagamento salvo do cliente sem exigir que ele digite novamente os dados do cartão.
+
+### Benefícios principais
+
+| Benefício | Impacto |
+|---------|--------|
+| **Compras de um clique** | Pule completamente o formulário de pagamento para clientes recorrentes |
+| **Maior conversão** | Reduza o atrito no momento da decisão |
+| **Processamento instantâneo** | As cobranças são processadas imediatamente com `confirm: true` |
+| **Experiência contínua** | Os clientes permanecem no seu app durante todo o fluxo |
+
+## Como funciona
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo API
+    
+    C->>A: Completes purchase
+    A->>D: Get payment methods
+    D-->>A: payment_method_id
+    A->>C: Show upsell offer
+    C->>A: Accept (one click)
+    A->>D: Charge with payment_method_id
+    D-->>A: Payment success
+    D->>A: Webhook: payment.succeeded
+```
+
+## Pré-requisitos
+
+Antes de implementar upsells e downsells, garanta que você tenha:
+
+<Steps>
+<Step title="Customer with Saved Payment Method">
+  Os clientes devem ter concluído pelo menos uma compra. Os métodos de pagamento são salvos automaticamente quando os clientes finalizam o checkout.
+</Step>
+
+<Step title="Products Configured">
+  Crie seus produtos de upsell no painel da Dodo Payments. Eles podem ser pagamentos únicos, assinaturas ou complementos.
+</Step>
+
+<Step title="Webhook Endpoint">
+  Configure webhooks para lidar com os eventos `payment.succeeded`, `payment.failed` e `subscription.plan_changed`.
+</Step>
+</Steps>
+
+## Obtendo métodos de pagamento do cliente
+
+Antes de oferecer um upsell, recupere os métodos de pagamento salvos do cliente:
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'live_mode',
+});
+
+async function getPaymentMethods(customerId: string) {
+  const paymentMethods = await client.customers.listPaymentMethods(customerId);
+  
+  // Returns array of saved payment methods
+  // Each has: payment_method_id, type, card (last4, brand, exp_month, exp_year)
+  return paymentMethods;
+}
+
+// Example usage
+const methods = await getPaymentMethods('cus_123');
+console.log('Available payment methods:', methods);
+
+// Use the first available method for upsell
+const primaryMethod = methods[0]?.payment_method_id;
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+import os
+from dodopayments import DodoPayments
+
+client = DodoPayments(
+    bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+    environment="live_mode",
+)
+
+def get_payment_methods(customer_id: str):
+    payment_methods = client.customers.list_payment_methods(customer_id)
+    
+    # Returns list of saved payment methods
+    # Each has: payment_method_id, type, card (last4, brand, exp_month, exp_year)
+    return payment_methods
+
+# Example usage
+methods = get_payment_methods("cus_123")
+print("Available payment methods:", methods)
+
+# Use the first available method for upsell
+primary_method = methods[0].payment_method_id if methods else None
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/dodopayments/dodopayments-go"
+    "github.com/dodopayments/dodopayments-go/option"
+)
+
+func getPaymentMethods(customerID string) ([]dodopayments.PaymentMethod, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    methods, err := client.Customers.ListPaymentMethods(
+        context.TODO(),
+        customerID,
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    return methods, nil
+}
+
+func main() {
+    methods, err := getPaymentMethods("cus_123")
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Println("Available payment methods:", methods)
+    
+    // Use the first available method for upsell
+    if len(methods) > 0 {
+        primaryMethod := methods[0].PaymentMethodID
+        fmt.Println("Primary method:", primaryMethod)
+    }
+}
+```
+
+</Tab>
+</Tabs>
+
+<Info>
+Os métodos de pagamento são salvos automaticamente quando os clientes finalizam o checkout. Você não precisa salvá-los explicitamente.
+</Info>
+
+## Upsells pós-compra de um clique
+
+Ofereça produtos adicionais imediatamente após uma compra bem-sucedida. O cliente pode aceitar com um único clique, pois seu método de pagamento já está salvo.
+
+```mermaid
+flowchart LR
+    A[Purchase] --> B{Upsell?}
+    B -->|Yes| C[Show Offer]
+    B -->|No| F[Done]
+    C --> D{Accept?}
+    D -->|Yes| E[One-Click Charge] --> F
+    D -->|No| F
+```
+
+### Implementação
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'live_mode',
+});
+
+async function createOneClickUpsell(
+  customerId: string,
+  paymentMethodId: string,
+  upsellProductId: string
+) {
+  // Create checkout session with saved payment method
+  // confirm: true processes the payment immediately
+  const session = await client.checkoutSessions.create({
+    product_cart: [
+      {
+        product_id: upsellProductId,
+        quantity: 1
+      }
+    ],
+    customer: {
+      customer_id: customerId
+    },
+    payment_method_id: paymentMethodId,
+    confirm: true,  // Required when using payment_method_id
+    return_url: 'https://yourapp.com/upsell-success',
+    feature_flags: {
+      redirect_immediately: true  // Skip success page
+    },
+    metadata: {
+      upsell_source: 'post_purchase',
+      original_order_id: 'order_123'
+    }
+  });
+
+  return session;
+}
+
+// Example: Offer premium add-on after initial purchase
+async function handlePostPurchaseUpsell(customerId: string) {
+  // Get customer's payment methods
+  const methods = await client.customers.listPaymentMethods(customerId);
+  
+  if (methods.length === 0) {
+    console.log('No saved payment methods available');
+    return null;
+  }
+
+  // Create the upsell with one-click checkout
+  const upsell = await createOneClickUpsell(
+    customerId,
+    methods[0].payment_method_id,
+    'prod_premium_addon'
+  );
+
+  console.log('Upsell processed:', upsell.session_id);
+  return upsell;
+}
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+import os
+from dodopayments import DodoPayments
+
+client = DodoPayments(
+    bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+    environment="live_mode",
+)
+
+def create_one_click_upsell(
+    customer_id: str,
+    payment_method_id: str,
+    upsell_product_id: str
+):
+    """Create a one-click upsell using saved payment method."""
+    
+    # Create checkout session with saved payment method
+    # confirm=True processes the payment immediately
+    session = client.checkout_sessions.create(
+        product_cart=[
+            {
+                "product_id": upsell_product_id,
+                "quantity": 1
+            }
+        ],
+        customer={
+            "customer_id": customer_id
+        },
+        payment_method_id=payment_method_id,
+        confirm=True,  # Required when using payment_method_id
+        return_url="https://yourapp.com/upsell-success",
+        feature_flags={
+            "redirect_immediately": True  # Skip success page
+        },
+        metadata={
+            "upsell_source": "post_purchase",
+            "original_order_id": "order_123"
+        }
+    )
+    
+    return session
+
+def handle_post_purchase_upsell(customer_id: str):
+    """Offer premium add-on after initial purchase."""
+    
+    # Get customer's payment methods
+    methods = client.customers.list_payment_methods(customer_id)
+    
+    if not methods:
+        print("No saved payment methods available")
+        return None
+    
+    # Create the upsell with one-click checkout
+    upsell = create_one_click_upsell(
+        customer_id=customer_id,
+        payment_method_id=methods[0].payment_method_id,
+        upsell_product_id="prod_premium_addon"
+    )
+    
+    print(f"Upsell processed: {upsell.session_id}")
+    return upsell
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+    
+    "github.com/dodopayments/dodopayments-go"
+    "github.com/dodopayments/dodopayments-go/option"
+)
+
+func createOneClickUpsell(
+    customerID string,
+    paymentMethodID string,
+    upsellProductID string,
+) (*dodopayments.CheckoutSession, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    // Create checkout session with saved payment method
+    // Confirm: true processes the payment immediately
+    session, err := client.CheckoutSessions.Create(context.TODO(), dodopayments.CheckoutSessionCreateParams{
+        ProductCart: dodopayments.F([]dodopayments.CheckoutSessionCreateParamsProductCart{
+            {
+                ProductID: dodopayments.F(upsellProductID),
+                Quantity:  dodopayments.F(int64(1)),
+            },
+        }),
+        Customer: dodopayments.F(dodopayments.CheckoutSessionCreateParamsCustomer{
+            CustomerID: dodopayments.F(customerID),
+        }),
+        PaymentMethodID: dodopayments.F(paymentMethodID),
+        Confirm:         dodopayments.F(true), // Required when using payment_method_id
+        ReturnURL:       dodopayments.F("https://yourapp.com/upsell-success"),
+        FeatureFlags: dodopayments.F(dodopayments.CheckoutSessionCreateParamsFeatureFlags{
+            RedirectImmediately: dodopayments.F(true), // Skip success page
+        }),
+        Metadata: dodopayments.F(map[string]string{
+            "upsell_source":     "post_purchase",
+            "original_order_id": "order_123",
+        }),
+    })
+    
+    return session, err
+}
+
+func handlePostPurchaseUpsell(customerID string) (*dodopayments.CheckoutSession, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    // Get customer's payment methods
+    methods, err := client.Customers.ListPaymentMethods(context.TODO(), customerID)
+    if err != nil {
+        return nil, err
+    }
+    
+    if len(methods) == 0 {
+        fmt.Println("No saved payment methods available")
+        return nil, nil
+    }
+    
+    // Create the upsell with one-click checkout
+    upsell, err := createOneClickUpsell(
+        customerID,
+        methods[0].PaymentMethodID,
+        "prod_premium_addon",
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    fmt.Printf("Upsell processed: %s\n", upsell.SessionID)
+    return upsell, nil
+}
+```
+
+</Tab>
+</Tabs>
+
+<Warning>
+Ao usar `payment_method_id`, você deve definir `confirm: true` e fornecer um `customer_id` existente. O método de pagamento deve pertencer a esse cliente.
+</Warning>
+
+## Upgrades de assinatura
+
+Mova os clientes para planos de assinatura de nível superior com tratamento automático de prorrateamento.
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant A as Your App
+    participant D as Dodo API
+    
+    C->>A: Request upgrade
+    A->>D: Preview change plan
+    D-->>A: Charge amount
+    A->>C: Confirm $50 charge?
+    C->>A: Confirm
+    A->>D: Change plan
+    D->>A: Webhook: plan_changed
+```
+
+### Visualizar antes de confirmar
+
+Sempre visualize as alterações de plano para mostrar aos clientes exatamente o que será cobrado:
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+async function previewUpgrade(
+  subscriptionId: string,
+  newProductId: string
+) {
+  const preview = await client.subscriptions.previewChangePlan(subscriptionId, {
+    product_id: newProductId,
+    quantity: 1,
+    proration_billing_mode: 'difference_immediately'
+  });
+
+  return {
+    immediateCharge: preview.immediate_charge?.summary,
+    newPlan: preview.new_plan,
+    effectiveDate: preview.effective_date
+  };
+}
+
+// Show customer the charge before confirming
+const preview = await previewUpgrade('sub_123', 'prod_pro_plan');
+console.log(`Upgrade will charge: ${preview.immediateCharge}`);
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+def preview_upgrade(subscription_id: str, new_product_id: str):
+    preview = client.subscriptions.preview_change_plan(
+        subscription_id=subscription_id,
+        product_id=new_product_id,
+        quantity=1,
+        proration_billing_mode="difference_immediately"
+    )
+    
+    return {
+        "immediate_charge": preview.immediate_charge.summary if preview.immediate_charge else None,
+        "new_plan": preview.new_plan,
+        "effective_date": preview.effective_date
+    }
+
+# Show customer the charge before confirming
+preview = preview_upgrade("sub_123", "prod_pro_plan")
+print(f"Upgrade will charge: {preview['immediate_charge']}")
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+func previewUpgrade(subscriptionID string, newProductID string) (map[string]interface{}, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    preview, err := client.Subscriptions.PreviewChangePlan(
+        context.TODO(),
+        subscriptionID,
+        dodopayments.SubscriptionPreviewChangePlanParams{
+            ProductID:             dodopayments.F(newProductID),
+            Quantity:              dodopayments.F(int64(1)),
+            ProrationBillingMode:  dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+        },
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    return map[string]interface{}{
+        "immediate_charge": preview.ImmediateCharge.Summary,
+        "new_plan":         preview.NewPlan,
+        "effective_date":   preview.EffectiveDate,
+    }, nil
+}
+```
+
+</Tab>
+</Tabs>
+
+### Execute o upgrade
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+async function upgradeSubscription(
+  subscriptionId: string,
+  newProductId: string,
+  prorationMode: 'prorated_immediately' | 'difference_immediately' | 'full_immediately' = 'difference_immediately'
+) {
+  const result = await client.subscriptions.changePlan(subscriptionId, {
+    product_id: newProductId,
+    quantity: 1,
+    proration_billing_mode: prorationMode
+  });
+
+  return {
+    status: result.status,
+    subscriptionId: result.subscription_id,
+    paymentId: result.payment_id,
+    invoiceId: result.invoice_id
+  };
+}
+
+// Upgrade from Basic ($30) to Pro ($80)
+// With difference_immediately: charges $50 instantly
+const upgrade = await upgradeSubscription('sub_123', 'prod_pro_plan');
+console.log('Upgrade status:', upgrade.status);
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+def upgrade_subscription(
+    subscription_id: str,
+    new_product_id: str,
+    proration_mode: str = "difference_immediately"
+):
+    result = client.subscriptions.change_plan(
+        subscription_id=subscription_id,
+        product_id=new_product_id,
+        quantity=1,
+        proration_billing_mode=proration_mode
+    )
+    
+    return {
+        "status": result.status,
+        "subscription_id": result.subscription_id,
+        "payment_id": result.payment_id,
+        "invoice_id": result.invoice_id
+    }
+
+# Upgrade from Basic ($30) to Pro ($80)
+# With difference_immediately: charges $50 instantly
+upgrade = upgrade_subscription("sub_123", "prod_pro_plan")
+print(f"Upgrade status: {upgrade['status']}")
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+func upgradeSubscription(
+    subscriptionID string,
+    newProductID string,
+    prorationMode dodopayments.ProrationBillingMode,
+) (*dodopayments.SubscriptionChangePlanResponse, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    result, err := client.Subscriptions.ChangePlan(
+        context.TODO(),
+        subscriptionID,
+        dodopayments.SubscriptionChangePlanParams{
+            ProductID:            dodopayments.F(newProductID),
+            Quantity:             dodopayments.F(int64(1)),
+            ProrationBillingMode: dodopayments.F(prorationMode),
+        },
+    )
+    
+    return result, err
+}
+
+// Upgrade from Basic ($30) to Pro ($80)
+// With DifferenceImmediately: charges $50 instantly
+upgrade, err := upgradeSubscription(
+    "sub_123",
+    "prod_pro_plan",
+    dodopayments.ProrationBillingModeDifferenceImmediately,
+)
+if err != nil {
+    panic(err)
+}
+fmt.Printf("Upgrade status: %s\n", upgrade.Status)
+```
+
+</Tab>
+</Tabs>
+
+### Modos de prorrateamento
+
+Escolha como os clientes são cobrados ao fazer upgrade:
+
+| Modo | Comportamento | Ideal para |
+|------|----------|----------|
+| `difference_immediately` | Cobra a diferença de preço instantaneamente ($30→$80 = $50) | Upgrades simples |
+| `prorated_immediately` | Cobra com base no tempo restante no ciclo de faturamento | Cobrança justa baseada no tempo |
+| `full_immediately` | Cobra o preço total do novo plano, ignorando o tempo restante | Ciclo de faturamento reinicia |
+
+<Tip>
+Use `difference_immediately` para fluxos de upgrade diretos. Use `prorated_immediately` quando quiser contabilizar o tempo não utilizado no plano atual.
+</Tip>
+
+## Cross-sells
+
+Adicione produtos complementares para clientes existentes sem exigir que eles reentrem os dados de pagamento.
+
+```mermaid
+flowchart LR
+    A[View Product] --> B{Existing Customer?}
+    B -->|Yes| C[One-Click Buy] --> E[Deliver]
+    B -->|No| D[Standard Checkout] --> E
+```
+
+### Implementação
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+async function createCrossSell(
+  customerId: string,
+  paymentMethodId: string,
+  productId: string,
+  quantity: number = 1
+) {
+  // Create a one-time payment using saved payment method
+  const payment = await client.payments.create({
+    product_cart: [
+      {
+        product_id: productId,
+        quantity: quantity
+      }
+    ],
+    customer_id: customerId,
+    payment_method_id: paymentMethodId,
+    return_url: 'https://yourapp.com/purchase-complete',
+    metadata: {
+      purchase_type: 'cross_sell',
+      source: 'product_recommendation'
+    }
+  });
+
+  return payment;
+}
+
+// Example: Customer bought a course, offer related ebook
+async function offerRelatedProduct(customerId: string, relatedProductId: string) {
+  const methods = await client.customers.listPaymentMethods(customerId);
+  
+  if (methods.length === 0) {
+    // Fall back to standard checkout
+    return client.checkoutSessions.create({
+      product_cart: [{ product_id: relatedProductId, quantity: 1 }],
+      customer: { customer_id: customerId },
+      return_url: 'https://yourapp.com/purchase-complete'
+    });
+  }
+
+  // One-click purchase
+  return createCrossSell(customerId, methods[0].payment_method_id, relatedProductId);
+}
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+def create_cross_sell(
+    customer_id: str,
+    payment_method_id: str,
+    product_id: str,
+    quantity: int = 1
+):
+    """Create a one-time payment using saved payment method."""
+    
+    payment = client.payments.create(
+        product_cart=[
+            {
+                "product_id": product_id,
+                "quantity": quantity
+            }
+        ],
+        customer_id=customer_id,
+        payment_method_id=payment_method_id,
+        return_url="https://yourapp.com/purchase-complete",
+        metadata={
+            "purchase_type": "cross_sell",
+            "source": "product_recommendation"
+        }
+    )
+    
+    return payment
+
+def offer_related_product(customer_id: str, related_product_id: str):
+    """Offer related product with one-click purchase if possible."""
+    
+    methods = client.customers.list_payment_methods(customer_id)
+    
+    if not methods:
+        # Fall back to standard checkout
+        return client.checkout_sessions.create(
+            product_cart=[{"product_id": related_product_id, "quantity": 1}],
+            customer={"customer_id": customer_id},
+            return_url="https://yourapp.com/purchase-complete"
+        )
+    
+    # One-click purchase
+    return create_cross_sell(customer_id, methods[0].payment_method_id, related_product_id)
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+func createCrossSell(
+    customerID string,
+    paymentMethodID string,
+    productID string,
+    quantity int64,
+) (*dodopayments.Payment, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    payment, err := client.Payments.Create(context.TODO(), dodopayments.PaymentCreateParams{
+        ProductCart: dodopayments.F([]dodopayments.PaymentCreateParamsProductCart{
+            {
+                ProductID: dodopayments.F(productID),
+                Quantity:  dodopayments.F(quantity),
+            },
+        }),
+        CustomerID:      dodopayments.F(customerID),
+        PaymentMethodID: dodopayments.F(paymentMethodID),
+        ReturnURL:       dodopayments.F("https://yourapp.com/purchase-complete"),
+        Metadata: dodopayments.F(map[string]string{
+            "purchase_type": "cross_sell",
+            "source":        "product_recommendation",
+        }),
+    })
+    
+    return payment, err
+}
+
+func offerRelatedProduct(customerID string, relatedProductID string) (interface{}, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    methods, err := client.Customers.ListPaymentMethods(context.TODO(), customerID)
+    if err != nil {
+        return nil, err
+    }
+    
+    if len(methods) == 0 {
+        // Fall back to standard checkout
+        return client.CheckoutSessions.Create(context.TODO(), dodopayments.CheckoutSessionCreateParams{
+            ProductCart: dodopayments.F([]dodopayments.CheckoutSessionCreateParamsProductCart{
+                {ProductID: dodopayments.F(relatedProductID), Quantity: dodopayments.F(int64(1))},
+            }),
+            Customer:  dodopayments.F(dodopayments.CheckoutSessionCreateParamsCustomer{CustomerID: dodopayments.F(customerID)}),
+            ReturnURL: dodopayments.F("https://yourapp.com/purchase-complete"),
+        })
+    }
+    
+    // One-click purchase
+    return createCrossSell(customerID, methods[0].PaymentMethodID, relatedProductID, 1)
+}
+```
+
+</Tab>
+</Tabs>
+
+## Downgrades de assinatura
+
+Quando os clientes quiserem migrar para um plano inferior, trate a transição com elegância usando créditos automáticos.
+
+### Como funcionam os downgrades
+
+1. Cliente solicita downgrade (Pro → Basic)
+2. Sistema calcula o valor restante no plano atual
+3. Crédito é adicionado à assinatura para futuras renovações
+4. Cliente muda para o novo plano imediatamente
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+async function downgradeSubscription(
+  subscriptionId: string,
+  newProductId: string
+) {
+  // Preview the downgrade first
+  const preview = await client.subscriptions.previewChangePlan(subscriptionId, {
+    product_id: newProductId,
+    quantity: 1,
+    proration_billing_mode: 'difference_immediately'
+  });
+
+  console.log('Credit to be applied:', preview.credit_amount);
+
+  // Execute the downgrade
+  const result = await client.subscriptions.changePlan(subscriptionId, {
+    product_id: newProductId,
+    quantity: 1,
+    proration_billing_mode: 'difference_immediately'
+  });
+
+  // Credits are automatically applied to future renewals
+  return result;
+}
+
+// Downgrade from Pro ($80) to Basic ($30)
+// $50 credit added to subscription, auto-applied on next renewal
+const downgrade = await downgradeSubscription('sub_123', 'prod_basic_plan');
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+def downgrade_subscription(subscription_id: str, new_product_id: str):
+    # Preview the downgrade first
+    preview = client.subscriptions.preview_change_plan(
+        subscription_id=subscription_id,
+        product_id=new_product_id,
+        quantity=1,
+        proration_billing_mode="difference_immediately"
+    )
+    
+    print(f"Credit to be applied: {preview.credit_amount}")
+    
+    # Execute the downgrade
+    result = client.subscriptions.change_plan(
+        subscription_id=subscription_id,
+        product_id=new_product_id,
+        quantity=1,
+        proration_billing_mode="difference_immediately"
+    )
+    
+    # Credits are automatically applied to future renewals
+    return result
+
+# Downgrade from Pro ($80) to Basic ($30)
+# $50 credit added to subscription, auto-applied on next renewal
+downgrade = downgrade_subscription("sub_123", "prod_basic_plan")
+```
+
+</Tab>
+
+<Tab title="Go">
+
+```go
+func downgradeSubscription(subscriptionID string, newProductID string) (*dodopayments.SubscriptionChangePlanResponse, error) {
+    client := dodopayments.NewClient(
+        option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
+    )
+    
+    // Preview the downgrade first
+    preview, err := client.Subscriptions.PreviewChangePlan(
+        context.TODO(),
+        subscriptionID,
+        dodopayments.SubscriptionPreviewChangePlanParams{
+            ProductID:            dodopayments.F(newProductID),
+            Quantity:             dodopayments.F(int64(1)),
+            ProrationBillingMode: dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+        },
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    fmt.Printf("Credit to be applied: %v\n", preview.CreditAmount)
+    
+    // Execute the downgrade
+    result, err := client.Subscriptions.ChangePlan(
+        context.TODO(),
+        subscriptionID,
+        dodopayments.SubscriptionChangePlanParams{
+            ProductID:            dodopayments.F(newProductID),
+            Quantity:             dodopayments.F(int64(1)),
+            ProrationBillingMode: dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+        },
+    )
+    
+    return result, err
+}
+```
+
+</Tab>
+</Tabs>
+
+<Info>
+Os créditos de downgrades usando `difference_immediately` são vinculados à assinatura e aplicados automaticamente às renovações futuras. Eles são diferentes dos [Customer Credits](/features/customer-credit).
+</Info>
+
+## Exemplo completo: fluxo de upsell pós-compra
+
+Aqui está uma implementação completa mostrando como oferecer um upsell após uma compra bem-sucedida:
+
+<Tabs>
+<Tab title="TypeScript">
+
+```typescript
+import DodoPayments from 'dodopayments';
+import express from 'express';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'live_mode',
+});
+
+const app = express();
+
+// Store for tracking upsell eligibility (use your database in production)
+const eligibleUpsells = new Map<string, { customerId: string; productId: string }>();
+
+// Webhook handler for initial purchase success
+app.post('/webhooks/dodo', express.raw({ type: 'application/json' }), async (req, res) => {
+  const event = JSON.parse(req.body.toString());
+  
+  switch (event.type) {
+    case 'payment.succeeded':
+      // Check if customer is eligible for upsell
+      const customerId = event.data.customer_id;
+      const productId = event.data.product_id;
+      
+      // Define upsell rules (e.g., bought Basic, offer Pro)
+      const upsellProduct = getUpsellProduct(productId);
+      
+      if (upsellProduct) {
+        eligibleUpsells.set(customerId, {
+          customerId,
+          productId: upsellProduct
+        });
+      }
+      break;
+      
+    case 'payment.failed':
+      console.log('Payment failed:', event.data.payment_id);
+      // Handle failed upsell payment
+      break;
+  }
+  
+  res.json({ received: true });
+});
+
+// API endpoint to check upsell eligibility
+app.get('/api/upsell/:customerId', async (req, res) => {
+  const { customerId } = req.params;
+  const upsell = eligibleUpsells.get(customerId);
+  
+  if (!upsell) {
+    return res.json({ eligible: false });
+  }
+  
+  // Get payment methods
+  const methods = await client.customers.listPaymentMethods(customerId);
+  
+  if (methods.length === 0) {
+    return res.json({ eligible: false, reason: 'no_payment_method' });
+  }
+  
+  // Get product details for display
+  const product = await client.products.retrieve(upsell.productId);
+  
+  res.json({
+    eligible: true,
+    product: {
+      id: product.product_id,
+      name: product.name,
+      price: product.price,
+      currency: product.currency
+    },
+    paymentMethodId: methods[0].payment_method_id
+  });
+});
+
+// API endpoint to accept upsell
+app.post('/api/upsell/:customerId/accept', async (req, res) => {
+  const { customerId } = req.params;
+  const upsell = eligibleUpsells.get(customerId);
+  
+  if (!upsell) {
+    return res.status(400).json({ error: 'No upsell available' });
+  }
+  
+  try {
+    const methods = await client.customers.listPaymentMethods(customerId);
+    
+    // Create one-click purchase
+    const session = await client.checkoutSessions.create({
+      product_cart: [{ product_id: upsell.productId, quantity: 1 }],
+      customer: { customer_id: customerId },
+      payment_method_id: methods[0].payment_method_id,
+      confirm: true,
+      return_url: `${process.env.APP_URL}/upsell-success`,
+      feature_flags: { redirect_immediately: true },
+      metadata: { upsell: 'true', source: 'post_purchase' }
+    });
+    
+    // Clear the upsell offer
+    eligibleUpsells.delete(customerId);
+    
+    res.json({ success: true, sessionId: session.session_id });
+  } catch (error) {
+    console.error('Upsell failed:', error);
+    res.status(500).json({ error: 'Upsell processing failed' });
+  }
+});
+
+// Helper function to determine upsell product
+function getUpsellProduct(purchasedProductId: string): string | null {
+  const upsellMap: Record<string, string> = {
+    'prod_basic_plan': 'prod_pro_plan',
+    'prod_starter_course': 'prod_complete_bundle',
+    'prod_single_license': 'prod_team_license'
+  };
+  
+  return upsellMap[purchasedProductId] || null;
+}
+
+app.listen(3000);
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```python
+import os
+from flask import Flask, request, jsonify
+from dodopayments import DodoPayments
+
+client = DodoPayments(
+    bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+    environment="live_mode",
+)
+
+app = Flask(__name__)
+
+# Store for tracking upsell eligibility (use your database in production)
+eligible_upsells = {}
+
+@app.route('/webhooks/dodo', methods=['POST'])
+def webhook_handler():
+    event = request.json
+    
+    if event['type'] == 'payment.succeeded':
+        # Check if customer is eligible for upsell
+        customer_id = event['data']['customer_id']
+        product_id = event['data']['product_id']
+        
+        # Define upsell rules
+        upsell_product = get_upsell_product(product_id)
+        
+        if upsell_product:
+            eligible_upsells[customer_id] = {
+                'customer_id': customer_id,
+                'product_id': upsell_product
+            }
+    
+    elif event['type'] == 'payment.failed':
+        print(f"Payment failed: {event['data']['payment_id']}")
+    
+    return jsonify({'received': True})
+
+@app.route('/api/upsell/<customer_id>', methods=['GET'])
+def check_upsell(customer_id):
+    upsell = eligible_upsells.get(customer_id)
+    
+    if not upsell:
+        return jsonify({'eligible': False})
+    
+    # Get payment methods
+    methods = client.customers.list_payment_methods(customer_id)
+    
+    if not methods:
+        return jsonify({'eligible': False, 'reason': 'no_payment_method'})
+    
+    # Get product details for display
+    product = client.products.retrieve(upsell['product_id'])
+    
+    return jsonify({
+        'eligible': True,
+        'product': {
+            'id': product.product_id,
+            'name': product.name,
+            'price': product.price,
+            'currency': product.currency
+        },
+        'payment_method_id': methods[0].payment_method_id
+    })
+
+@app.route('/api/upsell/<customer_id>/accept', methods=['POST'])
+def accept_upsell(customer_id):
+    upsell = eligible_upsells.get(customer_id)
+    
+    if not upsell:
+        return jsonify({'error': 'No upsell available'}), 400
+    
+    try:
+        methods = client.customers.list_payment_methods(customer_id)
+        
+        # Create one-click purchase
+        session = client.checkout_sessions.create(
+            product_cart=[{'product_id': upsell['product_id'], 'quantity': 1}],
+            customer={'customer_id': customer_id},
+            payment_method_id=methods[0].payment_method_id,
+            confirm=True,
+            return_url=f"{os.environ['APP_URL']}/upsell-success",
+            feature_flags={'redirect_immediately': True},
+            metadata={'upsell': 'true', 'source': 'post_purchase'}
+        )
+        
+        # Clear the upsell offer
+        del eligible_upsells[customer_id]
+        
+        return jsonify({'success': True, 'session_id': session.session_id})
+    
+    except Exception as error:
+        print(f"Upsell failed: {error}")
+        return jsonify({'error': 'Upsell processing failed'}), 500
+
+def get_upsell_product(purchased_product_id: str) -> str:
+    """Determine upsell product based on purchased product."""
+    upsell_map = {
+        'prod_basic_plan': 'prod_pro_plan',
+        'prod_starter_course': 'prod_complete_bundle',
+        'prod_single_license': 'prod_team_license'
+    }
+    return upsell_map.get(purchased_product_id)
+
+if __name__ == '__main__':
+    app.run(port=3000)
+```
+
+</Tab>
+</Tabs>
+
+## Melhores práticas
+
+<AccordionGroup>
+<Accordion title="Time Your Upsells Strategically">
+O melhor momento para oferecer um upsell é imediatamente após uma compra bem-sucedida, quando os clientes estão em uma mentalidade de compra. Outros momentos eficazes:
+- Após marcos de uso de recursos
+- Ao se aproximar dos limites do plano
+- Durante a conclusão do onboarding
+</Accordion>
+
+<Accordion title="Validate Payment Method Eligibility">
+Antes de tentar uma cobrança de um clique, verifique o método de pagamento:
+- É compatível com a moeda do produto
+- Não expirou
+- Pertence ao cliente
+
+A API validará isso, mas verificar proativamente melhora a experiência.
+</Accordion>
+
+<Accordion title="Handle Failures Gracefully">
+Quando cobranças de um clique falharem:
+1. Retorne ao fluxo de checkout padrão
+2. Notifique o cliente com mensagens claras
+3. Ofereça atualizar o método de pagamento
+4. Não tente cobranças falhas repetidamente
+</Accordion>
+
+<Accordion title="Provide Clear Value Proposition">
+Upsells convertem melhor quando os clientes entendem o valor:
+- Mostre o que estão recebendo em comparação ao plano atual
+- Destaque a diferença de preço, não o preço total
+- Use prova social (ex.: "Upgrade mais popular")
+</Accordion>
+
+<Accordion title="Respect Customer Choice">
+- Sempre ofereça uma forma fácil de recusar
+- Não mostre o mesmo upsell repetidamente após uma recusa
+- Acompanhe e analise quais upsells convertem para otimizar as ofertas
+</Accordion>
+</AccordionGroup>
+
+## Webhooks para monitorar
+
+Acompanhe estes eventos de webhook para fluxos de upsell e downgrade:
+
+| Evento | Gatilho | Ação |
+|-------|---------|--------|
+| `payment.succeeded` | Pagamento de upsell/cross-sell concluído | Entregue o produto, atualize o acesso |
+| `payment.failed` | Cobrança de um clique falhou | Mostre o erro, ofereça nova tentativa ou fallback |
+| `subscription.plan_changed` | Upgrade/downgrade concluído | Atualize os recursos, envie confirmação |
+| `subscription.active` | Assinatura reativada após mudança de plano | Conceda acesso ao novo nível |
+
+<Card title="Webhook Integration Guide" icon="webhook" href="/developer-resources/webhooks">
+  Aprenda como configurar e verificar endpoints de webhook.
+</Card>
+
+## Recursos relacionados
+
+<CardGroup cols={2}>
+<Card title="Subscription Upgrade Guide" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
+  Guia detalhado sobre mudanças de plano, modos de prorrateamento e tratamento de falhas.
+</Card>
+
+<Card title="Checkout Sessions" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Referência completa para criar sessões de checkout com todas as opções.
+</Card>
+
+<Card title="Customer Payment Methods API" icon="credit-card" href="/api-reference/customers/get-customer-payment-methods">
+  Referência de API para listar métodos de pagamento do cliente.
+</Card>
+
+<Card title="Add-ons" icon="puzzle-piece" href="/features/addons">
+  Melhore assinaturas com complementos flexíveis para receita adicional.
+</Card>
+</CardGroup>

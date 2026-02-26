@@ -1,0 +1,580 @@
+---
+title: Bun Adaptor
+description: Bun 서버 프로젝트에 Dodo Payments를 통합하는 방법을 설명합니다. 체크아웃, 고객 포털, 웹훅 및 보안 환경 설정을 다룹니다.
+icon: code-merge
+---
+
+<CardGroup cols={2}>
+<Card title="Checkout Handler" icon="cart-shopping" href="#checkout-route-handler">
+    Bun 서버에 Dodo Payments 체크아웃을 통합하세요.
+</Card>
+<Card title="Customer Portal" icon="user" href="#customer-portal-route-handler">
+    고객이 구독 및 세부 정보를 관리할 수 있도록 합니다.
+</Card>
+<Card title="Webhooks" icon="bell" href="#webhook-route-handler">
+    Dodo Payments 웹훅 이벤트를 수신하고 처리하세요.
+</Card>
+</CardGroup>
+
+## 설치
+
+<Steps>
+<Step title="Install the package">
+프로젝트 루트에서 다음 명령을 실행하세요:
+
+```bash
+bun add @dodopayments/bun
+```
+
+</Step>
+<Step title="Set up environment variables">
+프로젝트 루트에 <code>.env</code> 파일을 생성하세요:
+
+```env expandable
+DODO_PAYMENTS_API_KEY=your-api-key
+DODO_PAYMENTS_WEBHOOK_KEY=your-webhook-secret
+DODO_PAYMENTS_ENVIRONMENT="test_mode" or "live_mode"
+DODO_PAYMENTS_RETURN_URL=your-return-url
+```
+
+<Warning>
+절대 <code>.env</code> 파일이나 비밀을 버전 관리 시스템에 커밋하지 마세요.
+</Warning>
+</Step>
+</Steps>
+
+## 라우트 핸들러 예시
+
+<Info>
+모든 예시는 <code>Bun.serve()</code>와 함께 Bun의 네이티브 서버를 사용한다고 가정합니다.
+</Info>
+
+<Tabs>
+<Tab title="Checkout Handler">
+  <Info>
+  이 핸들러를 사용해 Dodo Payments 체크아웃을 Bun 서버에 통합하세요. 정적(GET), 동적(POST), 세션(POST) 결제 흐름을 모두 지원합니다.
+  </Info>
+  <CodeGroup>
+
+    ```typescript Bun Server Handler expandable
+    import { Checkout } from '@dodopayments/bun';
+
+    const staticCheckoutHandler = Checkout({
+        bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+        returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+        environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+        type: "static"
+    });
+
+    const sessionCheckoutHandler = Checkout({
+        bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+        returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+        environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+        type: "session"
+    });
+
+    const dynamicCheckoutHandler = Checkout({
+        bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+        returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+        environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+        type: "dynamic"
+    });
+
+    Bun.serve({
+      port: 3000,
+      fetch(request) {
+        const url = new URL(request.url);
+        
+        if (url.pathname === "/api/checkout") {
+          if (request.method === "GET") {
+            return staticCheckoutHandler(request);
+          }
+          if (request.method === "POST") {
+            return sessionCheckoutHandler(request);
+            // or return dynamicCheckoutHandler(request);
+          }
+        }
+        
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    ```
+
+  </CodeGroup>
+  <CodeGroup>
+
+  ```curl Static Checkout Curl example expandable
+  curl --request GET \
+  --url 'https://example.com/api/checkout?productId=pdt_xxx' \
+  --header 'User-Agent: insomnia/11.2.0' \
+  --cookie mode=test
+  ```
+
+  </CodeGroup>
+  <CodeGroup>
+
+  ```curl Dynamic Checkout Curl example expandable
+  curl --request POST \
+  --url https://example.com/api/checkout \
+  --header 'Content-Type: application/json' \
+  --header 'User-Agent: insomnia/11.2.0' \
+  --cookie mode=test \
+  --data '{
+  "billing": {
+    "city": "Texas",
+    "country": "US",
+    "state": "Texas",
+    "street": "56, hhh",
+    "zipcode": "560000"
+  },
+  "customer": {
+    "email": "test@example.com",
+		"name": "test"
+  },
+  "metadata": {},
+  "payment_link": true,
+	"product_id": "pdt_xxx",
+	"quantity": 1,
+	"billing_currency": "USD",
+	"discount_code": "IKHZ23M9GQ",
+    "return_url": "https://example.com",
+	"trial_period_days": 10
+}'
+  ```
+
+  </CodeGroup>
+  <CodeGroup>
+
+  ```curl Checkout Session Curl example expandable
+  curl --request POST \
+  --url https://example.com/api/checkout \
+  --header 'Content-Type: application/json' \
+  --header 'User-Agent: insomnia/11.2.0' \
+  --cookie mode=test \
+  --data '{
+  "product_cart": [
+    {
+      "product_id": "pdt_xxx",
+      "quantity": 1
+    }
+  ],
+  "customer": {
+    "email": "test@example.com",
+    "name": "test"
+  },
+  "return_url": "https://example.com/success"
+}'
+  ```
+
+  </CodeGroup>
+
+</Tab>
+<Tab title="Customer Portal Handler">
+  <Info>
+  이 핸들러를 사용해 고객이 Dodo Payments 고객 포털을 통해 구독 및 세부 정보를 관리할 수 있도록 합니다.
+  </Info>
+  <CodeGroup>
+
+    ```typescript Bun Server Handler expandable
+    import { CustomerPortal } from "@dodopayments/bun";
+
+    const customerPortalHandler = CustomerPortal({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+      environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+    });
+
+    Bun.serve({
+      port: 3000,
+      fetch(request) {
+        const url = new URL(request.url);
+        
+        if (url.pathname === "/api/customer-portal" && request.method === "GET") {
+          return customerPortalHandler(request);
+        }
+        
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    ```
+
+  </CodeGroup>
+  <CodeGroup>
+
+  ```curl Customer Portal Curl example expandable
+  curl --request GET \
+  --url 'https://example.com/api/customer-portal?customer_id=cus_123&send_email=true' \
+  --header 'User-Agent: insomnia/11.2.0' \
+  --cookie mode=test
+  ```
+
+  </CodeGroup>
+</Tab>
+<Tab title="Webhook Handler">
+  <Info>
+  이 핸들러를 사용하여 Bun 서버에서 Dodo Payments 웹훅 이벤트를 안전하게 수신하고 처리하세요.
+  </Info>
+  <CodeGroup>
+
+  ```typescript Bun Server Handler expandable
+  import { Webhooks } from "@dodopayments/bun";
+
+  const webhookHandler = Webhooks({
+    webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+    onPayload: async (payload) => {
+      // handle the payload
+    },
+    // ... other event handlers for granular control
+  });
+
+  Bun.serve({
+    port: 3000,
+    fetch(request) {
+      const url = new URL(request.url);
+      
+      if (url.pathname === "/api/webhook/dodo-payments" && request.method === "POST") {
+        return webhookHandler(request);
+      }
+      
+      return new Response("Not Found", { status: 404 });
+    },
+  });
+  ```
+
+  </CodeGroup>
+</Tab>
+</Tabs>
+
+## 체크아웃 라우트 핸들러
+
+<Info>
+Dodo Payments는 사이트에 결제를 통합하기 위한 세 가지 유형의 결제 흐름을 지원하며, 이 어댑터는 모든 결제 흐름을 지원합니다.
+</Info>
+
+- **Static Payment Links:** 빠르고 코드 없이 결제 수집이 가능한 즉시 공유 가능한 URL입니다.
+- **Dynamic Payment Links:** API 또는 SDK를 사용하여 커스텀 세부 정보로 결제 링크를 프로그래밍 방식으로 생성합니다.
+- **Checkout Sessions:** 사전 구성된 상품 카트와 고객 정보를 사용하여 보안성과 사용자 정의가 강화된 체크아웃 환경을 생성합니다.
+
+<AccordionGroup>
+<Accordion title="Static Checkout (GET)">
+
+### 지원되는 쿼리 매개변수
+<ParamField query="productId" type="string" required>
+제품 식별자(예: <code>?productId=pdt_xxx</code>).
+</ParamField>
+<ParamField query="quantity" type="integer">
+제품 수량.
+</ParamField>
+<ParamField query="fullName" type="string">
+고객의 전체 이름.
+</ParamField>
+<ParamField query="firstName" type="string">
+고객의 이름.
+</ParamField>
+<ParamField query="lastName" type="string">
+고객의 성.
+</ParamField>
+<ParamField query="email" type="string">
+고객의 이메일 주소.
+</ParamField>
+<ParamField query="country" type="string">
+고객의 국가.
+</ParamField>
+<ParamField query="addressLine" type="string">
+고객의 주소 라인.
+</ParamField>
+<ParamField query="city" type="string">
+고객의 도시.
+</ParamField>
+<ParamField query="state" type="string">
+고객의 주/도.
+</ParamField>
+<ParamField query="zipCode" type="string">
+고객의 우편번호.
+</ParamField>
+<ParamField query="disableFullName" type="boolean">
+전체 이름 입력란 비활성화.
+</ParamField>
+<ParamField query="disableFirstName" type="boolean">
+이름 입력란 비활성화.
+</ParamField>
+<ParamField query="disableLastName" type="boolean">
+성 입력란 비활성화.
+</ParamField>
+<ParamField query="disableEmail" type="boolean">
+이메일 입력란 비활성화.
+</ParamField>
+<ParamField query="disableCountry" type="boolean">
+국가 입력란 비활성화.
+</ParamField>
+<ParamField query="disableAddressLine" type="boolean">
+주소 라인 입력란 비활성화.
+</ParamField>
+<ParamField query="disableCity" type="boolean">
+도시 입력란 비활성화.
+</ParamField>
+<ParamField query="disableState" type="boolean">
+주 입력란 비활성화.
+</ParamField>
+<ParamField query="disableZipCode" type="boolean">
+우편번호 입력란 비활성화.
+</ParamField>
+<ParamField query="paymentCurrency" type="string">
+지불 통화 지정(예: <code>USD</code>).
+</ParamField>
+<ParamField query="showCurrencySelector" type="boolean">
+통화 선택기를 표시합니다.
+</ParamField>
+<ParamField query="paymentAmount" type="integer">
+결제 금액 지정(예: <code>1000</code>은 $10.00).
+</ParamField>
+<ParamField query="showDiscounts" type="boolean">
+할인 필드를 표시합니다.
+</ParamField>
+<ParamField query="metadata_*" type="string">
+<code>metadata_</code>로 시작하는 모든 쿼리 매개변수는 메타데이터로 전달됩니다.
+</ParamField>
+
+<Warning>
+<code>productId</code>가 없으면 핸들러는 400 응답을 반환합니다. 잘못된 쿼리 매개변수 또한 400 응답을 초래합니다.
+</Warning>
+
+### 응답 형식
+정적 체크아웃은 체크아웃 URL이 포함된 JSON 응답을 반환합니다:
+
+```json
+{
+  "checkout_url": "https://checkout.dodopayments.com/..."
+}
+```
+
+</Accordion>
+<Accordion title="Dynamic Checkout (POST)">
+- POST 요청에서 JSON 본문으로 매개변수를 전송합니다.
+- 일회성 및 반복 결제를 모두 지원합니다.
+- 지원되는 POST 본문 필드 전체 목록은 다음을 참조하세요:
+  - [일회성 결제 상품의 요청 본문](https://docs.dodopayments.com/api-reference/payments/post-payments)
+  - [구독 상품의 요청 본문](https://docs.dodopayments.com/api-reference/subscriptions/post-subscriptions)
+
+### 응답 형식
+동적 체크아웃은 체크아웃 URL이 포함된 JSON 응답을 반환합니다:
+
+```json
+{
+  "checkout_url": "https://checkout.dodopayments.com/..."
+}
+```
+
+</Accordion>
+<Accordion title="Checkout Sessions (POST)">
+체크아웃 세션은 일회성 구매 및 구독 모두에 대해 전체 결제 흐름을 처리하는 보다 안전한 호스팅된 체크아웃 경험을 제공하며 완전한 사용자 정의 제어를 제공합니다.
+
+자세한 내용과 지원되는 필드 전체 목록은 [Checkout Sessions Integration Guide](https://docs.dodopayments.com/developer-resources/checkout-session)를 참조하세요.
+
+### 응답 형식
+체크아웃 세션은 체크아웃 URL이 포함된 JSON 응답을 반환합니다:
+
+```json
+{
+  "checkout_url": "https://checkout.dodopayments.com/session/..."
+}
+```
+
+</Accordion>
+</AccordionGroup>
+
+## 고객 포털 라우트 핸들러
+
+고객 포털 라우트 핸들러는 Dodo Payments 고객 포털을 Bun 서버 애플리케이션에 원활하게 통합할 수 있도록 합니다.
+
+### 쿼리 매개변수
+<ParamField query="customer_id" type="string" required>
+포털 세션에 사용할 고객 ID(예: <code>?customer_id=cus_123</code>).
+</ParamField>
+<ParamField query="send_email" type="boolean">
+<code>true</code>로 설정하면 고객에게 포털 링크가 포함된 이메일을 전송합니다.
+</ParamField>
+
+<Warning>
+<code>customer_id</code>가 없으면 400을 반환합니다.
+</Warning>
+
+## 웹훅 라우트 핸들러
+
+- **메서드:** POST 요청만 지원됩니다. 다른 메서드는 405를 반환합니다.
+- **서명 검증:** <code>webhookKey</code>를 사용하여 웹훅 서명을 검증합니다. 검증 실패 시 401을 반환합니다.
+- **페이로드 검증:** Zod로 검증합니다. 잘못된 페이로드는 400을 반환합니다.
+- **오류 처리:**
+  - 401: 잘못된 서명
+  - 400: 잘못된 페이로드
+  - 500: 검증 중 내부 오류
+- **이벤트 라우팅:** 페이로드 유형에 따라 적절한 이벤트 핸들러를 호출합니다.
+
+### 지원되는 웹훅 이벤트 핸들러
+<CodeGroup>
+
+```typescript Typescript expandable
+onPayload?: (payload: WebhookPayload) => Promise<void>;
+onPaymentSucceeded?: (payload: WebhookPayload) => Promise<void>;
+onPaymentFailed?: (payload: WebhookPayload) => Promise<void>;
+onPaymentProcessing?: (payload: WebhookPayload) => Promise<void>;
+onPaymentCancelled?: (payload: WebhookPayload) => Promise<void>;
+onRefundSucceeded?: (payload: WebhookPayload) => Promise<void>;
+onRefundFailed?: (payload: WebhookPayload) => Promise<void>;
+onDisputeOpened?: (payload: WebhookPayload) => Promise<void>;
+onDisputeExpired?: (payload: WebhookPayload) => Promise<void>;
+onDisputeAccepted?: (payload: WebhookPayload) => Promise<void>;
+onDisputeCancelled?: (payload: WebhookPayload) => Promise<void>;
+onDisputeChallenged?: (payload: WebhookPayload) => Promise<void>;
+onDisputeWon?: (payload: WebhookPayload) => Promise<void>;
+onDisputeLost?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionActive?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionOnHold?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionRenewed?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionPlanChanged?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionCancelled?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionFailed?: (payload: WebhookPayload) => Promise<void>;
+onSubscriptionExpired?: (payload: WebhookPayload) => Promise<void>;
+onLicenseKeyCreated?: (payload: WebhookPayload) => Promise<void>;
+```
+
+</CodeGroup>
+
+---
+
+## LLM을 위한 프롬프트 
+
+```
+
+You are an expert Bun developer assistant. Your task is to guide a user through integrating the @dodopayments/bun adapter into their existing Bun project.
+
+The @dodopayments/bun adapter provides handlers for Dodo Payments' Checkout, Customer Portal, and Webhook functionalities, designed for Bun's native server with Bun.serve().
+
+First, install the necessary package:
+
+bun add @dodopayments/bun
+
+Here's how you should structure your response:
+
+    Ask the user which functionalities they want to integrate.
+
+"Which parts of the @dodopayments/bun adapter would you like to integrate into your project? You can choose one or more of the following:
+1. Checkout (static, dynamic, or session-based)
+2. Customer Portal
+3. Webhooks"
+
+    Based on the user's selection, provide step-by-step integration instructions.
+
+For each selected functionality, show:
+
+    The environment variables required
+    The exact code to add to their server file
+    Where to place the code in their Bun.serve() configuration
+
+Provide complete, working examples that the user can copy and paste directly into their project.
+
+    Environment Variables Setup
+
+Always include instructions for setting up the .env file:
+
+DODO_PAYMENTS_API_KEY=your-api-key
+DODO_PAYMENTS_WEBHOOK_KEY=your-webhook-secret
+DODO_PAYMENTS_ENVIRONMENT="test_mode" or "live_mode"
+DODO_PAYMENTS_RETURN_URL=your-return-url
+
+Remind the user to never commit their .env file to version control.
+
+    For Checkout Integration
+
+If the user selects Checkout, ask which type they need:
+
+    Static checkout (GET requests with query parameters)
+    Dynamic checkout (POST requests with JSON body)
+    Checkout sessions (POST requests with product cart)
+
+Provide the appropriate handler code for their selection.
+
+    For Customer Portal Integration
+
+Provide a complete example showing how to integrate the customer portal handler into their Bun server.
+
+    For Webhook Integration
+
+Provide a complete example showing how to integrate the webhook handler with available event handlers for granular control.
+
+    Full Example
+
+If the user wants to integrate all three functionalities, provide a complete Bun server example that combines all handlers.
+
+```
+
+typescript
+import { Checkout, CustomerPortal, Webhooks } from "@dodopayments/bun";
+
+const staticCheckoutHandler = Checkout({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+  environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+  type: "static",
+});
+
+const sessionCheckoutHandler = Checkout({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  returnUrl: process.env.DODO_PAYMENTS_RETURN_URL,
+  environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+  type: "session",
+});
+
+const customerPortalHandler = CustomerPortal({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: process.env.DODO_PAYMENTS_ENVIRONMENT,
+});
+
+const webhookHandler = Webhooks({
+  webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+  onPaymentSucceeded: async (payload) => {
+    console.log("Payment succeeded:", payload);
+    // Your business logic here
+  },
+  onSubscriptionActive: async (payload) => {
+    console.log("Subscription activated:", payload);
+    // Your business logic here
+  },
+});
+
+Bun.serve({
+  port: 3000,
+  fetch(request) {
+    const url = new URL(request.url);
+    
+    // Checkout routes
+    if (url.pathname === "/api/checkout") {
+      if (request.method === "GET") {
+        return staticCheckoutHandler(request);
+      }
+      if (request.method === "POST") {
+        return sessionCheckoutHandler(request);
+      }
+    }
+    
+    // Customer portal route
+    if (url.pathname === "/api/customer-portal" && request.method === "GET") {
+      return customerPortalHandler(request);
+    }
+    
+    // Webhook route
+    if (url.pathname === "/api/webhook/dodo-payments" && request.method === "POST") {
+      return webhookHandler(request);
+    }
+    
+    return new Response("Not Found", { status: 404 });
+  },
+});
+
+console.log("Server running on http://localhost:3000");
+
+추가 안내:
+• 핸들러가 Bun 네이티브이며 Bun.serve()와 매끄럽게 작동함을 설명하세요
+• 웹 표준 Request 및 Response 객체 사용을 강조하세요
+• 오류 처리가 내장되어 있으며 적절한 HTTP 상태 코드를 반환한다는 점을 언급하세요
+• 자세한 내용은 Dodo Payments 문서로 연결되는 링크를 제공하세요
+```
