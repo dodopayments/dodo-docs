@@ -8,9 +8,11 @@
  * 2) Renames folders from Mintlify to Lingo codes (e.g., cn → zh-CN) so Lingo can find them
  * 3) Runs `npx lingo.dev@latest run` to update other language folders from /en + i18n.json
  * 4) Renames folders from Lingo codes to Mintlify codes (e.g., zh-CN → cn)
+ * 4b) Runs post-translation repair (restore locked patterns + fix broken MDX)
  * 5) Cleans up orphaned files in target languages (files that no longer exist in /en)
- * 6) Runs scripts/addUpdateLanguage.ts for all target languages (using Mintlify codes)
- * 7) Moves all content back from /en folder to root
+ * 6) Removes files excluded from translation
+ * 7) Runs scripts/addUpdateLanguage.ts for all target languages (using Mintlify codes)
+ * 8) Moves all content back from /en folder to root
  *
  * Usage:
  *   node scripts/syncAllLanguages.ts
@@ -25,6 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { restoreLockedPatterns, validateAndReplace } = require('./validateAndRepairTranslations');
 
 const ROOT = path.join(__dirname, '..');
 const I18N_PATH = path.join(ROOT, 'i18n.json');
@@ -377,6 +380,11 @@ function main() {
     // Step 3: Rename folders from Lingo to Mintlify codes (for Mintlify)
     // e.g., zh-CN/ → cn/
     renameFoldersToMintlifyCodes(lingoLangs);
+
+    // Step 3b: Repair translated files (restore locked patterns + fix broken MDX)
+    console.log('\n[repair] Running post-translation repair...');
+    restoreLockedPatterns(mintlifyLangs, dryRun);
+    validateAndReplace(mintlifyLangs, dryRun);
 
     // Step 4: Remove orphaned files from target languages (using Mintlify codes)
     if (!skipCleanup) {
