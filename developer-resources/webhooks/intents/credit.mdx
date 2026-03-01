@@ -1,0 +1,184 @@
+---
+title: Credit
+description: The payload sent to your webhook endpoint when credit-based billing events occur — credits granted, consumed, expired, rolled over, or balance alerts.
+icon: "coins"
+---
+
+## Credit Webhook Events
+
+The following webhook events are available for tracking credit lifecycle changes:
+
+| Event | Description |
+|-------|-------------|
+| `credit.added` | Credits are granted to a customer (via subscription, one-time purchase, add-on, or API) |
+| `credit.deducted` | Credits are consumed through usage or manual debit |
+| `credit.expired` | Unused credits expired after the configured expiry period |
+| `credit.rolled_over` | Unused credits are carried forward to a new grant at cycle end |
+| `credit.rollover_forfeited` | Credits forfeited because the max rollover count was reached |
+| `credit.overage_charged` | Overage charges applied when usage continues beyond zero balance |
+| `credit.manual_adjustment` | Manual credit or debit adjustment made via dashboard or API |
+| `credit.balance_low` | Credit balance drops below the configured low balance threshold |
+
+### Ledger Events (credit.added through credit.manual_adjustment)
+
+All ledger events share the same `CreditLedgerEntry` payload:
+
+```json
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "credit.added",
+  "timestamp": "2025-08-04T06:00:00.000000Z",
+  "data": {
+    "payload_type": "CreditLedgerEntry",
+    "id": "cle_3kF8mPqR7vNwXyZ1a",
+    "business_id": "bus_H4ekzPSlcg",
+    "customer_id": "cus_8VbC6JDZzPEqfBPUdpj0K",
+    "credit_entitlement_id": "cent_9xY2bKwQn5MjRpL8d",
+    "grant_id": "cgr_4tH7vNcWx2BfJpK9m",
+    "transaction_type": "credit_added",
+    "amount": "100",
+    "is_credit": true,
+    "balance_before": "1000",
+    "balance_after": "1100",
+    "overage_before": "0",
+    "overage_after": "0",
+    "description": "Credits granted from subscription",
+    "reference_type": "subscription",
+    "reference_id": "sub_7EeHq2ewQuadropD2ra",
+    "created_at": "2025-08-04T06:00:00.000000Z"
+  }
+}
+```
+
+<ParamField body="id" type="string">
+Unique identifier for this ledger entry.
+</ParamField>
+
+<ParamField body="customer_id" type="string">
+The customer whose credit balance changed.
+</ParamField>
+
+<ParamField body="credit_entitlement_id" type="string">
+The credit entitlement this entry belongs to.
+</ParamField>
+
+<ParamField body="grant_id" type="string | null">
+The specific credit grant affected. Null for some adjustment types.
+</ParamField>
+
+<ParamField body="transaction_type" type="string">
+One of: `credit_added`, `credit_deducted`, `credit_expired`, `credit_rolled_over`, `rollover_forfeited`, `overage_charged`, `manual_adjustment`.
+</ParamField>
+
+<ParamField body="amount" type="string">
+The number of credits affected by this transaction.
+</ParamField>
+
+<ParamField body="is_credit" type="boolean">
+`true` if credits were added to the balance, `false` if removed.
+</ParamField>
+
+<ParamField body="balance_before" type="string">
+Credit balance before this transaction.
+</ParamField>
+
+<ParamField body="balance_after" type="string">
+Credit balance after this transaction.
+</ParamField>
+
+<ParamField body="overage_before" type="string">
+Overage amount before this transaction.
+</ParamField>
+
+<ParamField body="overage_after" type="string">
+Overage amount after this transaction.
+</ParamField>
+
+<ParamField body="description" type="string | null">
+Human-readable description of the transaction.
+</ParamField>
+
+<ParamField body="reference_type" type="string | null">
+Source type that triggered the transaction (e.g., `subscription`, `payment`, `api`).
+</ParamField>
+
+<ParamField body="reference_id" type="string | null">
+ID of the source object that triggered the transaction.
+</ParamField>
+
+### Balance Low Event (credit.balance_low)
+
+The `credit.balance_low` event uses a different payload focused on threshold alerting:
+
+```json
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "credit.balance_low",
+  "timestamp": "2025-08-04T06:15:00.000000Z",
+  "data": {
+    "payload_type": "CreditBalanceLow",
+    "customer_id": "cus_8VbC6JDZzPEqfBPUdpj0K",
+    "subscription_id": "sub_7EeHq2ewQuadropD2ra",
+    "credit_entitlement_id": "cent_9xY2bKwQn5MjRpL8d",
+    "credit_entitlement_name": "API Credits",
+    "available_balance": "15",
+    "subscription_credits_amount": "100",
+    "threshold_percent": 20,
+    "threshold_amount": "20"
+  }
+}
+```
+
+<ParamField body="subscription_id" type="string">
+The subscription associated with this credit entitlement.
+</ParamField>
+
+<ParamField body="credit_entitlement_name" type="string">
+Display name of the credit entitlement.
+</ParamField>
+
+<ParamField body="available_balance" type="string">
+Current credit balance at the time of the alert.
+</ParamField>
+
+<ParamField body="subscription_credits_amount" type="string">
+Total credits issued per billing cycle for this subscription.
+</ParamField>
+
+<ParamField body="threshold_percent" type="integer">
+The configured low balance threshold percentage.
+</ParamField>
+
+<ParamField body="threshold_amount" type="string">
+The absolute credit amount that the threshold corresponds to.
+</ParamField>
+
+### Using `credit.balance_low` for Proactive Alerts
+
+Use the `credit.balance_low` webhook to notify customers before they run out of credits:
+
+```javascript
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+  
+  if (event.type === 'credit.balance_low') {
+    const data = event.data;
+    
+    // Notify the customer their credits are running low
+    await sendEmail(data.customer_id, {
+      subject: `Your ${data.credit_entitlement_name} balance is running low`,
+      body: `You have ${data.available_balance} credits remaining ` +
+            `(${data.threshold_percent}% threshold reached). ` +
+            `Consider upgrading your plan or purchasing additional credits.`
+    });
+    
+    console.log(`Low balance alert for customer ${data.customer_id}`);
+  }
+  
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Subscribe to `credit.balance_low` to proactively alert customers before they exhaust their credits. Combine with `credit.deducted` to track real-time consumption patterns.
+</Tip>
