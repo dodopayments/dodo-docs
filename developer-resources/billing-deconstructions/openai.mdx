@@ -2,7 +2,6 @@
 title: "OpenAI Billing Model"
 sidebarTitle: "OpenAI"
 description: "Deconstruct OpenAI's token-based billing with prepaid fiat credits and build the same model using Dodo Payments Credit-Based Billing. This guide covers everything from credit entitlements to usage meters and rate tiers."
-
 icon: "message-bot"
 ---
 
@@ -70,6 +69,12 @@ You can replicate OpenAI's billing model using Dodo Payments. We'll use Credit-B
     Set the credits issued per product in cents. For a \$50 pack, you'll issue 5000 credits.
 
     ```typescript
+    import DodoPayments from 'dodopayments';
+
+    const client = new DodoPayments({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+    });
+
     const session = await client.checkoutSessions.create({
       product_cart: [
         { product_id: 'prod_credit_pack_50', quantity: 1 }
@@ -83,8 +88,8 @@ You can replicate OpenAI's billing model using Dodo Payments. We'll use Credit-B
   <Step title="Create Usage Meters">
     Create two separate meters to track token usage.
 
-    * `llm.input_tokens`: Sum aggregation on the `input_tokens` property.
-    * `llm.output_tokens`: Sum aggregation on the `output_tokens` property.
+    * `llm.input_tokens`: Sum aggregation on the `tokens` property.
+    * `llm.output_tokens`: Sum aggregation on the `tokens` property.
 
     Link both meters to your fiat credit entitlement. You'll need to configure the "Meter units per credit" for each.
 
@@ -103,33 +108,26 @@ You can replicate OpenAI's billing model using Dodo Payments. We'll use Credit-B
     After each LLM request, send the usage data to Dodo Payments. You can send both input and output events in a single request.
 
     ```typescript
-    await fetch('https://api.dodopayments.com/events/ingest', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        events: [{
-          event_id: `req_${requestId}`,
-          customer_id: customerId,
-          event_name: 'llm.input_tokens',
-          timestamp: new Date().toISOString(),
-          metadata: { 
-            model: 'gpt-4o',
-            tokens: 1500 
-          }
-        }, {
-          event_id: `req_${requestId}_out`,
-          customer_id: customerId,
-          event_name: 'llm.output_tokens',
-          timestamp: new Date().toISOString(),
-          metadata: { 
-            model: 'gpt-4o',
-            tokens: 800 
-          }
-        }]
-      })
+    await client.usageEvents.ingest({
+      events: [{
+        event_id: `req_${requestId}`,
+        customer_id: customerId,
+        event_name: 'llm.input_tokens',
+        timestamp: new Date().toISOString(),
+        metadata: {
+          model: 'gpt-4o',
+          tokens: 1500
+        }
+      }, {
+        event_id: `req_${requestId}_out`,
+        customer_id: customerId,
+        event_name: 'llm.output_tokens',
+        timestamp: new Date().toISOString(),
+        metadata: {
+          model: 'gpt-4o',
+          tokens: 800
+        }
+      }]
     });
     ```
   </Step>
@@ -139,14 +137,10 @@ You can replicate OpenAI's billing model using Dodo Payments. We'll use Credit-B
 
     ```typescript
     async function checkCreditsBeforeRequest(customerId: string) {
-      const response = await fetch(`https://api.dodopayments.com/credit-entitlements/balance?customer_id=${customerId}&credit_entitlement_id=credit_entitlement_id`, {
-        headers: {
-          'Authorization': `Bearer ${process.env.DODO_API_KEY}`
-        }
+      const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+        credit_entitlement_id: 'credit_entitlement_id',
       });
-      
-      const balance = await response.json();
-      
+
       if (balance.available <= 0) {
         throw new Error('Insufficient credits. Please top up your account.');
       }
@@ -158,17 +152,36 @@ You can replicate OpenAI's billing model using Dodo Payments. We'll use Credit-B
     Don't wait until the user hits \$0 to notify them. Use webhooks to trigger an email or in-app notification when their balance drops below a certain threshold.
 
     ```typescript
-    // Example webhook handler for credit.balance_low
+    import DodoPayments from 'dodopayments';
+    import express from 'express';
+
+    const app = express();
+    app.use(express.raw({ type: 'application/json' }));
+
+    const client = new DodoPayments({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+      webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+    });
+
     app.post('/webhooks/dodo', async (req, res) => {
-      const event = req.body;
+      try {
+        const event = client.webhooks.unwrap(req.body.toString(), {
+          headers: {
+            'webhook-id': req.headers['webhook-id'] as string,
+            'webhook-signature': req.headers['webhook-signature'] as string,
+            'webhook-timestamp': req.headers['webhook-timestamp'] as string,
+          },
+        });
 
-      if (event.type === 'credit.balance_low') {
-        const { customer_id, available_balance } = event.data;
-        
-        await sendLowBalanceEmail(customer_id, available_balance);
+        if (event.type === 'credit.balance_low') {
+          const { customer_id, available_balance } = event.data;
+          await sendLowBalanceEmail(customer_id, available_balance);
+        }
+
+        res.json({ received: true });
+      } catch (error) {
+        res.status(401).json({ error: 'Invalid signature' });
       }
-
-      res.sendStatus(200);
     });
     ```
 
@@ -254,10 +267,12 @@ sequenceDiagram
 ```
 
 ```typescript
-import { DodoPayments } from 'dodopayments';
-import { OpenAI } from 'openai';
+import DodoPayments from 'dodopayments';
+import OpenAI from 'openai';
 
-const dodo = new DodoPayments({ apiKey: process.env.DODO_API_KEY });
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+});
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function handleApiRequest(req, res) {
@@ -265,10 +280,9 @@ export async function handleApiRequest(req, res) {
 
   try {
     // 1. Check credit balance
-    const balanceResponse = await fetch(`https://api.dodopayments.com/credit-entitlements/balance?customer_id=${customerId}&credit_entitlement_id=credit_entitlement_id`, {
-      headers: { 'Authorization': `Bearer ${process.env.DODO_API_KEY}` }
+    const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+      credit_entitlement_id: 'credit_entitlement_id',
     });
-    const balance = await balanceResponse.json();
 
     if (balance.available <= 0) {
       return res.status(402).json({ error: 'Insufficient credits. Please top up.' });
@@ -283,30 +297,23 @@ export async function handleApiRequest(req, res) {
     const { prompt_tokens, completion_tokens } = completion.usage;
 
     // 3. Ingest usage events to Dodo
-    await fetch('https://api.dodopayments.com/events/ingest', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        events: [
-          {
-            event_id: `req_${completion.id}_in`,
-            customer_id: customerId,
-            event_name: 'llm.input_tokens',
-            timestamp: new Date().toISOString(),
-            metadata: { model, tokens: prompt_tokens }
-          },
-          {
-            event_id: `req_${completion.id}_out`,
-            customer_id: customerId,
-            event_name: 'llm.output_tokens',
-            timestamp: new Date().toISOString(),
-            metadata: { model, tokens: completion_tokens }
-          }
-        ]
-      })
+    await client.usageEvents.ingest({
+      events: [
+        {
+          event_id: `req_${completion.id}_in`,
+          customer_id: customerId,
+          event_name: 'llm.input_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: prompt_tokens }
+        },
+        {
+          event_id: `req_${completion.id}_out`,
+          customer_id: customerId,
+          event_name: 'llm.output_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: completion_tokens }
+        }
+      ]
     });
 
     // 4. Return response to user

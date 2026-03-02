@@ -102,11 +102,13 @@ You can replicate this exact model using Dodo Payments' credit entitlements and 
   </Step>
 
   <Step title="Create a Usage Meter Linked to Credits">
-    Create a meter named `ai.request` with **Count** aggregation. Link this meter to your credit entitlement by enabling the "Bill usage in Credits" toggle. Set the meter units per credit to 1.
+    Create a meter named `ai.request` with **Sum** aggregation on the `credit_cost` property. Link this meter to your credit entitlement by enabling the "Bill usage in Credits" toggle. Set the meter units per credit to 1.
 
     To handle model-weighted depletion, you'll manage the credit cost at the application level. When a user makes a request, your app determines the cost based on the model or action type.
 
     ```typescript
+    import DodoPayments from 'dodopayments';
+    
     /**
      * Determines the credit cost for a given request type and model.
      * This logic lives in your application and can be updated without
@@ -123,7 +125,7 @@ You can replicate this exact model using Dodo Payments' credit entitlements and 
       // Default to 1 credit if the combination isn't found
       return costs[requestType]?.[model] ?? 1;
     }
-
+    
     /**
      * Ingests usage events into Dodo Payments.
      * For weighted requests, we send multiple events or use a sum aggregation.
@@ -134,27 +136,22 @@ You can replicate this exact model using Dodo Payments' credit entitlements and 
       // Tab completions are free, so we don't need to track them for billing
       if (creditCost === 0) return;
       
-      // We send the event to Dodo's ingestion endpoint
-      // The event_id should be unique to ensure idempotency
-      await fetch('https://api.dodopayments.com/events/ingest', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          events: [{
-            event_id: `req_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-            customer_id: customerId,
-            event_name: 'ai.request',
-            timestamp: new Date().toISOString(),
-            metadata: {
-              request_type: requestType,
-              model: model,
-              credit_cost: creditCost
-            }
-          }]
-        })
+      const client = new DodoPayments({
+        bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+      });
+      
+      await client.usageEvents.ingest({
+        events: [{
+          event_id: `req_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          customer_id: customerId,
+          event_name: 'ai.request',
+          timestamp: new Date().toISOString(),
+          metadata: {
+            request_type: requestType,
+            model: model,
+            credit_cost: creditCost
+          }
+        }]
       });
     }
     ```
@@ -168,29 +165,39 @@ You can replicate this exact model using Dodo Payments' credit entitlements and 
     Listen for the `credit.balance_low` webhook from Dodo. When a user's credits are near zero, you can switch them to a slow queue in your application. This is where you implement the "graceful degradation" logic.
 
     ```typescript
-    /**
-     * Webhook handler for Dodo Payments events.
-     * This endpoint should be registered in the Dodo dashboard.
-     */
-    app.post('/webhooks/dodo', async (req, res) => {
-      const event = req.body;
-      
-      // This event triggers when a user's credit balance falls below a threshold
-      if (event.type === 'credit.balance_low') {
-        const customerId = event.data.customer_id;
-        
-        // Update the user's tier in your database to 'slow'
-        // This will affect how future requests are routed in routeRequest
-        await updateUserTier(customerId, 'slow');
-        
-        // Notify the user so they aren't surprised by the change in performance
-        // You could also include a link to upgrade or enable overages
-        await notifyUser(customerId, 'You have used most of your premium requests. Switching to standard models.');
-      }
-      
-      res.json({ received: true });
+    import DodoPayments from 'dodopayments';
+    import express from 'express';
+    
+    const app = express();
+    app.use(express.raw({ type: 'application/json' }));
+    
+    const client = new DodoPayments({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+      webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
     });
-
+    
+    app.post('/webhooks/dodo', async (req, res) => {
+      try {
+        const event = client.webhooks.unwrap(req.body.toString(), {
+          headers: {
+            'webhook-id': req.headers['webhook-id'] as string,
+            'webhook-signature': req.headers['webhook-signature'] as string,
+            'webhook-timestamp': req.headers['webhook-timestamp'] as string,
+          },
+        });
+        
+        if (event.type === 'credit.balance_low') {
+          const customerId = event.data.customer_id;
+          await updateUserTier(customerId, 'slow');
+          await notifyUser(customerId, 'You have used most of your premium requests. Switching to standard models.');
+        }
+        
+        res.json({ received: true });
+      } catch (error) {
+        res.status(401).json({ error: 'Invalid signature' });
+      }
+    });
+    
     /**
      * Routes a request based on the user's current tier.
      * This function is called before every AI request to determine the model and queue.
@@ -215,6 +222,12 @@ You can replicate this exact model using Dodo Payments' credit entitlements and 
     Finally, generate a checkout session for the user to subscribe to a plan. Dodo handles the payment processing, tax compliance, and credit allocation automatically.
 
     ```typescript
+    import DodoPayments from 'dodopayments';
+    
+    const client = new DodoPayments({
+      bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+    });
+    
     /**
      * Creates a checkout session for a new subscription.
      * This is typically called when a user clicks an "Upgrade" button.

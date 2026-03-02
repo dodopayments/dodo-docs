@@ -94,32 +94,31 @@ The usage meter connects your application's activity to the credit system.
 Integrate the usage tracking into your application code. Every time a user generates audio, send an event to Dodo.
 
 ```typescript
+import DodoPayments from 'dodopayments';
+
 async function trackGeneration(
   customerId: string,
   text: string, 
   service: 'tts' | 'dubbing' | 'cloning'
 ) {
   const characterCount = text.length;
-  
-  await fetch('https://api.dodopayments.com/events/ingest', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      events: [{
-        event_id: `gen_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        customer_id: customerId,
-        event_name: 'tts.characters',
-        timestamp: new Date().toISOString(),
-        metadata: {
-          characters: characterCount,
-          service: service,
-          voice_id: 'voice_abc123'
-        }
-      }]
-    })
+
+  const client = new DodoPayments({
+    bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  });
+
+  await client.usageEvents.ingest({
+    events: [{
+      event_id: `gen_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      customer_id: customerId,
+      event_name: 'tts.characters',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        characters: characterCount,
+        service: service,
+        voice_id: 'voice_abc123'
+      }
+    }]
   });
 }
 ```
@@ -129,29 +128,47 @@ async function trackGeneration(
 Use webhooks to keep your users informed about their character usage.
 
 ```typescript
+import DodoPayments from 'dodopayments';
+import express from 'express';
+
+const app = express();
+app.use(express.raw({ type: 'application/json' }));
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+});
+
 app.post('/webhooks/dodo', async (req, res) => {
-  const event = req.body;
-  
-  switch (event.type) {
-    case 'credit.balance_low':
-      await notifyUser(event.data.customer_id, 
-        'You are running low on characters. Consider upgrading your plan for more characters and lower overage rates.'
-      );
-      break;
-      
-    case 'credit.deducted':
-      // Track usage for analytics
-      await logUsage(event.data);
-      break;
-      
-    case 'credit.overage_charged':
-      await notifyUser(event.data.customer_id,
-        'You have exceeded your character quota. Overage charges will appear on your next invoice.'
-      );
-      break;
+  try {
+    const event = client.webhooks.unwrap(req.body.toString(), {
+      headers: {
+        'webhook-id': req.headers['webhook-id'] as string,
+        'webhook-signature': req.headers['webhook-signature'] as string,
+        'webhook-timestamp': req.headers['webhook-timestamp'] as string,
+      },
+    });
+
+    switch (event.type) {
+      case 'credit.balance_low':
+        await notifyUser(event.data.customer_id, 
+          'You are running low on characters. Consider upgrading your plan for more characters and lower overage rates.'
+        );
+        break;
+      case 'credit.deducted':
+        await logUsage(event.data);
+        break;
+      case 'credit.overage_charged':
+        await notifyUser(event.data.customer_id,
+          'You have exceeded your character quota. Overage charges will appear on your next invoice.'
+        );
+        break;
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid signature' });
   }
-  
-  res.json({ received: true });
 });
 ```
 </Step>
