@@ -1,0 +1,208 @@
+---
+title: v1.86.0（2026年3月2日）
+description: ロールオーバー、超過分、期限切れ制御を備えたクレジットベース課金、統一されたデザイン＆テーマカスタマイズハブ、支払い一覧APIでの返金・異議ステータス、カスタマーポータルの返金テーブル、メーターのライブモードへのコピー
+icon: arrows-turn-right
+---
+
+## 新機能
+
+### 1. **クレジットベース課金**
+
+Dodo Payments は現在、サブスクリプション、ワンタイム製品、および使用量ベース課金にわたってクレジット権利を発行・管理・追跡する柔軟な仕組みである **クレジットベース課金** をサポートしています。従量課金や機能フラグによるアクセス制御の代わりに、顧客がサービスを消費するごとに引き出されるクレジットのプールを割り当てます。
+
+<Frame>
+<img src="/images/CBB/Checkout.png" alt="製品購入時に含まれるクレジットを示すチェックアウト" />
+</Frame>
+
+**できること**
+
+| 機能 | 説明 |
+|------------|-------------|
+| **カスタム単位または法定通貨クレジット** | 独自単位（API 呼び出し、トークン、コンピュート時間）や実際の通貨価値（USD、EUR）としてクレジットを定義 |
+| **サブスクリプションクレジット** | 更新時に自動再発行される請求周期ごとのクレジットを発行 |
+| **ワンタイムクレジット** | 購入時に固定クレジット残高を付与し、チャージパックやプロモーションバンドルに最適 |
+| **使用量ベースの差引** | メーターにクレジットをリンクし、リアルタイムの消費イベントに基づいて自動差引 |
+| **ロールオーバー** | 未使用クレジットを最大パーセンテージ、期間、回数を設定して繰り越し許可 |
+| **超過制御** | 残高を超えても利用継続を許可し、差額を免除、課金、または繰越すかを選択 |
+| **期限切れ** | クレジット有効期間を7日から無期限まで設定可能、任意の日数を指定 |
+
+
+**クレジットライフサイクル**
+
+1. **クレジット発行** - 顧客がクレジット権利の付いた製品を購入すると付与されます。サブスクリプションでは、請求周期ごとに再発行されます。
+2. **クレジット消費** - 顧客がサービスを利用するにあたり減算されます。メーターはリアルタイムのイベントに基づいて自動で差し引くか、ダッシュボードやAPIから手動で差し引けます。
+3. **クレジットの期日切れまたはロールオーバー** - 請求周期終了時（または設定された有効期限後）に未使用クレジットは、設定に応じて期限切れになるか繰り越されます。
+4. **超過処理** - 期間中にクレジットが尽きた場合は、利用継続を許可し、周期終了時の超過処理方法を選択できます。
+
+**製品へのクレジット添付**
+
+クレジットは製品作成フローで **権利（entitlements）** として添付されます。製品あたり最大 **3つのクレジット** を添付でき、サブスクリプション、ワンタイム支払い、使用量ベース課金のすべての価格タイプで機能します。
+
+```typescript
+// Create a checkout session for a product with attached credits
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_ai_pro_plan',
+      quantity: 1,
+    }
+  ],
+  customer: { email: 'customer@example.com' },
+  return_url: 'https://yourapp.com/success'
+});
+```
+
+**使用量ベースの差引**
+
+クレジットがメーターにリンクされると、システムは取り込まれた使用イベントに基づいて自動的にクレジットを差し引きます。クレジットあたりの **メーター単位** レート（例：1 万件の API 呼び出し＝1 クレジット）を設定して変換率を制御します。
+
+```typescript
+// Send usage events that deduct credits automatically
+await fetch('https://api.dodopayments.com/events/ingest', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    events: [{
+      event_id: `gen_${Date.now()}`,
+      customer_id: 'cus_abc123',
+      event_name: 'ai.generation',
+      timestamp: new Date().toISOString(),
+      metadata: { model: 'gpt-4', tokens: 1500 }
+    }]
+  })
+});
+```
+
+**顧客体験**
+
+顧客は **カスタマーポータル** のクレジットセクションで利用可能残高、取引履歴、利用内訳を確認・管理できます。クレジットはチェックアウト、サブスクリプション詳細、支払いトランザクションページにも表示されます。
+
+<Frame>
+<img src="/images/CBB/Customer Portal.jpg" alt="残高と取引履歴が表示されたカスタマーポータルのクレジット画面" />
+</Frame>
+
+**Webhook**
+
+クレジットベース課金では、クレジットライフサイクルの変更ごとにWebhookイベントが発火します。
+
+| イベント | 説明 |
+|-------|-------------|
+| `credit.added` | 顧客に付与されたクレジット |
+| `credit.deducted` | 利用または手動減算によって消費されたクレジット |
+| `credit.expired` | 未使用クレジットの期限切れ |
+| `credit.rolled_over` | 新しい付与に繰り越されたクレジット |
+| `credit.rollover_forfeited` | 最大ロールオーバー回数で放棄されたクレジット |
+| `credit.overage_charged` | 超過請求が適用された |
+| `credit.manual_adjustment` | 手動でクレジット/デビット調整が行われた |
+| `credit.balance_low` | 残高が設定された閾値を下回った |
+
+
+<Tip>
+最初はシンプルな設定（ロールオーバーなし、超過なし）で始め、顧客のクレジット利用状況を学びながら徐々に複雑化させてください。既存の付与に影響することなく、ほとんどの設定はいつでも更新できます。
+</Tip>
+
+詳細: [Credit-Based Billing](/features/credit-based-billing) | [Credit Webhook Payloads](/developer-resources/webhooks/intents/credit) | [Credit Entitlements API](/api-reference/credit-entitlements/create-credit-entitlement)
+
+### 2. **デザイン＆テーマカスタマイズ**
+
+新しい **Design** ページはチェックアウト、ストアフロント、カスタマーポータルの外観と雰囲気を一元管理するハブです。既存のテーマを選び、タイポグラフィやカラーを設定し、セクション単位のオーバーライドを適用でき、保存前にライブプレビューで確認できます。
+
+<Frame>
+<img src="/images/design/general-overview.jpg" alt="チェックアウト、カスタマーポータル、ストアフロントのライブプレビュー付きデザイン設定ページ" />
+</Frame>
+
+**主なポイント**
+
+| 機能 | 説明 |
+|---------|-------------|
+| **統一されたデザインハブ** | チェックアウト、ストアフロント、カスタマーポータルの外観を一つのページで設定 |
+| **プリセットテーマ** | 厳選されたテーマ（Dodo Pulses、Terminal、Bumblebee、Bubblegum）を起点にカスタマイズ |
+| **ライト＆ダークモード** | それぞれのモード専用のカラーパレットを定義 |
+| **ライブプレビュー** | 保存前にチェックアウト、カスタマーポータル、ストアフロント全体で変更を確認 |
+| **セクション別オーバーライド** | 他のセクションに影響を与えず個別に微調整 |
+| **プログラム制御** | API や Checkout SDK を使ってチェックアウト時にテーマをオーバーライド |
+
+
+**使い始めるには**
+
+マーチャントダッシュボードのメインサイドバーで **Design** を選択します。ページには4つのタブがあります:
+
+| タブ | 目的 |
+|-----|---------|
+| **General** | 事業名、ロゴ、テーマ選択、グローバルな高度設定 |
+| **Checkout** | チェックアウトページ専用のテーマ設定をオーバーライド |
+| **Storefront** | テーマ設定の上書きおよびストアフロントレイアウトの構成 |
+| **Customer Portal** | カスタマーポータル用のテーマ設定をオーバーライド |
+
+
+**高度な設定**
+
+General タブの高度な設定を展開すると、タイポグラフィ（主要/補助の Google Fonts、フォントサイズ、フォントウェイト）、カラー設定（背景・テキスト・ボタン・ボーダーに対応するライト/ダークモード用の別々のパレット）、UI 要素の丸みを制御するボーダー半径などを細かくコントロールできます。
+
+<Frame>
+<img src="/images/design/general-color-settings.jpg" alt="ライトモードとダークモード用にフルカラ―設定が表示された高度な設定" />
+</Frame>
+
+**プリセットテーマ**
+
+4つの厳選テーマが標準搭載されています:
+
+- **Dodo Pulses** - ライムグリーンのアクセントとクリーンなサンセリフタイポグラフィを持つデフォルトテーマ
+- **Terminal** - 等幅フォントとロイヤルブルーのアクセントが特徴の開発者向けスタイル
+- **Bumblebee** - 暖かいアンバーとゴールドのアクセントに力強くプレミアムなデザイン
+- **Bubblegum** - ピンクとマゼンタのアクセントに完全に丸いコーナーを採用した遊び心のあるテーマ
+
+<Tip>
+プリセットテーマを選択した後は、高度な設定で個別プロパティをさらにカスタマイズできます。未指定のプロパティはテーマのデフォルトにフォールバックします。
+</Tip>
+
+詳細: [Design & Theme Customization](/features/design) | [Checkout Features](/features/checkout) | [Storefront](/features/storefront)
+
+### 3. **List Payments API の返金ステータスと異議ステータス**
+
+`GET /payments` リストエンドポイントは、各支払い項目に `refund_status` および `dispute_status` フィールドを含むようになり、個別の支払い詳細を取得せずとも返金と異議の状態を一目で把握できます。
+
+| フィールド | 型 | 説明 |
+|-------|------|-------------|
+| `refund_status` | `partial \| full \| null` | この支払いの返金ステータスの概要。成功した返金がない場合は `null` |
+| `dispute_status` | `string \| null` | この支払いの最新の異議ステータス。異議がない場合は `null` |
+
+
+**`dispute_status` の値**: `dispute_opened`、`dispute_expired`、`dispute_accepted`、`dispute_cancelled`、`dispute_challenged`、`dispute_won`、`dispute_lost`
+
+`dispute_status` クエリパラメータを使用して、異議ステータスで支払いを **フィルタ** することもできます:
+
+```bash
+# List all payments with open disputes
+curl -X GET 'https://api.dodopayments.com/payments?dispute_status=dispute_opened' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+<Tip>
+これらのフィールドを使って異議・返金ダッシュボードを構築し、異議ステータスの変化にアラートをトリガーしたり、注目すべき支払いを抽出するために支払い一覧をフィルタしたりできます。
+</Tip>
+
+詳細: [List Payments API](/api-reference/payments/list-payments)
+
+### 4. **カスタマーポータルの返金テーブル**
+
+カスタマーポータルには専用の **Refunds** セクションが追加され、顧客は自分の支払いに紐づくすべての返金を確認できます。各返金には金額、ステータス、日付、発行元の支払いが表示され、サポートへの問い合わせなしで返金履歴の全貌を把握できます。
+
+<Check>
+返金テーブルはすべてのビジネスのカスタマーポータルで自動的に利用可能です。設定は不要です。
+</Check>
+
+詳細: [Customer Portal](/features/customer-portal)
+
+### 5. **メーターのライブモードへのコピー**
+
+テストモードのメーターをダッシュボードから **直接ライブモードにコピー** できるようになりました。テストモードでメーター構成の検証が終わったら、コピー操作で集計タイプ、イベント名、フィルター、クレジット関連付けなどすべての設定を保持したままライブモードに複製できます。これにより、開発環境から本番移行する際にメーターを手動で再作成する手間が省けます。
+
+<Tip>
+まずテストモードでメーター構成を構築・検証し、本番移行準備が整ったらライブモードにコピーしてください。実稼働の顧客使用前に課金設定をテストすることができます。
+</Tip>
+
+詳細: [Usage-Based Billing](/features/usage-based-billing/introduction) | [Meters](/features/usage-based-billing/meters)

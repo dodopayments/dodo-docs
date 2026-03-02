@@ -103,31 +103,144 @@ Votre tableau de bord des compteurs montre :
 - **Événements** : Événements individuels reçus
 - **Clients** : Utilisation et frais par client
 
+## Facturation en crédits plutôt qu'en devise
+
+Par défaut, les compteurs facturent les clients à l’unité en dollars (ou dans la devise que vous avez configurée). Vous pouvez plutôt configurer un compteur pour **déduire d’un solde de crédits** : l’utilisation consomme des crédits plutôt que de générer une charge monétaire.
+
+<Info>
+La déduction basée sur les crédits nécessite un [Droit de crédit](/features/credit-based-billing) attaché au même produit. Créez d’abord votre crédit, puis associez-le au compteur.
+</Info>
+
+### Quand utiliser la déduction basée sur les crédits
+
+| Scénario | Standard (devise) | Par crédits |
+|----------|-------------------|-------------|
+| Tarification simple par unité (0,01 $/appel) | ✅ Mieux adapté | Surcharge inutile |
+| Packs de crédits prépayés (achetez 10 000 jetons, utilisez-les au fil du temps) | ❌ Impossible à exprimer | ✅ Mieux adapté |
+| Utilisation groupée avec des abonnements (le plan Pro inclut 100 000 appels) | Possible via un seuil gratuit | ✅ Préférable - les crédits se reportent, expirent, s’affichent dans le portail |
+| Produits multi-compteurs partageant une réserve de crédits | ❌ Chaque compteur facture séparément | ✅ Tous les compteurs déduisent d’un même solde |
+
+
+### Configurer un compteur pour déduire des crédits
+
+<Steps>
+{/* LOCKED_PATTERN_2f001d4cc191a503bfa27e2b02a887d3 */}
+Commencez par créer un crédit dans **Produits → Crédits**. Définissez l’unité (par exemple, « Appels API », « Jetons »), la précision et les paramètres de cycle de vie (expiration, report, dépassement).
+
+Consultez le [guide de facturation basée sur les crédits](/features/credit-based-billing) pour des instructions détaillées.
+</Step>
+
+{/* LOCKED_PATTERN_e56c2bce14c9ffc41b822106f30b9344 */}
+Accédez à votre produit basé sur l’utilisation et ouvrez la section de configuration du **compteur**.
+</Step>
+
+{/* LOCKED_PATTERN_0e1120cd860a229dcc6f92a517f37ac6 */}
+Cliquez sur le bouton **+** pour joindre un compteur. Configurez comme d’habitude le nom de l’événement, le type d’agrégation et l’unité de mesure.
+</Step>
+
+{/* LOCKED_PATTERN_5742803ec5f5aba6317bae5a7cd68e62 */}
+Activez **Facturer l’utilisation en crédits** dans la configuration du compteur. Cela affiche les paramètres de crédit :
+
+{/* LOCKED_PATTERN_5164565eee83d03235035c7c8b6b2680 */}
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Configuration du compteur avec l’option Facturer l’utilisation en crédits activée" />
+</Frame>
+
+{/* LOCKED_PATTERN_643db6bd6419b3403905cdf5351f1450 */}
+Sélectionnez le droit de crédit dont ce compteur doit déduire.
+</ParamField>
+
+{/* LOCKED_PATTERN_f350d049ff7e758408e63c7b8b7766de */}
+Le nombre d’unités d’utilisation requis pour déduire 1 crédit. Par exemple :
+- `1` = chaque événement de compteur déduit 1 crédit
+- `100` = 100 événements de compteur déduisent 1 crédit
+- `1000` = 1 000 appels API consomment 1 crédit
+</ParamField>
+</Step>
+
+{/* LOCKED_PATTERN_6b77ac14c64de04b72ad44281724bb0c */}
+Le **seuil gratuit** s’applique toujours : les événements en dessous de ce seuil ne déduisent pas de crédits.
+
+**Exemple** : avec un seuil gratuit de 1 000 et 1 unité de compteur par crédit :
+- Le client utilise 2 500 appels API
+- Les 1 000 premiers sont gratuits
+- Les 1 500 restants déduisent 1 500 crédits de leur solde
+</Step>
+</Steps>
+
+### Comment fonctionne la déduction de crédits
+
+Une fois configuré, le flux de déduction s’exécute automatiquement :
+
+1. **Les événements arrivent** - Votre application envoie les événements d’utilisation via l’[API d’ingestion d’événements](/features/usage-based-billing/event-ingestion)
+2. **Le compteur agrège** - Les événements sont agrégés selon la configuration du compteur (Count, Sum, Max, Last)
+3. **Les workers d’arrière-plan traitent** - Toutes les minutes, un worker récupère les nouveaux événements depuis le dernier point de contrôle
+4. **Les crédits sont déduits** - L’utilisation agrégée est convertie en crédits en utilisant le taux `meter_units_per_credit` et déduite selon l’**ordre FIFO** (les droits les plus anciens sont consommés en premier)
+5. **Le dépassement est suivi** - Si le solde atteint zéro et que le dépassement est activé, l’utilisation continue et le dépassement est géré selon le comportement configuré (réinitialisé, facturé sur la prochaine facture, ou reporté comme déficit)
+
+```mermaid
+flowchart LR
+    A[Usage Event] --> B[Meter Aggregation]
+    B --> C{Credits Available?}
+    C -->|Yes| D[Deduct from Balance]
+    C -->|No| E{Overage Enabled?}
+    E -->|Yes| F[Track Overage]
+    E -->|No| G[Block Usage]
+    D --> H[Update Ledger]
+    F --> H
+```
+
+{/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */}
+La déduction des crédits s’exécute de manière asynchrone (toutes les ~1 minute). Un léger délai peut exister entre l’ingestion de l’événement et la déduction du solde. Concevez votre application pour gérer ce délai : ne comptez pas sur des vérifications de solde en temps réel pour contrôler l’accès sur des requêtes individuelles.
+{/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */}
+
+### Plusieurs compteurs, une seule réserve de crédits
+
+Vous pouvez lier plusieurs compteurs d’un même produit au **même droit de crédit**. Tous les compteurs déduisent d’un solde partagé unique.
+
+**Exemple** : une plateforme IA avec deux compteurs :
+- `text.generation` - 1 crédit pour 1 000 jetons
+- `image.generation` - 10 crédits par image
+
+Les deux déduisent de la même réserve « Crédits IA ». Le client voit un solde unifié dans son portail.
+
+{/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */}
+Utilisez des taux `meter_units_per_credit` différents selon les compteurs pour exprimer des coûts relatifs. Les opérations coûteuses (génération d’images) consomment moins d’unités de compteur par crédit que les opérations bon marché (complétion de texte).
+{/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */}
+
+<CardGroup cols={2}>
+{/* LOCKED_PATTERN_2e110f22e0f3741250f140b212ae466d */}
+Affichez l’historique complet de déduction de crédits d’un client.
+</Card>
+{/* LOCKED_PATTERN_83b4a13ef9031c5fd9378a998aeaa952 */}
+Vérifiez le solde de crédits actuel d’un client via l’API.
+</Card>
+</CardGroup>
+
 ## Dépannage
 
 <AccordionGroup>
 <Accordion title="Events not appearing">
 - Le nom de l’événement doit correspondre exactement (sensible à la casse)
-- Vérifiez que les filtres du compteur n’excluent pas les événements
-- Vérifiez que les identifiants client existent
+- Vérifiez que les filtres du compteur n’excluent pas d’événements
+- Assurez-vous que les identifiants de client existent
 - Désactivez temporairement les filtres pour tester
 </Accordion>
 
 <Accordion title="Aggregation not working">
-- Vérifiez que la propriété Over correspond exactement à la clé de métadonnées
-- Utilisez des nombres, pas des chaînes : `tokens: 150` pas `"150"`
+- Vérifiez que la propriété Over correspond exactement à la clé des métadonnées
+- Utilisez des nombres, pas des chaînes : `tokens: 150` et non `"150"`
 - Incluez les propriétés requises dans tous les événements
 </Accordion>
 
 <Accordion title="Filters not working">
-- Respectez la casse exactement
-- Utilisez les opérateurs corrects pour le type de données
-- Assurez-vous que les événements incluent les propriétés filtrées
+- Respectez la casse
+- Utilisez les opérateurs adaptés au type de données
+- Assurez-vous que les événements contiennent les propriétés filtrées
 </Accordion>
 
 <Accordion title="Wrong usage totals">
-- Consultez l’onglet Événements pour compter les événements réellement reçus
-- Vérifiez le type d’agrégation (Count versus Sum)
+- Consultez l’onglet Événements pour comptabiliser les événements réellement reçus
+- Vérifiez le type d’agrégation (Count vs Sum)
 - Assurez-vous que les valeurs sont numériques pour Sum/Max
 </Accordion>
 </AccordionGroup>
@@ -137,10 +250,10 @@ Votre tableau de bord des compteurs montre :
 <CardGroup cols={2}>
 
 <Card title="Send Events" icon="bolt" href="/features/usage-based-billing/event-ingestion">
-Commencez à envoyer les événements d’usage de votre application vers vos compteurs.
+Commencez à envoyer des événements d’utilisation depuis votre application vers vos compteurs.
 </Card>
 
 <Card title="View Blueprints" icon="copy" href="/features/usage-based-billing/ingestion-blueprints">
-Utilisez des configurations de compteur prêtes à l’emploi pour les cas d’usage courants.
+Utilisez des configurations de compteurs prêtes à l’emploi pour des cas d’usage courants.
 </Card>
 </CardGroup>

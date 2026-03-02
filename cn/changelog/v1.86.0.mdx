@@ -1,0 +1,204 @@
+---
+title: v1.86.0（2026年3月2日）
+description: 支持有滚存、超额、过期控制的信用额度计费、统一设计与主题定制中心、List Payments API
+  中的退款与争议状态、客户门户中的退款表及仪表计量复制到实时模式
+icon: arrows-turn-right
+---
+
+## 新功能
+
+### 1. **基于信用额度的计费**
+
+Dodo Payments 现已支持 **基于信用额度的计费**，这是一种在订阅、一次性产品和基于使用的计费之间发行、管理与追踪信用权益的灵活系统。与其按次收费或通过功能开关限制访问，不如分配一个信用池，客户在使用服务时从中扣减。
+
+<Frame>
+<img src="/images/CBB/Checkout.png" alt="Checkout showing included credits with the product purchase" />
+</Frame>
+
+**你可以做的事情**
+
+| 能力 | 描述 |
+|------------|-------------|
+| **自定义单位或法币信用** | 以你自己的单位（API 调用、令牌、计算小时）或实际货币价值（USD、EUR）定义信用 |
+| **订阅信用** | 每个计费周期发行信用，并在续订时自动重新发行 |
+| **一次性信用** | 在购买时授予固定信用余额，适用于充值包或促销套装 |
+| **基于使用的扣减** | 将信用与仪表关联，根据实时消耗事件自动扣减 |
+| **滚存** | 允许未使用的信用在可配置的最大百分比、时段和滚存次数范围内结转 |
+| **超额控制** | 让客户在余额用尽后继续使用服务，并选择宽恕、计费或结转赤字 |
+| **过期** | 设置信用有效期为 7 天到永不过期之间的任意天数 |
+
+**信用生命周期**
+
+1. **发行信用**——当客户购买附带信用权益的产品时授予。对于订阅，信用在每个计费周期重新发行。
+2. **消费信用**——当客户使用服务时扣减信用。仪表可根据实时事件自动扣减，或可通过仪表板/API 手动扣减。
+3. **信用过期或滚存**——在计费周期结束时（或配置的过期期后），未使用信用将根据设置过期或滚存。
+4. **超额处理**——如果信用在周期中用尽，你可以允许继续使用，并在周期结束时决定如何处理超额。
+
+**将信用附加到产品**
+
+在产品创建流程中，以**权益**形式附加信用。每个产品最多可以附加**3 个信用**，且信用适用于所有三种定价类型：订阅、一次性支付以及基于使用的计费。
+
+```typescript
+// Create a checkout session for a product with attached credits
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_ai_pro_plan',
+      quantity: 1,
+    }
+  ],
+  customer: { email: 'customer@example.com' },
+  return_url: 'https://yourapp.com/success'
+});
+```
+
+**基于使用的扣减**
+
+当信用与仪表关联时，系统会根据导入的使用事件自动扣减信用。配置 **每个信用对应的仪表单位** 以控制转换比例（例如 1,000 次 API 调用 = 1 个信用）。
+
+```typescript
+// Send usage events that deduct credits automatically
+await fetch('https://api.dodopayments.com/events/ingest', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    events: [{
+      event_id: `gen_${Date.now()}`,
+      customer_id: 'cus_abc123',
+      event_name: 'ai.generation',
+      timestamp: new Date().toISOString(),
+      metadata: { model: 'gpt-4', tokens: 1500 }
+    }]
+  })
+});
+```
+
+**客户体验**
+
+客户可以在 **客户门户** 的信用部分查看并管理信用余额，包括可用余额、交易历史记录和使用细分。信用也会出现在结账、订阅详情和支付交易页面。
+
+<Frame>
+<img src="/images/CBB/Customer Portal.jpg" alt="Customer Portal credits view with balance and transaction history" />
+</Frame>
+
+**Webhook**
+
+基于信用额度的计费会在每次信用生命周期变化时触发 webhook 事件：
+
+| 事件 | 描述 |
+|-------|-------------|
+| `credit.added` | 向客户授予信用 |
+| `credit.deducted` | 通过使用或手动扣减消耗信用 |
+| `credit.expired` | 未使用信用过期 |
+| `credit.rolled_over` | 信用结转至新额度 |
+| `credit.rollover_forfeited` | 达到最大滚存次数后信用被没收 |
+| `credit.overage_charged` | 应用超额费用 |
+| `credit.manual_adjustment` | 进行手动信用/借记调整 |
+| `credit.balance_low` | 余额跌至配置的阈值以下 |
+
+<Tip>
+从简单设置开始，无滚存、无超额，并随着了解客户如何使用信用再逐步增加复杂性。大多数设置可以随时更新而不会影响现有额度。
+</Tip>
+
+了解更多：[基于信用额度的计费](/features/credit-based-billing) | [信用 Webhook 有效载荷](/developer-resources/webhooks/intents/credit) | [信用权益 API](/api-reference/credit-entitlements/create-credit-entitlement)
+
+### 2. **设计与主题定制**
+
+推出全新的 **设计** 页面，它是一个统一中心，可从单一入口定制结账、店面和客户门户的外观与风格。选择预设主题、配置排版与颜色，并应用各部分覆盖，所有更改都可在保存前通过实时预览查看。
+
+<Frame>
+<img src="/images/design/general-overview.jpg" alt="Design settings page with live preview of checkout, customer portal, and storefront" />
+</Frame>
+
+**关键亮点**
+
+| 功能 | 描述 |
+|---------|-------------|
+| **统一设计中心** | 从单一页面配置结账、店面和客户门户的外观 |
+| **预设主题** | 从精选主题（Dodo Pulses、Terminal、Bumblebee 或 Bubblegum）开始，并在此基础上自定义 |
+| **明暗模式** | 为每种模式定义独立的颜色调色板 |
+| **实时预览** | 在保存前查看结账、客户门户和店面的更改效果 |
+| **按部分覆盖** | 精细调整单个部分而不影响其他部分 |
+| **编程控制** | 通过 API 或结账 SDK 在结账时覆盖主题 |
+
+**入门**
+
+在商家控制面板主侧边栏中导航至 **设计**。该页面包含四个选项卡：
+
+| 选项卡 | 作用 |
+|-----|---------|
+| **通用** | 商业名称、徽标、主题选择及全局高级设置 |
+| **结账** | 专门覆盖结账页面的主题设置 |
+| **店面** | 覆盖主题设置并配置店面布局 |
+| **客户门户** | 覆盖客户门户的主题设置 |
+
+**高级设置**
+
+在“通用”选项卡中展开高级设置，可对排版（主/次 Google 字体、字号、字体粗细）、颜色配置（明暗模式分别涵盖背景、文本、按钮和边框）以及边角半径进行精细控制，以调整 UI 元素的圆角程度。
+
+<Frame>
+<img src="/images/design/general-color-settings.jpg" alt="Advanced settings expanded showing full color configuration for light and dark modes" />
+</Frame>
+
+**预设主题**
+
+开箱即用提供四个精选主题：
+
+- **Dodo Pulses** - 默认主题，采用青柠绿点缀与简洁无衬线排版
+- **Terminal** - 面向开发者，使用等宽字体与皇家蓝点缀
+- **Bumblebee** - 温暖的琥珀与金色点缀，体现大胆的高级风格
+- **Bubblegum** - 俏皮的粉色与品红点缀，全面圆角设计
+
+<Tip>
+在选择预设主题后，你可以在高级设置中进一步自定义个别属性。未指定的属性将回退到主题默认值。
+</Tip>
+
+了解更多：[设计与主题定制](/features/design) | [结账功能](/features/checkout) | [店面](/features/storefront)
+
+### 3. **List Payments API 中的退款状态与争议状态**
+
+`GET /payments` 列表端点现在在每个支付项目中包含 `refund_status` 和 `dispute_status` 字段，因此你可以一目了然地查看退款与争议状态，而无需获取单个支付详情。
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `refund_status` | `partial \| full \| null` | 该支付的退款状态摘要。`null` 表示不存在成功退款 |
+| `dispute_status` | `string \| null` | 该支付的最新争议状态。`null` 表示不存在争议 |
+
+**`dispute_status` 值**：`dispute_opened`、`dispute_expired`、`dispute_accepted`、`dispute_cancelled`、`dispute_challenged`、`dispute_won`、`dispute_lost`
+
+你也可以使用 `dispute_status` 查询参数**按争议状态筛选支付**：
+
+```bash
+# List all payments with open disputes
+curl -X GET 'https://api.dodopayments.com/payments?dispute_status=dispute_opened' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+<Tip>
+使用这些字段构建争议与退款仪表板、在争议状态更改时触发警报，或筛选支付列表以突出需要关注的支付。
+</Tip>
+
+了解更多：[List Payments API](/api-reference/payments/list-payments)
+
+### 4. **客户门户中的退款表**
+
+客户门户现在包含一个专用的 **退款** 部分，客户可以在其中查看与其支付相关的所有退款。每个退款条目显示退款金额、状态、日期以及退款对应的原始支付，让客户无需联系支持即可全面了解其退款历史。
+
+<Check>
+退款表会自动在所有企业的客户门户中显示，无需任何配置。
+</Check>
+
+了解更多：[客户门户](/features/customer-portal)
+
+### 5. **将仪表复制到实时模式**
+
+你现在可以直接在仪表板中**将测试模式的仪表复制到实时模式**。完成测试模式下的仪表配置后，使用复制操作即可在保持所有设置不变的情况下将其复制到实时模式：聚合类型、事件名称、筛选器以及信用关联。这免去了从开发转向生产时手动重建仪表的需求。
+
+<Tip>
+先在测试模式中构建并验证仪表配置，然后在准备上线时将其复制到实时模式。这样可以确保在处理真实客户使用前，计费设置已经过测试。
+</Tip>
+
+了解更多：[基于使用的计费](/features/usage-based-billing/introduction) | [仪表](/features/usage-based-billing/meters)

@@ -1,0 +1,206 @@
+---
+title: v1.86.0 (2 Maret 2026)
+description: Penagihan berbasis kredit dengan rollover, kontrol overage, dan
+  kedaluwarsa, pusat kustomisasi desain dan tema terpadu, status pengembalian
+  dana dan sengketa di API daftar pembayaran, tabel pengembalian dana di portal
+  pelanggan, serta salin ke mode langsung untuk meter
+icon: arrows-turn-right
+---
+
+## Fitur Baru
+
+### 1. **Penagihan Berbasis Kredit**
+
+Dodo Payments kini mendukung **Penagihan Berbasis Kredit**, sistem fleksibel untuk menerbitkan, mengelola, dan melacak hak kredit di seluruh langganan, produk satu kali, dan penagihan berbasis penggunaan. Alih-alih membebankan biaya per penggunaan atau membatasi akses melalui fitur, Anda mengalokasikan kumpulan kredit yang diambil pelanggan saat mereka mengonsumsi layanan Anda.
+
+<Frame>
+<img src="/images/CBB/Checkout.png" alt="Checkout menunjukkan kredit yang termasuk dengan pembelian produk" />
+</Frame>
+
+**Apa yang Bisa Anda Lakukan**
+
+| Capability | Description |
+|------------|-------------|
+| **Unit Kustom atau Kredit Fiat** | Tentukan kredit dalam unit Anda sendiri (panggilan API, token, jam komputasi) atau sebagai nilai mata uang nyata (USD, EUR) |
+| **Kredit Langganan** | Terbitkan kredit per siklus penagihan dengan penerbitan ulang otomatis saat perpanjangan |
+| **Kredit Sekali Pakai** | Berikan saldo kredit tetap saat pembelian, ideal untuk paket isi ulang atau bundel promosi |
+| **Pemotongan Berdasarkan Penggunaan** | Hubungkan kredit ke meter untuk pemotongan otomatis berdasarkan kejadian konsumsi waktu nyata |
+| **Rollover** | Biarkan kredit yang tidak digunakan berlanjut dengan persentase maksimum, kerangka waktu, dan jumlah rollover yang dapat dikonfigurasi |
+| **Kontrol Overage** | Izinkan pelanggan terus menggunakan layanan Anda di luar saldo mereka, dengan opsi untuk menggugurkan, menagih, atau meneruskan defisit |
+| **Kadaluwarsa** | Tetapkan masa berlaku kredit mulai dari 7 hari hingga tidak pernah, dengan jumlah hari kustom |
+
+**Siklus Hidup Kredit**
+
+1. **Kredit Diterbitkan** - Diberikan saat pelanggan membeli produk dengan hak kredit terlampir. Untuk langganan, kredit diterbitkan kembali setiap siklus penagihan.
+2. **Kredit Dikonsumsi** - Dipotong saat pelanggan menggunakan layanan Anda. Meter secara otomatis memotong kredit berdasarkan kejadian waktu nyata, atau Anda dapat memotong secara manual melalui dasbor atau API.
+3. **Kredit Kedaluwarsa atau Berlanjut** - Pada akhir siklus penagihan (atau setelah periode kedaluwarsa yang dikonfigurasi), kredit yang tidak digunakan akan kedaluwarsa atau berlanjut berdasarkan pengaturan Anda.
+4. **Penanganan Overage** - Jika kredit habis di tengah siklus, Anda bisa mengizinkan penggunaan berlanjut dan menentukan bagaimana overage ditangani di akhir siklus.
+
+**Melampirkan Kredit ke Produk**
+
+Kredit dilampirkan sebagai **hak** dalam alur pembuatan produk. Anda dapat melampirkan hingga **3 kredit per produk**, dan kredit bekerja dengan ketiga jenis harga: langganan, pembayaran satu kali, dan penagihan berbasis penggunaan.
+
+```typescript
+// Create a checkout session for a product with attached credits
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_ai_pro_plan',
+      quantity: 1,
+    }
+  ],
+  customer: { email: 'customer@example.com' },
+  return_url: 'https://yourapp.com/success'
+});
+```
+
+**Pemotongan Berdasarkan Penggunaan**
+
+Saat kredit dihubungkan ke meter, sistem secara otomatis memotong kredit berdasarkan kejadian penggunaan yang diinput. Konfigurasikan tingkat **unit meter per kredit** untuk mengontrol konversi (misalnya, 1.000 panggilan API = 1 kredit).
+
+```typescript
+// Send usage events that deduct credits automatically
+await fetch('https://api.dodopayments.com/events/ingest', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    events: [{
+      event_id: `gen_${Date.now()}`,
+      customer_id: 'cus_abc123',
+      event_name: 'ai.generation',
+      timestamp: new Date().toISOString(),
+      metadata: { model: 'gpt-4', tokens: 1500 }
+    }]
+  })
+});
+```
+
+**Pengalaman Pelanggan**
+
+Pelanggan dapat melihat dan mengelola saldo kredit mereka di **Portal Pelanggan** di bawah bagian Kredit, dengan saldo tersedia, riwayat transaksi, dan rincian penggunaan. Kredit juga muncul di checkout, detail langganan, dan halaman transaksi pembayaran.
+
+<Frame>
+<img src="/images/CBB/Customer Portal.jpg" alt="Tampilan kredit di Portal Pelanggan dengan saldo dan riwayat transaksi" />
+</Frame>
+
+**Webhook**
+
+Penagihan Berbasis Kredit mengirimkan event webhook untuk setiap perubahan siklus hidup kredit:
+
+| Event | Description |
+|-------|-------------|
+| `credit.added` | Kredit diberikan kepada pelanggan |
+| `credit.deducted` | Kredit dikonsumsi melalui penggunaan atau debit manual |
+| `credit.expired` | Kredit tidak terpakai kedaluwarsa |
+| `credit.rolled_over` | Kredit diteruskan ke grant baru |
+| `credit.rollover_forfeited` | Kredit hangus saat mencapai jumlah rollover maksimum |
+| `credit.overage_charged` | Biaya overage diterapkan |
+| `credit.manual_adjustment` | Penyesuaian kredit/debit manual dibuat |
+| `credit.balance_low` | Saldo turun di bawah ambang yang dikonfigurasi |
+
+<Tip>
+Mulailah dengan pengaturan sederhana, tanpa rollover, tanpa overage, lalu tambahkan kompleksitas seiring Anda memahami bagaimana pelanggan menggunakan kredit. Sebagian besar pengaturan dapat diperbarui kapan saja tanpa memengaruhi grant yang sudah ada.
+</Tip>
+
+Pelajari selengkapnya: [Credit-Based Billing](/features/credit-based-billing) | [Credit Webhook Payloads](/developer-resources/webhooks/intents/credit) | [Credit Entitlements API](/api-reference/credit-entitlements/create-credit-entitlement)
+
+### 2. **Kustomisasi Desain & Tema**
+
+Memperkenalkan halaman **Desain** baru, pusat terpadu untuk menyesuaikan tampilan dan nuansa checkout, storefront, serta portal pelanggan dari satu tempat. Pilih tema pra-bangun, konfigurasikan tipografi dan warna, serta terapkan override per bagian, semuanya dengan pratinjau langsung sebelum Anda menyimpan.
+
+<Frame>
+<img src="/images/design/general-overview.jpg" alt="Halaman pengaturan Desain dengan pratinjau langsung checkout, portal pelanggan, dan storefront" />
+</Frame>
+
+**Sorotan Utama**
+
+| Feature | Description |
+|---------|-------------|
+| **Pusat Desain Terpadu** | Konfigurasikan tampilan checkout, storefront, dan portal pelanggan dari satu halaman |
+| **Tema Pra-Bangun** | Mulai dengan tema kurasi (Dodo Pulses, Terminal, Bumblebee, atau Bubblegum) dan kustomisasi dari sana |
+| **Mode Terang & Gelap** | Tetapkan palet warna terpisah untuk masing-masing mode |
+| **Pratinjau Langsung** | Lihat bagaimana perubahan Anda terlihat di seluruh checkout, portal pelanggan, dan storefront sebelum menyimpan |
+| **Override Per-Bagian** | Sesuaikan bagian individu tanpa memengaruhi lainnya |
+| **Kontrol Programatik** | Override tema saat checkout melalui API atau Checkout SDK |
+
+**Memulai**
+
+Arahkan ke **Desain** di bilah samping utama Dashboard Merchant Anda. Halaman ini memiliki empat tab:
+
+| Tab | Purpose |
+|-----|---------|
+| **Umum** | Nama bisnis, logo, pemilihan tema, dan pengaturan lanjutan global |
+| **Checkout** | Override pengaturan tema khusus untuk halaman checkout |
+| **Storefront** | Override pengaturan tema dan konfigurasikan tata letak storefront |
+| **Portal Pelanggan** | Override pengaturan tema untuk portal pelanggan |
+
+**Pengaturan Lanjutan**
+
+Perluas Pengaturan Lanjutan di tab Umum untuk kontrol mendetail atas tipografi (Google Font primer/sekunder, ukuran font, ketebalan font), konfigurasi warna (palet terpisah untuk mode terang dan gelap yang mencakup latar belakang, teks, tombol, dan batas), serta radius batas untuk mengatur kelengkungan elemen UI.
+
+<Frame>
+<img src="/images/design/general-color-settings.jpg" alt="Pengaturan lanjutan diperluas menampilkan konfigurasi warna penuh untuk mode terang dan gelap" />
+</Frame>
+
+**Tema Pra-Bangun**
+
+Empat tema kurasi tersedia langsung:
+
+- **Dodo Pulses** - Tema default dengan aksen hijau limau dan tipografi sans-serif bersih
+- **Terminal** - Berorientasi pengembang dengan tipografi monospaced dan aksen biru kerajaan
+- **Bumblebee** - Aksen amber dan emas hangat dengan gaya tegas dan premium
+- **Bubblegum** - Aksen pink dan magenta yang playful dengan sudut sepenuhnya melengkung
+
+<Tip>
+Setelah memilih tema pra-bangun, Anda bisa lebih lanjut menyesuaikan properti individu di Pengaturan Lanjutan. Properti yang tidak ditentukan akan kembali ke default tema.
+</Tip>
+
+Pelajari selengkapnya: [Design & Theme Customization](/features/design) | [Checkout Features](/features/checkout) | [Storefront](/features/storefront)
+
+### 3. **Status Pengembalian Dana dan Status Sengketa di List Payments API**
+
+Endpoint daftar `GET /payments` sekarang menyertakan kolom `refund_status` dan `dispute_status` di setiap item pembayaran, sehingga Anda bisa melihat status pengembalian dana dan sengketa sekilas tanpa mengambil detail pembayaran individu.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `refund_status` | `partial \| full \| null` | Ringkasan status pengembalian dana untuk pembayaran ini. `null` jika tidak ada pengembalian dana yang berhasil |
+| `dispute_status` | `string \| null` | Status sengketa terbaru untuk pembayaran ini. `null` jika tidak ada sengketa |
+
+**Nilai `dispute_status`**: `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost`
+
+Anda juga dapat **memfilter pembayaran berdasarkan status sengketa** menggunakan parameter kueri `dispute_status`:
+
+```bash
+# List all payments with open disputes
+curl -X GET 'https://api.dodopayments.com/payments?dispute_status=dispute_opened' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+<Tip>
+Gunakan kolom-kolom ini untuk membangun dasbor sengketa dan pengembalian dana, memicu peringatan saat status sengketa berubah, atau memfilter daftar pembayaran Anda untuk menampilkan pembayaran yang perlu diperhatikan.
+</Tip>
+
+Pelajari selengkapnya: [List Payments API](/api-reference/payments/list-payments)
+
+### 4. **Tabel Pengembalian Dana di Portal Pelanggan**
+
+Portal Pelanggan kini menyertakan bagian **Pengembalian Dana** khusus di mana pelanggan dapat melihat semua pengembalian dana yang terkait dengan pembayaran mereka. Setiap entri pengembalian dana menampilkan jumlah pengembalian dana, status, tanggal, dan pembayaran asli yang diterbitkan, memberikan transparansi penuh tentang riwayat pengembalian dana tanpa perlu menghubungi dukungan.
+
+<Check>
+Tabel pengembalian dana tersedia secara otomatis di portal pelanggan untuk semua bisnis. Tidak diperlukan konfigurasi.
+</Check>
+
+Pelajari selengkapnya: [Customer Portal](/features/customer-portal)
+
+### 5. **Salin ke Mode Langsung untuk Meter**
+
+Anda kini dapat **menyalin meter dari mode uji ke mode langsung** langsung dari dasbor. Setelah Anda selesai menguji konfigurasi meter di mode uji, gunakan tindakan salin untuk menduplikasinya ke mode langsung dengan semua pengaturan terjaga: tipe agregasi, nama event, filter, dan asosiasi kredit. Ini menghilangkan kebutuhan untuk membuat ulang meter secara manual saat berpindah dari pengembangan ke produksi.
+
+<Tip>
+Bangun dan validasi konfigurasi meter Anda di mode uji terlebih dahulu, lalu salin ke mode langsung saat Anda siap ke produksi. Ini memastikan pengaturan penagihan Anda diuji sebelum menangani penggunaan pelanggan nyata.
+</Tip>
+
+Pelajari selengkapnya: [Usage-Based Billing](/features/usage-based-billing/introduction) | [Meters](/features/usage-based-billing/meters)

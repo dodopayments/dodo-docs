@@ -1,0 +1,206 @@
+---
+title: v1.86.0 (2. März 2026)
+description: Credit-Based Billing mit Übertrag, Overage- und Ablaufkontrollen,
+  zentraler Design- und Theme-Anpassung, Rückerstattungs- und Streitfallstatus
+  in der List Payments API, Rückerstattungstabelle im Kundenportal sowie
+  Kopieren in den Live-Modus für Meter
+icon: arrows-turn-right
+---
+
+## Neue Funktionen
+
+### 1. **Credit-Based Billing**
+
+Dodo Payments unterstützt jetzt **Credit-Based Billing**, ein flexibles System zum Ausstellen, Verwalten und Nachverfolgen von Kreditansprüchen für Abonnements, einmalige Produkte und nutzungsbasierte Abrechnung. Anstatt pro Nutzung abzurechnen oder den Zugang über Feature-Flags zu beschränken, weist du einen Pool von Credits zu, aus dem Kunden beim Verbrauch deiner Dienstleistung schöpfen.
+
+<Frame>
+<img src="/images/CBB/Checkout.png" alt="Checkout showing included credits with the product purchase" />
+</Frame>
+
+**Was du tun kannst**
+
+| Fähigkeit | Beschreibung |
+|------------|-------------|
+| **Eigene Einheiten oder Fiat-Credits** | Definiere Credits in deiner Einheit (API-Aufrufe, Tokens, Rechenstunden) oder als echten Währungswert (USD, EUR) |
+| **Abonnement-Credits** | Weise Credits pro Abrechnungszyklus zu, mit automatischer Wiedervergabe bei Verlängerung |
+| **Einmalige Credits** | Vergib beim Kauf eine feste Guthabenbalance, ideal für Aufladepakete oder Aktionsbündel |
+| **Nutzungsbasierte Abzüge** | Verknüpfe Credits mit Metern, damit sie basierend auf Echtzeitverbrauch automatisch abgezogen werden |
+| **Übertrag (Rollover)** | Lass ungenutzte Credits mit konfigurierbarem Maximalprozentsatz, Zeitraum und Anzahl an Übertragungen ins nächste Intervall mitgehen |
+| **Overage-Kontrollen** | Erlaube Nutzern, über das Guthaben hinaus weiterzubuchen, mit Optionen zum Vergeben, Berechnen oder Mitnehmen des Defizits |
+| **Ablauf** | Lege die Gültigkeit der Credits von 7 Tagen bis unbegrenzt fest, mit benutzerdefiniertem Tageswert |
+
+**Kredit-Lebenszyklus**
+
+1. **Credits vergeben** – Werden gewährt, wenn ein Kunde ein Produkt mit zugehörigen Credit-Ansprüchen kauft. Bei Abonnements werden Credits mit jedem Abrechnungszyklus neu ausgegeben.
+2. **Credits verbraucht** – Werden abgezogen, sobald ein Kunde deine Dienstleistung nutzt. Meter ziehen Credits automatisch basierend auf Echtzeitereignissen ab, oder du ziehst manuell über das Dashboard oder die API ab.
+3. **Credits verfallen oder übertragen sich** – Am Ende des Abrechnungszyklus (oder nach dem konfigurierten Ablaufzeitraum) verfallen ungenutzte Credits oder werden je nach Einstellung übertragen.
+4. **Overage-Verarbeitung** – Wenn das Guthaben mitten im Zyklus aufgebraucht ist, kannst du weitere Nutzung zulassen und entscheiden, wie der Overage am Ende des Zyklus behandelt wird.
+
+**Credits an Produkte anhängen**
+
+Credits werden im Produkt-Erstellungsprozess als **Ansprüche** angehängt. Du kannst bis zu **3 Credits pro Produkt** anhängen, und Credits funktionieren mit allen drei Preistypen: Abonnements, einmalige Zahlungen und nutzungsbasierte Abrechnung.
+
+```typescript
+// Create a checkout session for a product with attached credits
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_ai_pro_plan',
+      quantity: 1,
+    }
+  ],
+  customer: { email: 'customer@example.com' },
+  return_url: 'https://yourapp.com/success'
+});
+```
+
+**Nutzungsbasierte Abzüge**
+
+Wenn Credits mit Metern verknüpft sind, zieht das System automatisch Credits basierend auf erfassten Nutzungsereignissen ab. Konfiguriere die **Meter-Einheiten pro Credit**, um die Umrechnung zu steuern (z. B. 1.000 API-Aufrufe = 1 Credit).
+
+```typescript
+// Send usage events that deduct credits automatically
+await fetch('https://api.dodopayments.com/events/ingest', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    events: [{
+      event_id: `gen_${Date.now()}`,
+      customer_id: 'cus_abc123',
+      event_name: 'ai.generation',
+      timestamp: new Date().toISOString(),
+      metadata: { model: 'gpt-4', tokens: 1500 }
+    }]
+  })
+});
+```
+
+**Kundenerlebnis**
+
+Kunden können ihre Credit-Bilanzen im **Kundenportal** unter dem Abschnitt Credits einsehen und verwalten, inklusive verfügbarem Guthaben, Transaktionsverlauf und Nutzungsauswertungen. Credits erscheinen auch im Checkout, in Abonnementdetails und auf Zahlungs-transaktionsseiten.
+
+<Frame>
+<img src="/images/CBB/Customer Portal.jpg" alt="Customer Portal credits view with balance and transaction history" />
+</Frame>
+
+**Webhooks**
+
+Credit-Based Billing löst Webhook-Ereignisse für jede Credit-Lebenszyklusänderung aus:
+
+| Ereignis | Beschreibung |
+|-------|-------------|
+| `credit.added` | Credits wurden einem Kunden gewährt |
+| `credit.deducted` | Credits wurden durch Nutzung oder manuelle Abbuchung verbraucht |
+| `credit.expired` | Ungenutzte Credits sind abgelaufen |
+| `credit.rolled_over` | Credits wurden in eine neue Zuteilung übertragen |
+| `credit.rollover_forfeited` | Credits wurden nach Erreichen der maximalen Übertragungsanzahl verfallen |
+| `credit.overage_charged` | Overage-Gebühren wurden angewendet |
+| `credit.manual_adjustment` | Manuelle Credit-/Debit-Anpassung vorgenommen |
+| `credit.balance_low` | Guthaben fiel unter den konfigurierten Schwellenwert |
+
+<Tip>
+Beginne mit einfachen Einstellungen, ohne Übertrag, ohne Overage, und erhöhe die Komplexität, sobald du verstehst, wie Kunden Credits nutzen. Die meisten Einstellungen lassen sich jederzeit ändern, ohne bestehende Zuteilungen zu beeinflussen.
+</Tip>
+
+Mehr erfahren: [Credit-Based Billing](/features/credit-based-billing) | [Credit Webhook Payloads](/developer-resources/webhooks/intents/credit) | [Credit Entitlements API](/api-reference/credit-entitlements/create-credit-entitlement)
+
+### 2. **Design- und Theme-Anpassung**
+
+Wir präsentieren die neue **Design**-Seite, ein zentrales Hub zur Anpassung von Checkout, Storefront und Kundenportal an einem Ort. Wähle vorgefertigte Themes, konfiguriere Typografie und Farben und wende Überschreibungen pro Abschnitt an – alles mit Live-Vorschau, bevor du speicherst.
+
+<Frame>
+<img src="/images/design/general-overview.jpg" alt="Design settings page with live preview of checkout, customer portal, and storefront" />
+</Frame>
+
+**Wichtige Highlights**
+
+| Feature | Beschreibung |
+|---------|-------------|
+| **Einheitliches Design-Hub** | Konfiguriere das Erscheinungsbild von Checkout, Storefront und Kundenportal auf einer Seite |
+| **Vorgefertigte Themes** | Starte mit einem kuratierten Theme (Dodo Pulses, Terminal, Bumblebee oder Bubblegum) und passe es an |
+| **Hell- und Dunkelmodus** | Definiere separate Farbpaletten für jeden Modus |
+| **Live-Vorschau** | Sieh dir an, wie deine Änderungen auf Checkout, Kundenportal und Storefront aussehen, bevor du sie speicherst |
+| **Pro-Abschnitt-Überschreibungen** | Passe einzelne Bereiche an, ohne die anderen zu beeinflussen |
+| **Programmgesteuerte Steuerung** | Überschreibe Themes zur Checkout-Zeit über die API oder das Checkout SDK |
+
+**Erste Schritte**
+
+Navigiere im Hauptmenü deines Händler-Dashboards zu **Design**. Die Seite enthält vier Tabs:
+
+| Tab | Zweck |
+|-----|---------|
+| **Allgemein** | Geschäftsname, Logo, Theme-Auswahl und globale erweiterte Einstellungen |
+| **Checkout** | Überschreibe Theme-Einstellungen speziell für die Checkout-Seite |
+| **Storefront** | Überschreibe Theme-Einstellungen und konfiguriere das Storefront-Layout |
+| **Kundenportal** | Überschreibe Theme-Einstellungen für das Kundenportal |
+
+**Erweiterte Einstellungen**
+
+Erweitere die erweiterten Einstellungen auf dem Allgemein-Tab für eine feinkörnige Steuerung der Typografie (primäre/sekundäre Google Fonts, Schriftgröße, Schriftstärke), Farbkonfiguration (getrennte Paletten für Hell- und Dunkelmodus für Hintergründe, Texte, Buttons und Rahmen) und Border-Radius zur Steuerung der Rundung von UI-Elementen.
+
+<Frame>
+<img src="/images/design/general-color-settings.jpg" alt="Advanced settings expanded showing full color configuration for light and dark modes" />
+</Frame>
+
+**Vorgefertigte Themes**
+
+Vier kuratierte Themes sind sofort verfügbar:
+
+- **Dodo Pulses** – Das Standardtheme mit limonengrünen Akzenten und klarer Sans-Serif-Typografie
+- **Terminal** – Entwickelorientiert mit monospaced Typografie und königsblauen Akzenten
+- **Bumblebee** – Warme Bernstein- und Goldtöne mit kräftiger, hochwertiger Optik
+- **Bubblegum** – Verspielte rosa- und magentafarbene Akzente mit vollkommen abgerundeten Ecken
+
+<Tip>
+Nach der Auswahl eines vorgefertigten Themes kannst du einzelne Eigenschaften in den erweiterten Einstellungen weiter anpassen. Nicht spezifizierte Eigenschaften fallen auf die Standardeinstellungen des Themes zurück.
+</Tip>
+
+Mehr erfahren: [Design & Theme Customization](/features/design) | [Checkout Features](/features/checkout) | [Storefront](/features/storefront)
+
+### 3. **Rückerstattungsstatus und Streitfallstatus in der List Payments API**
+
+Der `GET /payments`-Listenendpunkt enthält nun in jedem Zahlungseintrag die Felder `refund_status` und `dispute_status`, damit du Rückerstattungs- und Streitfallstatus auf einen Blick siehst, ohne Details einzelner Zahlungen abrufen zu müssen.
+
+| Feld | Typ | Beschreibung |
+|-------|------|-------------|
+| `refund_status` | `partial \| full \| null` | Zusammenfassung des Rückerstattungsstatus für diese Zahlung. `null`, wenn keine erfolgreichen Rückerstattungen vorhanden sind |
+| `dispute_status` | `string \| null` | Der aktuellste Streitfallstatus für diese Zahlung. `null`, wenn keine Streitfälle existieren |
+
+**`dispute_status` Werte**: `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost`
+
+Du kannst Zahlungen auch nach Streitfallstatus filtern, indem du den Abfrageparameter `dispute_status` verwendest:
+
+```bash
+# List all payments with open disputes
+curl -X GET 'https://api.dodopayments.com/payments?dispute_status=dispute_opened' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+<Tip>
+Nutze diese Felder zum Erstellen von Streitfall- und Rückerstattungs-Dashboards, zum Auslösen von Warnungen bei Statusänderungen oder zum Filtern deiner Zahlungsliste, um Zahlungen mit Handlungsbedarf hervorzuheben.
+</Tip>
+
+Mehr erfahren: [List Payments API](/api-reference/payments/list-payments)
+
+### 4. **Rückerstattungstabelle im Kundenportal**
+
+Das Kundenportal enthält jetzt einen eigenen **Rückerstattungs**-Bereich, in dem Kunden alle Rückerstattungen zu ihren Zahlungen einsehen können. Jeder Eintrag zeigt Betrag, Status, Datum und die ursprüngliche Zahlung, gegen die die Rückerstattung erfolgte, sodass Kunden vollständige Transparenz über ihre Rückerstattungshistorie erhalten, ohne den Support kontaktieren zu müssen.
+
+<Check>
+Die Rückerstattungstabelle ist für alle Unternehmen automatisch im Kundenportal verfügbar. Es sind keine Konfigurationen erforderlich.
+</Check>
+
+Mehr erfahren: [Customer Portal](/features/customer-portal)
+
+### 5. **Kopieren in den Live-Modus für Meter**
+
+Du kannst jetzt **Meter direkt vom Test- in den Live-Modus kopieren**. Wenn du eine Meterkonfiguration im Testmodus fertig getestet hast, nutze die Kopierfunktion, um sie mit allen Einstellungen – Aggregationstyp, Ereignisname, Filter und Credit-Verknüpfungen – in den Livemodus zu übernehmen. So musst du Meter beim Übergang von Entwicklung zu Produktion nicht manuell neu erstellen.
+
+<Tip>
+Erstelle und überprüfe deine Meterkonfigurationen zuerst im Testmodus und kopiere sie dann in den Livemodus, sobald du bereit für den Einsatz in der Produktion bist. So ist deine Abrechnungslogik bereits getestet, bevor sie echten Kundenverbrauch verarbeitet.
+</Tip>
+
+Mehr erfahren: [Usage-Based Billing](/features/usage-based-billing/introduction) | [Meters](/features/usage-based-billing/meters)

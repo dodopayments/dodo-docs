@@ -103,32 +103,144 @@ Ihr Zähler-Dashboard zeigt:
 - **Ereignisse**: Einzelne empfangene Ereignisse
 - **Kunden**: Nutzung und Gebühren pro Kunde
 
-## Fehlersuche
+## Abrechnung in Credits statt Währung
+
+Standardmäßig berechnen Meter Kunden pro Einheit in Dollar (oder deiner konfigurierten Währung). Du kannst stattdessen ein Meter so konfigurieren, dass es **vom Credit-Guthaben abzieht** – sodass Nutzung Credits verbraucht statt eine monetäre Gebühr zu erzeugen.
+
+<Info>
+Die kreditbasierte Abrechnung benötigt eine [Credit-Berechtigung](/features/credit-based-billing), die demselben Produkt zugeordnet ist. Lege zuerst deinen Credit an und verknüpfe ihn dann mit dem Meter.
+</Info>
+
+### Wann man kreditbasierte Abrechnung verwenden sollte
+
+| Szenario | Standard (Währung) | Kreditbasiert |
+|----------|-------------------|--------------|
+| Einfache Preis pro Einheit ($0,01/Call) | ✅ Beste Wahl | Überflüssiger Mehraufwand |
+| Prepaid-Credit-Pakete (10.000 Tokens kaufen, über Zeit nutzen) | ❌ Nicht darstellbar | ✅ Beste Wahl |
+| Gebündelte Nutzung mit Abos (Pro-Plan enthält 100K Calls) | Möglich über kostenlosen Schwellenwert | ✅ Besser – Credits rollen über, verfallen, werden im Portal angezeigt |
+| Produkte mit mehreren Metern, die einen Credit-Pool teilen | ❌ Jeder Meter rechnet separat ab | ✅ Alle Meter ziehen von einem Guthaben ab |
+
+### Konfiguration eines Meters für Credit-Abzug
+
+<Steps>
+{/* LOCKED_PATTERN_2f001d4cc191a503bfa27e2b02a887d3 */}
+Erstelle zuerst einen Credit unter **Products → Credits**. Definiere die Einheit (z. B. „API Calls“, „Tokens“), die Genauigkeit und Lebenszyklus-Einstellungen (Ablauf, Übertragung, Überziehung).
+
+Sieh dir den [Credit-Based Billing guide](/features/credit-based-billing) für detaillierte Anleitungen an.
+</Step>
+
+{/* LOCKED_PATTERN_e56c2bce14c9ffc41b822106f30b9344 */}
+Gehe zu deinem nutzungsbasierten Produkt und öffne den Konfigurationsbereich **Meter**.
+</Step>
+
+{/* LOCKED_PATTERN_0e1120cd860a229dcc6f92a517f37ac6 */}
+Klicke auf die **+**-Schaltfläche, um ein Meter anzufügen. Konfiguriere wie gewohnt den Ereignisnamen, den Aggregationstyp und die Messeinheit.
+</Step>
+
+{/* LOCKED_PATTERN_5742803ec5f5aba6317bae5a7cd68e62 */}
+Aktiviere **Bill usage in Credits** in der Meter-Konfiguration. Dadurch werden die Credit-Einstellungen sichtbar:
+
+{/* LOCKED_PATTERN_5164565eee83d03235035c7c8b6b2680 */}
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Meterkonfiguration mit aktiviertem Schalter 'Bill usage in Credits'" />
+</Frame>
+
+{/* LOCKED_PATTERN_643db6bd6419b3403905cdf5351f1450 */}
+Wähle aus, von welcher Credit-Berechtigung dieses Meter abbuchen soll.
+</ParamField>
+
+{/* LOCKED_PATTERN_f350d049ff7e758408e63c7b8b7766de */}
+Die Anzahl der Nutzungseinheiten, die benötigt werden, um 1 Credit abzuziehen. Beispielsweise:
+- `1` = jedes Meter-Ereignis zieht 1 Credit ab
+- `100` = 100 Meter-Ereignisse ziehen 1 Credit ab
+- `1000` = 1.000 API-Aufrufe verbrauchen 1 Credit
+</ParamField>
+</Step>
+
+{/* LOCKED_PATTERN_6b77ac14c64de04b72ad44281724bb0c */}
+Der **kostenlose Schwellenwert** gilt weiterhin – Ereignisse unterhalb dieses Schwellenwerts ziehen keine Credits ab.
+
+**Beispiel**: Mit einem kostenlosen Schwellenwert von 1.000 und meter-units-per-credit von 1:
+- Kunde nutzt 2.500 API-Aufrufe
+- Die ersten 1.000 sind kostenlos
+- Die verbleibenden 1.500 ziehen 1.500 Credits vom Guthaben ab
+</Step>
+</Steps>
+
+### So funktioniert die Credit-Abrechnung
+
+Sobald konfiguriert, läuft die Abzugs-Pipeline automatisch ab:
+
+1. **Ereignisse treffen ein** – Deine Anwendung sendet Nutzungsevents über die [Event Ingestion API](/features/usage-based-billing/event-ingestion)
+2. **Meter aggregiert** – Ereignisse werden gemäß deiner Meter-Konfiguration aggregiert (Count, Sum, Max, Last)
+3. **Hintergrundprozesse** – Jede Minute holt ein Worker neue Ereignisse seit dem letzten Checkpoint
+4. **Credits werden abgezogen** – Aggregierte Nutzung wird mit dem `meter_units_per_credit` Satz in Credits umgerechnet und nach **FIFO-Reihenfolge** abgebucht (älteste Grants zuerst)
+5. **Überziehungen werden erfasst** – Wenn das Guthaben null erreicht und Überziehung aktiviert ist, läuft die Nutzung weiter und die Überziehung wird gemäß dem konfigurierten Verhalten behandelt (bei Reset erlassen, auf der nächsten Rechnung berechnet oder als Defizit vorgetragen)
+
+```mermaid
+flowchart LR
+    A[Usage Event] --> B[Meter Aggregation]
+    B --> C{Credits Available?}
+    C -->|Yes| D[Deduct from Balance]
+    C -->|No| E{Overage Enabled?}
+    E -->|Yes| F[Track Overage]
+    E -->|No| G[Block Usage]
+    D --> H[Update Ledger]
+    F --> H
+```
+
+{/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */}
+Die Credit-Abrechnung läuft asynchron (etwa jede Minute). Zwischen Ereigniseinspeisung und Guthabenabzug kann es zu kurzen Verzögerungen kommen. Gestalte deine Anwendung so, dass sie diese Verzögerung berücksichtigt – verlasse dich nicht auf Echtzeit-Guthabenkontrollen für einzelne Anfragen.
+{/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */}
+
+### Mehrere Meter, ein Credit-Pool
+
+Du kannst mehrere Meter desselben Produkts mit derselben **Credit-Berechtigung** verknüpfen. Alle Meter ziehen von einem gemeinsamen Guthaben ab.
+
+**Beispiel**: Eine KI-Plattform mit zwei Metern:
+- `text.generation` – 1 Credit pro 1.000 Tokens
+- `image.generation` – 10 Credits pro Bild
+
+Beide ziehen aus dem gleichen „AI Credits“-Pool. Der Kunde sieht ein einheitliches Guthaben in seinem Portal.
+
+{/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */}
+Nutze unterschiedliche `meter_units_per_credit` Sätze pro Meter, um relative Kosten auszudrücken. Teure Operationen (Bildgenerierung) verlangen weniger Meter-Einheiten pro Credit als günstige (Textvervollständigung).
+{/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */}
+
+<CardGroup cols={2}>
+{/* LOCKED_PATTERN_2e110f22e0f3741250f140b212ae466d */}
+Sieh dir den vollständigen Verlauf der Credit-Abzüge für einen Kunden an.
+</Card>
+{/* LOCKED_PATTERN_83b4a13ef9031c5fd9378a998aeaa952 */}
+Prüfe das aktuelle Credit-Guthaben eines Kunden über die API.
+</Card>
+</CardGroup>
+
+## Fehlerbehebung
 
 <AccordionGroup>
 <Accordion title="Events not appearing">
-- Der Ereignisname muss exakt übereinstimmen (Groß-/Kleinschreibung beachten)
-- Stellen Sie sicher, dass Meterfilter Ereignisse nicht ausschließen
-- Verifizieren Sie, dass Kunden-IDs existieren
-- Deaktivieren Sie Filter vorübergehend zum Testen
+- Der Ereignisname muss exakt übereinstimmen (Groß-/Kleinschreibung)
+- Überprüfe, dass Meter-Filter Ereignisse nicht ausschließen
+- Verifiziere, dass Kunden-IDs existieren
+- Deaktiviere Filter vorübergehend zum Testen
 </Accordion>
 
 <Accordion title="Aggregation not working">
-- Stellen Sie sicher, dass Over Property genau dem Metadaten-Schlüssel entspricht
-- Verwenden Sie Zahlen, keine Strings: `tokens: 150` nicht `"150"`
-- Schließen Sie erforderliche Eigenschaften in allen Ereignissen ein
+- Überprüfe, ob Over Property genau dem Metadaten-Schlüssel entspricht
+- Verwende Zahlen, keine Strings: `tokens: 150` nicht `"150"`
+- Füge erforderliche Eigenschaften in allen Ereignissen hinzu
 </Accordion>
 
 <Accordion title="Filters not working">
-- Achten Sie auf exakte Groß-/Kleinschreibung
-- Verwenden Sie die richtigen Operatoren für den Datentyp
-- Stellen Sie sicher, dass Ereignisse die gefilterten Eigenschaften enthalten
+- Achte auf exakte Groß-/Kleinschreibung
+- Verwende die korrekten Operatoren für den Datentyp
+- Stelle sicher, dass Ereignisse gefilterte Eigenschaften enthalten
 </Accordion>
 
 <Accordion title="Wrong usage totals">
-- Prüfen Sie die Registerkarte „Events“, um die tatsächlich empfangenen Ereignisse zu zählen
-- Vergewissern Sie sich, dass der Aggregationstyp korrekt ist (Count vs. Sum)
-- Stellen Sie sicher, dass Werte für Sum/Max numerisch sind
+- Überprüfe den Events-Tab, um die tatsächlich empfangenen Ereignisse zu zählen
+- Verifiziere den Aggregationstyp (Count vs Sum)
+- Stelle sicher, dass Werte für Sum/Max numerisch sind
 </Accordion>
 </AccordionGroup>
 
@@ -137,10 +249,10 @@ Ihr Zähler-Dashboard zeigt:
 <CardGroup cols={2}>
 
 <Card title="Send Events" icon="bolt" href="/features/usage-based-billing/event-ingestion">
-Beginnen Sie, Nutzungsereignisse aus Ihrer Anwendung an Ihre Zähler zu senden.
+Beginne damit, Nutzungsevents aus deiner Anwendung an deine Meter zu senden.
 </Card>
 
 <Card title="View Blueprints" icon="copy" href="/features/usage-based-billing/ingestion-blueprints">
-Verwenden Sie fertige Zählerkonfigurationen für gängige Anwendungsfälle.
+Nutze fertige Meter-Konfigurationen für gängige Anwendungsfälle.
 </Card>
 </CardGroup>

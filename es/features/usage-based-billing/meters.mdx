@@ -58,7 +58,6 @@ Nombre exacto del evento que debe coincidir (sensible a mayúsculas). Ejemplos: 
 <ParamField path="Aggregation Type" type="string" required>
 Elige cómo se agregan los eventos:
 
-
 - **Count**: Número total de eventos (llamadas a la API, cargas)
 - **Sum**: Suma valores numéricos (tokens, bytes)
 - **Max**: Valor más alto en el periodo (usuarios máximos)
@@ -104,26 +103,138 @@ Tu panel de medidores muestra:
 - **Eventos**: Eventos individuales recibidos
 - **Clientes**: Uso y cargos por cliente
 
-## Solución de Problemas
+## Facturación en créditos en lugar de moneda
+
+Por defecto, los medidores cobran a los clientes por unidad en dólares (o la moneda configurada). En cambio, puedes configurar un medidor para **deducir de un saldo de créditos**; de ese modo, el uso consume créditos en lugar de generar un cargo monetario.
+
+<Info>
+La deducción basada en créditos requiere una [Asignación de créditos](/features/credit-based-billing) adjunta al mismo producto. Crea primero tu crédito y luego vincúlalo al medidor.
+</Info>
+
+### Cuándo usar la deducción basada en créditos
+
+| Escenario | Estándar (moneda) | Basado en créditos |
+|----------|-------------------|-------------------|
+| Precios simples por unidad ($0.01/llamada) | ✅ Mejor opción | Sobrecarga innecesaria |
+| Paquetes de créditos prepago (comprar 10K tokens, usar con el tiempo) | ❌ No se puede expresar | ✅ Mejor opción |
+| Uso incluido con suscripciones (plan Pro incluye 100K llamadas) | Posible mediante umbral gratuito | ✅ Mejor - los créditos se acumulan, expiran y se muestran en el portal |
+| Productos con múltiples medidores que comparten una reserva de créditos | ❌ Cada medidor factura por separado | ✅ Todos los medidores deducen de un mismo saldo |
+
+### Configurar un medidor para deducir créditos
+
+<Steps>
+{/* LOCKED_PATTERN_2f001d4cc191a503bfa27e2b02a887d3 */}
+Primero, crea un crédito en **Productos → Créditos**. Define la unidad (por ejemplo, “Llamadas a la API”, “Tokens”), la precisión y los ajustes del ciclo de vida (caducidad, acumulación, excedente).
+
+Consulta la [guía de facturación basada en créditos](/features/credit-based-billing) para obtener instrucciones detalladas.
+</Step>
+
+{/* LOCKED_PATTERN_e56c2bce14c9ffc41b822106f30b9344 */}
+Ve a tu producto basado en uso y abre la sección de configuración del **Medidor**.
+</Step>
+
+{/* LOCKED_PATTERN_0e1120cd860a229dcc6f92a517f37ac6 */}
+Haz clic en el botón **+** para adjuntar un medidor. Configura el nombre del evento, el tipo de agregación y la unidad de medida como de costumbre.
+</Step>
+
+{/* LOCKED_PATTERN_5742803ec5f5aba6317bae5a7cd68e62 */}
+Activa **Facturar uso en Créditos** en la configuración del medidor. Esto muestra los ajustes de crédito:
+
+{/* LOCKED_PATTERN_5164565eee83d03235035c7c8b6b2680 */}
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Configuración del medidor con la opción Facturar uso en Créditos activada" />
+</Frame>
+
+{/* LOCKED_PATTERN_643db6bd6419b3403905cdf5351f1450 */}
+Selecciona de qué asignación de créditos debe deducir este medidor.
+</ParamField>
+
+{/* LOCKED_PATTERN_f350d049ff7e758408e63c7b8b7766de */}
+El número de unidades de uso necesarias para deducir 1 crédito. Por ejemplo:
+- `1` = cada evento del medidor deduce 1 crédito
+- `100` = 100 eventos del medidor deducen 1 crédito
+- `1000` = 1.000 llamadas a la API consumen 1 crédito
+</ParamField>
+</Step>
+
+{/* LOCKED_PATTERN_6b77ac14c64de04b72ad44281724bb0c */}
+El **Umbral gratuito** sigue aplicándose: los eventos por debajo de ese umbral no deducen créditos.
+
+**Ejemplo**: Con un umbral gratuito de 1.000 y unidades del medidor por crédito de 1:
+- El cliente usa 2.500 llamadas a la API
+- Las primeras 1.000 son gratis
+- Las 1.500 restantes deducen 1.500 créditos de su saldo
+</Step>
+</Steps>
+
+### Cómo funciona la deducción de créditos
+
+Una vez configurado, la canalización de deducción se ejecuta automáticamente:
+
+1. **Llegan eventos** - Tu aplicación envía eventos de uso a través de la [API de ingestión de eventos](/features/usage-based-billing/event-ingestion)
+2. **El medidor agrega** - Los eventos se agregan según la configuración del medidor (Count, Sum, Max, Last)
+3. **Procesos en segundo plano** - Cada minuto, un trabajador obtiene los nuevos eventos desde el último punto de control
+4. **Se deducen créditos** - El uso agregado se convierte en créditos usando la tarifa `meter_units_per_credit` y se deduce mediante **orden FIFO** (primero se consumen los créditos más antiguos)
+5. **Se registra el exceso** - Si el saldo llega a cero y el exceso está habilitado, el uso continúa y el exceso se gestiona según el comportamiento configurado (perdonado al restablecer, facturado en la siguiente factura o trasladado como déficit)
+
+```mermaid
+flowchart LR
+    A[Usage Event] --> B[Meter Aggregation]
+    B --> C{Credits Available?}
+    C -->|Yes| D[Deduct from Balance]
+    C -->|No| E{Overage Enabled?}
+    E -->|Yes| F[Track Overage]
+    E -->|No| G[Block Usage]
+    D --> H[Update Ledger]
+    F --> H
+```
+
+{/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */}
+La deducción de créditos se ejecuta de forma asíncrona (cada ~1 minuto). Puede haber una breve demora entre la ingestión del evento y la deducción del saldo. Diseña tu aplicación para manejar esta demora: no dependas de verificaciones de saldo en tiempo real para el control de acceso de solicitudes individuales.
+{/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */}
+
+### Múltiples medidores, una reserva de créditos
+
+Puedes vincular múltiples medidores en el mismo producto a la **misma asignación de créditos**. Todos los medidores deducen de un saldo compartido.
+
+**Ejemplo**: Una plataforma de IA con dos medidores:
+- `text.generation` - 1 crédito por 1.000 tokens
+- `image.generation` - 10 créditos por imagen
+
+Ambos deducen del mismo fondo de “Créditos de IA”. El cliente ve un saldo unificado en su portal.
+
+{/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */}
+Usa diferentes tarifas `meter_units_per_credit` entre medidores para expresar costos relativos. Las operaciones costosas (generación de imágenes) requieren menos unidades del medidor por crédito que las operaciones baratas (completado de texto).
+{/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */}
+
+<CardGroup cols={2}>
+{/* LOCKED_PATTERN_2e110f22e0f3741250f140b212ae466d */}
+Consulta el historial completo de deducción de créditos de un cliente.
+</Card>
+{/* LOCKED_PATTERN_83b4a13ef9031c5fd9378a998aeaa952 */}
+Consulta el saldo de créditos actual de un cliente mediante la API.
+</Card>
+</CardGroup>
+
+## Solución de problemas
 
 <AccordionGroup>
 <Accordion title="Events not appearing">
 - El nombre del evento debe coincidir exactamente (sensible a mayúsculas)
 - Verifica que los filtros del medidor no estén excluyendo eventos
-- Asegúrate de que los IDs de cliente existan
-- Desactiva temporalmente los filtros para probar
+- Comprueba que existan los ID de cliente
+- Desactiva temporalmente los filtros para hacer pruebas
 </Accordion>
 
 <Accordion title="Aggregation not working">
-- Verifica que Over Property coincida exactamente con la clave de metadatos
+- Verifica que la propiedad Over coincida exactamente con la clave de metadatos
 - Usa números, no cadenas: `tokens: 150` no `"150"`
 - Incluye las propiedades requeridas en todos los eventos
 </Accordion>
 
 <Accordion title="Filters not working">
-- Coincide el uso de mayúsculas exactamente
+- Coincide exactamente con mayúsculas y minúsculas
 - Usa los operadores correctos para el tipo de datos
-- Asegúrate de que los eventos incluyan las propiedades filtradas
+- Asegura que los eventos incluyan las propiedades filtradas
 </Accordion>
 
 <Accordion title="Wrong usage totals">
@@ -133,7 +244,7 @@ Tu panel de medidores muestra:
 </Accordion>
 </AccordionGroup>
 
-## Próximos Pasos
+## Próximos pasos
 
 <CardGroup cols={2}>
 
@@ -142,6 +253,6 @@ Comienza a enviar eventos de uso desde tu aplicación a tus medidores.
 </Card>
 
 <Card title="View Blueprints" icon="copy" href="/features/usage-based-billing/ingestion-blueprints">
-Utiliza configuraciones de medidores ya creadas para casos de uso comunes.
+Utiliza configuraciones de medidor ya preparadas para casos de uso comunes.
 </Card>
 </CardGroup>

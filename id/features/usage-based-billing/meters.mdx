@@ -58,7 +58,6 @@ Nama event yang tepat untuk dicocokkan (sensitif terhadap huruf besar/kecil). Co
 <ParamField path="Aggregation Type" type="string" required>
 Pilih bagaimana event diagregasi:
 
-
 - **Count**: Jumlah total event (panggilan API, unggahan)
 - **Sum**: Menjumlahkan nilai numerik (token, byte)
 - **Max**: Nilai tertinggi dalam periode (pengguna puncak)
@@ -104,41 +103,153 @@ Dasbor meter Anda menunjukkan:
 - **Peristiwa**: Peristiwa individu yang diterima
 - **Pelanggan**: Penggunaan dan biaya per pelanggan
 
+## Penagihan dalam Kredit Alih-alih Mata Uang
+
+Secara default, meter mengenakan biaya pelanggan per unit dalam dolar (atau mata uang yang Anda konfigurasikan). Anda bisa mengonfigurasi meter untuk **memotong dari saldo kredit** - jadi penggunaan mengonsumsi kredit alih-alih menghasilkan biaya moneter.
+
+<Info>
+Pengurangan berbasis kredit memerlukan sebuah [Hak Kredit](/features/credit-based-billing) yang terpasang pada produk yang sama. Buat kredit Anda terlebih dahulu, lalu tautkan ke meter.
+</Info>
+
+### Kapan Menggunakan Pengurangan Berbasis Kredit
+
+| Scenario | Standard (currency) | Credit-based |
+|----------|-------------------|--------------|
+| Penetapan harga per unit sederhana ($0,01/panggilan) | ✅ Paling tepat | Beban tambahan yang tidak perlu |
+| Paket kredit prabayar (beli 10K token, gunakan seiring waktu) | ❌ Tidak bisa diekspresikan | ✅ Paling tepat |
+| Penggunaan bundel dengan langganan (paket Pro mencakup 100K panggilan) | Mungkin lewat ambang bebas | ✅ Lebih baik - kredit digulirkan, kedaluwarsa, tampil di portal |
+| Produk multi-meter berbagi kumpulan kredit | ❌ Setiap meter menagih secara terpisah | ✅ Semua meter memotong dari satu saldo |
+
+### Mengonfigurasi Meter agar Memotong Kredit
+
+<Steps>
+{/* LOCKED_PATTERN_2f001d4cc191a503bfa27e2b02a887d3 */}
+Pertama, buat kredit di **Products → Credits**. Tentukan unit (misal, "API Calls", "Tokens"), presisi, dan pengaturan siklus hidup (kedaluwarsa, pengguliran, kelebihan).
+
+Lihat panduan [Penagihan Berbasis Kredit](/features/credit-based-billing) untuk petunjuk rinci.
+</Step>
+
+{/* LOCKED_PATTERN_e56c2bce14c9ffc41b822106f30b9344 */}
+Buka produk berbasis penggunaan Anda dan buka bagian konfigurasi **Meter**.
+</Step>
+
+{/* LOCKED_PATTERN_0e1120cd860a229dcc6f92a517f37ac6 */}
+Klik tombol **+** untuk melampirkan meter. Konfigurasikan nama acara, jenis agregasi, dan unit pengukuran seperti biasa.
+</Step>
+
+{/* LOCKED_PATTERN_5742803ec5f5aba6317bae5a7cd68e62 */}
+Alihkan **Bill usage in Credits** di konfigurasi meter. Ini akan menampilkan pengaturan kredit:
+
+{/* LOCKED_PATTERN_5164565eee83d03235035c7c8b6b2680 */}
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Konfigurasi meter dengan tombol Bill usage in Credits diaktifkan" />
+</Frame>
+
+{/* LOCKED_PATTERN_643db6bd6419b3403905cdf5351f1450 */}
+Pilih hak kredit mana yang harus dipotong oleh meter ini.
+</ParamField>
+
+{/* LOCKED_PATTERN_f350d049ff7e758408e63c7b8b7766de */}
+Jumlah unit penggunaan yang diperlukan agar memotong 1 kredit. Misalnya:
+- `1` = setiap peristiwa meter memotong 1 kredit
+- `100` = 100 peristiwa meter memotong 1 kredit
+- `1000` = 1.000 panggilan API mengonsumsi 1 kredit
+</ParamField>
+</Step>
+
+{/* LOCKED_PATTERN_6b77ac14c64de04b72ad44281724bb0c */}
+Ambang **Free Threshold** masih berlaku - peristiwa di bawah ambang ini tidak memotong kredit.
+
+**Contoh**: Dengan ambang bebas 1.000 dan meter-units-per-credit 1:
+- Pelanggan menggunakan 2.500 panggilan API
+- 1.000 pertama gratis
+- Sisa 1.500 memotong 1.500 kredit dari saldo mereka
+</Step>
+</Steps>
+
+### Bagaimana Pengurangan Kredit Bekerja
+
+Setelah dikonfigurasi, pipeline pengurangan berjalan secara otomatis:
+
+1. **Events arrive** - Aplikasi Anda mengirimkan peristiwa penggunaan melalui [Event Ingestion API](/features/usage-based-billing/event-ingestion)
+2. **Meter aggregates** - Peristiwa digabungkan sesuai konfigurasi meter Anda (Count, Sum, Max, Last)
+3. **Background worker processes** - Setiap menit, seorang pekerja mengambil peristiwa baru sejak checkpoint terakhir
+4. **Credits are deducted** - Penggunaan yang telah digabungkan dikonversi menjadi kredit menggunakan tarif `meter_units_per_credit` dan dipotong menggunakan **penyusunan FIFO** (hak kredit tertua dikonsumsi lebih dulu)
+5. **Overage tracked** - Jika saldo mencapai nol dan overage diaktifkan, penggunaan berlanjut dan overage ditangani sesuai perilaku yang dikonfigurasi (maafkan saat reset, ditagihkan di faktur berikutnya, atau dibawa maju sebagai defisit)
+
+```mermaid
+flowchart LR
+    A[Usage Event] --> B[Meter Aggregation]
+    B --> C{Credits Available?}
+    C -->|Yes| D[Deduct from Balance]
+    C -->|No| E{Overage Enabled?}
+    E -->|Yes| F[Track Overage]
+    E -->|No| G[Block Usage]
+    D --> H[Update Ledger]
+    F --> H
+```
+
+{/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */}
+Pengurangan kredit berjalan secara asinkron (setiap ~1 menit). Mungkin ada jeda singkat antara ingesting peristiwa dan pemotongan saldo. Rancang aplikasi Anda untuk menangani jeda ini - jangan bergantung pada pemeriksaan saldo waktu nyata untuk kontrol akses pada permintaan individual.
+{/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */}
+
+### Banyak Meter, Satu Kumpulan Kredit
+
+Anda dapat menautkan beberapa meter pada produk yang sama ke **hak kredit yang sama**. Semua meter memotong dari satu saldo bersama.
+
+**Contoh**: Platform AI dengan dua meter:
+- `text.generation` - 1 kredit per 1.000 token
+- `image.generation` - 10 kredit per gambar
+
+Keduanya memotong dari kumpulan "AI Credits" yang sama. Pelanggan melihat satu saldo terpadu di portal mereka.
+
+{/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */}
+Gunakan tarif `meter_units_per_credit` berbeda antar meter untuk menyatakan biaya relatif. Operasi mahal (generasi gambar) membutuhkan lebih sedikit unit meter per kredit dibanding yang murah (penyelesaian teks).
+{/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */}
+
+<CardGroup cols={2}>
+{/* LOCKED_PATTERN_2e110f22e0f3741250f140b212ae466d */}
+Lihat riwayat pengurangan kredit lengkap untuk pelanggan.
+</Card>
+{/* LOCKED_PATTERN_83b4a13ef9031c5fd9378a998aeaa952 */}
+Periksa saldo kredit saat ini pelanggan melalui API.
+</Card>
+</CardGroup>
+
 ## Pemecahan Masalah
 
 <AccordionGroup>
 <Accordion title="Events not appearing">
-- Nama event harus cocok tepat (peka terhadap huruf besar/kecil)
-- Periksa agar filter meter tidak mengecualikan event
-- Verifikasi bahwa ID pelanggan ada
-- Nonaktifkan sementara filter untuk diuji
+- Nama peristiwa harus cocok persis (sensitif huruf besar-kecil)
+- Periksa agar filter meter tidak mengecualikan peristiwa
+- Pastikan ID pelanggan ada
+- Nonaktifkan filter sementara untuk menguji
 </Accordion>
 
 <Accordion title="Aggregation not working">
-- Verifikasi bahwa Over Property cocok persis dengan kunci metadata
+- Pastikan Over Property cocok persis dengan kunci metadata
 - Gunakan angka, bukan string: `tokens: 150` bukan `"150"`
-- Sertakan properti yang diperlukan di semua event
+- Sertakan properti yang diperlukan dalam semua peristiwa
 </Accordion>
 
 <Accordion title="Filters not working">
-- Cocokkan huruf besar/kecil secara tepat
-- Gunakan operator yang benar untuk tipe data
-- Pastikan event menyertakan properti yang difilter
+- Cocokkan huruf besar-kecil secara tepat
+- Gunakan operator yang tepat untuk tipe data
+- Pastikan peristiwa menyertakan properti yang difilter
 </Accordion>
 
 <Accordion title="Wrong usage totals">
-- Periksa tab Events untuk menghitung event yang diterima sebenarnya
+- Periksa tab Events untuk menghitung peristiwa yang sebenarnya diterima
 - Verifikasi jenis agregasi (Count vs Sum)
-- Pastikan nilai bernilai numerik untuk Sum/Max
+- Pastikan nilainya numerik untuk Sum/Max
 </Accordion>
 </AccordionGroup>
 
-## Langkah Selanjutnya
+## Langkah Berikutnya
 
 <CardGroup cols={2}>
 
 <Card title="Send Events" icon="bolt" href="/features/usage-based-billing/event-ingestion">
-Mulai kirim event pemakaian dari aplikasi Anda ke meter.
+Mulai kirim peristiwa penggunaan dari aplikasi Anda ke meter Anda.
 </Card>
 
 <Card title="View Blueprints" icon="copy" href="/features/usage-based-billing/ingestion-blueprints">

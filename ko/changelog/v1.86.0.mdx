@@ -1,0 +1,206 @@
+---
+title: v1.86.0 (March 2, 2026)
+description: Credit-based billing with rollover, overage, and expiration
+  controls, unified design and theme customization hub, refund and dispute
+  status in list payments API, refunds table in customer portal, and copy to
+  live mode for meters
+icon: arrows-turn-right
+---
+
+## New Features
+
+### 1. **Credit-Based Billing**
+
+Dodo Payments는 현재 구독, 일회성 상품, 사용량 기반 청구 전반에 걸쳐 신용권한을 발급, 관리, 추적할 수 있는 유연한 시스템인 **Credit-Based Billing**을 지원합니다. 기능 플래그로 접근을 제한하거나 사용량당 요금을 부과하는 대신 고객이 서비스를 소비할 때 사용하는 크레딧 풀을 할당합니다.
+
+<Frame>
+<img src="/images/CBB/Checkout.png" alt="Checkout showing included credits with the product purchase" />
+</Frame>
+
+**할 수 있는 일**
+
+| Capability | Description |
+|------------|-------------|
+| **Custom Units or Fiat Credits** | API 호출, 토큰, 컴퓨트 시간 같은 자체 단위 또는 USD, EUR 같은 실제 통화 값으로 크레딧 정의 |
+| **Subscription Credits** | 갱신 시 자동 재발급되는 청구 주기별 크레딧 발급 |
+| **One-Time Credits** | 충전팩이나 프로모션 번들에 적합한 구매 시 고정 크레딧 잔액 부여 |
+| **Usage-Based Deduction** | 실시간 소비 이벤트 기반으로 크레딧을 자동 차감하는 미터 연동 |
+| **Rollover** | 설정 가능한 최대 비율, 기간, 롤오버 횟수로 미사용 크레딧 이월 허용 |
+| **Overage Controls** | 잔액 초과 사용을 허용하고, 부족분을 면제, 청구 또는 이월 처리 옵션 |
+| **Expiration** | 7일에서 무제한까지 크레딧 유효 기간 설정 |
+
+**크레딧 수명주기**
+
+1. **크레딧 발급됨** - 고객이 크레딧 권한이 붙은 상품을 구매하면 부여됩니다. 구독의 경우 청구 주기마다 크레딧이 재발급됩니다.
+2. **크레딧 소비됨** - 고객이 서비스를 사용할 때 차감됩니다. 미터는 실시간 이벤트 기반으로 자동 차감하거나, 대시보드 또는 API를 통해 수동으로 차감할 수 있습니다.
+3. **크레딧 만료 또는 이월됨** - 청구 주기 종료 시 (또는 설정된 만료 기간 후) 미사용 크레딧은 설정에 따라 만료되거나 이월됩니다.
+4. **초과 사용 처리** - 주기 중 크레딧이 부족해지면 계속 사용을 허용하고 주기 말에 초과 사용을 어떻게 처리할지 선택할 수 있습니다.
+
+**상품에 크레딧 부착하기**
+
+크레딧은 상품 생성 흐름에서 **권한(entitlements)** 으로 부착됩니다. 상품당 최대 **3개의 크레딧**을 부착할 수 있으며, 구독, 일회성 결제, 사용량 기반 청구의 세 가지 가격 유형과 모두 호환됩니다.
+
+```typescript
+// Create a checkout session for a product with attached credits
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_ai_pro_plan',
+      quantity: 1,
+    }
+  ],
+  customer: { email: 'customer@example.com' },
+  return_url: 'https://yourapp.com/success'
+});
+```
+
+**사용량 기반 차감**
+
+크레딧이 미터와 연결되면 시스템은 수집된 사용량 이벤트에 따라 자동으로 크레딧을 차감합니다. 변환을 제어하려면 **크레딧당 미터 단위** 비율을 구성하세요 (예: 1,000 API 호출 = 1 크레딧).
+
+```typescript
+// Send usage events that deduct credits automatically
+await fetch('https://api.dodopayments.com/events/ingest', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    events: [{
+      event_id: `gen_${Date.now()}`,
+      customer_id: 'cus_abc123',
+      event_name: 'ai.generation',
+      timestamp: new Date().toISOString(),
+      metadata: { model: 'gpt-4', tokens: 1500 }
+    }]
+  })
+});
+```
+
+**고객 경험**
+
+고객은 **고객 포털(Customer Portal)** 의 크레딧 섹션에서 사용 가능한 잔액, 거래 내역, 사용 내역을 확인하고 관리할 수 있습니다. 크레딧은 체크아웃, 구독 상세, 결제 거래 페이지에도 표시됩니다.
+
+<Frame>
+<img src="/images/CBB/Customer Portal.jpg" alt="Customer Portal credits view with balance and transaction history" />
+</Frame>
+
+**웹훅**
+
+Credit-Based Billing은 크레딧 수명주기 변화마다 웹훅 이벤트를 발생시킵니다:
+
+| Event | Description |
+|-------|-------------|
+| `credit.added` | 고객에게 부여된 크레딧 |
+| `credit.deducted` | 사용 또는 수동 차감으로 소비된 크레딧 |
+| `credit.expired` | 미사용 크레딧 만료됨 |
+| `credit.rolled_over` | 새로운 부여로 이월된 크레딧 |
+| `credit.rollover_forfeited` | 최대 롤오버 횟수에서 몰수된 크레딧 |
+| `credit.overage_charged` | 초과 사용 요금 적용됨 |
+| `credit.manual_adjustment` | 수동 크레딧/차감 조정 수행됨 |
+| `credit.balance_low` | 잔액이 설정된 임계값 밑으로 떨어짐 |
+
+<Tip>
+롤오버 없이 오버리지 없이 간단한 설정으로 시작한 후 고객이 크레딧을 어떻게 사용하는지 파악하면서 복잡도를 추가하세요. 대부분 설정은 기존 부여에 영향을 주지 않고 언제든지 업데이트할 수 있습니다.
+</Tip>
+
+자세히 알아보기: [Credit-Based Billing](/features/credit-based-billing) | [Credit Webhook Payloads](/developer-resources/webhooks/intents/credit) | [Credit Entitlements API](/api-reference/credit-entitlements/create-credit-entitlement)
+
+### 2. **Design & Theme Customization**
+
+이제 단일 위치에서 체크아웃, 스토어프런트, 고객 포털의 모양과 느낌을 맞춤 설정할 수 있는 **Design** 페이지라는 통합 허브를 도입합니다. 사전 구축된 테마를 선택하고 타이포그래피와 색상을 구성하며 각 섹션별 오버라이드를 적용하고, 저장 전에 라이브 미리보기를 통해 결과를 확인할 수 있습니다.
+
+<Frame>
+<img src="/images/design/general-overview.jpg" alt="Design settings page with live preview of checkout, customer portal, and storefront" />
+</Frame>
+
+**주요 하이라이트**
+
+| Feature | Description |
+|---------|-------------|
+| **Unified Design Hub** | 단일 페이지에서 체크아웃, 스토어프런트, 고객 포털 외관 구성 |
+| **Pre-Built Themes** | 큐레이션된 테마(Dodo Pulses, Terminal, Bumblebee, Bubblegum) 중에서 시작하여 커스터마이즈 |
+| **Light & Dark Mode** | 각 모드별 별도 색상 팔레트 정의 |
+| **Live Preview** | 저장하기 전에 체크아웃, 고객 포털, 스토어프런트에서 변경 내용이 어떻게 보이는지 확인 가능 |
+| **Per-Section Overrides** | 다른 섹션에 영향을 주지 않고 개별 섹션 미세 조정 |
+| **Programmatic Control** | API 또는 Checkout SDK 통해 체크아웃 시 테마 오버라이드 |
+
+**시작하기**
+
+머천트 대시보드의 왼쪽 사이드바에서 **Design**으로 이동하세요. 페이지는 네 개의 탭으로 구성됩니다:
+
+| Tab | Purpose |
+|-----|---------|
+| **General** | 사업자명, 로고, 테마 선택, 전역 고급 설정 |
+| **Checkout** | 체크아웃 페이지에 대한 테마 설정 오버라이드 |
+| **Storefront** | 테마 설정 오버라이드 및 스토어프런트 레이아웃 구성 |
+| **Customer Portal** | 고객 포털에 대한 테마 설정 오버라이드 |
+
+**고급 설정**
+
+General 탭에서 고급 설정을 확장하여 타이포그래피(기본/보조 Google Font, 글꼴 크기, 글꼴 굵기), 색상 구성(백그라운드, 텍스트, 버튼, 테두리에 대한 Light/Dark 모드별 별도 팔레트), UI 요소의 둥글기 제어를 위한 테두리 반경을 세밀하게 조정하세요.
+
+<Frame>
+<img src="/images/design/general-color-settings.jpg" alt="Advanced settings expanded showing full color configuration for light and dark modes" />
+</Frame>
+
+**사전 구축된 테마**
+
+기본 제공되는 네 가지 큐레이션된 테마:
+
+- **Dodo Pulses** - 라임 그린 악센트와 깔끔한 산세리프 타이포그래피를 갖춘 기본 테마
+- **Terminal** - 모노스페이스 타이포그래피와 로열 블루 악센트로 개발자 지향
+- **Bumblebee** - 따뜻한 호박색과 골드 악센트의 볼드하고 프리미엄한 스타일
+- **Bubblegum** - 완전히 둥근 모서리와 함께 놀이감 같은 핑크 및 마젠타 악센트
+
+<Tip>
+사전 구축된 테마를 선택한 후 고급 설정에서 개별 속성을 추가로 커스터마이즈할 수 있습니다. 지정하지 않은 속성은 테마 기본값을 따릅니다.
+</Tip>
+
+자세히 알아보기: [Design & Theme Customization](/features/design) | [Checkout Features](/features/checkout) | [Storefront](/features/storefront)
+
+### 3. **Refund Status and Dispute Status in List Payments API**
+
+`GET /payments` 목록 엔드포인트는 이제 각 결제 항목에 `refund_status` 및 `dispute_status` 필드를 포함하므로 개별 결제 세부정보를 가져오지 않고도 환불 및 분쟁 상태를 한눈에 확인할 수 있습니다.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `refund_status` | `partial \| full \| null` | 이 결제의 환불 상태 요약. 성공한 환불이 없으면 `null` |
+| `dispute_status` | `string \| null` | 이 결제의 최신 분쟁 상태. 분쟁이 없으면 `null` |
+
+**`dispute_status` 값**: `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost`
+
+`dispute_status` 쿼리 매개변수를 사용하여 **분쟁 상태로 결제 필터링**도 가능합니다:
+
+```bash
+# List all payments with open disputes
+curl -X GET 'https://api.dodopayments.com/payments?dispute_status=dispute_opened' \
+  -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+<Tip>
+이 필드를 사용하여 분쟁 및 환불 대시보드를 구축하거나, 분쟁 상태 변경 시 알림을 트리거하거나, 주의를 요하는 결제를 표시하기 위해 결제 목록을 필터링하세요.
+</Tip>
+
+자세히 알아보기: [List Payments API](/api-reference/payments/list-payments)
+
+### 4. **Refunds Table in Customer Portal**
+
+고객 포털에는 이제 결제와 관련된 모든 환불을 고객이 확인할 수 있는 전용 **Refunds** 섹션이 포함되어 있습니다. 각 환불 항목에는 환불 금액, 상태, 날짜, 환불이 이루어진 원래 결제가 표시되어 있어 고객이 지원에 연락하지 않고도 환불 내역을 투명하게 확인할 수 있습니다.
+
+<Check>
+환불 테이블은 모든 사업체의 고객 포털에서 자동으로 제공됩니다. 별도 구성은 필요하지 않습니다.
+</Check>
+
+자세히 알아보기: [Customer Portal](/features/customer-portal)
+
+### 5. **Copy to Live Mode for Meters**
+
+이제 **테스트 모드에서 라이브 모드로 미터 복사**를 대시보드에서 직접 수행할 수 있습니다. 테스트 모드에서 미터 구성을 완료했다면 복사 작업을 통해 집계 유형, 이벤트 이름, 필터, 크레딧 연동 등 모든 설정을 그대로 라이브 모드에 복제하세요. 개발에서 운영으로 전환할 때 미터를 수동으로 다시 설정할 필요가 없어집니다.
+
+<Tip>
+먼저 테스트 모드에서 미터 구성을 구축하고 검증한 다음 운영 준비가 되면 라이브 모드로 복사하세요. 이렇게 하면 실제 고객 사용량을 처리하기 전에 청구 설정을 사전에 테스트할 수 있습니다.
+</Tip>
+
+자세히 알아보기: [Usage-Based Billing](/features/usage-based-billing/introduction) | [Meters](/features/usage-based-billing/meters)

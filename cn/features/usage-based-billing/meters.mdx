@@ -102,32 +102,145 @@ icon: sliders
 - **事件**：接收到的单个事件
 - **客户**：每个客户的使用情况和费用
 
+## 以积分计费而非货币
+
+默认情况下，计量器按美元（或您配置的货币）对每单位进行收费。您也可以配置计量器**从余额积分中扣除**——这样使用量就会消耗积分，而不是产生货币费用。
+
+<Info>
+基于积分的扣费需要一个附属于同一产品的[积分权益](/features/credit-based-billing)。先创建您的积分，再将其链接到计量器。
+</Info>
+
+### 何时使用基于积分的扣费
+
+| 场景 | 标准（货币） | 基于积分 |
+|----------|-------------------|--------------|
+| 简单按单位定价（每次调用 $0.01） | ✅ 最适合 | 不必要的额外开销 |
+| 预付积分包（购买 10K 令牌，随时间使用） | ❌ 无法表达 | ✅ 最适合 |
+| 订阅包含捆绑使用量（专业版计划包括 100K 次调用） | 通过免费阈值可实现 | ✅ 更佳 - 积分可结转、过期，并在门户中显示 |
+| 共享积分池的多计量器产品 | ❌ 每个计量器单独计费 | ✅ 所有计量器均从同一余额扣除 |
+
+
+### 配置计量器以扣除积分
+
+<Steps>
+{/* LOCKED_PATTERN_2f001d4cc191a503bfa27e2b02a887d3 */}
+首先，在**产品 → 积分**中创建一个积分。定义单位（例如“API 调用”、“令牌”）、精度以及生命周期设置（过期、结转、超额）。
+
+详见[基于积分的计费指南](/features/credit-based-billing)了解详细说明。
+</Step>
+
+{/* LOCKED_PATTERN_e56c2bce14c9ffc41b822106f30b9344 */}
+进入您的基于使用量的产品，然后打开**计量器**配置部分。
+</Step>
+
+{/* LOCKED_PATTERN_0e1120cd860a229dcc6f92a517f37ac6 */}
+点击**+**按钮以附加计量器。按常规配置事件名称、聚合类型和度量单位。
+</Step>
+
+{/* LOCKED_PATTERN_5742803ec5f5aba6317bae5a7cd68e62 */}
+在计量器配置中切换**以积分计费**。这会显示积分设置：
+
+{/* LOCKED_PATTERN_5164565eee83d03235035c7c8b6b2680 */}
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="启用以积分计费切换的计量器配置" />
+</Frame>
+
+{/* LOCKED_PATTERN_643db6bd6419b3403905cdf5351f1450 */}
+选择这个计量器应从中扣除积分的权益。
+</ParamField>
+
+{/* LOCKED_PATTERN_f350d049ff7e758408e63c7b8b7766de */}
+每扣除 1 个积分所需的使用单位数量。例如：
+- `1` = 每个计量器事件扣除 1 个积分
+- `100` = 100 个计量器事件扣除 1 个积分
+- `1000` = 1,000 次 API 调用消耗 1 个积分
+</ParamField>
+</Step>
+
+{/* LOCKED_PATTERN_6b77ac14c64de04b72ad44281724bb0c */}
+**免费阈值**依旧适用——低于此阈值的事件不会扣除积分。
+
+**示例**：免费阈值为 1,000，计量器单位与积分比为 1：
+- 客户使用了 2,500 次 API 调用
+- 前 1,000 次免费
+- 剩余 1,500 次从其余额中扣除 1,500 个积分
+</Step>
+</Steps>
+
+### 积分扣除如何运作
+
+配置完成后，扣除管道会自动运行：
+
+1. **事件到达** - 您的应用通过[事件摄取 API](/features/usage-based-billing/event-ingestion)发送使用事件
+2. **计量器聚合** - 事件根据您的计量器配置进行聚合（Count、Sum、Max、Last）
+3. **后台工作进程处理** - 每分钟，一个工作进程会获取自上一个检查点以来的新事件
+4. **积分扣除** - 聚合使用量通过 `meter_units_per_credit` 费率转换为积分，并使用**FIFO 顺序**扣除（先消耗最旧的权益）
+5. **记录超额** - 如果余额归零且启用了超额，使用将继续，并根据配置的行为（在重置时豁免、在下一张发票中计费或作为赤字结转）处理超额
+
+```mermaid
+flowchart LR
+    A[Usage Event] --> B[Meter Aggregation]
+    B --> C{Credits Available?}
+    C -->|Yes| D[Deduct from Balance]
+    C -->|No| E{Overage Enabled?}
+    E -->|Yes| F[Track Overage]
+    E -->|No| G[Block Usage]
+    D --> H[Update Ledger]
+    F --> H
+```
+
+{/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */}
+积分扣除是异步运行的（约每分钟一次）。事件摄取与余额扣除之间可能会有短暂延迟。请在应用中考虑此延迟——不要依赖实时余额检查来控制单个请求的访问权限。
+{/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */}
+
+### 多计量器，共用一个积分池
+
+您可以将同一产品上的多个计量器链接到**相同的积分权益**。所有计量器均从一个共享的余额中扣除。
+
+**示例**：一个 AI 平台有两个计量器：
+- `text.generation` - 每 1,000 个令牌扣除 1 个积分
+- `image.generation` - 每张图像扣除 10 个积分
+
+两者均从同一个“AI 积分”池中扣除。客户在其门户中看到一个统一的余额。
+
+{/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */}
+在不同计量器间使用不同的 `meter_units_per_credit` 费率以表达相对成本。昂贵的操作（图像生成）每积分所需的计量器单位比廉价的操作（文本补全）少。
+{/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */}
+
+<CardGroup cols={2}>
+{/* LOCKED_PATTERN_2e110f22e0f3741250f140b212ae466d */}
+查看客户的完整积分扣除历史。
+</Card>
+{/* LOCKED_PATTERN_83b4a13ef9031c5fd9378a998aeaa952 */}
+通过 API 检查客户当前的积分余额。
+</Card>
+</CardGroup>
+
 ## 故障排除
 
 <AccordionGroup>
 <Accordion title="Events not appearing">
 - 事件名称必须完全匹配（区分大小写）
-- 检查计量器过滤器是否未排除事件
+- 检查计量器过滤器是否排除了事件
 - 验证客户 ID 是否存在
 - 暂时禁用过滤器进行测试
 </Accordion>
 
 <Accordion title="Aggregation not working">
 - 验证 Over Property 是否与元数据键完全匹配
-- 使用数字而不是字符串：`tokens: 150` 而非 `"150"`
+- 使用数字而非字符串：`tokens: 150`，而不是 `"150"`
 - 在所有事件中包含必需的属性
 </Accordion>
 
 <Accordion title="Filters not working">
 - 完全匹配大小写
-- 针对数据类型使用正确的运算符
-- 确保事件包含所筛选的属性
+- 对数据类型使用正确的运算符
+- 确保事件包含被过滤的属性
 </Accordion>
 
 <Accordion title="Wrong usage totals">
-- 检查 Events 选项卡以统计实际接收的事件
+- 检查“事件”选项卡以统计实际接收的事件
 - 验证聚合类型（Count 与 Sum）
-- 确保 Sum/Max 所用数值为数字
+- 确保 Sum/Max 的值为数字
 </Accordion>
 </AccordionGroup>
 
@@ -136,10 +249,10 @@ icon: sliders
 <CardGroup cols={2}>
 
 <Card title="Send Events" icon="bolt" href="/features/usage-based-billing/event-ingestion">
-开始从应用程序向计量器发送使用事件。
+开始从您的应用向计量器发送使用事件。
 </Card>
 
 <Card title="View Blueprints" icon="copy" href="/features/usage-based-billing/ingestion-blueprints">
-为常见用例使用现成的计量器配置。
+使用现成的计量器配置满足常见用例。
 </Card>
 </CardGroup>

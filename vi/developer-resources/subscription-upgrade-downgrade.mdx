@@ -355,7 +355,9 @@ Các tín dụng được tạo bởi việc hạ cấp sử dụng <code>differ
 - Nâng cấp: thu phí ngay lập tức sự khác biệt giá giữa kế hoạch cũ và mới
 - Hạ cấp: thêm giá trị còn lại như tín dụng nội bộ cho đăng ký và tự động áp dụng khi gia hạn
 
-### Các tình huống ví dụ
+<Info>
+Tín dụng được tạo ra bởi việc hạ cấp sử dụng <code>difference_immediately</code> là theo phạm vi đăng ký và khác biệt với các quyền lợi <a href="/features/credit-based-billing">Credit-Based Billing</a>. Chúng tự động áp dụng cho các lần gia hạn tương lai của cùng một đăng ký và không thể chuyển sang đăng ký khác.
+</Info>
 
 <AccordionGroup>
   <Accordion title="Nâng cấp: Cơ bản ($30) → Chuyên nghiệp ($80) với difference_immediately">
@@ -815,3 +817,224 @@ ID đăng ký không được tìm thấy hoặc không thuộc về tài khoả
 - Khám phá <a href="/features/customer-credit">Tín dụng Khách hàng</a>
 - Triển khai cảnh báo cho `subscription.on_hold`
 - Xem hướng dẫn <a href="/developer-resources/webhooks">Tích hợp Webhook</a>
+
+**Giải pháp**:
+- Xác minh đăng ký tồn tại và đang hoạt động
+- Kiểm tra ID sản phẩm hợp lệ và còn sẵn
+- Đảm bảo cung cấp tất cả các tham số bắt buộc
+- Xem lại tài liệu API để biết yêu cầu tham số
+</Accordion>
+
+{/* LOCKED_PATTERN_7917a64bf4b26c933f2e4649e9278a56 */}
+**Triệu chứng**: Việc thay đổi gói đã được khởi tạo nhưng việc thu phí ngay lập tức thất bại
+
+**Nguyên nhân phổ biến**:
+- Thiếu tiền trong phương thức thanh toán của khách hàng
+- Phương thức thanh toán đã hết hạn hoặc không hợp lệ
+- Ngân hàng từ chối giao dịch
+- Hệ thống phát hiện gian lận đã chặn khoản thu
+
+**Giải pháp**:
+- Xử lý sự kiện webhook `payment.failed` một cách phù hợp
+- Thông báo cho khách hàng cập nhật phương thức thanh toán
+- Triển khai logic thử lại cho các lỗi tạm thời
+- Xem xét cho phép thay đổi gói khi các khoản thu ngay lập tức thất bại
+</Accordion>
+
+{/* LOCKED_PATTERN_20276630e99e95ac9f5cdd0b347713bb */}
+**Triệu chứng**: Việc thu phí thay đổi gói thất bại và đăng ký chuyển sang trạng thái `on_hold`
+
+**Điều gì xảy ra**:
+Khi việc thu phí thay đổi gói thất bại, đăng ký sẽ tự động được đưa vào trạng thái `on_hold`. Đăng ký sẽ không tự động gia hạn cho đến khi phương thức thanh toán được cập nhật.
+
+**Giải pháp**: Cập nhật phương thức thanh toán để kích hoạt lại đăng ký
+
+Để kích hoạt lại đăng ký từ trạng thái `on_hold` sau khi thay đổi gói thất bại:
+
+1. **Cập nhật phương thức thanh toán** bằng cách sử dụng Update Payment Method API
+2. **Tạo khoản thu tự động**: API tự động tạo khoản thu cho số tiền còn nợ
+3. **Tạo hóa đơn**: Một hóa đơn được tạo cho khoản thu
+4. **Xử lý thanh toán**: Khoản thanh toán được xử lý bằng phương thức thanh toán mới
+5. **Kích hoạt lại**: Sau khi thanh toán thành công, đăng ký được kích hoạt lại về trạng thái `active`
+
+<CodeGroup>
+
+```javascript Node.js
+// Reactivate subscription from on_hold after failed plan change
+async function reactivateAfterFailedPlanChange(subscriptionId) {
+  // Update payment method - automatically creates charge for remaining dues
+  const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
+    type: 'new',
+    return_url: 'https://example.com/return'
+  });
+  
+  if (response.payment_id) {
+    console.log('Charge created for remaining dues:', response.payment_id);
+    console.log('Payment link:', response.payment_link);
+    
+    // Redirect customer to payment_link to complete payment
+    // Monitor webhooks for:
+    // 1. payment.succeeded - charge succeeded
+    // 2. subscription.active - subscription reactivated
+  }
+  
+  return response;
+}
+
+// Or use existing payment method if available
+async function reactivateWithExistingPaymentMethod(subscriptionId, paymentMethodId) {
+  const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
+    type: 'existing',
+    payment_method_id: paymentMethodId
+  });
+  
+  // Monitor webhooks for payment.succeeded and subscription.active
+  return response;
+}
+```
+
+```python Python
+# Reactivate subscription from on_hold after failed plan change
+def reactivate_after_failed_plan_change(subscription_id):
+    # Update payment method - automatically creates charge for remaining dues
+    response = client.subscriptions.update_payment_method(
+        subscription_id=subscription_id,
+        type="new",
+        return_url="https://example.com/return"
+    )
+    
+    if response.payment_id:
+        print("Charge created for remaining dues:", response.payment_id)
+        print("Payment link:", response.payment_link)
+        
+        # Redirect customer to payment_link to complete payment
+        # Monitor webhooks for:
+        # 1. payment.succeeded - charge succeeded
+        # 2. subscription.active - subscription reactivated
+    
+    return response
+
+# Or use existing payment method if available
+def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
+    response = client.subscriptions.update_payment_method(
+        subscription_id=subscription_id,
+        type="existing",
+        payment_method_id=payment_method_id
+    )
+    
+    # Monitor webhooks for payment.succeeded and subscription.active
+    return response
+```
+
+</CodeGroup>
+
+**Các sự kiện webhook cần giám sát**:
+- `subscription.on_hold`: Đăng ký bị tạm giữ (nhận khi việc thu phí thay đổi gói thất bại)
+- `payment.succeeded`: Việc thanh toán số tiền còn nợ đã thành công (sau khi cập nhật phương thức thanh toán)
+- `subscription.active`: Đăng ký được kích hoạt lại sau khi thanh toán thành công
+
+**Thực hành tốt nhất**:
+- Thông báo ngay cho khách hàng khi việc thu phí thay đổi gói thất bại
+- Cung cấp hướng dẫn rõ ràng về cách cập nhật phương thức thanh toán
+- Giám sát các sự kiện webhook để theo dõi trạng thái kích hoạt lại
+- Xem xét triển khai logic thử lại tự động cho các lỗi thanh toán tạm thời
+
+{/* LOCKED_PATTERN_d215ea1d00e95d5e9d5b4b6085f2443f */}
+Xem tài liệu API đầy đủ để cập nhật phương thức thanh toán và kích hoạt lại đăng ký.
+</Card>
+</Accordion>
+</AccordionGroup>
+
+## Kiểm tra triển khai của bạn
+
+Thực hiện các bước sau để kiểm tra kỹ lưỡng việc triển khai thay đổi gói đăng ký của bạn:
+
+<Steps>
+{/* LOCKED_PATTERN_f5ce79c6f425de558f6fdd6cea5793f5 */}
+- Sử dụng khóa API kiểm thử và sản phẩm kiểm thử
+- Tạo các đăng ký kiểm thử với nhiều loại gói khác nhau
+- Cấu hình điểm cuối webhook kiểm thử
+- Thiết lập giám sát và ghi nhật ký
+</Step>
+
+{/* LOCKED_PATTERN_3705b8701c8873992c57281c42adf8d6 */}
+- Kiểm tra `prorated_immediately` với các vị trí chu kỳ thanh toán khác nhau
+- Kiểm tra `difference_immediately` cho việc nâng cấp và hạ cấp
+- Kiểm tra `full_immediately` để đặt lại chu kỳ thanh toán
+- Xác minh việc tính toán tín dụng là chính xác
+</Step>
+
+{/* LOCKED_PATTERN_9fb1eaf73e8951f61d7daf19366cdfdf */}
+- Xác minh tất cả sự kiện webhook liên quan đã được nhận
+- Kiểm tra xác thực chữ ký webhook
+- Xử lý các sự kiện webhook trùng lặp một cách trơn tru
+- Kiểm tra các tình huống xử lý webhook thất bại
+</Step>
+
+{/* LOCKED_PATTERN_7d448c9309210902a86e740b08deae34 */}
+- Kiểm tra với ID đăng ký không hợp lệ
+- Kiểm tra với phương thức thanh toán đã hết hạn
+- Kiểm tra các lỗi mạng và hết thời gian chờ
+- Kiểm tra khi không đủ tiền
+</Step>
+
+{/* LOCKED_PATTERN_099bec4eb7633497929a085e7b0160cd */}
+- Thiết lập cảnh báo cho các thay đổi gói thất bại
+- Giám sát thời gian xử lý webhook
+- Theo dõi tỷ lệ thành công của các thay đổi gói
+- Xem xét các phiếu hỗ trợ khách hàng liên quan đến vấn đề thay đổi gói
+</Step>
+</Steps>
+
+## Xử lý lỗi
+
+Xử lý các lỗi API phổ biến một cách trôi chảy trong triển khai của bạn:
+
+### Mã trạng thái HTTP
+
+<AccordionGroup>
+<Accordion title="200 OK">
+Yêu cầu thay đổi gói đã được xử lý thành công. Đăng ký đang được cập nhật và xử lý thanh toán đã bắt đầu.
+</Accordion>
+
+<Accordion title="400 Bad Request">
+Tham số yêu cầu không hợp lệ. Kiểm tra tất cả các trường bắt buộc đã được cung cấp và định dạng đúng.
+</Accordion>
+
+<Accordion title="401 Unauthorized">
+Khóa API không hợp lệ hoặc bị thiếu. Xác minh `DODO_PAYMENTS_API_KEY` của bạn là chính xác và có quyền phù hợp.
+</Accordion>
+
+<Accordion title="404 Not Found">
+Không tìm thấy ID đăng ký hoặc không thuộc tài khoản của bạn.
+</Accordion>
+
+<Accordion title="422 Unprocessable Entity">
+Không thể thay đổi đăng ký (ví dụ: đã hủy, sản phẩm không có sẵn, v.v.).
+</Accordion>
+
+<Accordion title="500 Internal Server Error">
+Đã xảy ra lỗi máy chủ. Thử lại yêu cầu sau một khoảng thời gian ngắn.
+</Accordion>
+</AccordionGroup>
+
+### Định dạng phản hồi lỗi
+
+```json
+{
+  "error": {
+    "code": "subscription_not_found",
+    "message": "The subscription with ID 'sub_123' was not found",
+    "details": {
+      "subscription_id": "sub_123"
+    }
+  }
+}
+```
+
+## Bước tiếp theo
+
+- Xem lại <a href="/api-reference/subscriptions/change-plan">Change Plan API</a>
+- Khám phá <a href="/features/credit-based-billing">Credit-Based Billing</a>
+- Triển khai cảnh báo cho `subscription.on_hold`
+- Tham khảo <a href="/developer-resources/webhooks">Webhook Integration Guide</a>

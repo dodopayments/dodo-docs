@@ -1,0 +1,126 @@
+---
+openapi-schema: CreditLedgerEntryResponse
+title: الفوترة المعتمدة على الرصيد
+description: الحمولة المرسلة إلى نقطة اتصال الويب هوك الخاصة بك عند حدوث أحداث
+  الفوترة المعتمدة على الرصيد — اعتمادات افتراضية (استدعاءات API، رموز مميزة،
+  ساعات حوسبة) مُنحت، مُستهلكة، منتهية الصلاحية، مُرحلة، أو تنبيهات الرصيد. لا
+  ترتبط هذه الويب هوكات بـ [محافظ العملاء](/features/customer-wallet) (الأرصدة
+  النقدية).
+icon: coins
+---
+
+## أحداث الويب هوك للفوترة المعتمدة على الرصيد
+
+الأحداث التالية للويب هوك متاحة لتعقب تغييرات دورة حياة الفوترة المعتمدة على الرصيد. تنطبق هذه الأحداث على استحقاقات الاعتماد الافتراضي (استدعاءات API، رموز مميزة، ساعات حوسبة)، ولا تنطبق على [محافظ العملاء](/features/customer-wallet) (الأرصدة النقدية).
+
+| الحدث | الوصف |
+|-------|-------------|
+| `credit.added` | يتم منح الاعتمادات للعميل (من خلال الاشتراك، أو عملية شراء لمرة واحدة، أو إضافة، أو API) |
+| `credit.deducted` | يتم استهلاك الاعتمادات من خلال الاستخدام أو الخصم اليدوي |
+| `credit.expired` | تنتهي صلاحية الاعتمادات غير المستخدمة بعد فترة انتهاء الصلاحية المكوَّنة |
+| `credit.rolled_over` | تُرحَّل الاعتمادات غير المستخدمة إلى منحة جديدة عند نهاية الدورة |
+| `credit.rollover_forfeited` | يتم مصادرة الاعتمادات لأن الحد الأقصى لعدد عمليات الترحيل قد تم بلوغه |
+| `credit.overage_charged` | يتم تطبيق رسوم تجاوز عند استمرار الاستخدام بعد وصول الرصيد إلى الصفر |
+| `credit.manual_adjustment` | تعديل يدوي على الاعتماد أو الخصم يتم عبر لوحة التحكم أو API |
+| `credit.balance_low` | ينخفض رصيد الاعتماد إلى ما دون الحد الأدنى المكوَّن |
+
+
+### أحداث دفتر الأستاذ
+
+تشترك جميع أحداث دفتر الأستاذ (`credit.added` وحتى `credit.manual_adjustment`) في نفس الحمولة `CreditLedgerEntryResponse` الموضحة في المخطط أدناه.
+
+### حدث انخفاض الرصيد (credit.balance_low)
+
+يستخدم الحدث `credit.balance_low` حمولة مختلفة (`CreditBalanceLowPayload`) تركز على تنبيه العتبة:
+
+```json
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "credit.balance_low",
+  "timestamp": "2025-08-04T06:15:00.000000Z",
+  "data": {
+    "payload_type": "CreditBalanceLow",
+    "customer_id": "cus_8VbC6JDZzPEqfBPUdpj0K",
+    "subscription_id": "sub_7EeHq2ewQuadropD2ra",
+    "credit_entitlement_id": "cent_9xY2bKwQn5MjRpL8d",
+    "credit_entitlement_name": "API Credits",
+    "available_balance": "15",
+    "subscription_credits_amount": "100",
+    "threshold_percent": 20,
+    "threshold_amount": "20"
+  }
+}
+```
+
+<ParamField body="customer_id" type="string">
+العميل الذي أدى رصيده من الاعتماد إلى تشغيل التنبيه.
+</ParamField>
+
+<ParamField body="subscription_id" type="string">
+الاشتراك المرتبط بهذا الاستحقاق الاعتمادي.
+</ParamField>
+
+<ParamField body="credit_entitlement_id" type="string">
+الاستحقاق الاعتمادي الذي أصبح رصيده منخفضًا.
+</ParamField>
+
+<ParamField body="credit_entitlement_name" type="string">
+اسم العرض للاستحقاق الاعتمادي.
+</ParamField>
+
+<ParamField body="available_balance" type="string">
+الرصيد الحالي من الاعتماد وقت حدوث التنبيه.
+</ParamField>
+
+<ParamField body="subscription_credits_amount" type="string">
+إجمالي الاعتمادات الممنوحة خلال كل دورة فوترة لهذا الاشتراك.
+</ParamField>
+
+<ParamField body="threshold_percent" type="integer">
+نسبة حد الرصيد المنخفض المكوَّنة.
+</ParamField>
+
+<ParamField body="threshold_amount" type="string">
+مقدار الاعتماد المطلق الذي تتوافق معه العتبة.
+</ParamField>
+
+### استخدام `credit.balance_low` لتنبيهات استباقية
+
+استخدم ويب هوك `credit.balance_low` لإخطار العملاء قبل نفاد اعتماداتهم:
+
+```javascript
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+  
+  if (event.type === 'credit.balance_low') {
+    const data = event.data;
+    
+    // Notify the customer their credits are running low
+    await sendEmail(data.customer_id, {
+      subject: `Your ${data.credit_entitlement_name} balance is running low`,
+      body: `You have ${data.available_balance} credits remaining ` +
+            `(${data.threshold_percent}% threshold reached). ` +
+            `Consider upgrading your plan or purchasing additional credits.`
+    });
+    
+    console.log(`Low balance alert for customer ${data.customer_id}`);
+  }
+  
+  res.json({ received: true });
+});
+```
+
+<Tip>
+اشترك في `credit.balance_low` لتنبيه العملاء استباقيًا قبل نفاد اعتماداتهم. اجمعه مع `credit.deducted` لتتبع أنماط الاستهلاك في الوقت الفعلي.
+</Tip>
+
+<CardGroup cols={2}>
+<Card title="Get Customer Balance" icon="wallet" href="/api-reference/credit-entitlements/get-customer-balance">
+تحقق من الرصيد الحالي للعميل عبر API.
+</Card>
+<Card title="Create Ledger Entry" icon="plus" href="/api-reference/credit-entitlements/create-ledger-entry">
+قم بمناولة الإضافة أو الخصم يدويًا لرصيد العميل.
+</Card>
+</CardGroup>
+
+## مخطط حمولة الويب هوك
