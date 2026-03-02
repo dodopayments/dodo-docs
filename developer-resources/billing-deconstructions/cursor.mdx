@@ -1,0 +1,299 @@
+---
+title: "Cursor Billing Model"
+sidebarTitle: "Cursor"
+description: "Deconstruct Cursor's model-weighted credit system and build the same hybrid subscription-plus-credits model using Dodo Payments."
+icon: "code"
+---
+
+## How Cursor Bills
+
+Cursor uses a hybrid model that combines a monthly subscription with a depleting credit pool. This approach allows them to offer a predictable price for users while managing the variable costs of different AI models. It's a sophisticated way to handle the high and unpredictable costs associated with large language models (LLMs).
+
+By using this hybrid approach, Cursor ensures that they can cover the costs of expensive models like Claude 3.5 Sonnet and GPT-4o while still providing a low-cost entry point for hobbyists. The subscription provides a baseline of revenue, while the credit system manages the marginal cost of each request. This dual-layered strategy is becoming the standard for AI-native applications that need to balance user accessibility with infrastructure sustainability.
+
+### Pricing Tiers
+
+The pricing structure is designed to cater to everyone from hobbyists to power users. Each tier provides a different balance of premium and standard access, allowing users to choose the plan that best fits their workflow.
+
+| Plan | Price | Premium Requests | Slow Requests |
+| :--- | :--- | :--- | :--- |
+| Hobby | Free | 50/month | Unlimited |
+| Pro | $20/month | 500/month | Unlimited |
+| Pro+ | $60/month | Unlimited premium | - |
+| Ultra | $200/month | Unlimited premium | - |
+
+### Model-Weighted Depletion
+
+The core mechanic of Cursor's billing is model-weighted depletion. Not all requests cost the same amount of credits. This strategy lets Cursor offer one subscription that covers multiple underlying LLM providers at different cost points.
+
+For example, a simple code completion might be free, while a complex agentic task using a top-tier model might consume multiple credits. This weighting ensures that the most expensive operations are accounted for without overcharging for simple tasks. It also allows Cursor to be provider-agnostic, as they can adjust the credit cost of a model if the provider changes their pricing.
+
+| Request Type | Model | Credit Cost |
+| :--- | :--- | :--- |
+| Tab Completion | Default | 0 |
+| Chat | GPT-4o Mini | 1 |
+| Chat | Claude 3.5 Sonnet | 1 |
+| Composer | GPT-4o | 5 |
+| Agent | Claude 3.5 Sonnet | 10 |
+| Agent | o1-preview | 25 |
+
+### Credit Exhaustion and Overages
+
+When a user runs out of credits, they aren't cut off from the product. Instead, they move to a "Slow" queue that uses cheaper models or has lower priority. This ensures that the user can still work, albeit at a slower pace. This "graceful degradation" is a key part of the user experience, as it prevents the frustration of a hard cutoff.
+
+Alternatively, users can enable usage-based overages. This allows them to maintain access to premium models at a fixed per-request cost once their initial pool is exhausted. Dodo Payments handles this by automatically billing the overage amount at the end of the billing cycle. This gives power users the flexibility they need without forcing them to upgrade to a higher tier prematurely.
+
+### Enterprise and Business
+
+For teams, Cursor uses pooled usage. Instead of per-user limits, the entire team shares a single credit bucket. This simplifies management and ensures that heavy users don't hit limits while others have unused capacity. It also makes the billing more predictable for the organization, as they only have to manage one large pool of credits rather than dozens of individual subscriptions.
+
+## What Makes It Unique
+
+Cursor's model is a masterclass in balancing user experience with infrastructure costs. It solves several problems that traditional SaaS billing models struggle with.
+
+### Provider Abstraction
+
+A single subscription wraps multiple LLM providers. Users don't have to worry about whether they're using OpenAI, Anthropic, or Google. Cursor handles the complexity of different pricing structures and API keys behind the scenes. This abstraction is a key value proposition, as it gives users access to the best model for each task without the overhead of managing multiple accounts.
+
+### Weighted Depletion
+
+It recognizes that not all requests are equal in value or cost. By weighting the depletion, Cursor can offer access to the most powerful models without having to charge a massive flat fee to every user. It aligns the cost of the service with the value delivered to the user, making the pricing feel fair and transparent.
+
+### Graceful Degradation
+
+Moving to a slow queue instead of a hard cutoff keeps users in the product. It's a much better experience than seeing a "Limit Reached" modal that stops all work. It encourages users to upgrade to a higher tier or enable overages without being punitive. This approach also helps with retention, as users are less likely to churn if they can still use the product in a limited capacity.
+
+### Pooled Credits
+
+Team-level buckets reduce friction for enterprise customers. It's much easier for a manager to buy a pool of 5,000 requests for a team of 10 than to manage 10 individual 500-request subscriptions. This also allows for more efficient use of resources across the team, as unused credits from one user can be used by another.
+
+## Build This with Dodo Payments
+
+You can replicate this exact model using Dodo Payments' credit entitlements and usage-based billing. The following steps will guide you through the implementation.
+
+<Steps>
+  <Step title="Create a Custom Unit Credit Entitlement">
+    First, define the credit system in the Dodo dashboard. This entitlement will represent the "Premium Requests" that users get with their subscription.
+
+    *   **Credit Type:** Custom Unit
+    *   **Unit Name:** "Premium Requests"
+    *   **Precision:** 0 (since you can't use half a request)
+    *   **Credit Expiry:** 30 days (this ensures credits reset each billing cycle)
+    *   **Rollover:** Disabled (unused requests don't carry over to the next month)
+    *   **Overage:** Enabled
+    *   **Price Per Unit:** $0.04 (the cost for each request after the initial pool is exhausted)
+    *   **Overage Behavior:** Bill overage at billing (this adds the overage cost to the next invoice)
+
+    This configuration ensures that users have a fixed pool of requests each month, with the option to pay for more if they need them. It's the foundation of the hybrid billing model.
+  </Step>
+
+  <Step title="Create Subscription Products">
+    Create separate products for each tier. Attach the same credit entitlement to each product, but with different amounts. This allows you to manage all tiers with a single credit system, making it easy to upgrade or downgrade users.
+
+    *   **Hobby:** $0/month, 50 credits/cycle
+    *   **Pro:** $20/month, 500 credits/cycle
+    *   **Pro+:** $60/month, 5000 credits/cycle (effectively unlimited for most)
+    *   **Ultra:** $200/month, 50000 credits/cycle (effectively unlimited)
+
+    When a user subscribes to one of these products, Dodo automatically allocates the corresponding number of credits to their account. This happens instantly, providing a seamless onboarding experience.
+  </Step>
+
+  <Step title="Create a Usage Meter Linked to Credits">
+    Create a meter named `ai.request` with **Count** aggregation. Link this meter to your credit entitlement by enabling the "Bill usage in Credits" toggle. Set the meter units per credit to 1.
+
+    To handle model-weighted depletion, you'll manage the credit cost at the application level. When a user makes a request, your app determines the cost based on the model or action type.
+
+    ```typescript
+    /**
+     * Determines the credit cost for a given request type and model.
+     * This logic lives in your application and can be updated without
+     * changing your billing configuration.
+     */
+    function getCreditCost(requestType: string, model: string): number {
+      const costs: Record<string, Record<string, number>> = {
+        'tab_completion': { 'default': 0 },
+        'chat': { 'gpt-4o-mini': 1, 'gpt-4o': 1, 'claude-sonnet': 1 },
+        'composer': { 'gpt-4o-mini': 2, 'gpt-4o': 5, 'claude-sonnet': 5 },
+        'agent': { 'gpt-4o': 10, 'claude-sonnet': 10, 'o1': 25 }
+      };
+      
+      // Default to 1 credit if the combination isn't found
+      return costs[requestType]?.[model] ?? 1;
+    }
+
+    /**
+     * Ingests usage events into Dodo Payments.
+     * For weighted requests, we send multiple events or use a sum aggregation.
+     */
+    async function trackRequest(customerId: string, requestType: string, model: string) {
+      const creditCost = getCreditCost(requestType, model);
+      
+      // Tab completions are free, so we don't need to track them for billing
+      if (creditCost === 0) return;
+      
+      // We send the event to Dodo's ingestion endpoint
+      // The event_id should be unique to ensure idempotency
+      await fetch('https://api.dodopayments.com/events/ingest', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          events: [{
+            event_id: `req_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            customer_id: customerId,
+            event_name: 'ai.request',
+            timestamp: new Date().toISOString(),
+            metadata: {
+              request_type: requestType,
+              model: model,
+              credit_cost: creditCost
+            }
+          }]
+        })
+      });
+    }
+    ```
+
+    <Tip>
+      If you want to use a single event for weighted requests, set your meter aggregation to **Sum** and use a property like `credit_cost` as the value to sum. This is often more efficient for high-volume ingestion and simplifies your application logic.
+    </Tip>
+  </Step>
+
+  <Step title="Handle Credit Exhaustion (Slow Queue)">
+    Listen for the `credit.balance_low` webhook from Dodo. When a user's credits are near zero, you can switch them to a slow queue in your application. This is where you implement the "graceful degradation" logic.
+
+    ```typescript
+    /**
+     * Webhook handler for Dodo Payments events.
+     * This endpoint should be registered in the Dodo dashboard.
+     */
+    app.post('/webhooks/dodo', async (req, res) => {
+      const event = req.body;
+      
+      // This event triggers when a user's credit balance falls below a threshold
+      if (event.type === 'credit.balance_low') {
+        const customerId = event.data.customer_id;
+        
+        // Update the user's tier in your database to 'slow'
+        // This will affect how future requests are routed in routeRequest
+        await updateUserTier(customerId, 'slow');
+        
+        // Notify the user so they aren't surprised by the change in performance
+        // You could also include a link to upgrade or enable overages
+        await notifyUser(customerId, 'You have used most of your premium requests. Switching to standard models.');
+      }
+      
+      res.json({ received: true });
+    });
+
+    /**
+     * Routes a request based on the user's current tier.
+     * This function is called before every AI request to determine the model and queue.
+     */
+    async function routeRequest(customerId: string, requestType: string) {
+      const tier = await getUserTier(customerId);
+      
+      if (tier === 'slow') {
+        // Route to a cheaper model and a lower priority queue
+        // This saves costs while keeping the user active in the product
+        return { model: 'gpt-4o-mini', queue: 'standard' };
+      }
+      
+      // Premium routing for users with remaining credits
+      // This provides the best possible performance and model quality
+      return { model: 'claude-sonnet', queue: 'priority' };
+    }
+    ```
+  </Step>
+
+  <Step title="Create Checkout">
+    Finally, generate a checkout session for the user to subscribe to a plan. Dodo handles the payment processing, tax compliance, and credit allocation automatically.
+
+    ```typescript
+    /**
+     * Creates a checkout session for a new subscription.
+     * This is typically called when a user clicks an "Upgrade" button.
+     */
+    const session = await client.checkoutSessions.create({
+      product_cart: [
+        { product_id: 'prod_cursor_pro', quantity: 1 }
+      ],
+      customer: { email: 'developer@example.com' },
+      return_url: 'https://yourapp.com/dashboard'
+    });
+    ```
+  </Step>
+</Steps>
+
+## Pooled Team Credits (Enterprise)
+
+Cursor's Business and Enterprise plans pool credits across a team. You can implement this with Dodo by creating a single subscription for the organization rather than individual users. This ensures that the team's usage is consolidated and managed as a single entity, which is a major requirement for larger customers.
+
+### Implementation Strategy
+
+1.  **Organization-Level Customer:** Create a single `customer_id` in Dodo for the entire organization. This customer represents the billing entity for the team and holds the shared credit pool. All invoices and credit allocations are tied to this ID.
+2.  **Seat-Based Billing:** Use Dodo's add-ons to charge a per-user platform fee. When a team adds a new member, you update the quantity of the "Seat" add-on. This ensures your revenue scales with the number of users while keeping the credit pool separate. It's a clean way to handle multi-dimensional billing.
+3.  **Shared Usage Tracking:** All team members' requests are ingested using the organization's `customer_id`. This ensures that every request from any team member depletes the same central credit pool. You can still track individual user usage by including a `user_id` in the event metadata for internal reporting and analytics.
+
+This approach gives you the best of both worlds: a predictable per-user fee for the platform and a shared pool of credits for the expensive AI resources. It also simplifies the user experience for team members, as they don't have to manage their own individual limits.
+
+## Comparison with Traditional SaaS Billing
+
+Traditional SaaS billing usually involves flat-rate tiers (e.g., $10/month for 100 units). If a user needs 101 units, they often have to jump to a $50/month tier. This creates "cliff" effects that can frustrate users and lead to churn. It also doesn't account for the variable cost of different types of usage, which is critical in the AI space.
+
+Cursor's model, powered by Dodo, is much more flexible and fair:
+
+*   **No "Cliff" Effects:** Users don't have to upgrade just because they hit a limit. They can pay for overages or accept slower performance. This keeps them in the product and reduces friction, leading to higher customer satisfaction and lower churn.
+*   **Cost Alignment:** Your revenue scales directly with your infrastructure costs. If a user uses expensive models, they pay more (either through credits or overages). This protects your margins and allows you to offer high-cost features sustainably without risking your business model.
+*   **Better Retention:** By not cutting users off, you keep them engaged with your product even when they've reached their limit. They can continue to work, which builds long-term loyalty and increases the lifetime value of the customer. It's a win-win for both the user and the provider.
+
+## Handling Model Updates and Evolution
+
+One of the challenges with AI billing is that models are constantly being updated or replaced. New models might have different cost structures or performance characteristics. With Dodo's credit system, you can handle this gracefully at the application level without needing to migrate your billing data.
+
+If you introduce a new, more expensive model, you simply update your `getCreditCost` function to assign it a higher cost. You don't need to change your billing configuration or update existing subscriptions. This decoupling of billing and application logic is a major advantage, as it allows you to iterate on your product at the speed of AI without being constrained by your billing system.
+
+## User Notifications and Transparency
+
+To provide a great user experience, it's important to keep users informed about their credit usage. Transparency builds trust and helps users manage their costs effectively. You can use Dodo's webhooks to trigger notifications at various thresholds (e.g., 50%, 80%, and 100% usage).
+
+These notifications can be sent via email, in-app alerts, or Slack messages. By providing real-time feedback on usage, you encourage users to manage their consumption or upgrade their plan before they hit the "slow queue". This proactive approach reduces support tickets and improves the overall user experience, making your product feel more professional and user-centric.
+
+## Security and Fraud Prevention
+
+When implementing a credit-based system, it's important to consider security and fraud prevention. Since credits have a direct monetary value, they can be a target for abuse.
+
+*   **Idempotency:** Always use unique `event_id`s when ingesting usage events to prevent double-counting. Dodo's ingestion API handles idempotency automatically if you provide a unique ID, ensuring that a network retry doesn't charge the user twice.
+*   **Rate Limiting:** Implement rate limiting at the application level to prevent a single user from exhausting their credits (or your API budget) too quickly. This protects your infrastructure and the user's wallet.
+*   **Monitoring:** Monitor usage patterns for anomalies that might indicate account sharing or automated abuse. Dodo's analytics can help you identify these patterns, allowing you to take action before they become a major problem.
+
+## Best Practices for Credit Systems
+
+When building a credit-based billing system, keep these best practices in mind:
+
+1.  **Keep it Simple:** Don't make your credit system too complex. Users should be able to easily understand how much a request costs and how many credits they have left.
+2.  **Provide Value:** Ensure that the credits provide real value to the user. If the cost of a request is too high, users will feel like they're being nickel-and-dimed.
+3.  **Be Transparent:** Always show the user their current credit balance and usage history. This builds trust and reduces confusion.
+4.  **Automate Everything:** Use Dodo's webhooks and APIs to automate as much of the billing process as possible. This reduces manual work and ensures that your billing is always accurate.
+
+## Key Dodo Features Used
+
+<CardGroup cols={2}>
+  <Card title="Credit-Based Billing" icon="coins" href="/features/credit-based-billing">
+    Manage depleting credit pools and overages with custom units.
+  </Card>
+  <Card title="Subscriptions" icon="calendar" href="/features/subscription">
+    Set up recurring billing for different tiers with integrated credits.
+  </Card>
+  <Card title="Usage-Based Billing" icon="chart-line" href="/features/usage-based-billing/introduction">
+    Track events and bill based on consumption in real-time.
+  </Card>
+  <Card title="Event Ingestion" icon="bolt" href="/features/usage-based-billing/event-ingestion">
+    Send high-volume usage data to Dodo with low latency.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/credit">
+    React to credit balance changes and automate user tiering.
+  </Card>
+</CardGroup>
