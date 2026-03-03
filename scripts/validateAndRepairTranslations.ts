@@ -2,7 +2,7 @@
 /**
  * Post-translation validation & repair.
  *
- * Run this after lingo.dev to fix the two most common translation defects:
+ * Run this after lingo.dev to fix the most common translation defects:
  *
  *   1. **Un-restored locked patterns** — lingo.dev replaces JSX component tags
  *      with `{/* LOCKED_PATTERN_<hash> *​/}` placeholders before handing content
@@ -10,9 +10,14 @@
  *      This script rebuilds a hash→tag mapping from the English source and
  *      restores every placeholder.
  *
- *   2. **Structurally corrupted files** — the AI translator occasionally breaks
+ *   2. **Broken code fences** — the AI translator occasionally splits fenced code
+ *      block openings like ```typescript into ``` on one line and `typescript` on
+ *      the next.  MDX then tries to parse `{ ... }` in the code as JSX expressions,
+ *      causing "Could not parse expression with acorn" errors.
+ *
+ *   3. **Structurally corrupted files** — the AI translator occasionally breaks
  *      tag nesting (mismatched open/close, deleted tags, duplicated sections).
- *      Files that still fail MDX compilation after step 1 are replaced with the
+ *      Files that still fail MDX compilation after steps 1–2 are replaced with the
  *      English source so the site always builds.  They will be re-translated on
  *      the next sync run.
  *
@@ -92,6 +97,13 @@ function validateMdx(filePath) {
   // Remaining LOCKED_PATTERN placeholders → always invalid
   if (/\{\/\* LOCKED_PATTERN_[a-f0-9]+ \*\/\}/.test(stripped)) {
     return 'Contains un-restored LOCKED_PATTERN placeholders';
+  }
+
+  // Broken code fences: ```\n\n<lang> or ```\n<lang> outside a valid block
+  // This pattern causes "Could not parse expression with acorn" errors.
+  const brokenFenceRe = /^```[ \t]*\n(?:\n)?(?:typescript|javascript|json|bash|python|tsx|jsx|css|html|yaml|toml|shell|sh|sql|go|rust|ruby|php|csharp|java|kotlin|swift|xml|diff|text|plaintext|curl|powershell)[ \t]*$/m;
+  if (brokenFenceRe.test(stripped)) {
+    return 'Contains broken code fence (split language identifier)';
   }
 
   // Check for obviously broken JSX nesting via a simple tag-stack validator.
@@ -238,7 +250,59 @@ function restoreLockedPatterns(langDirs, dryRun) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2: Validate and replace structurally broken files
+// Phase 2: Repair broken code fences
+// ---------------------------------------------------------------------------
+
+// Common code fence languages used across the docs
+const FENCE_LANGS = [
+  'typescript', 'javascript', 'json', 'bash', 'python', 'tsx', 'jsx',
+  'css', 'html', 'yaml', 'toml', 'shell', 'sh', 'sql', 'go', 'rust',
+  'ruby', 'php', 'csharp', 'java', 'kotlin', 'swift', 'xml', 'diff',
+  'text', 'plaintext', 'curl', 'powershell',
+];
+
+// Matches: ```<newline><optional blank line><language><newline>
+// Captures the language so we can rejoin it with the fence
+const BROKEN_FENCE_RE = new RegExp(
+  '```[ \\t]*\\n(?:\\n)?(' + FENCE_LANGS.join('|') + ')[ \\t]*\\n',
+  'g',
+);
+
+function repairBrokenCodeFences(langDirs, dryRun) {
+  console.log('\n[repair:code-fences] Scanning for broken code fence openings...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      let content = fs.readFileSync(f, 'utf8');
+      let fixes = 0;
+
+      content = content.replace(BROKEN_FENCE_RE, (full, lang) => {
+        fixes++;
+        return '```' + lang + '\n';
+      });
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, content, 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No broken code fences found.');
+  } else {
+    console.log(`  Fixed ${totalFixes} broken fence(s) in ${filesFixed} file(s)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Validate and replace structurally broken files
 // ---------------------------------------------------------------------------
 
 function validateAndReplace(langDirs, dryRun) {
@@ -324,6 +388,7 @@ function main() {
   console.log(`[repair] ${dryRun ? 'DRY RUN — ' : ''}Processing languages: ${langDirs.join(', ')}`);
 
   restoreLockedPatterns(langDirs, dryRun);
+  repairBrokenCodeFences(langDirs, dryRun);
   const remaining = validateAndReplace(langDirs, dryRun);
 
   if (remaining > 0) {
@@ -335,7 +400,7 @@ function main() {
 }
 
 // Export for use from syncAllLanguages.ts
-module.exports = { restoreLockedPatterns, validateAndReplace, validateMdx };
+module.exports = { restoreLockedPatterns, repairBrokenCodeFences, validateAndReplace, validateMdx };
 
 // Run directly if executed as a script
 if (require.main === module) {
