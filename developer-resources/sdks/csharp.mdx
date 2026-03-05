@@ -4,19 +4,18 @@ description: 'Integrate Dodo Payments into your .NET applications with modern as
 icon: "c"
 ---
 
-The C# SDK provides convenient access to the Dodo Payments REST API from applications written in C#. It features an async Task-based API with strong typing.
-
+The C# SDK provides convenient access to the Dodo Payments REST API from applications written in C#. It features an async Task-based API with strong typing, automatic retries, and comprehensive error handling.
 
 ## Installation
 
-Install the SDK using the .NET CLI:
+Install the package from [NuGet](https://www.nuget.org/packages/DodoPayments.Client):
 
 ```bash
 dotnet add package DodoPayments.Client
 ```
 
 <Info>
-The SDK requires .NET Standard 2.0 or later. It works with ASP.NET Core, Console applications, and other .NET project types.
+The SDK requires .NET 8.0 or later. It works with ASP.NET Core, Console applications, and other .NET project types.
 </Info>
 
 ## Quick Start
@@ -63,20 +62,18 @@ Always store your API keys securely using environment variables, user secrets, o
   Comprehensive type safety with nullable reference types
 </Card>
 
-<Card title="Dependency Injection" icon="layer-group">
-  First-class support for .NET dependency injection
+<Card title="Smart Retries" icon="repeat">
+  Automatic retries with exponential backoff for transient errors
 </Card>
 
-<Card title="Configuration" icon="gear">
-  Simple configuration via environment variables or appsettings.json
+<Card title="Error Handling" icon="triangle-exclamation">
+  Built-in exception hierarchy for precise error management
 </Card>
 </CardGroup>
 
 ## Configuration
 
 ### Environment Variables
-
-Configure using environment variables:
 
 ```bash .env
 DODO_PAYMENTS_API_KEY=your_api_key_here
@@ -87,8 +84,6 @@ DODO_PAYMENTS_API_KEY=your_api_key_here
 DodoPaymentsClient client = new();
 ```
 
-See this table for the available options:
-
 | Property      | Environment variable        | Required | Default value                     |
 | ------------- | --------------------------- | -------- | --------------------------------- |
 | `BearerToken` | `DODO_PAYMENTS_API_KEY`     | true     | -                                 |
@@ -97,17 +92,54 @@ See this table for the available options:
 
 ### Manual Configuration
 
-Configure manually with bearer token:
-
 ```csharp
 DodoPaymentsClient client = new() { BearerToken = "My Bearer Token" };
+```
+
+### Environments
+
+Switch between live and test mode:
+
+```csharp
+using DodoPayments.Client.Core;
+
+DodoPaymentsClient client = new() { BaseUrl = EnvironmentUrl.TestMode };
+```
+
+### Retries
+
+The SDK automatically retries 2 times by default with exponential backoff. It retries on connection errors and status codes 408, 409, 429, and 5xx.
+
+```csharp
+// Custom retry count
+DodoPaymentsClient client = new() { MaxRetries = 3 };
+```
+
+### Timeouts
+
+Requests time out after 1 minute by default.
+
+```csharp
+DodoPaymentsClient client = new() { Timeout = TimeSpan.FromSeconds(30) };
+```
+
+### Per-Request Overrides
+
+Temporarily modify configuration for a single request using `WithOptions`:
+
+```csharp
+var response = await client
+    .WithOptions(options => options with
+    {
+        Timeout = TimeSpan.FromSeconds(10),
+        MaxRetries = 5,
+    })
+    .CheckoutSessions.Create(parameters);
 ```
 
 ## Common Operations
 
 ### Create a Checkout Session
-
-Generate a checkout session:
 
 ```csharp
 var parameters = new CheckoutSessionCreateParams
@@ -129,21 +161,13 @@ Console.WriteLine($"Checkout URL: {session.Url}");
 
 ### Manage Customers
 
-Create and retrieve customer information:
-
 ```csharp
 // Create a customer
-var createParams = new CustomerCreateParams
+var customer = await client.Customers.Create(new CustomerCreateParams
 {
     Email = "customer@example.com",
-    Name = "John Doe",
-    Metadata = new Dictionary<string, string>
-    {
-        { "user_id", "12345" }
-    }
-};
-
-var customer = await client.Customers.Create(createParams);
+    Name = "John Doe"
+});
 
 // Retrieve customer
 var retrieved = await client.Customers.Retrieve("cus_123");
@@ -152,34 +176,46 @@ Console.WriteLine($"Customer: {retrieved.Name} ({retrieved.Email})");
 
 ### Handle Subscriptions
 
-Create and manage recurring subscriptions:
-
 ```csharp
 // Create a subscription
-var subscriptionParams = new SubscriptionCreateParams
+var subscription = await client.Subscriptions.Create(new SubscriptionCreateParams
 {
     CustomerID = "cus_123",
     ProductID = "prod_456",
     PriceID = "price_789"
-};
-
-var subscription = await client.Subscriptions.Create(subscriptionParams);
+});
 
 // Cancel subscription
 await client.Subscriptions.Cancel(subscription.Id);
 ```
 
-## Pagination
+## Error Handling
 
-The SDK defines methods that return paginated lists of results with convenient ways to access results either one page at a time or item-by-item across all pages.
+The SDK throws specific exceptions based on the HTTP status code. All 4xx errors inherit from `DodoPayments4xxException`.
+
+| Status | Exception                                   |
+| ------ | ------------------------------------------- |
+| 400    | `DodoPaymentsBadRequestException`           |
+| 401    | `DodoPaymentsUnauthorizedException`         |
+| 403    | `DodoPaymentsForbiddenException`            |
+| 404    | `DodoPaymentsNotFoundException`             |
+| 422    | `DodoPaymentsUnprocessableEntityException`  |
+| 429    | `DodoPaymentsRateLimitException`            |
+| 5xx    | `DodoPayments5xxException`                  |
+| others | `DodoPaymentsUnexpectedStatusCodeException` |
+
+Other exception types:
+- `DodoPaymentsIOException`: I/O networking errors
+- `DodoPaymentsInvalidDataException`: Failure to interpret parsed data
+- `DodoPaymentsException`: Base class for all exceptions
+
+## Pagination
 
 ### Auto-Pagination
 
-To iterate through all results across all pages, use the `Paginate` method:
+Iterate through all results across all pages using the `Paginate` method, which returns an `IAsyncEnumerable`:
 
 ```csharp
-using System;
-
 var page = await client.Payments.List(parameters);
 await foreach (var item in page.Paginate())
 {
@@ -189,11 +225,7 @@ await foreach (var item in page.Paginate())
 
 ### Manual Pagination
 
-To access individual page items and manually request the next page:
-
 ```csharp
-using System;
-
 var page = await client.Payments.List();
 while (true)
 {
@@ -211,16 +243,13 @@ while (true)
 
 ## ASP.NET Core Integration
 
-### Service Registration
-
-Register the client in `Program.cs`:
+Register the client in your DI container:
 
 ```csharp Program.cs
 using DodoPayments.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Register DodoPayments client
 builder.Services.AddSingleton<DodoPaymentsClient>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
@@ -230,16 +259,9 @@ builder.Services.AddSingleton<DodoPaymentsClient>(sp =>
     };
 });
 
-builder.Services.AddControllers();
-
 var app = builder.Build();
-app.MapControllers();
 app.Run();
 ```
-
-### Configuration
-
-Add configuration in `appsettings.json`:
 
 ```json appsettings.json
 {
@@ -249,171 +271,22 @@ Add configuration in `appsettings.json`:
 }
 ```
 
-### API Controller
-
-Create a controller using dependency injection:
-
-```csharp
-using Microsoft.AspNetCore.Mvc;
-using DodoPayments.Client;
-using DodoPayments.Client.Models.CheckoutSessions;
-
-[ApiController]
-[Route("api/[controller]")]
-public class PaymentsController : ControllerBase
-{
-    private readonly DodoPaymentsClient _client;
-    private readonly ILogger<PaymentsController> _logger;
-
-    public PaymentsController(DodoPaymentsClient client, ILogger<PaymentsController> logger)
-    {
-        _client = client;
-        _logger = logger;
-    }
-
-    [HttpPost("checkout")]
-    public async Task<IActionResult> CreateCheckout([FromBody] CheckoutRequest request)
-    {
-        try
-        {
-            var parameters = new CheckoutSessionCreateParams
-            {
-                ProductCart = request.Items,
-                ReturnUrl = Url.Action("Return", "Checkout", null, Request.Scheme)
-            };
-
-            var session = await _client.CheckoutSessions.Create(parameters);
-
-            return Ok(new { checkoutUrl = session.Url });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to create checkout");
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-}
-
-public record CheckoutRequest(List<ProductCartItem> Items);
-```
-
-### Service Layer Pattern
-
-Create a service for business logic:
-
-```csharp
-public interface IPaymentService
-{
-    Task<CheckoutSessionResponse> CreateCheckoutAsync(List<ProductCartItem> items);
-    Task<PaymentResponse> ProcessPaymentAsync(decimal amount, string currency, string customerId);
-}
-
-public class PaymentService : IPaymentService
-{
-    private readonly DodoPaymentsClient _client;
-    private readonly ILogger<PaymentService> _logger;
-
-    public PaymentService(DodoPaymentsClient client, ILogger<PaymentService> logger)
-    {
-        _client = client;
-        _logger = logger;
-    }
-
-    public async Task<CheckoutSessionResponse> CreateCheckoutAsync(List<ProductCartItem> items)
-    {
-        var parameters = new CheckoutSessionCreateParams
-        {
-            ProductCart = items,
-            ReturnUrl = "https://yourdomain.com/return"
-        };
-
-        return await _client.CheckoutSessions.Create(parameters);
-    }
-
-    public async Task<PaymentResponse> ProcessPaymentAsync(
-        decimal amount,
-        string currency,
-        string customerId)
-    {
-        try
-        {
-            var parameters = new PaymentCreateParams
-            {
-                Amount = (long)(amount * 100), // Convert to cents
-                Currency = currency,
-                CustomerID = customerId
-            };
-
-            return await _client.Payments.Create(parameters);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to process payment");
-            throw;
-        }
-    }
-}
-```
-
-## User Secrets (Development)
-
-For development, use user secrets to store API keys:
+<Tip>
+For development, use [user secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) instead of storing keys in `appsettings.json`:
 
 ```bash
 dotnet user-secrets init
 dotnet user-secrets set "DodoPayments:ApiKey" "your_api_key_here"
 ```
-
-## Testing
-
-Example unit test using xUnit:
-
-```csharp
-using Xunit;
-using DodoPayments.Client;
-using DodoPayments.Client.Models.CheckoutSessions;
-
-public class PaymentServiceTests
-{
-    private readonly DodoPaymentsClient _client;
-
-    public PaymentServiceTests()
-    {
-        _client = new DodoPaymentsClient
-        {
-            BearerToken = "test_key"
-        };
-    }
-
-    [Fact]
-    public async Task CreateCheckout_ShouldReturnSession()
-    {
-        // Arrange
-        var parameters = new CheckoutSessionCreateParams
-        {
-            ProductCart =
-            [
-                new()
-                {
-                    ProductID = "prod_test",
-                    Quantity = 1
-                }
-            ]
-        };
-
-        // Act
-        var session = await _client.CheckoutSessions.Create(parameters);
-
-        // Assert
-        Assert.NotNull(session);
-        Assert.NotNull(session.SessionId);
-    }
-}
-```
+</Tip>
 
 ## Resources
 
 <CardGroup cols={2}>
+<Card title="NuGet Package" icon="box" href="https://www.nuget.org/packages/DodoPayments.Client">
+  View package on NuGet Gallery
+</Card>
+
 <Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-csharp">
   View source code and contribute
 </Card>
@@ -425,10 +298,6 @@ public class PaymentServiceTests
 <Card title="Discord Community" icon="discord" href="https://discord.gg/bYqAp4ayYh">
   Get help and connect with developers
 </Card>
-
-<Card title="Report Issues" icon="bug" href="https://github.com/dodopayments/dodopayments-csharp/issues">
-  Report bugs or request features
-</Card>
 </CardGroup>
 
 ## Support
@@ -438,8 +307,3 @@ Need help with the C# SDK?
 - **Discord**: Join our [community server](https://discord.gg/bYqAp4ayYh) for real-time support
 - **Email**: Contact us at support@dodopayments.com
 - **GitHub**: Open an issue on the [repository](https://github.com/dodopayments/dodopayments-csharp)
-
-## Contributing
-
-We welcome contributions! Check the [contributing guidelines](https://github.com/dodopayments/dodopayments-csharp/blob/main/CONTRIBUTING.md) to get started.
-
