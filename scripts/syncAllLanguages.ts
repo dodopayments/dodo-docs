@@ -270,12 +270,17 @@ function getTargetLanguagesFromI18n() {
   return targets;
 }
 
-function runCmd(cmd, args, cwd) {
+function runCmd(cmd, args, cwd, { allowNonZeroExit = false } = {}) {
   const res = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: false });
   if (res.error) throw res.error;
   if (typeof res.status === 'number' && res.status !== 0) {
+    if (allowNonZeroExit) {
+      console.warn(`[warn] Command exited with status ${res.status}: ${cmd} ${args.join(' ')}`);
+      return res.status;
+    }
     throw new Error(`Command failed (${res.status}): ${cmd} ${args.join(' ')}`);
   }
+  return 0;
 }
 
 function moveToEnFolder() {
@@ -372,7 +377,10 @@ function main() {
 
     if (!skipLingo) {
       console.log('\n[lingo] Running: npx --yes lingo.dev@latest run --concurrency 20');
-      runCmd('npx', ['--yes', 'lingo.dev@latest', 'run', '--concurrency', '20'], ROOT);
+      const lingoExit = runCmd('npx', ['--yes', 'lingo.dev@latest', 'run', '--concurrency', '20'], ROOT, { allowNonZeroExit: true });
+      if (lingoExit !== 0) {
+        console.warn('[warn] lingo.dev exited with errors — partial translation failures are expected. Continuing with successfully translated files.');
+      }
     } else {
       console.log('\n[lingo] Skipped (--skip-lingo).');
     }
