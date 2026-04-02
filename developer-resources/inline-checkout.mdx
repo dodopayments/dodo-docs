@@ -351,7 +351,6 @@ interface CheckoutOptions {
   options?: {
     showTimer?: boolean;
     showSecurityBadge?: boolean;
-    manualRedirect?: boolean;
     payButtonText?: string;
     fontSize?: FontSize;
     fontWeight?: FontWeight;
@@ -365,7 +364,6 @@ interface CheckoutOptions {
 | `elementId` | `string` | Yes | The `id` of the DOM element where the checkout should be rendered. |
 | `options.showTimer` | `boolean` | No | Show or hide the checkout timer. Defaults to `true`. When disabled, you will receive the `checkout.link_expired` event when the session expires. |
 | `options.showSecurityBadge` | `boolean` | No | Show or hide the security badge. Defaults to `true`. |
-| `options.manualRedirect` | `boolean` | No | When enabled, the checkout will not automatically redirect after completion. Instead, you will receive `checkout.status` and `checkout.redirect_requested` events to handle the redirect yourself. |
 | `options.payButtonText` | `string` | No | Custom text to display on the pay button. |
 | `options.fontSize` | `FontSize` | No | Global font size for the checkout. |
 | `options.fontWeight` | `FontWeight` | No | Global font weight for the checkout. |
@@ -392,31 +390,7 @@ DodoPayments.Checkout.open({
   options: {
     showTimer: false,
     showSecurityBadge: false,
-    manualRedirect: true,
     payButtonText: "Pay Now",
-  },
-});
-```
-
-When using `manualRedirect`, handle the checkout completion in your `onEvent` callback:
-
-```typescript
-DodoPayments.Initialize({
-  mode: "test",
-  displayType: "inline",
-  onEvent: (event) => {
-    if (event.event_type === "checkout.status") {
-      const status = event.data?.message?.status;
-      // Handle status: "succeeded", "failed", or "processing"
-    }
-    if (event.event_type === "checkout.redirect_requested") {
-      const redirectUrl = event.data?.message?.redirect_to;
-      // Redirect the customer manually
-      window.location.href = redirectUrl;
-    }
-    if (event.event_type === "checkout.link_expired") {
-      // Handle expired checkout session
-    }
   },
 });
 ```
@@ -452,8 +426,6 @@ The SDK provides real-time events through the `onEvent` callback. For inline che
 | `checkout.redirect` | Checkout will perform a redirect (e.g., to a bank page). |
 | `checkout.error` | An error occurred during checkout. |
 | `checkout.link_expired` | Fired when the checkout session expires. Only received when `showTimer` is set to `false`. |
-| `checkout.status` | Fired when `manualRedirect` is enabled. Contains the checkout status (`succeeded`, `failed`, or `processing`). |
-| `checkout.redirect_requested` | Fired when `manualRedirect` is enabled. Contains the URL to redirect the customer to. |
 
 #### Checkout Breakdown Data
 
@@ -468,30 +440,6 @@ interface CheckoutBreakdownData {
   currency?: string;         // e.g., "USD"
   finalTotal?: number;       // Final amount including adjustments
   finalTotalCurrency?: string; // Currency for the final total
-}
-```
-
-#### Checkout Status Event Data
-
-When `manualRedirect` is enabled, you receive the `checkout.status` event with the following data:
-
-```typescript
-interface CheckoutStatusEventData {
-  message: {
-    status?: "succeeded" | "failed" | "processing";
-  };
-}
-```
-
-#### Checkout Redirect Requested Event Data
-
-When `manualRedirect` is enabled, you receive the `checkout.redirect_requested` event with the following data:
-
-```typescript
-interface CheckoutRedirectRequestedEventData {
-  message: {
-    redirect_to?: string;
-  };
 }
 ```
 
@@ -657,7 +605,7 @@ Do not rely solely on inline checkout events to determine payment success or fai
 
 ### Why Server-Side Validation is Essential
 
-While inline checkout events like `checkout.status` provide real-time feedback, they should **not** be your only source of truth for payment status. Network issues, browser crashes, or users closing the page can cause events to be missed. To ensure reliable payment validation:
+While inline checkout events provide real-time feedback, they should **not** be your only source of truth for payment status. Network issues, browser crashes, or users closing the page can cause events to be missed. To ensure reliable payment validation:
 
 1. **Your server should listen to webhook events** - Dodo Payments sends webhooks for payment status changes
 2. **Implement a polling mechanism** - Your frontend should poll your server for status updates
@@ -696,7 +644,7 @@ flowchart TB
 
 ```typescript
 onEvent: (event) => {
-  if (event.event_type === 'checkout.status') {
+  if (event.event_type === 'checkout.pay_button_clicked') {
     // Start polling your server for confirmed status
     startPolling();
   }
@@ -717,36 +665,6 @@ const interval = setInterval(async () => {
 ```
 
 **3. Handle webhooks server-side** - Update your database when Dodo sends `payment.succeeded` or `payment.failed` webhooks. See our [Webhooks documentation](/developer-resources/webhooks) for details.
-
-### Handling Redirects (3DS, Google Pay, UPI)
-
-When using `manualRedirect: true`, certain payment methods require redirecting the user away from your page for authentication:
-
-- **3D Secure (3DS)** - Card authentication
-- **Google Pay** - Wallet authentication on some flows
-- **UPI** - Indian payment method redirects
-
-When a redirect is required, you'll receive the `checkout.redirect_requested` event. Redirect the user to the provided URL:
-
-```typescript
-if (event.event_type === 'checkout.redirect_requested') {
-  const redirectUrl = event.data?.message?.redirect_to;
-  // Save payment ID before redirect, then redirect
-  sessionStorage.setItem('pendingPaymentId', paymentId);
-  window.location.href = redirectUrl;
-}
-```
-
-After authentication completes (success or failure), the user returns to your page. **Do not assume success just because the user returned.** Instead:
-
-1. Check if the user is returning from a redirect (e.g., via `sessionStorage`)
-2. Start polling your server for the confirmed payment status
-3. Show a "Verifying payment..." state while polling
-4. Display success/failure UI based on the server-confirmed status
-
-<Tip>
-Always verify payment status server-side after redirects. The user returning to your page only means authentication completed—it doesn't indicate whether the payment succeeded or failed.
-</Tip>
 
 ## Troubleshooting
 
