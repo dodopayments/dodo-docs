@@ -43,12 +43,14 @@ const TAG_RE_SRC =
   '<\\/?(?:Note|Tip|Warning|Info|Check|Steps|Step|Tabs|Tab|CodeGroup|Card|CardGroup|Accordion|AccordionGroup|Frame|Expandable|ResponseField|ParamField|RequestExample|ResponseExample|Tooltip|Update|Snippet|Icon)(?:\\s[^>]*)?\\/?>'; // single-line
 const TAG_RE = new RegExp(TAG_RE_SRC, 'g');
 
-// Locked-pattern placeholder left by lingo.dev
-const LOCKED_RE = /\{\/\* LOCKED_PATTERN_([a-f0-9]+) \*\/\}/g;
+// Locked-pattern placeholder left by lingo.dev. Two variants are seen in the
+// wild: the canonical JSX-comment form `{/* LOCKED_PATTERN_... */}` and a
+// "naked" `/* LOCKED_PATTERN_... */` form where the translator stripped the
+// `{}` wrapper (still visible as text in the rendered output).
+const LOCKED_RE = /\{?\/\*[!\s]*LOCKED_PATTERN_([a-f0-9]+)[!\s]*\*\/\}?/g;
 
-// Combined: real tag OR locked-pattern (for ordered extraction)
 const ITEM_RE = new RegExp(
-  `(${TAG_RE_SRC})|(\\{/\\* LOCKED_PATTERN_[a-f0-9]+ \\*/\\})`,
+  `(${TAG_RE_SRC})|(\\{?/\\*[!\\s]*LOCKED_PATTERN_[a-f0-9]+[!\\s]*\\*/\\}?)`,
   'g',
 );
 
@@ -94,8 +96,7 @@ function validateMdx(filePath) {
   // Strip frontmatter
   const stripped = content.replace(/^---[\s\S]*?---/, '');
 
-  // Remaining LOCKED_PATTERN placeholders → always invalid
-  if (/\{\/\* LOCKED_PATTERN_[a-f0-9]+ \*\/\}/.test(stripped)) {
+  if (/\{?\/\*[!\s]*LOCKED_PATTERN_[a-f0-9]+[!\s]*\*\/\}?/.test(stripped)) {
     return 'Contains un-restored LOCKED_PATTERN placeholders';
   }
 
@@ -161,12 +162,55 @@ function validateMdx(filePath) {
 // Phase 1: Restore LOCKED_PATTERN placeholders
 // ---------------------------------------------------------------------------
 
-function restoreLockedPatterns(langDirs, dryRun) {
-  console.log('\n[repair:locked-patterns] Building hash → tag mapping...');
-  const hashToTag = new Map();
-  let conflicts = 0;
+/**
+ * Align translated items with English tags.
+ *
+ * Uses a sequential walk with small look-ahead for minor drift, but never
+ * pollutes a global map with bad alignments from one broken file.
+ *
+ * Returns a Map<hash, tag> of per-file confident mappings (one mapping per
+ * hash; if a hash appears multiple times in the file it always maps to the
+ * same tag because locked hashes are content-addressed).
+ */
+function alignFileLocked(enTags, trItems) {
+  const localMap = new Map(); // hash → tag (for this file only)
+  let ei = 0;
+  for (const item of trItems) {
+    if (ei >= enTags.length) break;
 
-  // Collect all translated files that contain locked patterns
+    if (item.type === 'tag') {
+      if (item.value === enTags[ei]) {
+        ei++;
+      } else {
+        // Look ahead up to 3 positions for a match. If none found we do NOT
+        // advance ei — the translated file has an extra/spurious tag.
+        for (let k = 1; k <= 3 && ei + k < enTags.length; k++) {
+          if (item.value === enTags[ei + k]) {
+            ei = ei + k + 1;
+            break;
+          }
+        }
+      }
+    } else {
+      // LOCKED_PATTERN → map to current English tag
+      const tag = enTags[ei];
+      if (tag) {
+        // All occurrences of a hash in this file must resolve to the same
+        // tag (locked hashes are content-addressed, so this is guaranteed
+        // upstream). If a local mismatch is observed, bail on the earlier
+        // mapping — trust the later alignment since we've walked further.
+        localMap.set(item.hash, tag);
+        ei++;
+      }
+    }
+  }
+  return localMap;
+}
+
+function restoreLockedPatterns(langDirs, dryRun) {
+  console.log('\n[repair:locked-patterns] Restoring locked patterns per-file...');
+
+  // Collect all translated files that contain locked patterns.
   const transFiles = [];
   for (const lang of langDirs) {
     const langDir = path.join(ROOT, lang);
@@ -182,8 +226,13 @@ function restoreLockedPatterns(langDirs, dryRun) {
     return;
   }
 
-  // Process simpler files first (fewer patterns = more reliable alignment)
-  transFiles.sort((a, b) => a.count - b.count);
+  // ---------------------------------------------------------------------
+  // Phase A: Per-file alignment. Each file produces its own hash → tag map
+  // derived solely from its own English source. This prevents a misaligned
+  // file from corrupting the restoration of *other* files.
+  // ---------------------------------------------------------------------
+  const perFileMaps = []; // [{ tf, localMap }]
+  const voteCounts = new Map(); // hash → Map<tag, count> across files
 
   for (const { path: tf } of transFiles) {
     const enPath = enSourcePath(tf);
@@ -191,51 +240,50 @@ function restoreLockedPatterns(langDirs, dryRun) {
 
     const enTags = extractTags(fs.readFileSync(enPath, 'utf8'));
     const trItems = extractItems(fs.readFileSync(tf, 'utf8'));
+    const localMap = alignFileLocked(enTags, trItems);
+    perFileMaps.push({ tf, localMap });
 
-    let ei = 0;
-    for (const item of trItems) {
-      if (ei >= enTags.length) break;
-
-      if (item.type === 'tag') {
-        if (item.value === enTags[ei]) {
-          ei++;
-        } else {
-          // Look ahead up to 3 positions for a match
-          for (let k = 1; k <= 3 && ei + k < enTags.length; k++) {
-            if (item.value === enTags[ei + k]) {
-              ei = ei + k + 1;
-              break;
-            }
-          }
-        }
-      } else {
-        // LOCKED_PATTERN → map to current English tag
-        const tag = enTags[ei];
-        if (tag) {
-          if (hashToTag.has(item.hash) && hashToTag.get(item.hash) !== tag) {
-            conflicts++;
-          } else {
-            hashToTag.set(item.hash, tag);
-          }
-          ei++;
-        }
-      }
+    for (const [hash, tag] of localMap) {
+      if (!voteCounts.has(hash)) voteCounts.set(hash, new Map());
+      const tagCounts = voteCounts.get(hash);
+      tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
     }
   }
 
-  console.log(`  Mapped ${hashToTag.size} unique hashes (${conflicts} conflicts ignored)`);
+  // ---------------------------------------------------------------------
+  // Phase B: Build a consensus map across files. For each hash, pick the
+  // tag that appears in the most per-file alignments. This provides a safe
+  // fallback for files whose local alignment failed completely (e.g. the
+  // translator deleted most of the structure).
+  // ---------------------------------------------------------------------
+  const consensusMap = new Map();
+  for (const [hash, tagCounts] of voteCounts) {
+    let bestTag = null;
+    let bestCount = 0;
+    for (const [tag, count] of tagCounts) {
+      if (count > bestCount) { bestTag = tag; bestCount = count; }
+    }
+    if (bestTag) consensusMap.set(hash, bestTag);
+  }
 
-  // Apply replacements
+  console.log(`  Aligned ${perFileMaps.length} files; ${consensusMap.size} unique hashes in consensus map`);
+
+  // ---------------------------------------------------------------------
+  // Phase C: Apply replacements. Prefer the local per-file mapping; fall
+  // back to the cross-file consensus when the local map has no entry.
+  // ---------------------------------------------------------------------
   let filesFixed = 0;
   let totalReplacements = 0;
+  let unresolved = 0;
 
-  for (const { path: tf } of transFiles) {
+  for (const { tf, localMap } of perFileMaps) {
     let content = fs.readFileSync(tf, 'utf8');
     let replaced = 0;
 
     content = content.replace(LOCKED_RE, (full, hash) => {
-      const tag = hashToTag.get(hash);
+      const tag = localMap.get(hash) || consensusMap.get(hash);
       if (tag) { replaced++; return tag; }
+      unresolved++;
       return full;
     });
 
@@ -246,7 +294,7 @@ function restoreLockedPatterns(langDirs, dryRun) {
     }
   }
 
-  console.log(`  Restored ${totalReplacements} patterns in ${filesFixed} files`);
+  console.log(`  Restored ${totalReplacements} patterns in ${filesFixed} files${unresolved ? ` (${unresolved} still unresolved)` : ''}`);
 }
 
 // ---------------------------------------------------------------------------
