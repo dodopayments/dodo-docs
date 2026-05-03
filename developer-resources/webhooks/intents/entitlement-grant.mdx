@@ -1,0 +1,272 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: Entitlement Grant
+description: The payload sent to your webhook endpoint when an entitlement grant is created, delivered, fails, or is revoked.
+icon: "gift"
+keywords: ["Dodo Payments", "entitlement webhook", "grant events", "fulfillment", "license key webhook", "digital file webhook"]
+---
+
+## Entitlement Grant Webhook Events
+
+These events fire whenever a customer's entitlement grant changes state, for example when a license key is generated, a Discord role is assigned, a download link is provisioned, or access is revoked. Subscribe to these events to keep your application in sync with what each customer can access.
+
+| Event | Description |
+|-------|-------------|
+| `entitlement_grant.created` | A new grant row was created. Status is `delivered` immediately for license keys, and `pending` for every other integration. |
+| `entitlement_grant.delivered` | The grant transitions to delivered. The customer now has access to the entitled platform, file, or license key. |
+| `entitlement_grant.failed` | Delivery failed and is not being retried. Inspect `error_code` and `error_message`. |
+| `entitlement_grant.revoked` | Access was withdrawn. Inspect `revocation_reason` to understand why. |
+
+All four events share the same `EntitlementGrantResponse` payload documented in the schema below.
+
+---
+
+## Event Triggers
+
+### entitlement_grant.created
+
+A grant row was just inserted. The grant always has a stable `id` from this point on, even if its status changes. Use this event to record that fulfillment is in progress.
+
+For **license keys** the row is inserted directly with `status: "delivered"` and `delivered_at` populated, so a single `created` event is followed by no further state changes unless the grant is later revoked.
+
+For **every other integration** the row arrives with `status: "pending"`. A `delivered` or `failed` event follows once delivery completes:
+
+- **OAuth-based integrations** (Discord, GitHub, Notion) include an `oauth_url` the customer must visit to complete consent. The grant stays `pending` until the customer authorizes.
+- **Platform-direct integrations** (Telegram, Figma, Framer, Digital Files) sit in `pending` only briefly while the platform call runs, then move to `delivered`.
+
+### entitlement_grant.delivered
+
+The grant transitioned from `pending` to `delivered`. The customer now has the access described by the entitlement. Use this event to unlock dependent features in your own systems, for example to provision a workspace, send a custom welcome email, or mark a "fulfilled" flag.
+
+The payload's `delivered_at` field captures when delivery completed. For grants that arrived `delivered` on creation, you'll receive `created` and `delivered` events back to back.
+
+### entitlement_grant.failed
+
+Delivery was attempted and failed with a non-retryable error. The `error_code` and `error_message` fields explain the failure. Common causes include a revoked OAuth token, a denied platform permission, or a missing target (e.g., a deleted Discord guild).
+
+<Tip>
+Treat `entitlement_grant.failed` as actionable. The customer paid but did not get access. Surface failures to your support team or trigger a regrant once the underlying issue is resolved.
+</Tip>
+
+### entitlement_grant.revoked
+
+Access was withdrawn at the platform level: Discord role removed, GitHub collaborator removed, license key disabled, file download URLs no longer issued. The `revocation_reason` field records the trigger.
+
+| `revocation_reason` | Trigger |
+|---|---|
+| `subscription_cancelled` | The customer's subscription was cancelled (`subscription.cancelled` event). |
+| `subscription_on_hold` | The subscription is on hold due to failed renewal (`subscription.on_hold`). Recoverable: a successful retry produces a re-grant. |
+| `subscription_expired` | The subscription reached the end of its term (`subscription.expired`). |
+| `plan_changed` | The plan changed; old grants are revoked before new ones are issued (`subscription.plan_changed`). |
+| `refund` | A refund was processed for the original one-time payment (`refund.succeeded`). |
+| `manual` | A merchant revoked the grant via the API or dashboard. Manual revokes are not auto-regranted on subscription renewal. |
+| `license_key_disabled` | The license key behind a license-key grant was disabled. The grant is re-activated automatically if the key is re-enabled. |
+| `platform_external` | The platform side of an integration drifted out of sync (for example, a Discord role was removed manually, the GitHub App lost repository access, or a reconciliation pass detected a missing target). The grant is not auto-regranted on subscription renewal until the underlying platform issue is resolved. |
+
+---
+
+## Payload Variants
+
+The `data` field is always an `EntitlementGrantResponse` object. Two integration types attach extra nested objects:
+
+- **`license_key`** is included when the entitlement integration type is `license_key`. It contains the generated key, expiry, and activation usage.
+- **`digital_product_delivery`** is included when the integration type is `digital_files`. It contains presigned download URLs, the optional `instructions`, and the optional `external_url`.
+
+For all other integration types (Discord, GitHub, Telegram, Figma, Framer, Notion) both fields are `null`; the relevant configuration is captured in the entitlement itself, not the grant.
+
+---
+
+## Sample Payloads
+
+### License key delivered (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### Digital files delivered (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Discord role created and pending (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### Grant revoked on subscription cancellation (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### Delivery failed (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## Integration Tips
+
+- **Wait for `entitlement_grant.delivered` before unlocking dependent features.** A `payment.succeeded` event tells you the money cleared; it does not tell you the customer has the GitHub repo or the Discord role yet. The `delivered` event is the source of truth for fulfillment.
+- **Map `revocation_reason` to retention flows.** A `subscription_on_hold` revoke usually means the customer's card failed and the next renewal will re-grant access. A `manual` or `subscription_cancelled` revoke is intentional. Treat them differently in customer messaging.
+- **Use the grant `id` as your idempotency key.** A single grant emits at most one `created` event and at most one terminal event (`delivered` or `failed`), and at most one `revoked` event. Re-deliveries from the webhook system can repeat events; dedupe on the grant `id` plus `type`.
+- **Inspect `license_key` and `digital_product_delivery` to recognize the integration type.** The grant payload itself does not carry the integration type, but exactly one of these nested objects is populated for license-key and digital-files entitlements.
+- **For OAuth-based grants, surface `oauth_url` to the customer.** The `entitlement_grant.created` event for Discord, GitHub, or Notion subscriber flows includes an `oauth_url` and `oauth_expires_at`. Email it to the customer or display it in your app to unblock delivery.
