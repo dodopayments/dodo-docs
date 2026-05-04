@@ -43,14 +43,26 @@ const TAG_RE_SRC =
   '<\\/?(?:Note|Tip|Warning|Info|Check|Steps|Step|Tabs|Tab|CodeGroup|Card|CardGroup|Accordion|AccordionGroup|Frame|Expandable|ResponseField|ParamField|RequestExample|ResponseExample|Tooltip|Update|Snippet|Icon)(?:\\s[^>]*)?\\/?>'; // single-line
 const TAG_RE = new RegExp(TAG_RE_SRC, 'g');
 
-// Locked-pattern placeholder left by lingo.dev. Two variants are seen in the
-// wild: the canonical JSX-comment form `{/* LOCKED_PATTERN_... */}` and a
-// "naked" `/* LOCKED_PATTERN_... */` form where the translator stripped the
-// `{}` wrapper (still visible as text in the rendered output).
-const LOCKED_RE = /\{?\/\*[!\s]*LOCKED_PATTERN_([a-f0-9]+)[!\s]*\*\/\}?/g;
+// Locked-pattern placeholder left by lingo.dev. Several variants are seen in
+// the wild:
+//   1. Canonical JSX-comment form `{/* LOCKED_PATTERN_... */}`
+//   2. "Naked" `/* LOCKED_PATTERN_... */` form (translator stripped `{}`)
+//   3. Asterisk-stripped form `{/ LOCKED_PATTERN_... /}` (translator deleted `*`)
+//   4. Fully bare form `LOCKED_PATTERN_<hash>` with no wrappers at all
+// All four leak through as visible junk text in the rendered output if not
+// restored. The regex below tolerates whitespace/`!` decorators between the
+// hash and the (optional) comment delimiters.
+const LOCKED_HASH_SRC = 'LOCKED_PATTERN_([a-f0-9]+)';
+const LOCKED_RE = new RegExp(
+  // Variant A: `{/* ... */}`, `/* ... */`, `{/ ... /}`, or `{... }` style
+  `\\{?\\/\\*?[!\\s]*${LOCKED_HASH_SRC}[!\\s]*\\*?\\/\\}?` +
+    // Variant B (alternation): completely bare hash (no surrounding delimiters)
+    `|${LOCKED_HASH_SRC}`,
+  'g',
+);
 
 const ITEM_RE = new RegExp(
-  `(${TAG_RE_SRC})|(\\{?/\\*[!\\s]*LOCKED_PATTERN_[a-f0-9]+[!\\s]*\\*/\\}?)`,
+  `(${TAG_RE_SRC})|(\\{?\\/\\*?[!\\s]*LOCKED_PATTERN_[a-f0-9]+[!\\s]*\\*?\\/\\}?|LOCKED_PATTERN_[a-f0-9]+)`,
   'g',
 );
 
@@ -96,7 +108,7 @@ function validateMdx(filePath) {
   // Strip frontmatter
   const stripped = content.replace(/^---[\s\S]*?---/, '');
 
-  if (/\{?\/\*[!\s]*LOCKED_PATTERN_[a-f0-9]+[!\s]*\*\/\}?/.test(stripped)) {
+  if (/LOCKED_PATTERN_[a-f0-9]+/.test(stripped)) {
     return 'Contains un-restored LOCKED_PATTERN placeholders';
   }
 
@@ -280,7 +292,8 @@ function restoreLockedPatterns(langDirs, dryRun) {
     let content = fs.readFileSync(tf, 'utf8');
     let replaced = 0;
 
-    content = content.replace(LOCKED_RE, (full, hash) => {
+    content = content.replace(LOCKED_RE, (full, hashA, hashB) => {
+      const hash = hashA || hashB;
       const tag = localMap.get(hash) || consensusMap.get(hash);
       if (tag) { replaced++; return tag; }
       unresolved++;
