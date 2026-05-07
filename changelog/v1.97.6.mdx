@@ -1,0 +1,218 @@
+---
+title: v1.97.6 (May 7, 2026)
+description: "Import existing license keys via API, adaptive currency fees inclusive setting, Entitlement Engine launch, require_phone_number for checkout sessions, configurable INR e-mandate floor, subscription cancellation reasons in the customer portal, and bug fixes"
+icon: "arrows-turn-right"
+keywords: ["Dodo Payments", "changelog", "release notes", "product updates", "v1.97.6 (may 7, 2026)"]
+---
+
+## New Features
+
+### 1. **Import Existing License Keys**
+
+You can now **import license keys from another system** into Dodo Payments using the [Create License Key API](/api-reference/licenses/create-license-key). This unlocks zero-disruption migration from any external license-key provider, so your existing customers can continue activating, validating, and deactivating their keys against Dodo Payments without re-issuance.
+
+```typescript
+const licenseKey = await client.licenseKeys.create({
+  customer_id: 'cus_abc123',
+  product_id: 'prod_456',
+  key: 'YOUR-EXISTING-LICENSE-KEY',
+  activations_limit: 5,
+  expires_at: '2026-12-31T23:59:59Z',
+});
+```
+
+Imported keys are tagged with `source: "import"` (vs. `source: "auto"` for keys generated automatically on payment), so you can distinguish migrated inventory from organically issued keys when querying `GET /license_keys`. The `payment_id` on imported keys is `null` because they aren't tied to a Dodo Payments transaction.
+
+<Warning>
+License keys created or updated through the API do not trigger email notifications to customers. If you need to notify customers about an imported key, handle that separately in your application.
+</Warning>
+
+<Tip>
+Migrating from Polar.sh or Lemon Squeezy? The [`dodo-migrate` CLI](/migrate-to-dodo) automates bulk imports of products, customers, discounts, and license keys in a single command.
+</Tip>
+
+Learn more: [License Keys](/features/license-keys#import-existing-license-keys-via-api) | [Create License Key API](/api-reference/licenses/create-license-key)
+
+### 2. **Entitlement Engine**
+
+Dodo Payments now ships with a unified **Entitlement Engine** powering automatic delivery of every fulfilment integration. A single product can deliver multiple entitlements (license keys, downloadable files, Discord roles, GitHub access, Telegram invites, Framer remix links, Notion templates) on every successful purchase or active subscription.
+
+<Frame>
+<img src="/images/entitlements/list.png" alt="Entitlements dashboard with the list of entitlements on the left and grant activity on the right" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+**What the engine handles for you**
+
+| Capability | Description |
+|---|---|
+| **Reusable templates** | Define an entitlement once (activation limits, file bundles, Discord role, repo permission, etc.) and attach it to any product |
+| **Automatic grants** | Issued on `payment.succeeded` and `subscription.active`, idempotent across renewals and re-activations |
+| **Lifecycle-aware revocation** | Revoked on `subscription.cancelled`, `subscription.on_hold`, `subscription.expired`, `refund.succeeded`, `subscription.plan_changed`, or manual API/dashboard revoke — with a populated `revocation_reason` |
+| **OAuth + platform-direct flows** | OAuth for Discord, GitHub, and Notion subscriber consent; direct platform calls for Telegram, Framer, and Digital Files |
+| **Drift detection** | Detects when a Discord role, GitHub collaborator, or Notion page goes out of sync at the platform level and revokes with `revocation_reason: platform_external` |
+| **Encryption at rest** | All platform tokens (OAuth, bot, app installations) stored with AES-256-GCM |
+
+**Grant lifecycle**
+
+Every grant moves through `pending` → `delivered` → optionally `revoked` (or `failed`). License-key grants jump straight to `delivered`; OAuth integrations stay `pending` until the customer authorises.
+
+**Webhooks**
+
+Four new lifecycle events fire for every grant:
+
+| Event | Fires when |
+|---|---|
+| `entitlement_grant.created` | Grant created (license keys arrive `delivered`; everything else arrives `pending`) |
+| `entitlement_grant.delivered` | Customer access provisioned |
+| `entitlement_grant.failed` | Delivery could not complete; inspect `error_code` and `error_message` |
+| `entitlement_grant.revoked` | Access withdrawn; inspect `revocation_reason` |
+
+<Tip>
+For new integrations, listen to `entitlement_grant.delivered` rather than `payment.succeeded`. Payment success doesn't mean delivery is finished, especially for OAuth-based integrations.
+</Tip>
+
+Learn more: [Entitlements](/features/entitlements/introduction) | [Entitlement Grant Webhooks](/developer-resources/webhooks/intents/entitlement-grant)
+
+### 3. **Adaptive Currency Fees Inclusive Business Setting**
+
+Adaptive Currency is the feature that lets you charge customers in their local currency. By default, the **2–4% adaptive currency fee** is borne by the customer and added on top of your displayed price. With the new **Fees Inclusive** setting, you can flip this: keep the displayed price unchanged for the customer and absorb the fee yourself.
+
+**Where to configure**
+
+Go to **Settings → Business**, ensure **Adaptive Pricing** is enabled, and toggle **Fees Inclusive** in the Adaptive Currency section.
+
+**Per-request override**
+
+You can also override the merchant default for individual checkouts, payments, and on-demand subscriptions using the `adaptive_currency_fees_inclusive` boolean:
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  adaptive_currency_fees_inclusive: true, // override business default
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+| Mode | Customer sees | Merchant settles |
+|------|---------------|------------------|
+| Exclusive (default) | Local price + 2–4% fee on top | Full base price |
+| Inclusive | Local price (unchanged) | Base price minus the 2–4% fee |
+
+<Info>
+INR → INR transactions are always treated as inclusive regardless of the business setting or per-request override.
+</Info>
+
+Learn more: [Adaptive Currency](/features/adaptive-currency)
+
+### 4. **`require_phone_number` for Checkout Sessions**
+
+Force customers to provide a phone number during checkout by setting `feature_flags.require_phone_number: true` when creating a checkout session. Phone number becomes a required field on the checkout form, with form validation surfacing "Phone number is required" if the customer leaves it blank.
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  feature_flags: {
+    allow_phone_number_collection: true,
+    require_phone_number: true
+  },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+| Flag | Default | Behavior |
+|------|---------|----------|
+| `allow_phone_number_collection` | `true` | Shows the phone number field on checkout |
+| `require_phone_number` | `false` | Makes the phone number field required |
+
+<Warning>
+`require_phone_number: true` requires `allow_phone_number_collection: true`. The API rejects sessions where `require_phone_number` is true while phone collection is disabled.
+</Warning>
+
+<Tip>
+Useful for B2B SaaS, regulated industries, or any flow where you need a verified contact channel for support, fraud review, or compliance.
+</Tip>
+
+Learn more: [Checkout Features](/features/checkout) | [Create Checkout Session API](/api-reference/checkout-sessions/create)
+
+### 5. **Configurable Mandate Minimum Amount for INR E-Mandates**
+
+You can now configure the **mandate floor** for INR e-mandates on Indian-card recurring subscriptions. Previously, every Indian-card subscription below ₹15,000 used a fixed ₹15,000 on-demand mandate. Now you can override this floor at the merchant level — and per checkout session or subscription if needed.
+
+The mandate amount registered with the customer's bank is `max(mandate_min_amount_inr_paise, billing_amount)`, so this value acts as the customer-facing **authorization ceiling** whenever billing is lower than the floor.
+
+```typescript
+// Per-subscription override
+const subscription = await client.subscriptions.create({
+  product_id: 'prod_inr_monthly',
+  customer: { email: 'customer@example.in' },
+  billing: { country: 'IN' /* ... */ },
+  mandate_min_amount_inr_paise: 2_000_000 // ₹20,000 ceiling for this subscription
+});
+
+// Or via a checkout session
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_inr_monthly', quantity: 1 }],
+  mandate_min_amount_inr_paise: 2_000_000,
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Resolution priority**
+
+1. Per-request override (`mandate_min_amount_inr_paise` on the checkout session, payment, or subscription)
+2. Merchant-level setting in business settings
+3. System default of **₹15,000** (1,500,000 paise)
+
+| Field | Type | Range | Applies to |
+|-------|------|-------|------------|
+| `mandate_min_amount_inr_paise` | `integer` (INR paise) | `>= 1` | Indian-card INR subscriptions on non-Airwallex connectors |
+
+<Info>
+This setting only affects e-mandates registered for Indian-issued cards (Visa, Mastercard, RuPay) on INR subscriptions. UPI subscriptions follow their own AutoPay flow and are unaffected.
+</Info>
+
+Learn more: [India Payment Methods](/features/payment-methods/india#mandate-types) | [Subscriptions with RBI Mandates](/features/subscription#subscriptions-with-rbi-compliant-mandates)
+
+### 6. **Subscription Cancellation Reasons in the Customer Portal**
+
+When customers cancel a subscription from the Customer Portal, they're now prompted to share **why they're cancelling** before confirming. The captured reason is stored on the subscription as `cancellation_feedback`, surfaced in the API and webhook payloads, and available in the dashboard so you can spot churn patterns at a glance.
+
+<Frame>
+<img src="/images/customer-portal/cancellation-reasons.png" alt="Customer Portal cancellation modal with the 'Why are you cancelling?' dropdown showing reasons like Too expensive, Missing features, and Other" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+**Reason options**
+
+| Value | Customer-facing label |
+|-------|----------------------|
+| `too_expensive` | Too expensive |
+| `missing_features` | Missing features |
+| `switched_service` | Switched to another service |
+| `unused` | Not using it enough |
+| `customer_service` | Poor customer service |
+| `low_quality` | Low quality |
+| `too_complex` | Too complex |
+| `other` | Other |
+
+**Where it appears**
+
+- **Subscription object**: New `cancellation_feedback` field (one of the values above) and `cancellation_comment` (optional free-text), populated when the customer cancels
+- **`subscription.cancelled` webhook**: Both fields are included in the payload
+- **API**: Pass `cancellation_feedback` and `cancellation_comment` to `PATCH /subscriptions/{id}` when scheduling or executing a cancellation programmatically
+
+```typescript
+// Reading the captured feedback
+const subscription = await client.subscriptions.retrieve('sub_123');
+console.log(subscription.cancellation_feedback); // e.g., "too_expensive"
+console.log(subscription.cancellation_comment);  // e.g., "Switching to a competitor"
+```
+
+<Tip>
+Combine `cancellation_feedback` with [Subscription Dunning](/features/recovery/subscription-dunning) to tailor your win-back emails — e.g., send a discount code to `too_expensive` cancellers and a "what's missing?" survey to `missing_features` cancellers.
+</Tip>
+
+Learn more: [Customer Portal](/features/customer-portal#cancelling-a-subscription) | [Subscription Webhooks](/developer-resources/webhooks/intents/subscription)
+
+## Bug Fixes & Improvements
+
+- Minor bug fixes and stability improvements across the platform
