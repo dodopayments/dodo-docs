@@ -1,195 +1,187 @@
 ---
-title: Xây dựng Dịch Vụ Email Trả Trước với Thanh Toán Dựa Trên Tín Dụng
-description: Xây dựng MailKit, một nền tảng email giao dịch với các tín dụng
-  email trả trước. Bao gồm gói thuê bao hàng tháng, gói nạp tiền một lần, khấu
-  trừ tín dụng ngay lập tức mỗi khi gửi, và cảnh báo sớm khi tín dụng thấp được
-  hỗ trợ bởi Resend và Dodo Payments.
-icon: envelope
-keywords:
-  - Dodo Payments
-  - hướng dẫn nhà phát triển
-  - tính phí dựa trên tín dụng
-  - email giao dịch
-  - Resend
-  - tín dụng trả trước
+title: "Build a Prepaid Email Service with Credit-Based Billing"
+description: "Build MailKit, a transactional email platform with prepaid email credits. A monthly subscription plan, one-time top-up packs, instant credit deduction on every send, and proactive low-balance alerts powered by Resend and Dodo Payments."
+icon: "envelope"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "transactional email", "Resend", "prepaid credits"]
 ---
 
 <Tip>
-  <strong>Hãy để Sentra viết mã tích hợp cho bạn.</strong><br />
-  Sử dụng trợ lý AI của chúng tôi trong VS Code, Cursor hoặc Windsurf để tạo mã SDK/API, xử lý webhook, và hơn thế nữa, chỉ bằng cách mô tả điều bạn muốn.
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, and more, just by describing what you want.
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    Thử Sentra: Tích Hợp Sử Dụng AI &rarr;
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-Trong hướng dẫn này, bạn sẽ xây dựng **MailKit**, một nền tảng email giao dịch nơi khách hàng trả trước cho một nhóm tín dụng email. Gói này cấp một hạn mức email hàng tháng; khi khách hàng gần như hết, họ có thể mua thêm một gói nạp tiền thay vì chờ đến chu kỳ tiếp theo. Mỗi lần gửi sẽ tự động trừ một tín dụng.
+In this tutorial, you'll build **MailKit**, a transactional email platform where customers pay upfront for a pool of email credits. The plan grants a monthly email allowance; when customers run low, they can buy a top-up pack instead of waiting for the next cycle. Every send deducts one credit automatically.
 
 <Note>
-Hướng dẫn này sử dụng [Resend](https://resend.com) làm nhà cung cấp email. Gói miễn phí (3.000 email/tháng) đủ để xây dựng và kiểm tra toàn bộ luồng mà không cần tài khoản trả phí. Mẫu này hoạt động với bất kỳ nhà cung cấp nào; hoán đổi `resend.emails.send` với SendGrid, Postmark, SES, hoặc SMTP relay của riêng bạn.
+This tutorial uses [Resend](https://resend.com) as the email provider. Its free tier (3,000 emails/month) is enough to build and test the entire flow without a paid account. The pattern works with any provider; swap `resend.emails.send` for SendGrid, Postmark, SES, or your own SMTP relay.
 </Note>
 
-Kết thúc hướng dẫn này, bạn sẽ biết cách:
+By the end of this tutorial, you'll know how to:
 
-- Tạo quyền tín dụng tùy chỉnh (emails) trong bảng điều khiển của bạn
-- Gắn tín dụng vào gói thuê bao và sản phẩm nạp tiền một lần
-- Gửi email thực qua Resend và trừ một tín dụng mỗi lần gửi qua mục nhập ledger
-- Truy vấn số dư tín dụng trực tuyến từ frontend của bạn
-- Xác minh đúng webhook Dodo và xử lý `credit.balance_low` để nhắc nhở khách hàng trước khi họ đạt mức 0
+- Create a custom credit entitlement (emails) in your dashboard
+- Attach credits to a subscription plan and a one-time top-up product
+- Send real emails via Resend and debit one credit per send via a ledger entry
+- Query a live credit balance from your frontend
+- Verify Dodo webhooks correctly and handle `credit.balance_low` to nudge customers before they hit zero
 
-## Những Gì Chúng Ta Xây Dựng
+## What We're Building
 
-Đây là mô hình giá cho MailKit:
+Here's the pricing model for MailKit:
 
-| Sản phẩm | Giá | Emails |
+| Product | Price | Emails |
 |---------|-------|--------|
-| Gói MailKit | $19/tháng | 5.000 emails/chu kỳ |
-| Gói Nạp Tiền | $9 một lần | +5.000 emails |
+| MailKit Plan | $19/month | 5,000 emails/cycle |
+| Top-Up Pack | $9 one-time | +5,000 emails |
 
-Đơn vị là **một email = một tín dụng**. Khách hàng không cần nghĩ về token, batch, hay đơn vị trọng số. Họ chỉ thấy "bạn còn 4.231 emails trong tháng này."
+The unit is **one email = one credit**. Customers don't have to think about tokens, batches, or weighted units. They just see "you have 4,231 emails left this month."
 
 <Info>
-Trước khi bạn bắt đầu, hãy chắc chắn rằng bạn có:
-- Một tài khoản Dodo Payments (chế độ thử nghiệm là đủ)
-- Một tài khoản [Resend](https://resend.com) miễn phí và khóa API
-- Node.js 18+ và quen thuộc với TypeScript cơ bản
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- A free [Resend](https://resend.com) account and API key
+- Node.js 18+ and basic TypeScript familiarity
 </Info>
 
-## Bước 1: Tạo Quyền Tín Dụng Email của Bạn
+## Step 1: Create Your Email Credit Entitlement
 
-Quyền tín dụng xác định đơn vị nền tảng của bạn bán: trong trường hợp này, là một lần gửi email.
+The credit entitlement defines the unit your platform sells: in this case, one email send.
 
 <Frame caption="The Credits tab under Products lists all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Trang danh sách tín dụng" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Credits listing page" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Open the Credits section">
-1. Đăng nhập vào bảng điều khiển Dodo Payments của bạn
-2. Nhấp vào **Sản phẩm** ở thanh bên trái
-3. Chọn tab **Tín Dụng**
-4. Nhấp vào **Tạo Tín Dụng**
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
 </Step>
 
 <Step title="Configure the credit unit">
-Điền vào các chi tiết tín dụng:
+Fill in the credit details:
 
-**Tên Tín Dụng**: `Email Credits`
+**Credit Name**: `Email Credits`
 
-**Loại Tín Dụng**: Chọn **Đơn Vị Tùy Chỉnh**
+**Credit Type**: Select **Custom Unit**
 
-**Tên Đơn Vị**: `email`
+**Unit Name**: `email`
 
-**Độ chính xác**: `0` (một email luôn là một đơn vị hoàn chỉnh; bạn không thể gửi nửa email)
+**Precision**: `0` (an email is always a whole unit; you can't send half an email)
 
-**Hạn Sử Dụng Tín Dụng**: `30 days` (hạn mức mỗi chu kỳ được đặt lại)
+**Credit Expiry**: `30 days` (each cycle's allowance resets)
 
 <Warning>
-Độ chính xác không thể thay đổi sau khi tạo. Đối với các đơn vị rời rạc như emails, tin nhắn, hoặc phiên, `0` là chính xác.
+Precision cannot be changed after creation. For discrete units like emails, messages, or sessions, `0` is correct.
 </Warning>
 </Step>
 
 <Step title="Leave the other defaults as-is">
-Chúng tôi sẽ không bật rollover hoặc overage trong sách này; mục tiêu là luồng CBB đơn giản nhất có thể. Bạn có thể xem lại điều này trên phần liên kết tín dụng sau.
+We won't enable rollover or overage in this cookbook; the goal is the simplest possible CBB flow. You can revisit these on the credit attachment later.
 </Step>
 
 <Step title="Save and copy the credit ID">
-Nhấp vào **Tạo Tín Dụng**. Mở tín dụng và sao chép ID của nó. Bạn sẽ cần nó cho các truy vấn số dư ở backend. Nó trông như `cent_xxxxxxxxxxxx`.
+Click **Create Credit**. Open the credit and copy its ID. You'll need it for backend balance queries. It looks like `cent_xxxxxxxxxxxx`.
+
 <Check>
-Quyền `Email Credits` của bạn đã sẵn sàng. Tiếp theo: các sản phẩm mà cấp tín dụng cho khách hàng.
+Your `Email Credits` entitlement is ready. Next: the products that grant credits to customers.
 </Check>
 </Step>
 </Steps>
 
-## Bước 2: Tạo Gói và Gói Nạp Tiền
+## Step 2: Create the Plan and Top-Up Pack
 
-Bạn sẽ tạo hai sản phẩm: một gói thuê bao **Định Kỳ** và một gói nạp tiền **Thanh Toán Một Lần**. Gói định kỳ cấp 5.000 emails mỗi chu kỳ; gói nạp tiền thêm 5.000 khi cần. Cả hai đều gắn quyền `Email Credits` như nhau.
+You'll create two products: a recurring **Subscription** plan and a **Single Payment** top-up. The plan grants 5,000 emails each cycle; the top-up adds another 5,000 on demand. Both attach the same `Email Credits` entitlement.
 
-/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
-Sách này trừ tín dụng thông qua mục nhập ledger trực tiếp thay vì các bộ đo dựa trên mức sử dụng. Mục nhập ledger là ngay lập tức (số dư cập nhật trong mili giây), không cần thiết lập thêm, và rất phù hợp khi một hành động của người dùng bằng đúng một tín dụng. Nếu bạn thích tự động trừ từ các sự kiện sử dụng thu được (tiện với các đơn vị có trọng số như "tokens" hoặc "MB processed"), hãy xem [Tính Phí Dựa Trên Tín Dụng → Thanh Toán Sử Dụng Với Tín Dụng](/features/credit-based-billing) cho mẫu dựa trên đồng hồ đo.
-/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */
+<Tip>
+This cookbook deducts credits with direct ledger entries instead of usage-based meters. Ledger entries are immediate (the balance updates in milliseconds), need no extra setup, and are the right fit when one user action equals exactly one credit. If you'd prefer auto-deduction from ingested usage events (handy for weighted units like "tokens" or "MB processed"), see [Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing) for the meter-based pattern.
+</Tip>
 
-### Gói MailKit ($19/tháng, 5.000 emails)
+### MailKit Plan ($19/month, 5,000 emails)
 
-/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
-/* LOCKED_PATTERN_f42d5a3b7b669b3d13a76cba7da9019d */
-1. Đi tới **Sản phẩm → Tạo Sản Phẩm**
-2. Điền thông tin sản phẩm:
+<Steps>
+<Step title="Create the subscription">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**Tên Sản Phẩm**: `MailKit Plan`
+**Product Name**: `MailKit Plan`
 
-**Mô tả**: `5,000 transactional emails per month.`
+**Description**: `5,000 transactional emails per month.`
 
-3. Chọn **Thuê Bao** làm loại sản phẩm
-4. Đặt giá định kỳ:
+3. Select **Subscription** as the product type
+4. Set the recurring price:
 
-**Giá Định Kỳ**: `19.00`
+**Recurring Price**: `19.00`
 
-**Chu Kỳ Thanh Toán**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**Tiền Tệ**: `USD`
+**Currency**: `USD`
 </Step>
 
-/* LOCKED_PATTERN_1057f8df8096efbe13a6d346959c0990 */
-Cuộn xuống **Quyền Hạn → Tín Dụng → Đính Kèm** và cấu hình:
+<Step title="Attach the email credit entitlement">
+Scroll to **Entitlements → Credits → Attach** and configure:
 
-**Quyền Tín Dụng**: `Email Credits`
+**Credit Entitlement**: `Email Credits`
 
-**Tín Dụng được phát hành mỗi chu kỳ thanh toán**: `5000`
+**Credits issued per billing cycle**: `5000`
 
-**Ngưỡng Số Dư Thấp**: `20` (phần trăm; kích hoạt `credit.balance_low` khi số dư giảm dưới 20% của hạn mức chu kỳ, tức là 1.000 emails)
+**Low Balance Threshold**: `20` (percent; fires `credit.balance_low` when the balance drops below 20% of the cycle allowance, i.e. 1,000 emails)
 
-**Nhập Cài Đặt Tín Dụng Mặc Định**: bật (sử dụng hạn 30 ngày từ Bước 1)
+**Import Default Credit Settings**: enabled (uses the 30-day expiry from Step 1)
 
-Nhấp vào **Thêm vào Sản Phẩm**, sau đó **Lưu** sản phẩm. Sao chép ID sản phẩm (`pdt_xxxxxxxxxxxx`).
+Click **Add to Product**, then **Save** the product. Copy the product ID (`pdt_xxxxxxxxxxxx`).
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Gói: $19/tháng → 5.000 emails được làm mới mỗi chu kỳ.
+<Check>
+Plan: $19/month → 5,000 emails refreshed each cycle.
 </Check>
 </Step>
 </Steps>
 
-### Gói Nạp Tiền ($9 một lần, 5.000 emails)
+### Top-Up Pack ($9 one-time, 5,000 emails)
 
-/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
-/* LOCKED_PATTERN_c5a84493a1db0067f1776bc768c5067d */
-1. Đi tới **Sản phẩm → Tạo Sản Phẩm**
-2. Điền thông tin sản phẩm:
+<Steps>
+<Step title="Create a one-time product">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**Tên Sản Phẩm**: `Email Top-Up Pack`
+**Product Name**: `Email Top-Up Pack`
 
-**Mô tả**: `Add 5,000 emails to your MailKit balance instantly.`
+**Description**: `Add 5,000 emails to your MailKit balance instantly.`
 
-3. Chọn **Thanh Toán Một Lần** làm loại sản phẩm
-4. Đặt giá:
+3. Select **Single Payment** as the product type
+4. Set the pricing:
 
-**Giá**: `9.00`
+**Price**: `9.00`
 
-**Tiền Tệ**: `USD`
+**Currency**: `USD`
 </Step>
 
-/* LOCKED_PATTERN_d9a76bfa3afc3ce5a94ba49dee10c8b4 */
-Trong mục **Quyền Hạn → Tín Dụng → Đính Kèm**:
-- Quyền Tín Dụng: `Email Credits`
-- Tín Dụng được phát hành: `5000`
+<Step title="Attach the credit grant">
+In **Entitlements → Credits → Attach**:
+- Credit Entitlement: `Email Credits`
+- Credits issued: `5000`
 
-/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */
-Sản phẩm một lần cấp tín dụng với hạn dùng riêng của chúng (30 ngày từ khi mua, theo Bước 1). Các gói nạp tiền chồng lên tín dụng thuê bao; chúng không thay thế.
+<Info>
+One-time products grant credits with their own expiry (30 days from purchase, per Step 1). Top-ups stack on top of subscription credits; they don't replace them.
+</Info>
 
-Lưu và sao chép ID sản phẩm.
+Save and copy the product ID.
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Gói Nạp Tiền: $9 → +5.000 emails, có sẵn ngay lập tức.
+<Check>
+Top-Up Pack: $9 → +5,000 emails, available immediately.
 </Check>
 </Step>
 </Steps>
 
-## Bước 3: Thiết Lập Backend
+## Step 3: Set Up the Backend
 
-Bây giờ xây dựng server Express xử lý checkout, gửi, truy vấn số dư, và webhook.
+Now build the Express server that handles checkout, sending, balance queries, and webhooks.
 
-/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
-/* LOCKED_PATTERN_bf4cf6a5db44cb7e58524a05e1f32e31 */
-
+<Steps>
+<Step title="Initialize the project">
 ```bash
 mkdir mailkit && cd mailkit
 npm init -y
@@ -197,7 +189,7 @@ npm install dodopayments resend express dotenv
 npm install -D tsx @types/node @types/express
 ```
 
-Thêm script dev vào `package.json`:
+Add a dev script to `package.json`:
 
 ```json
 {
@@ -207,13 +199,13 @@ Thêm script dev vào `package.json`:
 }
 ```
 
-/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
-[`tsx`](https://tsx.is) chạy TypeScript trực tiếp mà không cần bước build hoặc `tsconfig.json`, điều này rất phù hợp cho hướng dẫn. Đối với sản xuất, thêm `tsconfig.json` và script `build`.
+<Tip>
+[`tsx`](https://tsx.is) runs TypeScript directly without a build step or `tsconfig.json`, which is perfect for a tutorial. For production, add a `tsconfig.json` and a `build` script.
 </Tip>
 </Step>
 
-/* LOCKED_PATTERN_0c512f5b7e825fa7ca5d28ab2bd66cb0 */
-Tạo `.env`:
+<Step title="Configure environment variables">
+Create `.env`:
 
 ```bash .env
 # Dodo Payments
@@ -231,18 +223,17 @@ BASE_URL=http://localhost:3000
 PORT=3000
 ```
 
-Bạn sẽ điền vào `DODO_WEBHOOK_KEY` trong Bước 4 sau khi tạo endpoint. Khóa API Resend lấy từ [resend.com/api-keys](https://resend.com/api-keys).
+You'll fill in the `DODO_WEBHOOK_KEY` in Step 4 after creating the endpoint. The Resend API key comes from [resend.com/api-keys](https://resend.com/api-keys).
 
-/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */
-Thêm `.env` vào `.gitignore` ngay lập tức. Đừng bao giờ commit khóa API.
+<Warning>
+Add `.env` to `.gitignore` immediately. Never commit API keys.
 </Warning>
 </Step>
 
-/* LOCKED_PATTERN_5117af3ef391312fabfae217baf864b0 */
-Tạo `server.ts` trong gốc dự án:
+<Step title="Build the server">
+Create `server.ts` in the project root:
 
-/* LOCKED_PATTERN_278c8ff892f265e3e925879c7aa762a2 */
-
+<CodeGroup>
 ```typescript server.ts expandable
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
@@ -416,23 +407,21 @@ app.listen(port, () => {
   console.log(`MailKit running on http://localhost:${port}`);
 });
 ```
+</CodeGroup>
 
-/* LOCKED_PATTERN_2a2518a6b81e50ec206d5e6c9d83c4eb */
-
-/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */
-**Webhook body phải là raw.** `express.json()` phân tích và tuần tự hóa lại body, điều này phá vỡ xác minh chữ ký. Định nghĩa `/webhooks/dodo` với `express.raw()` *trước* dòng `app.use(express.json())`.
+<Warning>
+**Webhook body must be raw.** `express.json()` parses and re-serializes the body, which breaks signature verification. Define `/webhooks/dodo` with `express.raw()` *before* the `app.use(express.json())` line.
 </Warning>
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Backend sẵn sàng: đăng ký, nạp tiền, số dư, gửi, và xử lý webhook đều được nối dây.
+<Check>
+Backend ready: subscribe, top-up, balance, send, and webhook handler all wired up.
 </Check>
 </Step>
 
-/* LOCKED_PATTERN_44e0d7cc1817324269d5267e0fa13347 */
-Tạo `public/index.html`:
+<Step title="Add a demo UI">
+Create `public/index.html`:
 
-/* LOCKED_PATTERN_278c8ff892f265e3e925879c7aa762a2 */
-
+<CodeGroup>
 ```html public/index.html expandable
 <!doctype html>
 <html>
@@ -581,144 +570,147 @@ Tạo `public/index.html`:
   </body>
 </html>
 ```
-
-/* LOCKED_PATTERN_2a2518a6b81e50ec206d5e6c9d83c4eb */
+</CodeGroup>
 </Step>
 </Steps>
 
-## Bước 4: Kết Nối Endpoint Webhook
+## Step 4: Wire Up the Webhook Endpoint
 
-Sự kiện `credit.balance_low` cho phép bạn nhắc nhở khách hàng *trước* khi họ hết. Nếu không có nó, lần đầu tiên họ nhận thấy vấn đề là khi một email không gửi được.
+The `credit.balance_low` event is what lets you nudge customers *before* they run out. Without it, the first time they notice the problem is when an email fails to send.
 
-/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
-/* LOCKED_PATTERN_f46153c73ef1422a51dfa6b646bceb83 */
-Webhooks cần một URL công khai. Sử dụng [ngrok](https://ngrok.com) (hoặc bất kỳ tunnel nào) trong khi phát triển:
+<Steps>
+<Step title="Expose your local server">
+Webhooks need a public URL. Use [ngrok](https://ngrok.com) (or any tunnel) while developing:
 
 ```bash
 ngrok http 3000
 ```
 
-Sao chép URL forwarding HTTPS (ví dụ: `https://1234abcd.ngrok-free.app`).
+Copy the HTTPS forwarding URL (e.g. `https://1234abcd.ngrok-free.app`).
 </Step>
 
-/* LOCKED_PATTERN_06211bf558d5ed34909a962f2d992da9 */
-1. Đi tới **Developers → Webhooks → Thêm Endpoint**
+<Step title="Register the endpoint in Dodo">
+1. Go to **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
-3. **Sự Kiện**: đăng ký `credit.added`, `credit.balance_low`, và `credit.rolled_over`
-4. Lưu, sau đó sao chép **khóa ký** vào `.env` của bạn dưới dạng `DODO_WEBHOOK_KEY`
-5. Khởi động lại server của bạn
+3. **Events**: subscribe to `credit.added`, `credit.balance_low`, and `credit.rolled_over`
+4. Save, then copy the **signing key** into your `.env` as `DODO_WEBHOOK_KEY`
+5. Restart your server
 </Step>
 </Steps>
 
-## Bước 5: Kiểm Tra Toàn Bộ Quy Trình
+## Step 5: Test the Full Flow
 
-/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
-/* LOCKED_PATTERN_1bd92175e42a8ccd3eaaf7b07dc839eb */
-
+<Steps>
+<Step title="Start the server">
 ```bash
 npm run dev
 ```
 
-Bạn sẽ thấy `MailKit running on http://localhost:3000`. Mở nó trong trình duyệt của bạn.
+You should see `MailKit running on http://localhost:3000`. Open it in your browser.
 </Step>
 
-/* LOCKED_PATTERN_c0916ec9ccdb6841d16158c675b18d31 */
-1. Trong phần 1, nhập email và tên thử nghiệm, nhấp vào **Lấy liên kết checkout**
-2. Mở liên kết, hoàn thành thanh toán với [thẻ thử nghiệm](/miscellaneous/testing-process)
-3. Sau khi thanh toán, tìm `customer_id` trong bảng điều khiển của bạn dưới mục **Khách Hàng**
+<Step title="Subscribe a test customer">
+1. In section 1, enter a test email and name, click **Get checkout link**
+2. Open the link, complete checkout with a [test card](/miscellaneous/testing-process)
+3. After payment, find the `customer_id` in your dashboard under **Customers**
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Khách hàng bây giờ sẽ có **5.000 emails** trong số dư của họ. Kiểm tra **Khách Hàng → [Khách Hàng] → Tín Dụng**.
+<Check>
+The customer should now have **5,000 emails** in their balance. Check **Customers → [Customer] → Credits**.
 </Check>
 </Step>
 
-/* LOCKED_PATTERN_9d8679e2f977394a0f190f159f950a20 */
-1. Dán `customer_id` vào phần 3
-2. Để `to` giữ nguyên `delivered@resend.dev` (hộp thư sandbox của Resend chấp nhận mọi thứ)
-3. Nhấp vào **Gửi**
+<Step title="Send a real email">
+1. Paste the `customer_id` into section 3
+2. Leave `to` set to `delivered@resend.dev` (Resend's sandbox inbox that accepts everything)
+3. Click **Send**
 
-Bạn sẽ nhận được một id tin nhắn từ Resend. Làm mới số dư trong phần 2 và số lượng giảm ngay lập tức xuống 4.999. Mỗi lần ghi nợ ledger được phản ánh trong số dư trực tiếp ngay khi nó được viết.
+You'll get a Resend message id back. Refresh the balance in section 2 and the count immediately drops to 4,999. Each ledger debit is reflected in the live balance the moment it's written.
 </Step>
 
-/* LOCKED_PATTERN_fdaa4d54d90bef72ba04fbb875bdc9c4 */
-Ngưỡng là 20% (1.000 của 5.000-email hạn mức). Để kích hoạt nó mà không gửi 4.000 email thực, **điều chỉnh số dư theo cách thủ công** từ bảng điều khiển:
+<Step title="Trigger the low-balance webhook">
+The threshold is 20% (1,000 of the 5,000-email allowance). To trigger it without sending 4,000 real emails, **manually debit the balance** from the dashboard:
 
-1. Đi tới **Khách Hàng → [Khách Hàng] → Tín Dụng → Tín Dụng Email**
-2. Nhấp vào **Điều chỉnh Số dư** và ghi nợ `4000`
-3. Gửi thêm một email qua demo
+1. Go to **Customers → [Customer] → Credits → Email Credits**
+2. Click **Adjust Balance** and debit `4000`
+3. Send one more email through the demo
 
-Server của bạn sẽ ghi nhật ký trong vài giây:
+Your server should log within a few seconds:
 
 ```
 [low-balance] cus_xxx has 999 Email Credits left (under 20%)
 [NOTIFY] cus_xxx: 999 emails left. Consider topping up.
 ```
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Server của bạn đã nhận và xác minh webhook. Trong quá trình sản xuất, đây là nơi bạn sẽ gửi email cho khách hàng hoặc hiển thị một banner trong ứng dụng.
+<Check>
+Your server received and verified the webhook. In production this is where you'd email the customer or show an in-app banner.
 </Check>
 </Step>
 
-/* LOCKED_PATTERN_9aa47a3c1c909f7b771786a43bb1cff7 */
-1. Dán `customer_id` vào phần 4
-2. Nhấp vào **Mua 5.000 emails**, hoàn thành thanh toán thử nghiệm
-3. Làm mới số dư, và nó nhảy lên 5.000
+<Step title="Buy a top-up pack">
+1. Paste the `customer_id` into section 4
+2. Click **Buy 5,000 emails**, complete the test checkout
+3. Refresh the balance, and it jumps by 5,000
 
-/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
-Một sự kiện `credit.added` được kích hoạt với `grant_source: one_time`. Gói nạp tiền chồng lên tín dụng thuê bao; cả hai pool đều được tiêu FIFO (grant không hết hạn cũ nhất trước).
+<Check>
+A `credit.added` event fires with `grant_source: one_time`. The top-up stacks on top of the subscription credits; both pools are consumed FIFO (oldest non-expired grant first).
 </Check>
 </Step>
 
-/* LOCKED_PATTERN_5314eeda64a3354331c57cd82e520f72 */
-Điều chỉnh số dư theo cách thủ công xuống bằng không, sau đó thử gửi thêm một email. Bạn sẽ nhận được:
+<Step title="Test the hard stop">
+Manually debit the balance to zero, then try to send one more email. You'll get:
 
 ```json
 { "error": "No email credits remaining. Buy a top-up pack or upgrade your plan." }
 ```
 
-402 đó là sự thực thi cấp độ ứng dụng của bạn. API số dư Dodo là nguồn sự thật; không bao giờ cache nó trên client.
+That 402 is your application-level enforcement. The Dodo balance API is the source of truth; never cache it on the client.
 </Step>
 </Steps>
 
-## Xử Lý Sự Cố
+## Troubleshooting
 
-/* LOCKED_PATTERN_3a00efd457b01f610250031fcbf16962 */
-/* LOCKED_PATTERN_db62ef8462838bae902c5d2a04a52536 */
-Chữ ký được tính trên raw HTTP body. `express.json()` phân tích và tuần tự hóa lại payload, điều này phá vỡ HMAC. Hãy chắc chắn `/webhooks/dodo` được đăng ký với `express.raw({ type: 'application/json' })` *trên* dòng `app.use(express.json())`, và rằng `DODO_WEBHOOK_KEY` khớp với khóa ký được hiển thị trên trang chi tiết endpoint.
+<AccordionGroup>
+<Accordion title="Webhook signature verification fails (401)">
+The signature is computed over the raw HTTP body. `express.json()` parses and re-serializes the payload, which breaks the HMAC. Make sure `/webhooks/dodo` is registered with `express.raw({ type: 'application/json' })` *above* the `app.use(express.json())` line, and that `DODO_WEBHOOK_KEY` matches the signing key shown on the endpoint detail page.
 </Accordion>
 
-/* LOCKED_PATTERN_b77d71ae87823d9ac437a09f41227033 */
-Ba điều cần xác minh, theo thứ tự này:
+<Accordion title="Balance is 0, customer not found, or credits don't deduct">
+Three things to verify, in this order:
 
-1. Khách hàng **hoàn thành checkout** (tín dụng được phát hành khi thanh toán thành công, không phải khi tạo phiên)
-2. `CREDIT_ENTITLEMENT_ID` trong `.env` của bạn khớp với tín dụng được gắn vào sản phẩm (ID không khớp sẽ âm thầm ghi vào tín dụng sai)
+1. The customer **completed checkout** (credits are issued on successful payment, not on session creation)
+2. `CREDIT_ENTITLEMENT_ID` in your `.env` matches the credit attached to the product (mismatched IDs silently write to the wrong credit)
+3. The `customer_id` you're passing came from Dodo (the `customers` table in the dashboard), not your own database
+</Accordion>
 
-3. `customer_id` bạn đang truyền đến từ Dodo (bảng `customers` trong bảng điều khiển), không phải từ cơ sở dữ liệu của bạn
-
-/* LOCKED_PATTERN_498e292b83b8c4305b2edb8b439639a8 */
-Sender sandbox `onboarding@resend.dev` chỉ chuyển đến email trên tài khoản Resend của bạn hoặc đến `delivered@resend.dev`. Để gửi đến bất kỳ ai khác, [xác minh một miền](https://resend.com/docs/dashboard/domains/introduction) và sử dụng địa chỉ `from` trên đó.
+<Accordion title="Resend rejects the recipient">
+The sandbox sender `onboarding@resend.dev` only delivers to the email on your Resend account or to `delivered@resend.dev`. To send to anyone else, [verify a domain](https://resend.com/docs/dashboard/domains/introduction) and use a `from` address on it.
 </Accordion>
 </AccordionGroup>
 
-## Những Gì Bạn Đã Xây Dựng
+## What You Built
 
-/* LOCKED_PATTERN_bd3b9ce11ef978f59c6eb5461169b62d */
-/* LOCKED_PATTERN_3dd3b9c32612a12cffe0a191a0244ebd */
-`Email Credits`, được định nghĩa một lần và gắn cho cả gói thuê bao và gói nạp tiền.
-
-/* LOCKED_PATTERN_49a1eea087dd07c15ee24957419de561 */
-$19/tháng cấp 5.000 emails mỗi chu kỳ. Khách hàng biết những gì họ đang trả, bạn biết chi phí tối tệ nhất của bạn.
-
-/* LOCKED_PATTERN_94b25477c0c8998aec62a5357c63816c */
-Một sản phẩm một lần cấp 5.000 emails. Chồng lên tín dụng thuê bao mà không cần thay đổi gói.
-
-/* LOCKED_PATTERN_593fa2d9ea52197a1d9541cd91ee46e4 */
-Một cuộc gọi `createLedgerEntry` đơn sau mỗi lần gửi. Không đồng hồ đo, không độ trễ tổng hợp, idempotent trên retry qua id tin nhắn của Resend.
-
-/* LOCKED_PATTERN_c10919833b5f2b2159a0c76c1520f8a8 */
-Đọc toàn bộ tài liệu CBB cho rollover, chế độ overage, quản lý ledger, và bề mặt API hoàn chỉnh.
+<CardGroup cols={2}>
+<Card title="One reusable credit unit" icon="envelope">
+`Email Credits`, defined once and attached to both the subscription plan and the top-up pack.
 </Card>
 
-Cần trợ giúp?
-- [Cộng Đồng Discord](https://discord.gg/bYqAp4ayYh)
+<Card title="Subscription with prepaid allowance" icon="layer-group">
+$19/month grants 5,000 emails per cycle. Customers know what they're paying for, you know your worst-case cost.
+</Card>
+
+<Card title="Top-up pack" icon="circle-plus">
+A one-time product that grants 5,000 emails. Stacks on subscription credits with no plan change required.
+</Card>
+
+<Card title="Instant ledger debits" icon="bolt">
+A single `createLedgerEntry` call after each send. No meter, no aggregation lag, idempotent on retry via Resend's message id.
+</Card>
+</CardGroup>
+
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Read the full CBB documentation for rollover, overage modes, ledger management, and the complete API surface.
+</Card>
+
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
 - support@dodopayments.com

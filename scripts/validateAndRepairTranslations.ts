@@ -15,16 +15,24 @@
  *      the next.  MDX then tries to parse `{ ... }` in the code as JSX expressions,
  *      causing "Could not parse expression with acorn" errors.
  *
+ *   2b. **HTML-style comments wrapping JSX** — the AI translator sometimes emits
+ *      `<!-- <Frame> -->` instead of restoring the original tag, which both
+ *      invalidates MDX (`<!` is rejected) and silently drops the wrapped JSX.
+ *      We convert each `<!-- X -->` outside code blocks to either the bare JSX
+ *      it likely was (when X is a single Mintlify tag) or to an MDX comment
+ *      `{/* X *​/}` (both accepted by Mintlify).
+ *
  *   3. **Structurally corrupted files** — the AI translator occasionally breaks
  *      tag nesting (mismatched open/close, deleted tags, duplicated sections).
- *      Files that still fail MDX compilation after steps 1–2 are replaced with the
- *      English source so the site always builds.  They will be re-translated on
- *      the next sync run.
+ *      Files that still fail MDX compilation after steps 1–2b are replaced with
+ *      the English source so the site always builds.  They will be re-translated
+ *      on the next sync run.
  *
  * Usage:
  *   node scripts/validateAndRepairTranslations.ts                # run repairs
  *   node scripts/validateAndRepairTranslations.ts --dry-run      # preview only
  *   node scripts/validateAndRepairTranslations.ts --langs ar,es  # specific languages
+ *   node scripts/validateAndRepairTranslations.ts --self-test    # run unit tests
  *
  * This script is also called automatically by syncAllLanguages.ts.
  */
@@ -101,35 +109,80 @@ function extractItems(content) {
   });
 }
 
+// Strip frontmatter, fenced code blocks, and inline backtick code from an MDX
+// document so syntax checks operate only on prose + JSX.
+//
+// Fence stripping is line-based and tolerant of indent mismatches between the
+// opening and closing fences — docs nest fences inside `<Step>` / `<Tab>` and
+// the closing fence is sometimes dedented to column 0. State-machine logic:
+//   * see a fence line          → toggle inFence
+//   * inFence == true           → drop the line
+//   * inFence == false but fence→ drop the fence line itself
+//
+// A "fence line" is any line whose first non-whitespace characters are ```.
+function stripCodeAndFrontmatter(content) {
+  let s = content.replace(/^---[\s\S]*?---/, '');
+
+  const lines = s.split('\n');
+  const out = [];
+  let inFence = false;
+  for (const line of lines) {
+    const isFence = /^[ \t]*```/.test(line);
+    if (isFence) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    out.push(line);
+  }
+  s = out.join('\n');
+
+  // Strip inline backtick code. Single-line only so real JSX is preserved.
+  s = s.replace(/`[^`\n]+`/g, '');
+
+  return s;
+}
+
+const COMPONENT_NAMES =
+  'Note|Tip|Warning|Info|Check|Steps|Step|Tabs|Tab|CodeGroup|Card|CardGroup|Accordion|AccordionGroup|Frame|Expandable|ResponseField|ParamField|RequestExample|ResponseExample|Tooltip|Update|Snippet|Icon';
+
 /** Lightweight MDX syntax validation (no dependencies). */
 function validateMdx(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
-
-  // Strip frontmatter
   const stripped = content.replace(/^---[\s\S]*?---/, '');
 
   if (/LOCKED_PATTERN_[a-f0-9]+/.test(stripped)) {
     return 'Contains un-restored LOCKED_PATTERN placeholders';
   }
 
-  // Broken code fences: ```\n\n<lang> or ```\n<lang> outside a valid block
+  // Broken code fences: ```\n\n<lang> or ```\n<lang> outside a valid block.
   // This pattern causes "Could not parse expression with acorn" errors.
   const brokenFenceRe = /^```[ \t]*\n(?:\n)?(?:typescript|javascript|json|bash|python|tsx|jsx|css|html|yaml|toml|shell|sh|sql|go|rust|ruby|php|csharp|java|kotlin|swift|xml|diff|text|plaintext|curl|powershell)[ \t]*$/m;
   if (brokenFenceRe.test(stripped)) {
     return 'Contains broken code fence (split language identifier)';
   }
 
-  // Check for obviously broken JSX nesting via a simple tag-stack validator.
-  // This catches the vast majority of translation-introduced structural bugs
-  // without requiring a full MDX compiler at runtime.
+  // All subsequent checks operate on prose + JSX only (no code).
+  const outsideCode = stripCodeAndFrontmatter(content);
+
+  // HTML-style comments are not valid in MDX (`<!-- foo -->` must be `{/* foo */}`).
+  // Translator sometimes wraps JSX tags in `<!-- -->` which both invalidates the
+  // file and silently drops the wrapped component from rendered output.
+  if (/<!--/.test(outsideCode)) {
+    return 'Contains HTML-style comment (`<!-- -->`), not valid in MDX';
+  }
+
+  // Stray `<!` at start of a tag (e.g., DOCTYPE leaks). MDX rejects `<!`.
+  if (/<![A-Za-z]/.test(outsideCode)) {
+    return 'Contains stray `<!` (DOCTYPE or similar), not valid in MDX';
+  }
+
+  // Tag-stack walker for known Mintlify components. Catches translator-induced
+  // structural bugs (mismatched, orphan, or unclosed tags) without a real MDX
+  // compiler. Self-closing tags are skipped.
   const tagStack = [];
-  const componentNames =
-    'Note|Tip|Warning|Info|Check|Steps|Step|Tabs|Tab|CodeGroup|Card|CardGroup|Accordion|AccordionGroup|Frame|Expandable|ResponseField|ParamField|RequestExample|ResponseExample|Tooltip|Update|Snippet|Icon';
-  // Only check tags outside of fenced code blocks
-  const codeBlockRe = /^```[\s\S]*?^```/gm;
-  const outsideCode = stripped.replace(codeBlockRe, '');
   const tagRe = new RegExp(
-    `<(\\/?)(?:${componentNames})(\\s[^>]*)?\\/?>`,
+    `<(\\/?)(?:${COMPONENT_NAMES})(\\s[^>]*)?\\/?>`,
     'g',
   );
   let m;
@@ -138,14 +191,9 @@ function validateMdx(filePath) {
     const isClosing = m[1] === '/';
     const isSelfClosing = fullTag.endsWith('/>');
 
-    if (isSelfClosing && !isClosing) {
-      continue; // self-closing — no push/pop
-    }
+    if (isSelfClosing && !isClosing) continue;
 
-    // Extract component name
-    const nameMatch = fullTag.match(
-      /^<\/?([A-Z][a-zA-Z]*)/,
-    );
+    const nameMatch = fullTag.match(/^<\/?([A-Z][a-zA-Z]*)/);
     if (!nameMatch) continue;
     const name = nameMatch[1];
 
@@ -167,7 +215,7 @@ function validateMdx(filePath) {
     return `Unclosed tag(s): ${tagStack.join(', ')}`;
   }
 
-  return null; // valid
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +411,75 @@ function repairBrokenCodeFences(langDirs, dryRun) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2b: Convert HTML comments to MDX comments
+// ---------------------------------------------------------------------------
+
+// Translator sometimes wraps JSX tags in `<!-- ... -->` instead of restoring
+// them. MDX rejects HTML comments outright, producing
+//   "Unexpected closing slash `/` in tag, expected an open tag first"
+// at the `</...-->` boundary. Convert each `<!-- X -->` outside code blocks to
+// the wrapped JSX it likely was (when X is a single Mintlify tag) or to an
+// MDX comment `{/* X */}` otherwise — both forms are accepted by Mintlify.
+function repairHtmlComments(langDirs, dryRun) {
+  console.log('\n[repair:html-comments] Scanning for HTML-style comments...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  const singleTagRe = new RegExp(`^<\\/?(?:${COMPONENT_NAMES})(?:\\s[^>]*)?\\/?>$`);
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      const original = fs.readFileSync(f, 'utf8');
+      let fixes = 0;
+
+      // Split file into "fence" and "non-fence" chunks so HTML-comment
+      // replacement only touches non-fence regions. This is more robust than
+      // line-by-line because multi-line HTML comments span newlines.
+      const lines = original.split('\n');
+      const chunks = []; // [{ inFence, text }]
+      let buf = [];
+      let inFence = false;
+      for (const line of lines) {
+        if (/^[ \t]*```/.test(line)) {
+          if (buf.length) chunks.push({ inFence, text: buf.join('\n') });
+          chunks.push({ inFence: true, text: line });
+          buf = [];
+          inFence = !inFence;
+          continue;
+        }
+        buf.push(line);
+      }
+      if (buf.length) chunks.push({ inFence, text: buf.join('\n') });
+
+      const repairedChunks = chunks.map((ch) => {
+        if (ch.inFence) return ch.text;
+        return ch.text.replace(/<!--([\s\S]*?)-->/g, (full, inner) => {
+          fixes++;
+          const trimmed = inner.trim();
+          if (singleTagRe.test(trimmed)) return trimmed;
+          return `{/*${inner}*/}`;
+        });
+      });
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, repairedChunks.join('\n'), 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No HTML comments found.');
+  } else {
+    console.log(`  Converted ${totalFixes} HTML comment(s) in ${filesFixed} file(s)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 3: Validate and replace structurally broken files
 // ---------------------------------------------------------------------------
 
@@ -417,11 +534,106 @@ function validateAndReplace(langDirs, dryRun) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-test
+// ---------------------------------------------------------------------------
+
+// Unit tests for validateMdx. Each case is [name, mdxContent, expectedError].
+// expectedError === null means the file is expected to validate cleanly.
+const SELF_TEST_CASES = [
+  [
+    'valid-self-closing',
+    '---\ntitle: x\n---\n\n<Snippet name="a" />\nhello\n',
+    null,
+  ],
+  [
+    'valid-indented-fence-with-html-comment',
+    '---\ntitle: x\n---\n\n<Steps>\n<Step title="x">\n    ```html\n    <!-- Place in <head> -->\n    ```\n</Step>\n</Steps>\n',
+    null,
+  ],
+  [
+    'valid-mismatched-indent-fence',
+    '---\ntitle: x\n---\n\n<Tabs>\n  <Tab title="x">\n    ```javascript\ncode at col 0\n```\n  </Tab>\n</Tabs>\n',
+    null,
+  ],
+  [
+    'detect-html-comment',
+    '---\ntitle: x\n---\n\n<!-- <Frame> -->\nhello\n<!-- </Frame> -->\n',
+    /HTML-style comment/,
+  ],
+  [
+    'detect-locked-pattern',
+    '---\ntitle: x\n---\n\n{/* LOCKED_PATTERN_abcdef123 */}\nhello\n',
+    /LOCKED_PATTERN/,
+  ],
+  [
+    'detect-mismatch',
+    '---\ntitle: x\n---\n\n<Steps>\n<Frame>\nhello\n</Step>\n</Steps>\n',
+    /Mismatched tags/,
+  ],
+  [
+    'detect-orphan-close',
+    '---\ntitle: x\n---\n\nhello\n</Frame>\n',
+    /no matching open tag/,
+  ],
+  [
+    'detect-unclosed',
+    '---\ntitle: x\n---\n\n<Frame>\nhello\n',
+    /Unclosed tag/,
+  ],
+  [
+    'detect-broken-fence',
+    '---\ntitle: x\n---\n\n```\ntypescript\nconst x = 1;\n```\n',
+    /broken code fence/,
+  ],
+  [
+    'detect-doctype',
+    '---\ntitle: x\n---\n\n<!DOCTYPE html>\nhello\n',
+    /stray `<!`/,
+  ],
+];
+
+function runSelfTest() {
+  const tmpFile = path.join(require('os').tmpdir(), `mdx-self-test-${process.pid}.mdx`);
+  let passed = 0;
+  let failed = 0;
+
+  for (const [name, content, expected] of SELF_TEST_CASES) {
+    fs.writeFileSync(tmpFile, content, 'utf8');
+    const got = validateMdx(tmpFile);
+    const ok = expected === null
+      ? got === null
+      : expected instanceof RegExp
+        ? typeof got === 'string' && expected.test(got)
+        : got === expected;
+
+    if (ok) {
+      passed++;
+      console.log(`  PASS  ${name}`);
+    } else {
+      failed++;
+      console.log(`  FAIL  ${name}: expected ${expected}, got ${JSON.stringify(got)}`);
+    }
+  }
+
+  try { fs.unlinkSync(tmpFile); } catch {}
+
+  console.log(`\n[self-test] ${passed} passed, ${failed} failed`);
+  return failed === 0;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 function main() {
   const args = process.argv.slice(2);
+
+  if (args.includes('--self-test')) {
+    console.log('[self-test] Running unit tests on validateMdx...');
+    const ok = runSelfTest();
+    process.exit(ok ? 0 : 1);
+  }
+
   const dryRun = args.includes('--dry-run');
 
   // Allow specifying languages: --langs ar,es,fr
@@ -450,6 +662,7 @@ function main() {
 
   restoreLockedPatterns(langDirs, dryRun);
   repairBrokenCodeFences(langDirs, dryRun);
+  repairHtmlComments(langDirs, dryRun);
   const remaining = validateAndReplace(langDirs, dryRun);
 
   if (remaining > 0) {
@@ -461,7 +674,7 @@ function main() {
 }
 
 // Export for use from syncAllLanguages.ts
-module.exports = { restoreLockedPatterns, repairBrokenCodeFences, validateAndReplace, validateMdx };
+module.exports = { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, validateAndReplace, validateMdx, stripCodeAndFrontmatter };
 
 // Run directly if executed as a script
 if (require.main === module) {

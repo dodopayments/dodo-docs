@@ -1,300 +1,290 @@
 ---
-title: بناء منصة API للذكاء الاصطناعي مع الفوترة المعتمدة على الرصيد
-description: ابنِ خدمة API للذكاء الاصطناعي تعتمد على مستويات متعددة باستخدام
-  أرصدة الرموز — إصدار الأرصدة عبر خطط الاشتراك والحزم الإضافية لمرة واحدة،
-  وخصمها تلقائيًا عند استخدام العملاء لـ API الخاص بك.
-icon: coins
-keywords:
-  - Dodo Payments
-  - دليل المطور
-  - الفوترة المعتمدة على الرصيد
-  - الفوترة بالرموز
-  - AI API
-  - أرصدة
-  - تجاوز
+title: "Build an AI API Platform with Credit-Based Billing"
+description: "Build a tiered AI API service with token credits — issue credits via subscription plans and one-time top-up packs, and auto-deduct as customers call your API."
+icon: "coins"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "token billing", "AI API", "credits", "overage"]
 ---
 
 <Tip>
-  <strong>دع Sentra يكتب لك كود التكامل.</strong><br />
-  استخدم مساعدنا الذكي في VS Code أو Cursor أو Windsurf لإنشاء كود SDK/API، ومعالجات webhook، ومنح الأرصدة، وأكثر — فقط من خلال وصف ما تريد.
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, credit grants, and more — just by describing what you want.
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    جرّب Sentra: التكامل المدعوم بالذكاء الاصطناعي &rarr;
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-في هذا الدليل، ستقوم ببناء **NeuralAPI** — منصة ذكاء اصطناعي تعتمد على مستويات، حيث تأتي كل خطة اشتراك بكمية شهرية من أرصدة الرموز، ويمكن للعملاء شراء حزم إضافية عندما تنخفض الأرصدة، ويقوم الخلفية تلقائيًا بخصم الأرصدة مع معالجة الطلبات بواسطة OpenAI.
+In this tutorial, you'll build **NeuralAPI** — a tiered AI platform where each subscription plan comes with a monthly token credit allowance, customers can buy top-up packs when they run low, and your backend automatically deducts credits as requests are processed by OpenAI.
 
 <Note>
-يستخدم هذا الدليل Node.js/Express + OpenAI SDK. تنطبق مفاهيم Dodo Payments (الأرصدة، المقاييس، webhooks) على أي إطار عمل أو مزود ذكاء اصطناعي — عدل بحرية.
+This tutorial uses Node.js/Express + the OpenAI SDK. The Dodo Payments concepts (credits, meters, webhooks) apply to any framework or AI provider — adapt freely.
 </Note>
 
-بحلول نهاية هذا الدليل، ستعرف كيفية:
+By the end of this tutorial, you'll know how to:
 
-- إنشاء تخصيص رصيد مخصص (رموز) وعَدَاد يخصم تلقائيًا منه
-- ربط الأرصدة بخطط الاشتراك (مع وبدون تجاوز) ومنتج واحدًا للتجديد
-- توصيل نقطة نهاية حقيقية لـ OpenAI التي ترسل الفواتير عبر Dodo Payments
-- استعلام عن رصيد مباشر للعملاء عبر SDK
-- التحقق من توقيعات webhook وتوجيه أحداث رصيد Dodo Payments
+- Create a custom credit entitlement (tokens) and a meter that auto-deducts from it
+- Attach credits to subscription plans (with and without overage) and a one-time top-up product
+- Wire a real OpenAI completion endpoint that bills tokens through Dodo Payments
+- Query a customer's live credit balance via the SDK
+- Verify webhook signatures and route Dodo Payments credit events
 
-## ما نقوم ببنائه
+## What We're Building
 
-إليك نموذج التسعير لـ NeuralAPI:
+Here's the pricing model for NeuralAPI:
 
-| المنتج | السعر | الرموز | تجاوز |
+| Product | Price | Tokens | Overage |
 |---------|-------|--------|---------|
-| خطة المبتدئين | $29/شهر | 10,000,000 رمز/دورة | محظورة عند الصفر |
-| خطة المحترفين | $99/شهر | 40,000,000 رمز/دورة | $0.005 لكل 1K رمز |
-| حزمة الشحن | $19 دفعة واحدة | +5,000,000 رمز | — |
+| Starter Plan | $29/month | 10,000,000 tokens/cycle | Blocked at zero |
+| Pro Plan | $99/month | 40,000,000 tokens/cycle | $0.005 per 1K tokens |
+| Token Top-Up Pack | $19 one-time | +5,000,000 tokens | — |
 
 <Info>
-قبل أن تبدأ، تأكد من أنك تملك:
-- حساب Dodo Payments (وضع الاختبار يكفي)
-- مفتاح API لـ OpenAI
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- An OpenAI API key
 - Node.js 18+
-- معرفة أساسية بـ TypeScript/Node.js
+- Basic familiarity with TypeScript/Node.js
 </Info>
 
-## الخطوة 1: إنشاء تخصيص رصيد الرموز
+## Step 1: Create Your Token Credit Entitlement
 
-أولاً، قم بإنشاء تخصيص الرصيد الذي ستشاركه خطط الاشتراك وحزمة الشحن. فكر في هذا على أنه تحديد وحدة "الرمز" التي يستخدمها النظام الأساسي الخاص بك.
+First, create the credit entitlement that both subscription plans and the top-up pack will share. Think of this as defining the "token" unit your platform uses.
 
 <Frame caption="The Credits tab under Products shows all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="صفحة قائمة الأرصدة تظهر تخصيصات الأرصدة التي تم إنشاؤها" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Credits listing page showing created credit entitlements" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Navigate to Credits">
-1. قم بتسجيل الدخول إلى لوحة التحكم في Dodo Payments
-2. انقر فوق **المنتجات** في الشريط الجانبي الأيسر
-3. حدد علامة تبويب **الأرصدة**
-4. انقر فوق **إنشاء رصيد**
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
 </Step>
 
 <Step title="Configure the credit unit">
-ادخل التفاصيل الأساسية لرصيد الرموز الخاص بك:
+Fill in the basic details for your token credit:
 
-**اسم الرصيد**: `API Tokens`
+**Credit Name**: `API Tokens`
 
-**نوع الرصيد**: حدد **وحدة مخصصة**
+**Credit Type**: Select **Custom Unit**
 
-**اسم الوحدة**: `token`
+**Unit Name**: `token`
 
-**الدقة**: `0` (الرموز دائمًا أرقام كاملة)
+**Precision**: `0` (tokens are always whole numbers)
 
-**انتهاء الرصيد**: `30 days` (تتم إعادة تعيين الأرصدة كل دورة فواتير)
+**Credit Expiry**: `30 days` (credits reset each billing cycle)
 
 <Warning>
-لا يمكن تغيير الدقة بعد إنشاء الرصيد. بالنسبة لأعداد الرموز، `0` (أرقام كاملة) تكون دائمًا صحيحة تقريبًا.
+Precision cannot be changed after a credit is created. For token counts, `0` (whole numbers) is almost always correct.
 </Warning>
 </Step>
 
 <Step title="Skip overage at the credit level">
-اترك تجاوز **معطلاً** هنا — ستقوم بتكوينه لكل خطة عند ربط الرصيد بالمنتجات. يتيح ذلك لخطة المبتدئين حظر الاستخدام عند الصفر بينما يسمح لخطة المحترفين بالتجاوز.
+Leave overage **disabled** here — you'll configure it per-plan when attaching the credit to products. This lets the Starter plan block usage at zero while the Pro plan allows overage.
 
 <Tip>
-تكوينات التجاوز التي يتم تكوينها هنا هي *افتراضات*. يمكن أن تتجاوز كل مرفق منتج هذه التكوينات — وهذا ما سنفعله في الخطوة الثالثة.
+Overage settings configured here are *defaults*. Each product attachment can override them — which is exactly what we'll do in Step 3.
 </Tip>
 </Step>
 
 <Step title="Save and copy the credit ID">
-انقر فوق **إنشاء رصيد**. بمجرد الحفظ، افتح الرصيد ونسخ معرّفه — يبدو مثل `cent_xxxxxxxxxxxx`.
+Click **Create Credit**. Once saved, open the credit and copy its ID — it looks like `cent_xxxxxxxxxxxx`.
 
 <Check>
-تخصيص الرصيد `API Tokens` جاهز. التالي، إنشاء عداد حتى يمكن للأحداث الاستخدامية قيادة الخصومات تلقائيًا.
+Your `API Tokens` credit entitlement is ready. Next, create a meter so usage events can drive deductions automatically.
 </Check>
 </Step>
 </Steps>
 
-## الخطوة 2: إنشاء عداد لاستخدام الرموز
+## Step 2: Create a Meter for Token Usage
 
-عداد يجمع بين الأحداث الاستخدامية الواردة ويحولها إلى خصومات رصيد. تحتاج هذا *قبل* إنشاء منتجات الخطة، حيث ستقوم بربطه أثناء إنشاء المنتج في الخطوة 3.
+A meter aggregates incoming usage events and converts them into credit deductions. You need this *before* creating the plan products, since you'll attach it during product creation in Step 3.
 
 <Steps>
 <Step title="Open the Meters section">
-1. في الشريط الجانبي للوحة التحكم، انتقل إلى **المنتجات → العدادات**
-2. انقر فوق **إنشاء عداد**
+1. In the dashboard sidebar, go to **Products** → **Meters**
+2. Click **Create Meter**
 </Step>
 
 <Step title="Configure the meter">
-املأ: 
+Fill in:
 
-**اسم العداد**: `Token Usage Meter`
+**Meter Name**: `Token Usage Meter`
 
-**اسم الحدث**: `api.tokens_used` *(يجب أن يتطابق بالضبط مع ما ترسله تطبيقك)*
+**Event Name**: `api.tokens_used` *(this must match exactly what your app sends)*
 
-**نوع التجميع**: `Sum` — نقوم بجمع عدد الرموز من كل حدث
+**Aggregation Type**: `Sum` — we sum the token count from each event
 
-**الخاصية الزائدة**: `tokens` — مفتاح البيانات الوصفية على كل حدث الذي سيتم جمع قيمته
+**Over Property**: `tokens` — the metadata key on each event whose value will be summed
 
-**وحدة القياس**: `tokens`
+**Measurement Unit**: `tokens`
 
 <Warning>
-أسماء الأحداث حساسة لحالة الأحرف. `api.tokens_used` ≠ `Api.Tokens.Used` — اختر واحدة والتزم بها.
+Event names are case-sensitive. `api.tokens_used` ≠ `Api.Tokens.Used` — pick one and stick to it.
 </Warning>
 
-احفظ العداد ونسخ معرفه — ستقوم بالإشارة إليه عند الإرفاق بالمنتجات.
+Save the meter and copy its ID — you'll reference it when attaching to products.
 
 <Check>
-تم إنشاء العداد. الآن يمكننا توصيله بالرصيد عند تكوين المنتجات.
+Meter is created. Now we can wire it to the credit when we configure products.
 </Check>
 </Step>
 </Steps>
 
-## الخطوة 3: إنشاء منتجات الخطة
+## Step 3: Create the Plan Products
 
-تحتاج كلا الخطتين إلى أن تكون منتجات **فواتير قائمة على الاستخدام**، وليست اشتراكات عادية — العدادات يمكن أن تربط فقط بالمنتجات القائمة على الاستخدام، وتحتاج إلى العداد لخصم الأرصدة تلقائيًا عندما يجري العملاء اتصالات بالـ API. المنتجات القائمة على الاستخدام تدعم أيضًا رسوم قاعدة متكررة (`$29` / `$99`)؛ الاستخدام فوق ذلك يتم فوترة في الأرصدة.
+Both plans need to be **Usage Based Billing** products, not plain Subscriptions — meters can only attach to UBB products, and you need the meter to auto-deduct credits as customers call your API. UBB products still support a recurring base fee (the `$29` / `$99`); usage on top of that gets billed in credits.
 
 <Frame caption="Usage Based Billing pricing type with meter configuration.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="تكوين أسعار الفواتير القائمة على الاستخدام" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billing pricing configuration" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-### خطة المبتدئين ($29/شهر — 10M رمز، بدون تجاوز)
+### Starter Plan ($29/month — 10M tokens, no overage)
 
 <Steps>
 <Step title="Create the Starter UBB product">
-1. اذهب إلى **المنتجات → إنشاء منتج**
-2. اختر **الفواتير القائمة على الاستخدام** كنوع الأسعار
-3. املأ:
+1. Go to **Products → Create Product**
+2. Select **Usage Based Billing** as the pricing type
+3. Fill in:
 
-**اسم المنتج**: `NeuralAPI Starter`
+**Product Name**: `NeuralAPI Starter`
 
-**الوصف**: `10 million API tokens per month. Perfect for individual developers and small projects.`
+**Description**: `10 million API tokens per month. Perfect for individual developers and small projects.`
 
-**السعر الثابت**: `29.00` (رسوم القاعدة المتكررة — تُفوتر شهريًا حتى قبل أي استخدام)
+**Fixed Price**: `29.00` (the recurring base fee — billed monthly even before any usage)
 
-**دورة الفوترة**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**العملة**: `USD`
+**Currency**: `USD`
 </Step>
 
 <Step title="Attach the meter">
-في قسم **تحديد العداد**، انقر فوق **+** وأضف `Token Usage Meter`. ثم على العداد:
+In the **Select meter** section, click **+** and add `Token Usage Meter`. Then on the meter:
 
-1. قم بتشغيل **فوترة الاستخدام في الأرصدة**
-2. **تخصيص الرصيد**: اختر `API Tokens`
-3. **وحدات العداد لكل رصيد**: `1` — كل رمز في الحدث يترجم إلى 1 رصيد مخصوم
-4. **الحد المجاني**: `0` — التخصيص الرصيد نفسه هو "النطاق المجاني" للعميل؛ لا نحتاج إلى نطاق مجاني إضافي
+1. Toggle **Bill usage in Credits** on
+2. **Credit Entitlement**: select `API Tokens`
+3. **Meter units per credit**: `1` — each token in the event maps to 1 credit deducted
+4. **Free Threshold**: `0` — the credit allocation itself is the customer's "free tier"; we don't need an extra free band
 
 <Frame caption="Toggle 'Bill usage in Credits' on the meter and pick the credit entitlement.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="عداد مع تمكين فوترة الاستخدام في الأرصدة وتم اختيار رموز API" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Meter with Bill usage in Credits enabled and API Tokens selected" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-هذا هو التوصيل الذي يجعل أحداث `api.tokens_used` الداخلة تخصم فعليًا من رصيد العميل.
+This is the wiring that makes incoming `api.tokens_used` events actually deduct from the customer's balance.
 </Step>
 
 <Step title="Configure credit issuance for Starter">
-مازلت على المنتج، انتقل إلى قسم تكوين الرصيد الذي يظهر بمجرد إرفاق عداد فوترة الرصيد:
+Still on the product, scroll to the credit configuration section that appears once a credit-billed meter is attached:
 
-**الأرصدة المصدرة لكل دورة فوترة**: `10000000`
+**Credits issued per billing cycle**: `10000000`
 
-**السماح بالتجاوز**: **معطل** — يتم حظر العملاء في خطة المبتدئين عندما تنتهي الرموز
+**Allow Overage**: **Disabled** — Starter customers are blocked when tokens run out
 
-**استيراد إعدادات الرصيد الافتراضية**: تمكين — استخدم انتهاء الصلاحية لمدة 30 يومًا من تخصيص الرصيد
+**Import Default Credit Settings**: Enabled — use the 30-day expiry from the credit entitlement
 
 <Frame caption="Configure credit issuance per cycle on the UBB product.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="نموذج تكوين الرصيد مع المبلغ لكل دورة والإعدادات المتجاوزة" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="Credit configuration form with per-cycle amount and overage settings" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-انقر فوق **حفظ** ونسخ معرف المنتج.
+Click **Save** and copy the product ID.
 
 <Check>
-خطة المبتدئين: رسوم قاعدة $29/شهر، 10M رمز/دورة، محظورة عند الصفر، تخصم تلقائيًا عبر العداد.
+Starter Plan: $29/month base fee, 10M tokens/cycle, blocked at zero, auto-deducts via meter.
 </Check>
 </Step>
 </Steps>
 
-### خطة المحترفين ($99/شهر — 40M رمز، التجاوز ممكن)
+### Pro Plan ($99/month — 40M tokens, overage enabled)
 
 <Steps>
 <Step title="Create the Pro UBB product">
-نفس الخطوات مثل المبتدئين، مع أرقام أكبر:
+Same flow as Starter, with bigger numbers:
 
-**اسم المنتج**: `NeuralAPI Pro`
+**Product Name**: `NeuralAPI Pro`
 
-**الوصف**: `40 million API tokens per month with overage. Built for production applications.`
+**Description**: `40 million API tokens per month with overage. Built for production applications.`
 
-**السعر الثابت**: `99.00`
+**Fixed Price**: `99.00`
 
-**دورة الفوترة**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**العملة**: `USD`
+**Currency**: `USD`
 </Step>
 
 <Step title="Attach the meter">
-مطابق لخطة المبتدئين: إضافة `Token Usage Meter`، تمكين **فوترة الاستخدام في الأرصدة**، اختر `API Tokens`، **وحدات العداد لكل رصيد** `1`، **الحد المجاني** `0`.
+Identical to Starter: add `Token Usage Meter`, toggle **Bill usage in Credits** on, select `API Tokens`, **Meter units per credit** `1`, **Free Threshold** `0`.
 </Step>
 
 <Step title="Configure credit issuance with overage">
-قم بتكوين إصدار الرصيد، هذه المرة تمكين التجاوز:
+Configure the credit issuance, this time enabling overage:
 
-**الأرصدة المصدرة لكل دورة فوترة**: `40000000`
+**Credits issued per billing cycle**: `40000000`
 
-**استيراد إعدادات الرصيد الافتراضية**: **تعطيل** — نحتاج إلى تخصيص إعدادات التجاوز لكل منتج
+**Import Default Credit Settings**: **Disable** — we need to customize overage settings per product
 
-**السماح بالتجاوز**: **تمكين**
+**Allow Overage**: **Enabled**
 
-**السعر لكل وحدة**: `0.000005` USD لكل رمز (أي، $0.005 لكل 1K رمز، أو $5 لكل 1M رمز — فوق معدل الرمز الفعلي للخطة لتجنب التجاوز)
+**Price Per Unit**: `0.000005` USD per token (i.e., $0.005 per 1K tokens, or $5 per 1M tokens — above the plan's effective per-token rate to discourage spillover)
 
-**سلوك التجاوز**: `Bill overage at billing` — يتم تحصيل التجاوز في الفاتورة التالية، ثم يعاد ضبط الرصيد
+**Overage Behavior**: `Bill overage at billing` — overage is charged on the next invoice, then the balance resets
 
-احفظ المنتج ونسخ معرف المنتج.
+Save the product and copy the product ID.
 
 <Check>
-خطة المحترفين: رسوم قاعدة $99/شهر، 40M رمز/دورة، تجاوز بسعر $0.005 لكل 1K رموز، تخصم تلقائيًا عبر العداد.
+Pro Plan: $99/month base fee, 40M tokens/cycle, overage at $0.005/1K tokens, auto-deducts via meter.
 </Check>
 </Step>
 </Steps>
 
-## الخطوة 4: إنشاء حزمة تجديد الرموز
+## Step 4: Create the Token Top-Up Pack
 
-حزمة الشحن هي عملية شراء لمرة واحدة تمنح 5,000,000 رمز لرصيد عميل موجود.
+The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existing customer's balance.
 
 <Frame caption="Single Payment pricing selected for a one-time credit product.">
-<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="قسم تسعير المنتج مع تحديد دفع منفرد" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Product pricing section with Single Payment selected" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Create a one-time product">
-1. اذهب إلى **المنتجات → إنشاء منتج**
-2. اختر **دفع منفرد** كنوع الأسعار
-3. املأ:
+1. Go to **Products → Create Product**
+2. Select **Single Payment** as the pricing type
+3. Fill in:
 
-**اسم المنتج**: `Token Top-Up Pack`
+**Product Name**: `Token Top-Up Pack`
 
-**الوصف**: `Instantly add 5 million tokens to your NeuralAPI balance.`
+**Description**: `Instantly add 5 million tokens to your NeuralAPI balance.`
 
-**السعر**: `19.00`
+**Price**: `19.00`
 
-**العملة**: `USD`
+**Currency**: `USD`
 </Step>
 
 <Step title="Attach the token credit">
-1. في قسم **الامتيازات**، انقر فوق **إرفاق** بجوار **الأرصدة**
-2. اختر `API Tokens`
-3. حدد **الأرصدة المصدرة**: `5000000`
-4. **تعطيل** *استيراد إعدادات الرصيد الافتراضية* — نريد تجاوز انتهاء الصلاحية الافتراضي لمدة 30 يومًا
-5. تعيين **انتهاء الرصيد**: `365 days`
-6. احفظ المنتج
+1. In the **Entitlements** section, click **Attach** next to **Credits**
+2. Select `API Tokens`
+3. Set **Credits issued**: `5000000`
+4. **Disable** *Import Default Credit Settings* — we want to override the default 30-day expiry
+5. Set **Credit Expiry**: `365 days`
+6. Save the product
 
-نسخ معرف المنتج.
+Copy the product ID.
 
 <Tip>
-لماذا انتهاء مدة أطول على التجديدات؟ أرصدة الاشتراك يعاد تعيينها كل 30 يومًا لأن هذه هي الدورة. التجديدات هي *مشتريات مدفوعة مقدمًا* — دفع العميل 19 دولارًا مقدمًا ويتوقع بشكل معقول أن تستمر تلك الرموز لأكثر من شهر. 365 يومًا مطابقة لكيفية عمل الأرصدة المدفوعة مقدمًا في OpenAI وAWS وAnthropic، مع تحديد مسؤولياتك بحيث لا يستطيع العملاء تكديسها إلى الأبد.
+Why a longer expiry on top-ups? Subscription credits reset every 30 days because that's the cycle. Top-ups are *prepaid purchases* — the customer paid $19 upfront and reasonably expects those tokens to last beyond a month. 365 days matches how real prepaid credits work at OpenAI, AWS, and Anthropic, while still capping your liability so customers can't stockpile indefinitely.
 </Tip>
 
 <Check>
-تم تكوين حزمة الشحن — تمنح شراءها 5,000,000 رمز تظل صالحة لمدة 365 يومًا.
+Top-Up Pack configured — purchasing it grants 5,000,000 tokens that remain valid for 365 days.
 </Check>
 </Step>
 </Steps>
 
-## الخطوة 5: بناء الخلفية
+## Step 5: Build the Backend
 
-الآن دعنا نبني خادم Express الذي يعالج الشراء للاشتراك، والشراء للشحن، والتكامل الحقيقي مع OpenAI مع فوترة الرموز، والاستعلامات عن الرصيد، وأحداث webhook للرصيد.
+Now let's build the Express server that handles subscription checkout, top-up checkout, real OpenAI completions with token billing, balance queries, and credit webhook events.
 
 <Steps>
 <Step title="Set up your project">
-
 ```bash
 mkdir neural-api-billing
 cd neural-api-billing
@@ -303,7 +293,7 @@ npm install dodopayments openai express dotenv
 npm install -D @types/node @types/express typescript tsx
 ```
 
-إنشاء `tsconfig.json`:
+Create a `tsconfig.json`:
 
 ```json tsconfig.json
 {
@@ -319,7 +309,7 @@ npm install -D @types/node @types/express typescript tsx
 }
 ```
 
-تحديث سكربتات `package.json`:
+Update `package.json` scripts:
 
 ```json package.json
 {
@@ -330,11 +320,10 @@ npm install -D @types/node @types/express typescript tsx
   }
 }
 ```
-
 </Step>
 
 <Step title="Set up environment variables">
-إنشاء `.env` مع بيانات الاعتماد ومعرفاتك من الخطوات السابقة:
+Create `.env` with your credentials and IDs from the previous steps:
 
 ```bash .env
 DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
@@ -349,17 +338,16 @@ BASE_URL=http://localhost:3000
 ```
 
 <Warning>
-لا تقم أبدًا بنشر `.env` في إدارة الإصدارات. أضفها إلى `.gitignore` فورًا.
+Never commit `.env` to version control. Add it to `.gitignore` immediately.
 </Warning>
 
-ستملأ `DODO_PAYMENTS_WEBHOOK_KEY` في الخطوة 7 بعد تسجيل نقطة نهاية webhook الخاصة بك.
+You'll fill in `DODO_PAYMENTS_WEBHOOK_KEY` in Step 7 after registering your webhook endpoint.
 </Step>
 
 <Step title="Implement the server">
-إنشاء `src/server.ts`:
+Create `src/server.ts`:
 
 <CodeGroup>
-
 ```typescript src/server.ts expandable
 import 'dotenv/config';
 import DodoPayments from 'dodopayments';
@@ -583,37 +571,35 @@ app.listen(3000, () => {
   }
 }
 ```
-
 </CodeGroup>
 
 <Check>
-الخلفيات منتهية: شراء الاشتراك، وشراء الشحن، وإكمال OpenAI مع فوترة الرموز، واستعلام الرصيد، ومعالج webhook معتمد.
+Backend done: subscription checkout, top-up checkout, OpenAI completion with metered token billing, balance query, and a verified webhook handler.
 </Check>
 
 <Tip>
-[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) يوفر متتبعين جاهزين للاستخدام يساعدونك في أتمتة استدعاء `usageEvents.ingest` — بما في ذلك [LLM Blueprint](/developer-resources/ingestion-blueprints/llm)، [API gateway](/developer-resources/ingestion-blueprints/api-gateway)، [object storage](/developer-resources/ingestion-blueprints/object-storage)، [streams](/developer-resources/ingestion-blueprints/stream)، و[time-range](/developer-resources/ingestion-blueprints/time-range) الاستخدام.
+[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) provides drop-in trackers that automate the `usageEvents.ingest` call for you — including the [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), and [time-range](/developer-resources/ingestion-blueprints/time-range) usage.
 </Tip>
 </Step>
 
 <Step title="A note on how deductions actually happen">
-قد لاحظت أنه لا يوجد استدعاء صريح "خصم N أرصدة". هذا عن عمد:
-1. يستدعي معالجك OpenAI ويحصل على `usage.total_tokens` (مثل، 1532).
-2. تدخل حدث استخدام واحد: `event_name: api.tokens_used`، `metadata: { tokens: 1532 }`.
-3. يجمع `Token Usage Meter` الأحداث بحسب العميل.
-4. لأن العداد متصل بالرصيد `API Tokens` مع **فوترة الاستخدام في الأرصدة**، يخصم Dodo Payments 1532 رصيداً من أقدم منحة غير منتهية للعميل (FIFO).
-5. إذا كان التجاوز ممكّنًا والعميل وصل إلى ما دون الصفر، يتم تتبع العجز وتحصيله في الفاتورة التالية.
+You may have noticed there's no explicit "deduct N credits" call. That's by design:
 
+1. Your handler calls OpenAI and gets back `usage.total_tokens` (e.g., 1532).
+2. You ingest a single usage event: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
+3. The `Token Usage Meter` aggregates events by customer.
+4. Because the meter is wired to the `API Tokens` credit with **Bill usage in Credits**, Dodo Payments deducts 1532 credits from the customer's oldest non-expired grant (FIFO).
+5. If overage is enabled and the customer goes below zero, the deficit is tracked and billed on the next invoice.
 
-يتعامل العداد مع كل ذلك. الكود الخاص بك فقط يدخل الأحداث.
+The meter handles all of that. Your code only ingests events.
 </Step>
 </Steps>
 
-## الخطوة 6: إضافة واجهة تجريبية أمامية
+## Step 6: Add a Demo Frontend
 
-إنشاء `public/index.html` لاختبار جميع العمليات في متصفحك. نحن نحفظ معرف العميل إلى `localStorage` بحيث يشارك الكل الاشتراك → التوليد → الشحن نفس الهوية، مما يحاكي تطبيقًا محميًا بالدخول:
+Create `public/index.html` to test all the flows in your browser. We persist the customer ID to `localStorage` so subscribe → generate → top-up all share the same identity, mimicking a logged-in app:
 
 <CodeGroup>
-
 ```html public/index.html expandable
 <!DOCTYPE html>
 <html>
@@ -783,146 +769,164 @@ app.listen(3000, () => {
 </body>
 </html>
 ```
-
 </CodeGroup>
 
-## الخطوة 7: توصيل الـ Webhook
+## Step 7: Wire Up the Webhook
 
-تمكنك الويب هوكس من تفاعل خادمك مع تغييرات الرصيد — ستستخدمهم لإرسال رسائل البريد الإلكتروني "تقترب من النفاد" قبل أن تصل إلى الصفر.
+Webhooks let your server react to balance changes — you'll use them to send "running low" emails before customers hit zero.
 
 <Steps>
 <Step title="Expose your local server">
-تحتاج الويب هوكس إلى URL عام. للتطوير المحلي، استخدم [ngrok](https://ngrok.com) أو أي نفق:
+Webhooks need a public URL. For local development, use [ngrok](https://ngrok.com) or any tunnel:
 
 ```bash
 ngrok http 3000
 ```
 
-نسخ URL `https://...ngrok-free.app`.
+Copy the `https://...ngrok-free.app` URL.
 </Step>
 
 <Step title="Register the webhook in Dodo Payments">
-1. في لوحة التحكم، اذهب إلى **المطورون → Webhooks → إضافة نقطة نهاية**
+1. In the dashboard, go to **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
-3. الاشتراك في (على الأقل):
+3. Subscribe to (at minimum):
    - `credit.added`
    - `credit.deducted`
    - `credit.overage_charged`
-4. احفظ ونسخ **التوقيع السري**
-5. الصقه في `.env` كـ `DODO_PAYMENTS_WEBHOOK_KEY`، ثم أعد تشغيل INLINE_CODE_PLACEHOLDER_a094353b3164909 END
+4. Save and copy the **Signing Secret**
+5. Paste it into `.env` as `DODO_PAYMENTS_WEBHOOK_KEY`, then restart `npm run dev`
 
 <Tip>
-يقوم `dodo.webhooks.unwrap()` في SDK بالتحقق من `webhook-id`، `webhook-timestamp`، و`webhook-signature` باستخدام توقيعك السري. لا تحتاج إلى تقديم تحقق HMAC بنفسك — ولا ينبغي، لأن Dodo Payments تستخدم [Standard Webhooks](https://www.standardwebhooks.com/) والتي توقّع `id.timestamp.body` بدلاً من مجرد النص.
+The SDK's `dodo.webhooks.unwrap()` validates the `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers using your signing secret. You don't need to hand-roll HMAC verification — and you shouldn't, because Dodo Payments uses [Standard Webhooks](https://www.standardwebhooks.com/), which signs `id.timestamp.body` rather than just the body.
 </Tip>
 </Step>
 </Steps>
 
-## الخطوة 8: اختبار العملية الكاملة
+## Step 8: Test the Full Flow
 
 <Steps>
 <Step title="Subscribe a test customer">
-1. شغّل `npm run dev`
-2. افتح `http://localhost:3000`
-3. اختر **خطة المحترفين**، أدخل بريدًا إلكترونيًا تجريبيًا + اسم، انقر فوق **الحصول على رابط الشراء**، أكمل الشراء باستخدام [تفاصيل البطاقة التجريبية](/miscellaneous/testing-process)
-4. في لوحة التحكم، اذهب إلى **العملاء → الأحدث** ونسخ معرف `cus_...`
-5. الصقه في حقل "معرف العميل المسجل" على العرض التوضيحي وانقر فوق **حفظ**
+1. Run `npm run dev`
+2. Open `http://localhost:3000`
+3. Pick **Pro Plan**, enter a test email + name, click **Get Checkout Link**, complete checkout with [test card details](/miscellaneous/testing-process)
+4. In the dashboard, go to **Customers → most recent** and copy the `cus_...` ID
+5. Paste it into the "Logged-in customer ID" field on the demo and click **Save**
 
 <Check>
-ينبغي أن يكون لدى العميل 40,000,000 رمز. انقر فوق **تحديث الرصيد** للتأكد.
+The customer should have 40,000,000 tokens. Click **Refresh Balance** to confirm.
 </Check>
 </Step>
 
-/* LOCKED_PATTERN_9348a447eaa236e559027a2c0ccdec3c */}
-اكتب مؤثرًا وانقر فوق **توليد**. يستدعي الخادم OpenAI، ويحصل على `total_tokens` الفعلي، ويدخل حدث استخدام، ويعيد الرد.
+<Step title="Generate a real AI response">
+Type a prompt and click **Generate**. The server calls OpenAI, gets back the actual `total_tokens`, ingests a usage event, and returns the response.
 
-{{-- LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 --}}
-يتم معالجة أحداث الاستخدام بواسطة عامل الخلفية تقريبًا كل دقيقة. لن ينخفض الرصيد على الفور — انتظر من 30 إلى 90 ثانية وانقر فوق **تحديث الرصيد** مرة أخرى. لا تستنتج أنه مكسور إذا لم يظهر التجديد الأول أي حركة.
+<Info>
+Usage events are processed by a background worker every ~minute. The balance won't tick down instantly — wait 30–90 seconds and click **Refresh Balance** again. Don't conclude it's broken if the first refresh doesn't show movement.
+</Info>
+</Step>
 
-{{-- LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 --}}
+<Step title="Test the top-up flow">
+Click **Buy 5M Tokens — $19** and complete checkout. After the payment succeeds, refresh the balance — it should jump by 5,000,000 tokens. Your server log should show a `credit.added` event.
+</Step>
+</Steps>
 
-{{-- LOCKED_PATTERN_6860d3c063f83b8bdd751538c39f5dca --}}
-انقر فوق **شراء 5M رموز — $19** وأكمل الشراء. بعد نجاح الدفع، حدث الرصيد — ينبغي أن يقفز بمقدار 5,000,000 رمز. يجب أن يظهر سجل الخادم الخاص بك حدث `credit.added`.
+## Troubleshooting
 
-{{-- LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 --}}
-
-{{-- LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc --}}
-
-## استكشاف الأخطاء وإصلاحها
-
-/* LOCKED_PATTERN_3a00efd457b01f610250031fcbf16962 */}
+<AccordionGroup>
 <Accordion title="Credits not deducting after usage events">
-**الأسباب المحتملة:**
-- لا يتطابق اسم حدث العداد مع `event_name` الذي ترسله (`api.tokens_used` حساسة لحالة الأحرف)
-- العداد غير مرتبط بالرصيد `API Tokens` على المنتج — اذهب إلى تكوين العداد الخاص بالمنتج وتأكد من أن **فوترة الاستخدام في الأرصدة** مفعلة
-- لا يتطابق مفتاح `metadata.tokens` مع حقل "الخاصية الزائدة" للعداد
-- انتهت صلاحية المَنحَة للعميل (تحقق من سجل الرصيد الخاص بالعميل)
+**Possible causes:**
+- The meter's event name doesn't match the `event_name` you're sending (`api.tokens_used` is case-sensitive)
+- The meter isn't linked to the `API Tokens` credit on the product — go to the product's meter configuration and confirm **Bill usage in Credits** is on
+- The `metadata.tokens` key doesn't match the meter's "Over Property" field
+- The customer's grant has expired (check the customer's credit history)
 
-**ما الذي يجب التحقق منه:**
-1. **المنتجات → العدادات**: افتح العداد وتأكد من أنه يظهر اسم الرصيد المرتبط على مرفق المنتج
-2. علامة التبويب **الأحداث** على العداد — يجب أن تظهر الأحداث المدخلة هناك حتى قبل الخصم
-3. **العملاء → \[العميل\] → الأرصدة**: يجب أن تظهر إدخالات دفتر الأستاذ في غضون دقيقة أو دقيقتين
+**What to check:**
+1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
+2. The **Events** tab on the meter — ingested events should appear there even before deduction
+3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
 </Accordion>
 
-/* LOCKED_PATTERN_2e6ee51d68eb1cce3e4eeeeb4d472380 */}
-**الأسباب المحتملة:**
-- لم يكمل العميل عملية الشراء بعد — تُصدر الأرصدة فقط بعد دفع ناجح
-- تستفسر باستخدام `customer_id` خاطئ (استخدم معرف `cus_...` من لوحة التحكم، وليس معرف قاعدة البيانات الخاصة بك)
-- لا يتطابق `CREDIT_ENTITLEMENT_ID` في `.env` مع الرصيد المرتبط بالمنتج
+<Accordion title="Balance always shows 0 or 'customer not found'">
+**Possible causes:**
+- The customer hasn't completed checkout yet — credits are only issued after a successful payment
+- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
+- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
 
-**ما الذي يجب التحقق منه:** افتح **العملاء → \[العميل\] → الأرصدة**. إذا لم تظهر أي أرصدة هناك، لم يتم إرفاق تخصيص المنتج أو لم يكتمل الدفع.
+**What to check:**
+Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
 </Accordion>
 
-/* LOCKED_PATTERN_27caecf30429b0544f845c602ece6c9a */}
-**الأسباب المحتملة:**
-- لم يتم تمكين التجاوز على **ملحق رصيد منتج المحترفين** (يعتبر الإعداد على مستوى الرصيد مجرد افتراضي)
-- العميل فعليًا في خطة المبتدئين وليس المحترفين
-- تم تعيين حد التجاوز إلى 0
+<Accordion title="Overage not working for Pro plan customers">
+**Possible causes:**
+- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
+- The customer is actually on Starter, not Pro
+- Overage limit was set to 0
 
-**ما الذي يجب التحقق منه:** تحرير خطة المحترفين → الامتيازات → الأرصدة → تأكيد أن **السماح بالتجاوز** مفعّل و**السعر لكل وحدة** هو `0.000005` (= 5 دولارات لكل مليون رمز؛ تحقق من الأصفار المتصدرة — الحقل يستقبل سعر كل رمز، وليس لكل 1K).
+**What to check:**
+Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
 </Accordion>
 
-/* LOCKED_PATTERN_a16d21c3d9a822c822483d66e25c8013 */}
-**الأسباب المحتملة:**
-- ترتيب تحليل جسد الطلب: `express.json()` تم تطبيقه على `/webhooks/dodo` قبل `express.raw()` — يحتاج SDK إلى **byte الخام** للطلب، وليس JSON مفصول
-- الخطأ في التوقيع السري في `DODO_PAYMENTS_WEBHOOK_KEY`
-- يغير البروكسي العكسي الرؤوس
+<Accordion title="`Webhook verification failed` in logs">
+**Possible causes:**
+- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
+- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
+- Reverse proxy is rewriting headers
 
-**ما الذي يجب التحقق منه:** تأكد من أن سطر `app.use('/webhooks/dodo', express.raw(...))` قبل `app.use(express.json())` في `server.ts`.
+**What to check:**
+Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
 </Accordion>
 </AccordionGroup>
 
-## بحاجة إلى مساعدة؟
+## Need help?
 
-- [مجتمع Discord](https://discord.gg/bYqAp4ayYh)
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
 - [support@dodopayments.com](mailto:support@dodopayments.com)
 
-## تهانينا! لقد قمت ببناء النظام القائم على الرصيد لمنصة NeuralAPI
+## Congratulations! You've Built Credit-Based Billing for NeuralAPI
 
-النظام الخاص بك يحتوي الآن على نظام فوترة رصيد كامل وجاهز للإنتاج:
+Your platform now has a complete, production-ready credit billing system:
 
-/* LOCKED_PATTERN_bd3b9ce11ef978f59c6eb5461169b62d */}
+<CardGroup cols={2}>
 <Card title="Token Credit Entitlement" icon="coins">
-رصيد `API Tokens` القابل لإعادة الاستخدام مع انتهاء صلاحية لمدة 30 يومًا، مُشارك عبر جميع الخطط وحزمة الشحن
+A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
 </Card>
 
-/* LOCKED_PATTERN_172cb483d138171e4b2d8f3115718d76 */}
-خطة المبتدئين (10M، حد صعب) وخطة المحترفين (40M + تجاوز) مُكوّنة لكل منتج بدون تكرار الرصيد
+<Card title="Tiered Plans, One Credit" icon="layer-group">
+Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
 </Card>
 
-/* LOCKED_PATTERN_c2045688fffde38f509e080d7fd1b05b */}
-يمكن للعملاء إضافة 5M رموز مقابل 19 دولارًا دون تغيير اشتراكهم
+<Card title="One-Time Top-Up Pack" icon="circle-plus">
+Customers add 5M tokens for $19 without changing their subscription
 </Card>
 
-/* LOCKED_PATTERN_2b86ac1ca2cd9c10b1994c5a6f0b74df */}
-يتم إدخال أعداد الرموز الحقيقية من OpenAI كأحداث؛ العداد يخصم الأرصدات بنظام FIFO بدون تتبع يدوي
+<Card title="Auto-Deduction via Meter" icon="bolt">
+Real OpenAI token counts ingested as events; the meter deducts credits FIFO with no manual tracking
 </Card>
 
-/* LOCKED_PATTERN_2f7adf758d4ed4f71eb07cbccdf6de2c */}
-رصيد حي عبر SDK للحد من الوصول، عرض الاستخدام، أو تحذير العملاء في التطبيق
+<Card title="Live Balance API" icon="gauge">
+Real-time balance via the SDK to gate access, display usage, or warn customers in-app
 </Card>
 
-/* LOCKED_PATTERN_64f557d064ca0180fca545f631afea7b */}
-أحداث دفتر الأستاذ للرصيد (`credit.added`، `credit.deducted`، `credit.overage_charged`) يتم توجيهها عبر معالج مُصدق عليه باستخدام مساعد Webhooks القياسي في SDK
+<Card title="Verified Webhook Pipeline" icon="bell">
+Credit ledger events (`credit.added`, `credit.deducted`, `credit.overage_charged`) routed through a signature-verified handler using the SDK's Standard Webhooks helper
+</Card>
+</CardGroup>
+
+<Info>
+**Going to production?** Tighten these:
+- **Auth on `/credits/:customerId` and `/api/generate`** — currently anyone can hit these with any customer ID. Authenticate users and look up *their* customer ID server-side.
+- **Stable `event_id`s** — the example uses `Date.now() + random`. In production, use your request ID so retries are idempotent (Dodo Payments deduplicates by `event_id`).
+- **Persist the customer↔user mapping** — store `customer_id` in your DB after the first checkout so you don't need a manual paste step.
+- **Decide what happens when a subscription ends.** Plan credits remain in the customer's ledger until their natural expiry (30 days from issuance) and top-up credits stay valid for 365 days — but the cookbook's `/api/generate` only checks *balance*, not subscription status. So a cancelled customer can still consume their remaining tokens. That's the consumer-friendly default. If you want stricter access control, either (a) listen to the `subscription.cancelled` webhook and gate `/api/generate` on subscription status, or (b) call Dodo's ledger API to debit unused plan credits on cancel while leaving top-up credits intact.
+- **Monitor the Usage Billing dashboard** to catch metering anomalies early.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Full CBB documentation: rollover, overage modes, ledger management, all API endpoints.
 </Card>
 
-{{-- LOCKED_PATTERN_639ec37665c9a30d7ddbd3a284a688a5 --}}
+<Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
+Payload schemas for every credit event your server might receive.
+</Card>
+</CardGroup>
