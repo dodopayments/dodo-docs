@@ -1,0 +1,676 @@
+---
+title: Erstellen Sie eine KI-API-Plattform mit Kreditbasierter Abrechnung
+description: Erstellen Sie einen gestaffelten KI-API-Dienst mit Token-Krediten —
+  vergeben Sie Kredite über Abonnementpläne und einmalige Auflade-Pakete und
+  ziehen Sie automatisch ab, wenn Kunden Ihre API aufrufen.
+icon: coins
+keywords:
+  - Dodo Payments
+  - Entwicklerhandbuch
+  - kreditbasierte Abrechnung
+  - Token-Abrechnung
+  - KI-API
+  - Kredite
+  - Überziehung
+---
+
+<Tip>
+  <strong>Lassen Sie Sentra Ihren Integrationscode für Sie schreiben.</strong><br />
+  Verwenden Sie unseren KI-Assistenten in VS Code, Cursor oder Windsurf, um SDK/API-Code, Webhook-Handler, Kreditvergaben und mehr zu generieren — indem Sie einfach beschreiben, was Sie wollen.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Probieren Sie Sentra: KI-gesteuerte Integration &rarr;
+  </a>
+</Tip>
+
+In diesem Tutorial erstellen Sie **NeuralAPI** — eine gestaffelte KI-Plattform, bei der jeder Abonnementplan mit einem monatlichen Token-Kreditrahmen ausgestattet ist. Kunden können zusätzliche Pakete kaufen, wenn sie knapp werden, und Ihr Backend zieht automatisch Kredite ab, wenn Anfragen von OpenAI verarbeitet werden.
+
+<Note>
+Dieses Tutorial verwendet Node.js/Express + das OpenAI SDK. Die Dodo Payments-Konzepte (Kredite, Zähler, Webhooks) sind auf jedes Framework oder KI-Anbieter anwendbar — passen Sie sie frei an.
+</Note>
+
+Am Ende dieses Tutorials wissen Sie, wie man:
+
+- Eine benutzerdefinierte Kreditberechtigung (Tokens) und einen Zähler erstellt, der automatisch davon abzieht
+- Kredite an Abonnementpläne (mit und ohne Überziehungen) und ein einmaliges Aufladeprodukt anhängt
+- Einen echten OpenAI-Abschlussendpunkt verbindet, der Tokens über Dodo Payments in Rechnung stellt
+- Den aktuellen Kreditstand eines Kunden über das SDK abfragt
+- Webhook-Signaturen überprüft und Dodo Payments-Kreditereignisse leitet
+
+## Was wir bauen
+
+Hier ist das Preismodell für NeuralAPI:
+
+| Produkt | Preis | Tokens | Überziehung |
+|---------|-------|--------|-------------|
+| Starter Plan | 29 $/Monat | 10.000.000 Tokens/Zyklus | Gesperrt bei null |
+| Pro Plan | 99 $/Monat | 40.000.000 Tokens/Zyklus | 0,005 $ pro 1K Tokens |
+| Token-Auffüllpackung | 19 $ einmalig | +5.000.000 Tokens | — |
+
+<Info>
+Bevor Sie beginnen, stellen Sie sicher, dass Sie haben:
+- Ein Dodo Payments-Konto (Testmodus ist in Ordnung)
+- Einen OpenAI API-Schlüssel
+- Node.js 18+
+- Grundlegende Kenntnisse in TypeScript/Node.js
+</Info>
+
+## Schritt 1: Erstellen Sie Ihre Token-Kreditberechtigung
+
+Erstellen Sie zuerst die Kreditberechtigung, die sowohl von den Abonnementplänen als auch vom Zusatzpaket geteilt wird. Denken Sie daran, dass dies die "Token"-Einheit definiert, die Ihre Plattform verwendet.
+
+<Frame caption="The Credits tab under Products shows all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Kreditliste zeigt erstellte Kreditberechtigungen" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Steps>
+<Step title="Navigate to Credits">
+1. Melden Sie sich in Ihrem Dodo Payments-Dashboard an
+2. Klicken Sie auf **Produkte** in der linken Seitenleiste
+3. Wählen Sie die Registerkarte **Kredite**
+4. Klicken Sie auf **Kredit erstellen**
+</Step>
+
+<Step title="Configure the credit unit">
+Füllen Sie die Basisdetails für Ihren Token-Kredit aus:
+
+**Kreditname**: `API Tokens`
+
+**Kredittype**: Wählen Sie **Benutzerdefinierte Einheit**
+
+**Einheitsname**: `token`
+
+**Genauigkeit**: `0` (Tokens sind immer ganze Zahlen)
+
+**Kreditablauf**: `30 days` (Kredite werden mit jedem Abrechnungszyklus zurückgesetzt)
+
+<Warning>
+Die Genauigkeit kann nach der Erstellung eines Kredits nicht mehr geändert werden. Für Token-Zählungen ist `0` (ganze Zahlen) fast immer korrekt.
+</Warning>
+</Step>
+
+<Step title="Skip overage at the credit level">
+Lassen Sie Überziehung **deaktiviert** hier — Sie konfigurieren es pro Plan, wenn Sie den Kredit an Produkte anhängen. Dies erlaubt es dem Starter-Plan, die Nutzung bei null zu sperren, während der Pro-Plan Überziehung erlaubt.
+<Tip>
+Die hier konfigurierten Überziehungseinstellungen sind *Standards*. Jedes Produktanhängsel kann sie überschreiben — genau das werden wir in Schritt 3 tun.
+</Tip>
+</Step>
+
+Klicken Sie auf **Kredit erstellen**. Sobald gespeichert, öffnen Sie den Kredit und kopieren Sie seine ID — sie sieht aus wie `cent_xxxxxxxxxxxx`.
+
+Ihr `API Tokens` Kreditberechtigung ist bereit. Als nächstes erstellen Sie einen Zähler, damit Nutzungsevents automatisch Abzüge vornehmen können.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 2: Erstellen Sie einen Zähler für den Token-Verbrauch
+
+Ein Zähler aggregiert eingehende Nutzungsevents und wandelt sie in Kreditabzüge um. Sie benötigen dies *bevor* die Planprodukte erstellt werden, da Sie es während der Produkterstellung in Schritt 3 anhängen.
+
+1. Gehen Sie in der Dashboard-Seitenleiste zu **Produkte → Zähler**
+2. Klicken Sie auf **Zähler erstellen**
+
+Füllen Sie aus:
+
+**Zählername**: `Token Usage Meter`
+
+**Ereignisname**: `api.tokens_used` *(dies muss genau dem entsprechen, was Ihre App sendet)*
+
+**Aggregationstyp**: `Sum` — wir summieren die Token-Anzahl von jedem Ereignis
+
+**Über Eigenschaft**: `tokens` — der Metadatenschlüssel auf jedem Ereignis, dessen Wert summiert wird
+
+**Maßeinheit**: `tokens`
+
+Eventnamen sind case-sensitiv. `api.tokens_used` ≠ `Api.Tokens.Used` — wählen Sie eines und bleiben Sie dabei.
+
+Speichern Sie den Zähler und kopieren Sie seine ID — Sie werden sie beim Anfügen an Produkte referenzieren.
+
+Der Zähler ist erstellt. Nun können wir ihn mit dem Kredit verbinden, wenn wir Produkte konfigurieren.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 3: Erstellen Sie die Planprodukte
+
+Beide Pläne müssen **Nutzungsbasierte Abrechnungs**-Produkte sein, keine reinen Abonnements — Zähler können nur an UBB-Produkte angehängt werden, und Sie benötigen den Zähler, um automatisch Kredite abzuziehen, wenn Kunden Ihre API aufrufen. UBB-Produkte unterstützen immer noch eine wiederkehrende Basisgebühr (das `$29` / `$99`); Nutzung darüber hinaus wird in Krediten abgerechnet.
+
+### Starter-Plan (29 $/Monat — 10M Tokens, keine Überziehung)
+
+1. Gehen Sie zu **Produkte → Produkt erstellen**
+2. Wählen Sie **Nutzungsbasierte Abrechnung** als Preistyp
+3. Füllen Sie aus:
+
+**Produktname**: `NeuralAPI Starter`
+
+**Beschreibung**: `10 million API tokens per month. Perfect for individual developers and small projects.`
+
+**Festpreis**: `29.00` (die wiederkehrende Basisgebühr — monatlich abgerechnet, auch ohne Nutzung)
+
+**Abrechnungszyklus**: `Monthly`
+
+**Währung**: `USD`
+
+Im Abschnitt **Zähler wählen**, klicken Sie auf **+** und fügen Sie `Token Usage Meter` hinzu. Dann am Zähler:
+
+1. Schalten Sie **Nutzung in Krediten abrechnen** ein
+2. **Kreditberechtigung**: Wählen Sie `API Tokens`
+3. **Zähleinheiten pro Kredit**: `1` — jedes Token im Ereignis entspricht 1 abgezogenen Kredit
+4. **Freie Schwelle**: `0` — die Kreditzuteilung selbst ist das "Freikontingent" des Kunden; wir benötigen kein zusätzliches freies Band
+
+Dies ist die Verkabelung, die eingehende `api.tokens_used` Events tatsächlich vom Saldo des Kunden abzieht.
+
+Scrollen Sie im Produkt zur Kreditkonfigurationssektion, die erscheint, sobald ein kreditverrechneter Zähler angeschlossen ist:
+
+**Kredite pro Abrechnungszyklus ausgegeben**: `10000000`
+
+**Überziehung zulassen**: **Deaktiviert** — Starter-Kunden werden gesperrt, wenn Tokens ausgehen
+
+**Standardeinstellungen für Kreditimport**: Aktiviert — verwenden Sie den 30-tägigen Ablauf aus der Kreditberechtigung
+
+Speichern Sie und kopieren Sie die Produkt-ID.
+
+Starter-Plan: 29 $/Monat Basisgebühr, 10M Tokens/Zyklus, gesperrt bei null, automatische Abzüge über den Zähler.
+</Check>
+</Step>
+</Steps>
+
+### Pro-Plan (99 $/Monat — 40M Tokens, Überziehung aktiviert)
+
+Gleicher Ablauf wie bei Starter, mit größeren Zahlen:
+
+**Produktname**: `NeuralAPI Pro`
+
+**Beschreibung**: `40 million API tokens per month with overage. Built for production applications.`
+
+**Festpreis**: `99.00`
+
+**Abrechnungszyklus**: `Monthly`
+
+**Währung**: `USD`
+
+Identisch mit Starter: fügen Sie `Token Usage Meter` hinzu, schalten Sie **Nutzung in Krediten abrechnen** ein, wählen Sie `API Tokens`, **Zähleinheiten pro Kredit** `1`, **Freie Schwelle** `0`.
+
+Konfigurieren Sie die Kreditausgabe, dieses Mal Überziehung aktivieren:
+
+**Kredite pro Abrechnungszyklus ausgegeben**: `40000000`
+
+**Standardeinstellungen für Kreditimport**: **Deaktivieren** — wir müssen Überziehungseinstellungen pro Produkt anpassen
+
+**Überziehung zulassen**: **Aktiviert**
+
+**Preis pro Einheit**: `0.000005` USD pro Token (d.h., 0,005 $ pro 1K Tokens oder 5 $ pro 1M Tokens — über dem effektiven Tarif des Plans, um Überlauf zu verhindern)
+
+**Überziehungsverhalten**: `Bill overage at billing` — Überziehung wird auf der nächsten Rechnung abgerechnet, dann wird der Saldo zurückgesetzt
+
+Speichern Sie das Produkt und kopieren Sie die Produkt-ID.
+
+Pro-Plan: 99 $/Monat Basisgebühr, 40M Tokens/Zyklus, Überziehung bei 0,005 $/1K Tokens, automatische Abzüge über den Zähler.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 4: Erstellen Sie das Token-Auffüllpaket
+
+Das Auffüllpaket ist ein einmaliger Kauf, der 5.000.000 Tokens zum bestehenden Saldo eines Kunden hinzufügt.
+
+1. Gehen Sie zu **Produkte → Produkt erstellen**
+2. Wählen Sie **Einmalzahlung** als Preistyp
+3. Füllen Sie aus:
+
+**Produktname**: `Token Top-Up Pack`
+
+**Beschreibung**: `Instantly add 5 million tokens to your NeuralAPI balance.`
+
+**Preis**: `19.00`
+
+**Währung**: `USD`
+
+1. Im Abschnitt **Berechtigungen**, klicken Sie auf **Anhängen** neben **Kredite**
+2. Wählen Sie `API Tokens`
+3. Setzen Sie **Kredite ausgegeben**: `5000000`
+4. **Deaktivieren** Sie *Standardeinstellungen für Kreditimport* — wir wollen den Standardablauf von 30 Tagen überschreiben
+5. Setzen Sie **Kreditablauf**: `365 days`
+6. Speichern Sie das Produkt
+
+Kopieren Sie die Produkt-ID.
+
+Warum eine längere Gültigkeit für Aufladungen? Abonnementkredite werden alle 30 Tage zurückgesetzt, da dies der Zyklus ist. Aufladungen sind *vorausbezahlte Käufe* — der Kunde hat 19 $ im Voraus bezahlt und erwartet vernünftigerweise, dass diese Tokens länger als einen Monat halten. 365 Tage entspricht, wie echte Prepaid-Kredite bei OpenAI, AWS und Anthropic funktionieren, während Ihre Haftung begrenzt wird, sodass Kunden nicht unbegrenzt horten können.
+</Tip>
+
+Auffüllpaket konfiguriert — der Kauf gewährt 5.000.000 Tokens, die 365 Tage gültig bleiben.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 5: Erstellen Sie das Backend
+
+Jetzt bauen wir den Express-Server, der den Abonnement-Checkout, Auflade-Checkout, echte OpenAI-Abschlüsse mit Token-Abrechnung, Kontostandabfragen und Kredit-Webhook-Ereignisse verwaltet.
+
+```bash
+mkdir neural-api-billing
+cd neural-api-billing
+npm init -y
+npm install dodopayments openai express dotenv
+npm install -D @types/node @types/express typescript tsx
+```
+
+Erstellen Sie eine `tsconfig.json`:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+Aktualisieren Sie `package.json` Skripte:
+
+```json package.json
+{
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  }
+}
+```
+
+Erstellen Sie `.env` mit Ihren Anmeldeinformationen und IDs aus den vorherigen Schritten:
+
+```bash .env
+DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
+DODO_PAYMENTS_WEBHOOK_KEY=your_webhook_signing_secret_here
+DODO_ENVIRONMENT=test_mode
+OPENAI_API_KEY=sk-...
+CREDIT_ENTITLEMENT_ID=cent_xxxxxxxxxxxx
+STARTER_PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
+PRO_PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
+TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
+BASE_URL=http://localhost:3000
+```
+
+Speichern Sie niemals `.env` in der Versionskontrolle. Fügen Sie es sofort zu `.gitignore` hinzu.
+
+Sie füllen `DODO_PAYMENTS_WEBHOOK_KEY` in Schritt 7 aus, nachdem Sie Ihren Webhook-Endpunkt registriert haben.
+
+Erstellen Sie `src/server.ts`:
+
+```html public/index.html expandable
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NeuralAPI Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 20px; color: #1a1a2e; }
+    h1 { font-size: 24px; }
+    h2 { margin-top: 36px; border-bottom: 1px solid #eee; padding-bottom: 8px; font-size: 18px; }
+    .panel { padding: 16px; background: #fafafe; border: 1px solid #e6e6f0; border-radius: 8px; margin: 12px 0; }
+    .form-group { margin: 12px 0; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 13px; }
+    input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 14px; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { background: #6366f1; color: white; padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    button:hover { background: #4f46e5; }
+    button:disabled { background: #c7c7d4; cursor: not-allowed; }
+    .balance { font-size: 32px; font-weight: 700; color: #6366f1; }
+    .muted { color: #777; font-size: 13px; margin-top: 4px; }
+    .result { margin-top: 12px; padding: 12px; background: #fff; border: 1px solid #e6e6f0; border-radius: 6px; font-size: 14px; white-space: pre-wrap; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .row > * { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>NeuralAPI Demo</h1>
+
+  <div class="panel">
+    <label>Logged-in customer ID (paste once after subscribing)</label>
+    <div class="row">
+      <input id="customerId" placeholder="cus_xxxxxxxxxxxx" />
+      <button onclick="saveCustomerId()" style="flex:0">Save</button>
+    </div>
+    <div class="muted">After completing checkout, copy the customer ID from your Dodo Payments dashboard (Customers → most recent) and paste here.</div>
+  </div>
+
+  <h2>1. Subscribe to a Plan</h2>
+  <div class="form-group"><label>Plan</label>
+    <select id="plan">
+      <option value="starter">Starter — $29/mo, 10M tokens</option>
+      <option value="pro">Pro — $99/mo, 40M tokens + overage</option>
+    </select>
+  </div>
+  <div class="form-group"><label>Email</label><input type="email" id="email" placeholder="you@example.com" /></div>
+  <div class="form-group"><label>Name</label><input id="name" placeholder="Your name" /></div>
+  <button onclick="subscribe(event)">Get Checkout Link</button>
+  <div id="subscribeResult" class="result" style="display:none"></div>
+
+  <h2>2. Generate AI Response (deducts tokens)</h2>
+  <div class="form-group"><label>Prompt</label><textarea id="prompt" placeholder="Explain quantum computing in one sentence"></textarea></div>
+  <button onclick="generate(event)">Generate</button>
+  <div id="generateResult" class="result" style="display:none"></div>
+
+  <h2>3. Live Token Balance</h2>
+  <button onclick="checkBalance(event)">Refresh Balance</button>
+  <div id="balanceResult" class="result" style="display:none"></div>
+
+  <h2>4. Buy a Top-Up Pack</h2>
+  <button onclick="topup(event)">Buy 5M Tokens — $19</button>
+  <div id="topupResult" class="result" style="display:none"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    document.addEventListener('DOMContentLoaded', () => {
+      $('customerId').value = localStorage.getItem('customerId') || '';
+    });
+
+    function getCustomerId() {
+      const id = $('customerId').value.trim();
+      if (!id) { alert('Save a customer ID first'); throw new Error('no customer'); }
+      return id;
+    }
+
+    function saveCustomerId() {
+      localStorage.setItem('customerId', $('customerId').value.trim());
+      alert('Saved');
+    }
+
+    async function withLoading(btn, loadingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = loadingLabel;
+      try { await fn(); } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function subscribe(ev) {
+      await withLoading(ev.target, 'Loading…', async () => {
+        const res = await fetch('/checkout/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan: $('plan').value, email: $('email').value, name: $('name').value }),
+        });
+        const data = await res.json();
+        const el = $('subscribeResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open Checkout →</a>`
+          : `Error: ${data.error}`;
+      });
+    }
+
+    async function generate(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Generating…', async () => {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id, prompt: $('prompt').value }),
+        });
+        const data = await res.json();
+        const el = $('generateResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<strong>Response:</strong>\n${data.text}\n\n<em>Tokens used: ${data.tokens_used} (${data.model})</em>`
+          : `Error: ${data.error}`;
+        if (res.ok) refreshBalanceSilently();
+      });
+    }
+
+    async function checkBalance(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Refreshing…', async () => {
+        const res = await fetch('/credits/' + customer_id);
+        const data = await res.json();
+        const el = $('balanceResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<div class="balance">${Number(data.balance).toLocaleString()} tokens</div>
+             <div class="muted">Overage used: ${Number(data.overage).toLocaleString()} · Last activity: ${data.last_transaction_at ?? 'never'}</div>`
+          : `Error: ${data.error}`;
+      });
+    }
+
+    async function refreshBalanceSilently() {
+      const customer_id = $('customerId').value.trim();
+      if (!customer_id) return;
+      const res = await fetch('/credits/' + customer_id);
+      const data = await res.json();
+      const el = $('balanceResult');
+      el.style.display = 'block';
+      el.innerHTML = res.ok
+        ? `<div class="balance">${Number(data.balance).toLocaleString()} tokens</div>
+           <div class="muted">Overage used: ${Number(data.overage).toLocaleString()} · Last activity: ${data.last_transaction_at ?? 'never'}</div>`
+        : `Error: ${data.error}`;
+    }
+
+    async function topup(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Loading…', async () => {
+        const res = await fetch('/checkout/topup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id }),
+        });
+        const data = await res.json();
+        const el = $('topupResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open Top-Up Checkout →</a>`
+          : `Error: ${data.error}`;
+      });
+    }
+  </script>
+</body>
+</html>
+```
+
+Backend fertig: Abonnement-Checkout, Auflade-Checkout, OpenAI-Abschluss mit gemetertem Token-Abrechnung, Kontostand-Abfrage und ein verifizierter Webhook-Handler.
+</Check>
+
+Webhooks lassen Ihren Server auf Saldoänderungen reagieren — Sie verwenden sie, um "Bald niedrig"-E-Mails zu senden, bevor Kunden null erreichen.
+
+Webhooks benötigen eine öffentliche URL. Verwenden Sie für die lokale Entwicklung [ngrok](https://ngrok.com) oder einen beliebigen Tunnel:
+
+Kopieren Sie die `https://...ngrok-free.app` URL.
+
+1. Gehen Sie im Dashboard zu **Entwickler → Webhooks → Endpunkt hinzufügen**
+2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
+3. Abonnieren Sie mindestens:
+   - `credit.added`
+   - `credit.deducted`
+   - `credit.overage_charged`
+4. Speichern Sie und kopieren Sie das **Signaturgeheimnis**
+5. Fügen Sie es in `.env` ein als `DODO_PAYMENTS_WEBHOOK_KEY`, dann starten Sie `npm run dev` neu
+
+Das SDK's `dodo.webhooks.unwrap()` validiert die `webhook-id`, `webhook-timestamp`, und `webhook-signature` Header mit Ihrem Signaturgeheimnis. Sie müssen keine manuelle HMAC-Verifikation durchführen — und sollten es auch nicht, da Dodo Payments [Standard-Webhooks](https://www.standardwebhooks.com/) verwendet, die `id.timestamp.body` signieren, anstatt nur den Körper.
+</Tip>
+</Step>
+</Steps>
+
+## Schritt 8: Testen Sie den gesamten Ablauf
+
+1. Führen Sie `npm run dev` aus
+2. Öffnen Sie `http://localhost:3000`
+3. Wählen Sie **Pro-Plan**, geben Sie eine Test-E-Mail + Namen ein, klicken Sie auf **Checkout-Link erhalten**, und schließen Sie den Checkout mit [Testkartendetails](/miscellaneous/testing-process) ab
+4. Gehen Sie im Dashboard zu **Kunden → der letzte** und kopieren Sie die `cus_...` ID
+5. Fügeen Sie es in das Feld "Eingeloggte Kunden-ID" auf dem Demo und klicken Sie auf **Speichern**
+
+Der Kunde sollte 40.000.000 Tokens haben. Klicken Sie auf **Saldo aktualisieren** zur Bestätigung.
+
+Geben Sie eine Eingabeaufforderung ein und klicken Sie auf **Erzeugen**. Der Server ruft OpenAI auf, erhält die tatsächliche `total_tokens` zurück, verzehrt ein Nutzungsevent und gibt die Antwort zurück.
+
+Nutzungsevents werden von einem Hintergrundarbeiter etwa jede Minute verarbeitet. Das Saldo wird nicht sofort sinken — warten Sie 30–90 Sekunden und klicken Sie erneut auf **Saldo aktualisieren**. Schlussfolgern Sie nicht, dass es defekt ist, wenn die erste Aktualisierung keine Bewegung zeigt.
+
+Klicken Sie auf **Kaufen 5M Tokens — 19 $** und schließen Sie den Checkout ab. Nach erfolgreicher Zahlung aktualisieren Sie das Saldo — es sollte um 5.000.000 Tokens springen. Ihr Server-Log sollte ein `credit.added` Ereignis anzeigen.
+</Step>
+</Steps>
+
+## Fehlerbehebung
+
+**Mögliche Ursachen:**
+- Der Eventname des Zählers stimmt nicht mit dem überein, was Sie senden (`api.tokens_used` ist case-sensitiv)
+- Der Zähler ist nicht mit dem Produkt in Verbindung mit dem `API Tokens` Kredit verbunden — gehen Sie zur Zählerkonfiguration des Produkts und bestätigen Sie, dass **Nutzung in Krediten abrechnen** aktiviert ist
+- Der Schlüssel `metadata.tokens` stimmt nicht mit dem Feld "Über Eigenschaft" des Zählers überein
+- Die Vergabe des Kunden ist abgelaufen (überprüfen Sie die Kredithistorie des Kunden)
+
+**Was zu prüfen ist:**
+1. **Produkte → Zähler**: Öffnen Sie den Zähler und bestätigen Sie, dass er den verknüpften Kreditnamen auf dem Produktanhang anzeigt
+2. Der **Events**-Reiter auf dem Zähler — aufgenommene Ereignisse sollten dort erscheinen, bevor sie abgezogen werden
+3. **Kunden → \[Kunde\] → Credits**: Buchungseinträge sollten innerhalb einer oder zwei Minuten erscheinen.
+
+**Mögliche Ursachen:**
+- Der Kunde hat den Checkout noch nicht abgeschlossen — Kredite werden erst nach einer erfolgreichen Zahlung ausgegeben
+- Sie fragen mit der falschen `customer_id` (verwenden Sie die `cus_...` ID aus dem Dashboard, nicht Ihre eigene DB-ID)
+- Das `CREDIT_ENTITLEMENT_ID` in `.env` stimmt nicht mit dem dem Produkt angehängten Kredit überein
+
+**Was zu prüfen ist:**
+Öffnen Sie **Kunden → \[Kunde\] → Credits**. Wenn dort keine Credits erscheinen, wurde die Produktberechtigung nicht angehängt oder die Zahlung wurde nicht abgeschlossen.
+
+**Mögliche Ursachen:**
+- Überziehung war nicht aktiviert auf der **Pro-Produkt-Kredit-Anbindung** (die Einstellung auf Kreditebene ist nur ein Standard)
+- Der Kunde ist tatsächlich im Starter, nicht im Pro
+- Überziehungslimit war auf 0 gesetzt
+
+**Was zu prüfen ist:**
+Bearbeiten Sie Pro → Berechtigungen → Credits → bestätigen Sie, dass **Überziehung zulassen** aktiviert ist und **Preis pro Einheit** `0.000005` ist (= $5 pro Million Tokens; überprüfen Sie doppelt die führenden Nullen — das Feld nimmt den Preis pro Token, nicht pro 1K).
+
+**Mögliche Ursachen:**
+- Reihenfolge der Body-Parsing: `express.json()` wurde vor `express.raw()` auf `/webhooks/dodo` angewendet — das SDK benötigt die **rohen Bytes** der Anfrage, nicht geparstes JSON
+- Falsches Signaturgeheimnis in `DODO_PAYMENTS_WEBHOOK_KEY`
+- Reverse-Proxy überschreibt Header
+
+**Was zu prüfen ist:**
+Bestätigen Sie, dass die `app.use('/webhooks/dodo', express.raw(...))` Linie *vor* `app.use(express.json())` in `server.ts` kommt.
+
+## Benötigen Sie Hilfe?
+
+- [Discord-Community](https://discord.gg/bYqAp4ayYh)
+- [support@dodopayments.com](mailto:support@dodopayments.com)
+
+## Glückwunsch! Sie haben Kreditbasierte Abrechnung für NeuralAPI erstellt
+
+Ihre Plattform hat nun ein vollständiges, produktionsreifes Kreditabrechnungssystem:
+
+Ein wiederverwendbarer `API Tokens` Kredit mit 30-tägiger Gültigkeit, geteilt über alle Pläne und das Aufladepaket
+
+Starter (10M, harte Grenze) und Pro (40M + Überziehung) konfiguriert pro Produkt ohne den Kredit zu duplizieren
+
+Kunden fügen 5M Tokens für 19 $ hinzu, ohne ihr Abonnement zu ändern
+
+Echte OpenAI-Token-Zählungen, die als Events aufgenommen werden; der Zähler zieht Kredite FIFO ohne manuelle Nachverfolgung ab
+
+Echtzeit-Saldo über das SDK, um Zugang zu gewähren, Nutzung anzuzeigen oder Kunden in der App zu warnen
+
+Kreditbuchführungsevents (`credit.added`, `credit.deducted`, `credit.overage_charged`) weitergeleitet durch einen signaturverifizierten Handler unter Verwendung des SDK's Standard-Webhooks-Helfers
+
+Gehen Sie in die Produktion? Verstärken Sie diese:
+- **Auth auf `/credits/:customerId` und `/api/generate`** — derzeit kann jeder mit jeder Kunden-ID darauf zugreifen. Authentifizieren Sie Benutzer und suchen Sie *ihre* Kunden-ID serverseitig auf.
+- **Stabile `event_id`s** — das Beispiel verwendet `Date.now() + random`. Verwenden Sie in der Produktion Ihre Anfrage-ID, sodass Wiederholungen idempotent sind (Dodo Payments dedupliziert nach `event_id`).
+- **Persisitieren Sie die Kunden↔Benutzer-Zuordnung** — speichern Sie `customer_id` in Ihrer DB nach dem ersten Checkout, sodass Sie keinen manuellen Einfügeschritt benötigen.
+- **Entscheiden Sie, was passiert, wenn ein Abonnement endet.** Plan-Credits bleiben im Ledger des Kunden, bis sie natürlich ablaufen (30 Tage nach Ausstellung) und Aufladekredits bleiben für 365 Tage gültig — aber das Kochbuchs `/api/generate` überprüft nur *Saldo*, nicht Abonnementstatus. Also kann ein gekündigter Kunde seine verbleibenden Tokens weiterhin nutzen. Das ist der verbraucherfreundliche Standard. Wenn Sie strengere Zugangskontrolle wünschen, entweder (a) hören Sie den `subscription.cancelled` Webhook und kontrollieren Sie `/api/generate` auf Abonnementstatus, oder (b) rufen Sie die Dodo's Ledger-API auf, um nicht genutzte Plan-Credits bei der Kündigung abzubuchen, während Sie Aufladekredits intakt lassen.
+- **Überwachen Sie das Usage Billing Dashboard** um Abrechnungsanomalien frühzeitig zu erkennen.
+
+Vollständige CBB-Dokumentation: Rollout, Überziehungsmodi, Ledger-Verwaltung, alle API-Endpunkte.
+
+Payload-Schemata für jedes Kreditevent, das Ihr Server empfangen könnte.
+
+Benötigen Sie Hilfe? - [Discord-Community](https://discord.gg/bYqAp4ayYh) - [support@dodopayments.com](mailto:support@dodopayments.com)
+
+**What to check:**
+1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
+2. The **Events** tab on the meter — ingested events should appear there even before deduction
+3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
+</Accordion>
+
+<Accordion title="Balance always shows 0 or 'customer not found'">
+**Possible causes:**
+- The customer hasn't completed checkout yet — credits are only issued after a successful payment
+- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
+- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
+
+**What to check:**
+Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
+</Accordion>
+
+<Accordion title="Overage not working for Pro plan customers">
+**Possible causes:**
+- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
+- The customer is actually on Starter, not Pro
+- Overage limit was set to 0
+
+**What to check:**
+Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
+</Accordion>
+
+<Accordion title="`Webhook verification failed` in logs">
+**Possible causes:**
+- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
+- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
+- Reverse proxy is rewriting headers
+
+**What to check:**
+Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
+</Accordion>
+</AccordionGroup>
+
+## Need help?
+
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- [support@dodopayments.com](mailto:support@dodopayments.com)
+
+## Congratulations! You've Built Credit-Based Billing for NeuralAPI
+
+Your platform now has a complete, production-ready credit billing system:
+
+<CardGroup cols={2}>
+<Card title="Token Credit Entitlement" icon="coins">
+A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
+</Card>
+
+<Card title="Tiered Plans, One Credit" icon="layer-group">
+Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
+</Card>
+
+<Card title="One-Time Top-Up Pack" icon="circle-plus">
+Customers add 5M tokens for $19 without changing their subscription
+</Card>
+
+<Card title="Auto-Deduction via Meter" icon="bolt">
+Real OpenAI token counts ingested as events; the meter deducts credits FIFO with no manual tracking
+</Card>
+
+<Card title="Live Balance API" icon="gauge">
+Real-time balance via the SDK to gate access, display usage, or warn customers in-app
+</Card>
+
+<Card title="Verified Webhook Pipeline" icon="bell">
+Credit ledger events (`credit.added`, `credit.deducted`, `credit.overage_charged`) routed through a signature-verified handler using the SDK's Standard Webhooks helper
+</Card>
+</CardGroup>
+
+<Info>
+**Going to production?** Tighten these:
+- **Auth on `/credits/:customerId` and `/api/generate`** — currently anyone can hit these with any customer ID. Authenticate users and look up *their* customer ID server-side.
+- **Stable `event_id`s** — the example uses `Date.now() + random`. In production, use your request ID so retries are idempotent (Dodo Payments deduplicates by `event_id`).
+- **Persist the customer↔user mapping** — store `customer_id` in your DB after the first checkout so you don't need a manual paste step.
+- **Decide what happens when a subscription ends.** Plan credits remain in the customer's ledger until their natural expiry (30 days from issuance) and top-up credits stay valid for 365 days — but the cookbook's `/api/generate` only checks *balance*, not subscription status. So a cancelled customer can still consume their remaining tokens. That's the consumer-friendly default. If you want stricter access control, either (a) listen to the `subscription.cancelled` webhook and gate `/api/generate` on subscription status, or (b) call Dodo's ledger API to debit unused plan credits on cancel while leaving top-up credits intact.
+- **Monitor the Usage Billing dashboard** to catch metering anomalies early.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Full CBB documentation: rollover, overage modes, ledger management, all API endpoints.
+</Card>
+
+<Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
+Payload schemas for every credit event your server might receive.
+</Card>
+</CardGroup>

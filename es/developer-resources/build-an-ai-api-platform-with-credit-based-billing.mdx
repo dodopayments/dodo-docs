@@ -1,0 +1,948 @@
+---
+title: Construir una Plataforma de API de IA con Facturación Basada en Créditos
+description: "Construye un servicio de API de IA por niveles con créditos de
+  token: emite créditos a través de planes de suscripción y paquetes de recarga
+  únicos, y deduce automáticamente a medida que los clientes llaman a tu API."
+icon: coins
+keywords:
+  - Dodo Payments
+  - guía del desarrollador
+  - facturación basada en créditos
+  - facturación por tokens
+  - API de IA
+  - créditos
+  - exceso
+---
+
+<Tip>
+  <strong>Deja que Sentra escriba tu código de integración.</strong><br />
+  Usa nuestro asistente de IA en VS Code, Cursor, o Windsurf para generar código SDK/API, manejadores de webhooks, concesiones de créditos y más, simplemente describiendo lo que deseas.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Prueba Sentra: Integración Potenciada por IA &rarr;
+  </a>
+</Tip>
+
+En este tutorial, construirás **NeuralAPI**: una plataforma de IA por niveles donde cada plan de suscripción viene con una asignación mensual de créditos de tokens, los clientes pueden comprar paquetes de recarga cuando se quedan sin crédito, y tu backend deduce automáticamente los créditos a medida que las solicitudes son procesadas por OpenAI.
+
+<Note>
+Este tutorial utiliza Node.js/Express + el SDK de OpenAI. Los conceptos de Dodo Payments (créditos, medidores, webhooks) se aplican a cualquier marco o proveedor de IA: adáptalos libremente.
+</Note>
+
+Al final de este tutorial, sabrás cómo:
+
+- Crear un derecho de crédito personalizado (tokens) y un medidor que deduce automáticamente de él
+- Adjuntar créditos a planes de suscripción (con y sin exceso) y un producto de recarga única
+- Conectar un endpoint real de completado de OpenAI que factura tokens a través de Dodo Payments
+- Consultar el saldo de crédito en vivo de un cliente a través del SDK
+- Verificar firmas de webhooks y enrutar eventos de crédito de Dodo Payments
+
+## Lo Que Estamos Construyendo
+
+Este es el modelo de precios para NeuralAPI:
+
+| Producto | Precio | Tokens | Exceso |
+|---------|-------|--------|---------|
+| Plan Inicial | $29/mes | 10,000,000 tokens/ciclo | Bloqueado en cero |
+| Plan Pro | $99/mes | 40,000,000 tokens/ciclo | $0.005 por 1K tokens |
+| Paquete de Recarga de Tokens | $19 único | +5,000,000 tokens | — |
+
+<Info>
+Antes de comenzar, asegúrate de tener:
+- Una cuenta de Dodo Payments (el modo de prueba está bien)
+- Una clave API de OpenAI
+- Node.js 18+
+- Familiaridad básica con TypeScript/Node.js
+</Info>
+
+## Paso 1: Crea Tu Derecho de Crédito de Token
+
+Primero, crea el derecho de crédito que compartirán ambos planes de suscripción y el paquete de recarga. Piensa en esto como definir la unidad de "token" que utiliza tu plataforma.
+
+<Frame caption="The Credits tab under Products shows all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Página de listado de créditos mostrando derechos de crédito creados" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Steps>
+<Step title="Navigate to Credits">
+1. Inicia sesión en tu panel de Dodo Payments
+2. Haz clic en **Productos** en la barra lateral izquierda
+3. Selecciona la pestaña **Créditos**
+4. Haz clic en **Crear Crédito**
+</Step>
+
+/* LOCKED_PATTERN_20ffc697f3215bc467f44f7077e0c22e */}
+Rellena los detalles básicos de tu crédito de token:
+
+**Nombre del Crédito**: `API Tokens`
+
+**Tipo de Crédito**: Selecciona **Unidad Personalizada**
+
+**Nombre de la Unidad**: `token`
+
+**Precisión**: `0` (los tokens siempre son números enteros)
+
+**Vencimiento de Crédito**: `30 days` (los créditos se reinician en cada ciclo de facturación)
+
+/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */
+La precisión no se puede cambiar después de crear un crédito. Para conteos de tokens, `0` (números enteros) es casi siempre correcto.
+/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_c6cbbf8832054003214c5218693cae25 */
+Deja el exceso **desactivado** aquí; lo configurarás por plan cuando adjuntes el crédito a los productos. Esto permite que el plan Inicial bloquee el uso en cero mientras que el plan Pro permite el exceso.
+
+/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
+Las configuraciones de exceso configuradas aquí son *predeterminadas*. Cada adjunto de producto puede sobrescribirlas, que es exactamente lo que haremos en el Paso 3.
+/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_a4dda72997a4b89db0ee59be8fb43971 */
+Haz clic en **Crear Crédito**. Una vez guardado, abre el crédito y copia su ID: se ve como `cent_xxxxxxxxxxxx`.
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+Tu derecho de crédito `API Tokens` está listo. A continuación, crea un medidor para que los eventos de uso puedan impulsar deducciones automáticamente.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 2: Crea un Medidor para el Uso de Tokens
+
+Un medidor agrega eventos de uso entrantes y los convierte en deducciones de crédito. Necesitas esto *antes* de crear los productos del plan, ya que lo adjuntarás durante la creación del producto en el Paso 3.
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_4cd9986c63e709bfdf87e444b9025379 */
+1. En la barra lateral del panel, ve a **Productos → Medidores**
+2. Haz clic en **Crear Medidor**
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_1777c52e149d9295d21bd6c88e17131e */
+Rellena:
+
+**Nombre del Medidor**: `Token Usage Meter`
+
+**Nombre del Evento**: `api.tokens_used` *(esto debe coincidir exactamente con lo que envía tu aplicación)*
+
+**Tipo de Agregación**: `Sum` — sumamos el conteo de tokens de cada evento
+
+**Propiedad Sobre**: `tokens` — la clave de metadatos en cada evento cuyo valor será sumado
+
+**Unidad de Medición**: `tokens`
+
+/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */
+Los nombres de los eventos son sensibles a mayúsculas y minúsculas. `api.tokens_used` ≠ `Api.Tokens.Used` — elige uno y mantenlo.
+/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */
+
+Guarda el medidor y copia su ID: lo referenciarás al adjuntar productos.
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+El medidor está creado. Ahora podemos conectarlo al crédito cuando configuremos productos.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 3: Crea los Productos del Plan
+
+Ambos planes deben ser productos de **Facturación Basada en Uso**, no suscripciones simples: los medidores solo pueden adjuntarse a productos de UBB, y necesitas el medidor para deducir automáticamente créditos a medida que los clientes llaman a tu API. Los productos UBB aún soportan una tarifa base recurrente (el `$29` / `$99`); el uso adicional se factura en créditos.
+
+/* LOCKED_PATTERN_3e1768bacd71284c37ba827fe6bf1749 */
+<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Configuración de precios de Facturación Basada en Uso" style={{ maxHeight: '500px', width: 'auto' }} />
+/* LOCKED_PATTERN_62a33af6ad2d743416e07b4e382a6c2b */
+
+### Plan Inicial ($29/mes — 10M tokens, sin exceso)
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_41e9400b09f083fed9acbb171cd342c5 */
+1. Ve a **Productos → Crear Producto**
+2. Selecciona **Facturación Basada en Uso** como el tipo de precios
+3. Rellena:
+
+**Nombre del Producto**: `NeuralAPI Starter`
+
+**Descripción**: `10 million API tokens per month. Perfect for individual developers and small projects.`
+
+**Precio Fijo**: `29.00` (la tarifa base recurrente — facturada mensual incluso antes de cualquier uso)
+
+**Ciclo de Facturación**: `Monthly`
+
+**Moneda**: `USD`
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_0a4c1ad7c43e8103225db2ac4a8652c3 */
+En la sección **Seleccionar medidor**, haz clic en **+** y agrega `Token Usage Meter`. Luego en el medidor:
+
+1. Activa **Facturar uso en Créditos**
+2. **Derecho de Crédito**: selecciona `API Tokens`
+3. **Unidades del Medidor por Crédito**: `1` — cada token en el evento se traduce en 1 crédito deducido
+4. **Umbral Libre**: `0` — la asignación de créditos en sí es el "nivel gratuito" del cliente; no necesitamos una banda libre adicional
+
+/* LOCKED_PATTERN_a4b07f137702d8a890c7969a66fe4873 */
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Medidor con Facturar uso en Créditos habilitado y Tokens de API seleccionados" style={{ maxHeight: '500px', width: 'auto' }} />
+/* LOCKED_PATTERN_62a33af6ad2d743416e07b4e382a6c2b */
+
+Esta es la conexión que hace que los eventos `api.tokens_used` entrantes realmente deduzcan del saldo del cliente.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_45738f13c73d99f11739c3d186dd4f17 */
+Todavía en el producto, desplázate a la sección de configuración de crédito que aparece una vez que se adjunta un medidor facturado en créditos:
+
+**Créditos emitidos por ciclo de facturación**: `10000000`
+
+**Permitir Exceso**: **Desactivado** — Los clientes del plan Inicial se bloquean cuando los tokens se agotan
+
+**Importar Configuración de Crédito Predeterminada**: Habilitado — usa el vencimiento de 30 días del derecho de crédito
+
+/* LOCKED_PATTERN_eecf48b808b7955818b385e43b310725 */
+<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="Formulario de configuración de crédito con cantidad por ciclo y configuración de exceso" style={{ maxHeight: '500px', width: 'auto' }} />
+/* LOCKED_PATTERN_62a33af6ad2d743416e07b4e382a6c2b */
+
+Haz clic en **Guardar** y copia el ID del producto.
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+Plan Inicial: tarifa base de $29/mes, 10M tokens/ciclo, bloqueado en cero, deduce automáticamente a través del medidor.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+### Plan Pro ($99/mes — 40M tokens, exceso habilitado)
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_e4ffa48d1c8232396143e437a21087ca */
+Misma marca que el Inicial, con números más grandes:
+
+**Nombre del Producto**: `NeuralAPI Pro`
+
+**Descripción**: `40 million API tokens per month with overage. Built for production applications.`
+
+**Precio Fijo**: `99.00`
+
+**Ciclo de Facturación**: `Monthly`
+
+**Moneda**: `USD`
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_0a4c1ad7c43e8103225db2ac4a8652c3 */
+Idéntico al Inicial: agrega `Token Usage Meter`, activa **Facturar uso en Créditos**, selecciona `API Tokens`, **Unidades del Medidor por Crédito** `1`, **Umbral Libre** `0`.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_1b8a7fb8feda420f9bbf4b53041008dc */
+Configura la emisión de créditos, esta vez habilitando el exceso:
+
+**Créditos emitidos por ciclo de facturación**: `40000000`
+
+**Importar Configuración de Crédito Predeterminada**: **Desactivado** — necesitamos personalizar la configuración de exceso por producto
+
+**Permitir Exceso**: **Habilitado**
+
+**Precio Por Unidad**: `0.000005` USD por token (es decir, $0.005 por 1K tokens, o $5 por 1M tokens — por encima de la tarifa efectiva por token del plan para desalentar el sobrepaso)
+
+**Comportamiento del Exceso**: `Bill overage at billing` — el exceso se cobra en la próxima factura, luego el saldo se restablece
+
+Guarda el producto y copia el ID del producto.
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+Plan Pro: tarifa base de $99/mes, 40M tokens/ciclo, exceso a $0.005/1K tokens, deduce automáticamente a través del medidor.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 4: Crea el Paquete de Recarga de Tokens
+
+El paquete de recarga es una compra única que otorga 5,000,000 de tokens al saldo de un cliente existente.
+
+/* LOCKED_PATTERN_2f5b8f5d9ec13eb5c8a9093a5b954570 */
+<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Sección de precios del producto con Pago Único seleccionado" style={{ maxHeight: '500px', width: 'auto' }} />
+/* LOCKED_PATTERN_62a33af6ad2d743416e07b4e382a6c2b */
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_c5a84493a1db0067f1776bc768c5067d */
+1. Ve a **Productos → Crear Producto**
+2. Selecciona **Pago Único** como el tipo de precios
+3. Rellena:
+
+**Nombre del Producto**: `Token Top-Up Pack`
+
+**Descripción**: `Instantly add 5 million tokens to your NeuralAPI balance.`
+
+**Precio**: `19.00`
+
+**Moneda**: `USD`
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_b49c1728bdaf5a1ac6012a98861ee19f */
+1. En la sección **Derechos**, haz clic en **Adjuntar** junto a **Créditos**
+2. Selecciona `API Tokens`
+3. Establece **Créditos emitidos**: `5000000`
+4. **Desactivar** *Importar Configuración de Crédito Predeterminada* — queremos sobrescribir el vencimiento predeterminado de 30 días
+5. Establece **Vencimiento del Crédito**: `365 days`
+6. Guarda el producto
+
+Copia el ID del producto.
+
+/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
+¿Por qué un vencimiento más largo en las recargas? Los créditos de suscripción se reinician cada 30 días porque ese es el ciclo. Las recargas son compras *prepagadas* — el cliente pagó $19 por adelantado y razonablemente espera que esos tokens duren más de un mes. 365 días coincide con cómo funcionan los créditos prepagados reales en OpenAI, AWS y Anthropic, mientras que aún limita tu responsabilidad para que los clientes no puedan acumular indefinidamente.
+/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+Paquete de Recarga configurado: comprarlo otorga 5,000,000 de tokens que permanecen válidos por 365 días.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 5: Construir el Backend
+
+Ahora construyamos el servidor Express que maneja el proceso de pago de suscripciones, el proceso de pago de recargas, las finalizaciones reales de OpenAI con facturación de tokens, consultas de saldo, y eventos de webhooks de crédito.
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_742a089d97373d8b9e805d5756f7d919 */}
+
+```bash
+mkdir neural-api-billing
+cd neural-api-billing
+npm init -y
+npm install dodopayments openai express dotenv
+npm install -D @types/node @types/express typescript tsx
+```
+
+Crea un `tsconfig.json`:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+Actualiza los scripts `package.json`:
+
+```json package.json
+{
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  }
+}
+```
+
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_85e536148c3d4a355f42242d1584f3dc */}
+Crea `.env` con tus credenciales e IDs de los pasos anteriores:
+
+```bash .env
+DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
+DODO_PAYMENTS_WEBHOOK_KEY=your_webhook_signing_secret_here
+DODO_ENVIRONMENT=test_mode
+OPENAI_API_KEY=sk-...
+CREDIT_ENTITLEMENT_ID=cent_xxxxxxxxxxxx
+STARTER_PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
+PRO_PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
+TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
+BASE_URL=http://localhost:3000
+```
+
+/* LOCKED_PATTERN_4907e9f6f7fbd509120d7a87afc829e9 */
+Nunca cometas `.env` al control de versiones. Agrégalo a `.gitignore` inmediatamente.
+/* LOCKED_PATTERN_176d815432e7554ac558e8631b2bc397 */
+
+Lo completarás en `DODO_PAYMENTS_WEBHOOK_KEY` en el Paso 7 después de registrar tu endpoint de webhook.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_712297f12868896dc5af0dfff516e15b */
+Crea `src/server.ts`:
+
+/* LOCKED_PATTERN_278c8ff892f265e3e925879c7aa762a2 */
+
+```typescript src/server.ts expandable
+import 'dotenv/config';
+import DodoPayments from 'dodopayments';
+import OpenAI from 'openai';
+import express, { Request, Response } from 'express';
+
+const app = express();
+
+// IMPORTANT: webhook route needs the raw body for signature verification.
+// We register the raw parser ONLY on /webhooks/dodo, then JSON for everything else.
+app.use('/webhooks/dodo', express.raw({ type: 'application/json' }));
+app.use(express.json());
+app.use(express.static('public'));
+
+const dodo = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY!,
+  webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+  environment: (process.env.DODO_ENVIRONMENT as 'test_mode' | 'live_mode') ?? 'test_mode',
+});
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
+const CREDIT_ENTITLEMENT_ID = process.env.CREDIT_ENTITLEMENT_ID!;
+const BASE_URL = process.env.BASE_URL!;
+const PLAN_PRODUCTS: Record<string, string> = {
+  starter: process.env.STARTER_PLAN_PRODUCT_ID!,
+  pro: process.env.PRO_PLAN_PRODUCT_ID!,
+};
+
+// ────────────────────────────────────────────────────────────────────────────
+// Subscription checkout
+// Body: { plan: 'starter' | 'pro', email: string, name: string }
+// ────────────────────────────────────────────────────────────────────────────
+app.post('/checkout/subscribe', async (req: Request, res: Response) => {
+  const { plan, email, name } = req.body;
+  if (!PLAN_PRODUCTS[plan]) {
+    return res.status(400).json({ error: `Unknown plan: ${plan}` });
+  }
+  try {
+    const session = await dodo.checkoutSessions.create({
+      product_cart: [{ product_id: PLAN_PRODUCTS[plan], quantity: 1 }],
+      customer: { email, name },
+      return_url: `${BASE_URL}/?subscribed=1`,
+    });
+    res.json({ checkout_url: session.checkout_url, session_id: session.session_id });
+  } catch (err) {
+    console.error('Subscription checkout error:', err);
+    res.status(500).json({ error: 'Failed to create subscription checkout' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Top-up checkout — buyer must already be a customer
+// Body: { customer_id: string }
+// ────────────────────────────────────────────────────────────────────────────
+app.post('/checkout/topup', async (req: Request, res: Response) => {
+  const { customer_id } = req.body;
+  if (!customer_id) return res.status(400).json({ error: 'customer_id required' });
+  try {
+    const session = await dodo.checkoutSessions.create({
+      product_cart: [{ product_id: process.env.TOPUP_PRODUCT_ID!, quantity: 1 }],
+      customer: { customer_id },
+      return_url: `${BASE_URL}/?topup=1`,
+    });
+    res.json({ checkout_url: session.checkout_url });
+  } catch (err) {
+    console.error('Top-up checkout error:', err);
+    res.status(500).json({ error: 'Failed to create top-up checkout' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Live token balance for a customer
+// ────────────────────────────────────────────────────────────────────────────
+app.get('/credits/:customerId', async (req: Request, res: Response) => {
+  try {
+    const result = await dodo.creditEntitlements.balances.retrieve(req.params.customerId, {
+      credit_entitlement_id: CREDIT_ENTITLEMENT_ID,
+    });
+    res.json({
+      balance: result.balance,
+      overage: result.overage,
+      last_transaction_at: result.last_transaction_at,
+    });
+  } catch (err) {
+    console.error('Balance fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch credit balance' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// AI completion — calls OpenAI, then ingests a usage event with the real
+// token count. The meter aggregates these and deducts credits automatically.
+// Body: { customer_id: string, prompt: string }
+// ────────────────────────────────────────────────────────────────────────────
+app.post('/api/generate', async (req: Request, res: Response) => {
+  const { customer_id, prompt } = req.body;
+  if (!customer_id || !prompt) {
+    return res.status(400).json({ error: 'customer_id and prompt required' });
+  }
+
+  // Best-effort balance gate for Starter (no overage). Note: balance updates
+  // are eventually consistent (~1 min lag from event ingestion), so a Starter
+  // customer can technically squeeze through a few extra requests right after
+  // running out. Use a stricter rate-limiter on top if you need hard cutoffs.
+  try {
+    const balance = await dodo.creditEntitlements.balances.retrieve(customer_id, {
+      credit_entitlement_id: CREDIT_ENTITLEMENT_ID,
+    });
+    if (Number(balance.balance) <= 0 && Number(balance.overage) <= 0) {
+      return res.status(402).json({
+        error: 'Out of tokens. Top up or upgrade to continue.',
+      });
+    }
+  } catch {
+    // Fall through — if the balance lookup fails, don't block; rely on metering.
+  }
+
+  let completion;
+  try {
+    completion = await openai.chat.completions.create({
+      model: 'gpt-5-mini',
+      messages: [{ role: 'user', content: prompt }],
+    });
+  } catch (err) {
+    console.error('OpenAI error:', err);
+    return res.status(502).json({ error: 'Upstream AI provider failed' });
+  }
+
+  const tokensUsed = completion.usage?.total_tokens ?? 0;
+
+  // Fire-and-forget — don't block the response on metering.
+  ingestTokenUsage(customer_id, tokensUsed, completion.model).catch((err) =>
+    console.error('Usage ingest failed:', err),
+  );
+
+  res.json({
+    text: completion.choices[0]?.message?.content ?? '',
+    tokens_used: tokensUsed,
+    model: completion.model,
+  });
+});
+
+async function ingestTokenUsage(customerId: string, tokens: number, model: string) {
+  await dodo.usageEvents.ingest({
+    events: [
+      {
+        // event_id is the idempotency key. Use a stable, unique value per request.
+        event_id: `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        customer_id: customerId,
+        event_name: 'api.tokens_used',
+        timestamp: new Date().toISOString(),
+        metadata: { tokens, model },
+      },
+    ],
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Webhook handler — verifies signature using the SDK, then routes events.
+// ────────────────────────────────────────────────────────────────────────────
+app.post('/webhooks/dodo', async (req: Request, res: Response) => {
+  const rawBody = (req.body as Buffer).toString('utf8');
+  const headers = {
+    'webhook-id': req.header('webhook-id') ?? '',
+    'webhook-signature': req.header('webhook-signature') ?? '',
+    'webhook-timestamp': req.header('webhook-timestamp') ?? '',
+  };
+
+  let event: { type: string; data: any };
+  try {
+    event = dodo.webhooks.unwrap(rawBody, { headers }) as any;
+  } catch (err) {
+    console.error('Webhook verification failed:', err);
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  switch (event.type) {
+    case 'credit.added':
+      console.log(`[credit.added] customer=${event.data.customer_id} amount=${event.data.amount}`);
+      break;
+    case 'credit.deducted':
+      console.log(`[credit.deducted] customer=${event.data.customer_id} amount=${event.data.amount}`);
+      break;
+    case 'credit.overage_charged':
+      console.log(`[credit.overage_charged] customer=${event.data.customer_id}`);
+      break;
+    default:
+      // Ignore other event types
+      break;
+  }
+
+  res.json({ received: true });
+});
+
+app.listen(3000, () => {
+  console.log('NeuralAPI billing server running on http://localhost:3000');
+});
+```
+
+```json package.json
+{
+  "name": "neural-api-billing",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "dodopayments": "latest",
+    "openai": "^4.0.0",
+    "express": "^4.18.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/express": "^4.17.0",
+    "typescript": "^5.0.0",
+    "tsx": "^4.0.0"
+  }
+}
+```
+
+/* LOCKED_PATTERN_2a2518a6b81e50ec206d5e6c9d83c4eb */
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+Backend completo: proceso de pago de suscripciones, proceso de pago de recarga, finalización con OpenAI con facturación de tokens, consulta de saldo y un manejador de webhook verificado.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+
+/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
+[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) proporciona rastreadores listos para usar que automatizan la llamada `usageEvents.ingest` por ti, incluyendo el [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), y [time-range](/developer-resources/ingestion-blueprints/time-range).
+/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_d8949ecde27bf33976be26fd5fb25e4a */
+Es posible que hayas notado que no hay una llamada explícita de "deducir N créditos". Eso es a propósito:
+
+1. Tu manejador llama a OpenAI y obtiene de regreso `usage.total_tokens` (por ejemplo, 1532).
+2. Ingieres un único evento de uso: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
+3. El `Token Usage Meter` agrega eventos por cliente.
+4. Debido a que el medidor está conectado al crédito `API Tokens` con **Facturar uso en Créditos**, Dodo Payments deduce 1532 créditos del mandato no expirado más antiguo del cliente (FIFO).
+5. Si el exceso está habilitado y el cliente cae por debajo de cero, el déficit se rastrea y factura en la próxima factura.
+
+El medidor maneja todo eso. Tu código solo ingiere eventos.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 6: Agrega un Frontend de Demostración
+
+Crea `public/index.html` para probar todos los flujos en tu navegador. Persistimos el ID del cliente a `localStorage` para que suscribirse → generar → recargar todo compartan la misma identidad, imitando una aplicación con sesión iniciada:
+
+/* LOCKED_PATTERN_278c8ff892f265e3e925879c7aa762a2 */
+
+```html public/index.html expandable
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NeuralAPI Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 20px; color: #1a1a2e; }
+    h1 { font-size: 24px; }
+    h2 { margin-top: 36px; border-bottom: 1px solid #eee; padding-bottom: 8px; font-size: 18px; }
+    .panel { padding: 16px; background: #fafafe; border: 1px solid #e6e6f0; border-radius: 8px; margin: 12px 0; }
+    .form-group { margin: 12px 0; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 13px; }
+    input, select, textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 14px; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { background: #6366f1; color: white; padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    button:hover { background: #4f46e5; }
+    button:disabled { background: #c7c7d4; cursor: not-allowed; }
+    .balance { font-size: 32px; font-weight: 700; color: #6366f1; }
+    .muted { color: #777; font-size: 13px; margin-top: 4px; }
+    .result { margin-top: 12px; padding: 12px; background: #fff; border: 1px solid #e6e6f0; border-radius: 6px; font-size: 14px; white-space: pre-wrap; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .row > * { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>NeuralAPI Demo</h1>
+
+  <div class="panel">
+    <label>Logged-in customer ID (paste once after subscribing)</label>
+    <div class="row">
+      <input id="customerId" placeholder="cus_xxxxxxxxxxxx" />
+      <button onclick="saveCustomerId()" style="flex:0">Save</button>
+    </div>
+    <div class="muted">After completing checkout, copy the customer ID from your Dodo Payments dashboard (Customers → most recent) and paste here.</div>
+  </div>
+
+  <h2>1. Subscribe to a Plan</h2>
+  <div class="form-group"><label>Plan</label>
+    <select id="plan">
+      <option value="starter">Starter — $29/mo, 10M tokens</option>
+      <option value="pro">Pro — $99/mo, 40M tokens + overage</option>
+    </select>
+  </div>
+  <div class="form-group"><label>Email</label><input type="email" id="email" placeholder="you@example.com" /></div>
+  <div class="form-group"><label>Name</label><input id="name" placeholder="Your name" /></div>
+  <button onclick="subscribe(event)">Get Checkout Link</button>
+  <div id="subscribeResult" class="result" style="display:none"></div>
+
+  <h2>2. Generate AI Response (deducts tokens)</h2>
+  <div class="form-group"><label>Prompt</label><textarea id="prompt" placeholder="Explain quantum computing in one sentence"></textarea></div>
+  <button onclick="generate(event)">Generate</button>
+  <div id="generateResult" class="result" style="display:none"></div>
+
+  <h2>3. Live Token Balance</h2>
+  <button onclick="checkBalance(event)">Refresh Balance</button>
+  <div id="balanceResult" class="result" style="display:none"></div>
+
+  <h2>4. Buy a Top-Up Pack</h2>
+  <button onclick="topup(event)">Buy 5M Tokens — $19</button>
+  <div id="topupResult" class="result" style="display:none"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    document.addEventListener('DOMContentLoaded', () => {
+      $('customerId').value = localStorage.getItem('customerId') || '';
+    });
+
+    function getCustomerId() {
+      const id = $('customerId').value.trim();
+      if (!id) { alert('Save a customer ID first'); throw new Error('no customer'); }
+      return id;
+    }
+
+    function saveCustomerId() {
+      localStorage.setItem('customerId', $('customerId').value.trim());
+      alert('Saved');
+    }
+
+    async function withLoading(btn, loadingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = loadingLabel;
+      try { await fn(); } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function subscribe(ev) {
+      await withLoading(ev.target, 'Loading…', async () => {
+        const res = await fetch('/checkout/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan: $('plan').value, email: $('email').value, name: $('name').value }),
+        });
+        const data = await res.json();
+        const el = $('subscribeResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open Checkout →</a>`
+          : `Error: ${data.error}`;
+      });
+    }
+
+    async function generate(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Generating…', async () => {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id, prompt: $('prompt').value }),
+        });
+        const data = await res.json();
+        const el = $('generateResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<strong>Response:</strong>\n${data.text}\n\n<em>Tokens used: ${data.tokens_used} (${data.model})</em>`
+          : `Error: ${data.error}`;
+        if (res.ok) refreshBalanceSilently();
+      });
+    }
+
+    async function checkBalance(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Refreshing…', async () => {
+        const res = await fetch('/credits/' + customer_id);
+        const data = await res.json();
+        const el = $('balanceResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<div class="balance">${Number(data.balance).toLocaleString()} tokens</div>
+             <div class="muted">Overage used: ${Number(data.overage).toLocaleString()} · Last activity: ${data.last_transaction_at ?? 'never'}</div>`
+          : `Error: ${data.error}`;
+      });
+    }
+
+    async function refreshBalanceSilently() {
+      const customer_id = $('customerId').value.trim();
+      if (!customer_id) return;
+      const res = await fetch('/credits/' + customer_id);
+      const data = await res.json();
+      const el = $('balanceResult');
+      el.style.display = 'block';
+      el.innerHTML = res.ok
+        ? `<div class="balance">${Number(data.balance).toLocaleString()} tokens</div>
+           <div class="muted">Overage used: ${Number(data.overage).toLocaleString()} · Last activity: ${data.last_transaction_at ?? 'never'}</div>`
+        : `Error: ${data.error}`;
+    }
+
+    async function topup(ev) {
+      const customer_id = getCustomerId();
+      await withLoading(ev.target, 'Loading…', async () => {
+        const res = await fetch('/checkout/topup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id }),
+        });
+        const data = await res.json();
+        const el = $('topupResult');
+        el.style.display = 'block';
+        el.innerHTML = res.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open Top-Up Checkout →</a>`
+          : `Error: ${data.error}`;
+      });
+    }
+  </script>
+</body>
+</html>
+```
+
+/* LOCKED_PATTERN_2a2518a6b81e50ec206d5e6c9d83c4eb */
+
+## Paso 7: Conectar el Webhook
+
+Los webhooks permiten que tu servidor reaccione a cambios de saldo: los usarás para enviar correos electrónicos de "bajo en saldo" antes de que los clientes lleguen a cero.
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_f46153c73ef1422a51dfa6b646bceb83 */
+Los webhooks necesitan una URL pública. Para el desarrollo local, usa [ngrok](https://ngrok.com) o cualquier túnel:
+
+```bash
+ngrok http 3000
+```
+
+Copia la URL `https://...ngrok-free.app`.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_80c1828c7781ba5544e26387ba600173 */
+1. En el panel, ve a **Desarrolladores → Webhooks → Agregar Endpoint**
+2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
+3. Suscríbete a (como mínimo):
+   - `credit.added`
+   - `credit.deducted`
+   - `credit.overage_charged`
+4. Guarda y copia el **Secret de Firma**
+5. Pégalo en `.env` como `DODO_PAYMENTS_WEBHOOK_KEY`, luego reinicia `npm run dev`
+
+/* LOCKED_PATTERN_317ec56569e36d0c9e56c2648890a76e */
+El SDK `dodo.webhooks.unwrap()` valida los encabezados `webhook-id`, `webhook-timestamp`, y `webhook-signature` usando tu secret de firma. No necesitas crear la verificación HMAC manualmente, ni deberías, porque Dodo Payments usa [Webhooks Estándar](https://www.standardwebhooks.com/), que firma `id.timestamp.body` en lugar de solo el cuerpo.
+/* LOCKED_PATTERN_4dec52ce04aa8849a8a60508baae30ae */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Paso 8: Prueba el Flujo Completo
+
+/* LOCKED_PATTERN_bd2642ca094c2e4ce733f0386172be2d */
+/* LOCKED_PATTERN_c0916ec9ccdb6841d16158c675b18d31 */
+1. Ejecuta `npm run dev`
+2. Abre `http://localhost:3000`
+3. Selecciona **Plan Pro**, ingresa un correo electrónico de prueba + nombre, haz clic en **Obtener Enlace de Pago**, completa el pago con [detalles de tarjeta de prueba](/miscellaneous/testing-process)
+4. En el panel, ve a **Clientes → más reciente** y copia el ID `cus_...`
+5. Pégalo en el campo "ID de cliente con sesión iniciada" en la demostración y haz clic en **Guardar**
+
+/* LOCKED_PATTERN_3c8e9103f1fb437472f20f9142ad5c56 */
+El cliente debería tener 40,000,000 de tokens. Haz clic en **Actualizar Saldo** para confirmar.
+/* LOCKED_PATTERN_6abc13ae2ca3ecce11977a5f9bd347f4 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_9348a447eaa236e559027a2c0ccdec3c */
+Escribe un mensaje y haz clic en **Generar**. El servidor llama a OpenAI, obtiene de regreso el `total_tokens` real, ingiere un evento de uso y devuelve la respuesta.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */
+Los eventos de uso son procesados por un trabajador en segundo plano cada ~minuto. El saldo no disminuirá instantáneamente, espera de 30 a 90 segundos y haz clic en **Actualizar Saldo** nuevamente. No concluyas que está roto si la primera actualización no muestra movimiento.
+/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+
+/* LOCKED_PATTERN_6860d3c063f83b8bdd751538c39f5dca */
+Haz clic en **Comprar 5M Tokens — $19** y completa el pago. Después de que el pago tenga éxito, actualiza el saldo: debería aumentar en 5,000,000 de tokens. El registro de tu servidor debería mostrar un evento `credit.added`.
+/* LOCKED_PATTERN_640d0b31f6faa54914d25c81f5dbf413 */
+/* LOCKED_PATTERN_a01a451f7aba1a80f0af7148df811dfc */
+
+## Solución de Problemas
+
+/* LOCKED_PATTERN_3a00efd457b01f610250031fcbf16962 */
+/* LOCKED_PATTERN_83ee8b223ab6dbbcc65e7258268a52d3 */
+**Causas posibles:**
+- El nombre del evento del medidor no coincide con `event_name` que estás enviando (`api.tokens_used` es sensible a mayúsculas y minúsculas)
+- El medidor no está vinculado al crédito `API Tokens` en el producto: ve a la configuración del medidor del producto y confirma que **Facturar uso en Créditos** esté activado
+- La clave `metadata.tokens` no coincide con el campo "Propiedad Sobre" del medidor
+- El otorgamiento del cliente ha expirado (verifica el historial de créditos del cliente)
+
+**Qué verificar:**
+1. **Productos → Medidores**: abre el medidor y confirma que muestra el nombre del crédito vinculado en el adjunto del producto
+2. La pestaña **Eventos** en el medidor: los eventos ingeridos deberían aparecer allí incluso antes de la deducción
+3. **Clientes → \[Cliente\] → Créditos**: las entradas en el libro mayor deberían aparecer dentro de uno o dos minutos
+/* LOCKED_PATTERN_aae63d8bf6b6da4ac6fb501e13691e4d */
+
+/* LOCKED_PATTERN_2e6ee51d68eb1cce3e4eeeeb4d472380 */
+**Causas posibles:**
+- El cliente no ha completado el pago aún: los créditos solo se emiten después de un pago exitoso
+- Estás consultando con el `customer_id` incorrecto (usa el ID `cus_...` del panel, no el ID de tu propia base de datos)
+- El `CREDIT_ENTITLEMENT_ID` en `.env` no coincide con el crédito adjunto al producto
+
+**Qué verificar:**
+Abre **Clientes → \[Cliente\] → Créditos**. Si no aparecen créditos allí, el derecho de producto no se adjuntó o el pago no se completó.
+/* LOCKED_PATTERN_aae63d8bf6b6da4ac6fb501e13691e4d */
+
+/* LOCKED_PATTERN_27caecf30429b0544f845c602ece6c9a */
+**Causas posibles:**
+- El exceso no estaba habilitado en el **anexo de crédito del producto Pro** (la configuración a nivel de crédito es solo un predeterminado)
+- El cliente está realmente en el Inicial, no en el Pro
+- El límite de exceso se fijó en 0
+
+**Qué verificar:**
+Edita Pro → Derechos → Créditos → confirma que **Permitir Exceso** está activado y **Precio Por Unidad** es `0.000005` (= $5 por millón de tokens; verifica los ceros a la izquierda — el campo toma el precio por token, no por 1K).
+/* LOCKED_PATTERN_aae63d8bf6b6da4ac6fb501e13691e4d */
+
+/* LOCKED_PATTERN_a16d21c3d9a822c822483d66e25c8013 */
+**Causas posibles:**
+- Orden de análisis del cuerpo: se aplicó `express.json()` a `/webhooks/dodo` antes de `express.raw()` — el SDK necesita los **bytes en bruto** de la solicitud, no un JSON analizado
+- Secreto de firma incorrecto en `DODO_PAYMENTS_WEBHOOK_KEY`
+- El proxy inverso está reescribiendo encabezados
+
+**Qué verificar:**
+Confirma que la línea `app.use('/webhooks/dodo', express.raw(...))` viene *antes* de `app.use(express.json())` en `server.ts`.
+/* LOCKED_PATTERN_aae63d8bf6b6da4ac6fb501e13691e4d */
+/* LOCKED_PATTERN_7a451aee1061c1cf2a4108f13acbafff */
+
+## ¿Necesitas ayuda?
+
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- [support@dodopayments.com](mailto:support@dodopayments.com)
+
+## ¡Felicidades! Has Construido la Facturación Basada en Créditos para NeuralAPI
+
+Tu plataforma ahora tiene un sistema de facturación de créditos completo, listo para producción:
+
+/* LOCKED_PATTERN_bd3b9ce11ef978f59c6eb5461169b62d */
+/* LOCKED_PATTERN_9c6fc61399646513a0f56679754a2527 */
+Un crédito reusable `API Tokens` con vencimiento de 30 días, compartido entre todos los planes y el paquete de recarga
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_172cb483d138171e4b2d8f3115718d76 */
+Inicial (10M, límite estricto) y Pro (40M + exceso) configurados por producto sin duplicar el crédito
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_c2045688fffde38f509e080d7fd1b05b */
+Los clientes añaden 5M tokens por $19 sin cambiar su suscripción
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_2b86ac1ca2cd9c10b1994c5a6f0b74df */
+Conteos reales de tokens de OpenAI ingeridos como eventos; el medidor deduce créditos FIFO sin seguimiento manual
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_2f7adf758d4ed4f71eb07cbccdf6de2c */
+Balance en tiempo real a través del SDK para controlar el acceso, mostrar el uso o advertir a los clientes en la aplicación
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_64f557d064ca0180fca545f631afea7b */
+Eventos del libro mayor de créditos (`credit.added`, `credit.deducted`, `credit.overage_charged`) enrutados a través de un manejador verificado por firma usando el ayudante Standard Webhooks del SDK
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+/* LOCKED_PATTERN_639ec37665c9a30d7ddbd3a284a688a5 */
+
+/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */
+**¿Vas a producción?** Ajusta estos aspectos:
+- **Autenticación en `/credits/:customerId` e `/api/generate`** — actualmente cualquiera puede acceder a ellos con cualquier ID de cliente. Autentica a los usuarios y busca *su* ID de cliente en el servidor.
+- **IDs de `event_id` estables** — el ejemplo usa `Date.now() + random`. En producción, usa tu ID de solicitud para que los reintentos sean idempotentes (Dodo Payments desduplica por `event_id`).
+- **Persiste el mapeo cliente↔usuario** — guarda `customer_id` en tu base de datos después del primer pago para no necesitar un paso de pegar manualmente.
+- **Decide qué ocurre cuando una suscripción termina.** Los créditos del plan permanecen en el libro mayor del cliente hasta su vencimiento natural (30 días desde la emisión) y los créditos de recarga permanecen válidos por 365 días, pero el cookbook `/api/generate` solo verifica el *saldo*, no el estado de la suscripción. Así, un cliente cancelado todavía puede consumir sus tokens restantes. Ese es el usuario-amigable por defecto. Si deseas un control de acceso más estricto, ya sea (a) escucha el webhook `subscription.cancelled` y controla `/api/generate` en el estado de la suscripción, o (b) llama a la API del libro mayor de Dodo para debitar créditos del plan no usados al cancelar dejando intactos los créditos de recarga.
+- **Monitorea el panel de Facturación por Uso** para detectar anomalías de medición temprano.
+/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */
+
+/* LOCKED_PATTERN_bd3b9ce11ef978f59c6eb5461169b62d */
+/* LOCKED_PATTERN_c10919833b5f2b2159a0c76c1520f8a8 */
+Documentación completa de CBB: rollover, modos de exceso, gestión del libro mayor, todos los endpoints de API.
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+
+/* LOCKED_PATTERN_ec62914d7876d8760ea906c4d69865ee */
+Esquemas de payload para cada evento de crédito que tu servidor podría recibir.
+/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */
+/* LOCKED_PATTERN_639ec37665c9a30d7ddbd3a284a688a5 */

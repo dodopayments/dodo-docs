@@ -165,7 +165,9 @@ https://customer.dodopayments.com/login/{business_id}
 **想为现有订阅启用升级/降级？** 将您的订阅产品添加到产品集合。一旦归组，客户即可通过客户门户在同一集合内的计划之间切换。
 </Tip>
 
-### 可用操作
+- **自动检测**：首次访问时，门户会根据客户的浏览器设置检测其首选语言，并加载相应的翻译（如果有）。默认情况下使用英语。
+- **手动覆盖**：客户可以随时通过门户标题中的语言选择器更改活动语言（适用于电脑和移动设备）。
+- **持久偏好**：所选语言将存储在 `NEXT_LOCALE` cookie 中（有效期为1年），以便在会话之间记住选择。
 
 | 操作 | 描述 | 何时可用 |
 |--------|-------------|----------------|
@@ -236,41 +238,92 @@ https://customer.dodopayments.com/login/{business_id}
 处于 `on_hold` 状态的订阅不会自动续订。客户必须更新支付方式以清除欠款并重新激活订阅。
 </Warning>
 
+### 取消原因
+
+在确认取消之前，客户会被询问**“您为什么要取消？”**并从精心策划的列表中选择一个原因。原因会存储在订阅中，并显示在 webhook 有效负载和 API 中，以便分析流失原因并定制重新吸引的流程。
+
+<Frame>
+    <img src="/images/customer-portal/cancellation-reasons.png" alt="取消模态窗口，显示‘您为什么要取消？’的下拉选项，原因如太贵，缺少功能，和其他" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| 值 | 客户展示标签 |
+|-------|----------------------|
+| `too_expensive` | 太贵 |
+| `missing_features` | 缺少功能 |
+| `switched_service` | 切换到其他服务 |
+| `unused` | 使用不足 |
+| `customer_service` | 客户服务差 |
+| `low_quality` | 质量低 |
+| `too_complex` | 太复杂 |
+| `other` | 其他 |
+
+所选值将写入订阅的 `cancellation_feedback` 字段。还可以捕获一个可选的自由文本 `cancellation_comment`。
+
+```typescript
+// Read the captured feedback after a customer cancels
+const subscription = await client.subscriptions.retrieve('sub_123');
+console.log(subscription.cancellation_feedback); // e.g., "too_expensive"
+console.log(subscription.cancellation_comment);  // e.g., "Switching to a competitor"
+```
+
+两个字段也包含在 `subscription.cancelled` webhook 有效负载中，并且可以在通过 API 调度或执行取消时以编程方式填充。
+
+<Tip>
+结合 `cancellation_feedback` 和 [Subscription Dunning](/features/recovery/subscription-dunning) 为定制重新吸引邮件——例如，发送折扣代码给 `too_expensive` 取消者，并发送“缺少什么？”调查给 `missing_features` 取消者。
+</Tip>
+
+## 更新支付方式
+
+客户可以直接从订阅详情页面，通过点击支付方式旁边的“编辑”按钮更新其支付方式。此功能对重新激活因支付失败而中止的订阅尤为重要。
+
+### 重新激活暂停的订阅
+
+当订阅因支付失败而处于 `on_hold` 状态时，客户必须更新其支付方式以重新激活。更新过程会自动：
+
+1. **创建未付费用的费用**
+2. **生成费用发票**
+3. **使用新支付方式处理支付**
+4. **在成功支付后，将订阅重新激活为 `active` 状态**
+
+<Warning>
+处于 `on_hold` 状态的订阅将不会自动续订。客户必须更新其支付方式以清除欠款并重新激活订阅。
+</Warning>
+
 <Info>
-在成功更新 `on_hold` 订阅的支付方式后，客户将看到确认页面，并收到有关支付成功及订阅重新激活的电子邮件通知。
+成功更新 `on_hold` 订阅的支付方式后，客户将看到确认页面并收到成功支付和订阅重新激活的电子邮件通知。
 </Info>
 
 ### 支付方式更新流程
 
 <Steps>
 <Step title="Access subscription details">
-在门户主页上点击任意活跃订阅的“Manage subscription”。
+从门户主页的任何有效订阅中点击“管理订阅”。
 </Step>
 
 <Step title="Click Edit on payment method">
-点击支付方式旁的“Edit”按钮以打开支付方式更新界面。
+点击支付方式旁的“编辑”按钮以打开支付方式更新界面。
 </Step>
 
 <Step title="Select or add payment method">
-选择一个已保存的支付方式或通过安全输入卡信息添加新方式。
+选择一个现有的已保存支付方式或通过安全地输入卡信息添加新支付方式。
 </Step>
 
 <Step title="Confirm changes">
-确认更新。对于 `on_hold` 订阅，此操作会自动为剩余欠款创建费用。
+确认更新。对于 `on_hold` 订阅，这将自动为剩余欠款创建费用。
 </Step>
 
 <Step title="Complete payment (if on hold)">
-若订阅处于暂停状态，客户将被重定向以完成剩余欠款的支付。付款成功后，订阅会被自动重新激活。
+如果订阅被暂停，客户将被重定向以完成剩余欠款的支付。成功支付后，订阅将自动重新激活。
 </Step>
 
 <Step title="Confirmation">
-客户会收到支付方式已更新以及（如适用）订阅已重新激活的确认信息。
+客户会收到支付方式已更新的确认，并且如果适用，订阅已被重新激活。
 </Step>
 </Steps>
 
 ## 集成示例
 
-通过 API 为特定客户创建一个有时限的客户门户会话，然后将用户重定向到该会话 URL。
+通过 API 为特定客户创建一个时间限制的客户门户会话，然后重定向用户到该会话 URL。
 
 <CodeGroup>
 
@@ -285,52 +338,30 @@ window.location.href = session.link;
 
 ## 统一客户门户
 
-除以企业为准的客户门户外，Dodo Payments 还提供一个 **统一客户门户**，网址为 [customer.dodopayments.com](https://customer.dodopayments.com)，客户可以在此查看并管理所有通过 Dodo Payments 完成的不同企业的购买与订阅。
+除了特定业务的客户门户外，Dodo Payments 提供一个**统一客户门户**，在[customer.dodopayments.com](https://customer.dodopayments.com)上，客户可以查看和管理使用 Dodo Payments 的不同业务的所有购买和订阅。
 
 <Frame>
-    <img src="/images/changelog/unified-customer-portal.png" alt="统一客户门户"/>
+    <img src="/images/changelog/unified-customer-portal.png" alt="统一客户门户" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 ### 统一门户功能
 
-- **Cross-business visibility**：在一个位置查看任何 Dodo Payments 商户的所有购买和订阅
-- **Centralized management**：在单一仪表板中管理多个企业的订阅
-- **Unified billing history**：获取所有购买的发票和支付记录
-- **Single sign-on**：使用电子邮件登录一次即可访问所有 Dodo Payments 商户的购买记录
-
-<Tip>
-统一客户门户可与企业专属门户互补。客户可根据偏好使用品牌商户门户或统一门户。
-</Tip>
-
-## 故障排除
-
-- **Link expired**：生成并发送新的动态链接。
-- **Email not recognized**：请客户使用与购买相关联的电子邮件。
-- **Subscription on hold**：若订阅被暂停，客户必须通过门户更新支付方式以清除欠款并重新激活订阅。更新过程会自动为剩余欠款收费。
-- **Payment method update failed**：若在 `on_hold` 订阅的更新过程中付款失败，订阅将继续保持暂停状态。客户可尝试使用其他支付方式再试一次。
-
-<Card title="Design & Theme Customization" icon="palette" href="/features/design">
-  可从“设计”页面使用预建主题、排版、颜色和实时预览自定义客户门户外观。
-</Card>
-
-### 统一门户功能
-
-- **跨业务可视性**：在一个地方查看所有来自 Dodo Payments 商家的购买和订阅
+- **跨业务可见性**：在一个地方查看任何 Dodo Payments 商户的所有购买和订阅
 - **集中管理**：从单一仪表板管理不同业务的订阅
-- **统一账单历史**：访问所有购买的发票和付款历史
-- **单点登录**：使用邮箱登录一次即可访问所有 Dodo Payments 商家的购买信息
+- **统一账单历史**：访问所有购买的发票和支付历史
+- **单点登录**：使用电子邮件登录一次即可访问所有 Dodo Payments 商户的购买
 
 <Tip>
-统一客户门户补充了特定业务的门户。客户可以根据个人偏好使用品牌商家门户或统一门户。
+统一客户门户补充了业务特定门户。客户可以根据自己的偏好使用品牌商户门户或统一门户。
 </Tip>
 
 ## 故障排除
 
-- **链接过期**：生成并发送新的动态链接。
-- **邮箱无法识别**：要求客户使用与其购买相关联的邮箱
-- **订阅暂停**：如果订阅被暂停，客户必须通过门户更新付款方式以清除欠款并重新激活订阅。更新过程将自动扣除剩余欠款。
-- **付款方式更新失败**：如果在更新过程 `on_hold` 中付款失败，订阅将保持暂停状态。客户可以尝试使用不同的付款方式。
+- **链接过期**：生成并发送一个新的动态链接。
+- **电子邮件不被识别**：请客户使用与其购买关联的电子邮件
+- **订阅暂停**：如果订阅被暂停，客户必须通过门户更新支付方式以清除欠款并重新激活订阅。更新过程将自动对剩余欠款收费。
+- **支付方式更新失败**：如果在更新过程中支付失败，对于 `on_hold` 订阅，订阅将保持暂停状态。客户可以尝试使用其他支付方式。
 
 <Card title="Design & Theme Customization" icon="palette" href="/features/design">
-  在设计页面通过预构建的主题、字体、颜色和实时预览自定义您的客户门户外观。
+  使用预构建主题、字体、颜色和设计页面的实时预览自定义您的客户门户外观。
 </Card>

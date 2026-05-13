@@ -334,42 +334,91 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 Addebitare un abbonamento che non è on-demand potrebbe fallire. Assicurati che l’abbonamento abbia `on_demand: true` nei suoi dettagli prima dell’addebito.
 </Warning>
 
-## Riprova ai pagamenti
+## Gestione delle transazioni fallite
 
-Il nostro sistema di rilevamento delle frodi potrebbe bloccare schemi di ripetizione aggressivi (e può contrassegnarli come potenziale test di carte). Segui una politica di ripetizione sicura.
+Quando un addebito per un abbonamento su richiesta fallisce, decidi tu cosa succede dopo. A differenza degli abbonamenti programmati — dove un rinnovo fallito interrompe ulteriori addebiti automatici — **gli abbonamenti su richiesta rimangono addebitabili dopo un fallimento**. Puoi richiamare l'endpoint di addebito come parte della tua logica di ripetizione.
+
+### Cosa succede in caso di fallimento
+
+<Steps>
+{/* LOCKED_PATTERN_27812a4e645bd63379a2691bd2668c06 */}
+La richiesta `POST /subscriptions/{subscription_id}/charge` restituisce una risposta di errore oppure si completa in modo asincrono ed emette un webhook `payment.failed` con il motivo del rifiuto.
+</Step>
+
+{/* LOCKED_PATTERN_5bb78244416a7384da9d0cd3729b0072 */}
+L'abbonamento può passare allo stato `on_hold` ed emettere un webhook `subscription.on_hold` (vedi [Statuti degli abbonamenti → In sospeso](/features/subscription#on-hold-state)). Questo è un segnale — non un blocco. Per gli abbonamenti su richiesta, `on_hold` **non** impedisce di effettuare nuovamente l'addebito.
+</Step>
+
+{/* LOCKED_PATTERN_a97bddc2ac10c16a3987fc7474a2b4fb */}
+Per i flussi su richiesta, Dodo **non** riprova automaticamente. Puoi richiamare `POST /subscriptions/{subscription_id}/charge` in qualsiasi momento per riprovare. Applica la [politica di ripetizione sicura](#payment-retries) qui sotto — utilizza esponenziale backoff, salta i rifiuti rigidi e evita schemi di burst — in modo che le ripetizioni non vengano segnalate dai nostri sistemi di frode e rischio.
+</Step>
+
+{/* LOCKED_PATTERN_08feecc9471e6c6a42b55bf09d415d34 */}
+Se le ripetizioni continuano a fallire perché il metodo di pagamento stesso è danneggiato (carta scaduta, conto chiuso, ecc.), usa [`POST /subscriptions/{id}/payment-method`](/api-reference/subscriptions/update-payment-method) per raccoglierne uno nuovo dal cliente. In caso di successo, l'abbonamento torna a `active` e `payment.succeeded` seguito da webhook `subscription.active` sono emessi.
+</Step>
+</Steps>
+
+{/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */}
+**Su richiesta vs programmato**: Per gli abbonamenti programmati, Dodo esegue i propri rinnovi e dunning. Per gli abbonamenti su richiesta, tu possiedi la politica di ripetizione perché solo tu sai quando dovrebbe avvenire il prossimo addebito (è guidato dai tuoi eventi di utilizzo, non da un calendario).
+{/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */}
+
+### Sequenza di webhook su un addebito su richiesta fallito
+
+| Ordine | Evento | Significato |
+|-------|-------|---------|
+| 1 | `payment.failed` | Il tentativo di addebito su richiesta non è riuscito (include il motivo del rifiuto) |
+| 2 | `subscription.on_hold` | L'abbonamento è stato sospeso (informativo; non blocca ulteriori addebiti) |
+| 3* | `payment.succeeded` | Un addebito successivo — sia la tua ripetizione che dopo un aggiornamento del metodo di pagamento — è riuscito |
+| 4* | `subscription.active` | L'abbonamento è tornato a `active` dopo un addebito riuscito |
+
+{/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */}
+Gli eventi 3 e 4 si verificano solo dopo che un addebito di follow-up ha successo.
+{/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */}
+
+### Responsabilità della ripetizione
 
 <Warning>
-I modelli di retry a raffica possono essere segnalati come frode o come test di carte dai nostri sistemi di rischio e dai processori. Evita ritentativi ravvicinati; segui la pianificazione di backoff e l’allineamento temporale indicati di seguito.
+Dodo Payments **non ripete automaticamente gli addebiti su richiesta falliti**. Tu possiedi la politica di ripetizione. Segui le linee guida di ripetizione sicura qui sotto per evitare di essere segnalato dai nostri sistemi di rilevamento delle frodi come test di carte.
+</Warning>
+
+[Gestione delle insolvenze degli abbonamenti](/features/recovery/subscription-dunning) — la sequenza di recupero tramite email incorporata — è limitata ai pagamenti di *rinnovo* falliti su abbonamenti programmati e cancellazioni avviate dal cliente. Non è progettata per fallimenti di addebiti su richiesta. Comunica direttamente con il cliente (ad esempio, email transazionale o prompt in-app) quando decidi che il metodo di pagamento deve essere aggiornato.
+
+## Ripetizione dei pagamenti
+
+Il nostro sistema di rilevamento delle frodi può bloccare schemi di ripetizione aggressivi (e può segnalarli come potenziale test di carte). Segui una politica di ripetizione sicura.
+
+<Warning>
+Gli schemi di ripetizione a raffica possono essere segnalati come fraudolenti o sospetti test di carte dai nostri sistemi di rischio e dai processori. Evita ripetizioni raggruppate; segui il programma di backoff e le linee guida di allineamento temporale di seguito.
 </Warning>
 
 ### Principi per politiche di ripetizione sicure
 
-- **Meccanismo di backoff**: Usa il backoff esponenziale tra i retry.
-- **Limiti di retry**: Limita i retry totali (max 3–4 tentativi).
-- **Filtraggio intelligente**: Riprova solo su errori ripetibili (es. errori di rete/issuer, fondi insufficienti); non riprovare mai rifiuti hard.
-- **Prevenzione dei test di carte**: Non riprovare errori come `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Varia i metadata (opzionale)**: Se gestisci il tuo sistema di retry, differenzia i retry tramite metadata (es. `retry_attempt`).
+- **Meccanismo di backoff**: Usa un backoff esponenziale tra le ripetizioni.
+- **Limiti di ripetizione**: Limita le ripetizioni totali (max 3–4 tentativi).
+- **Filtraggio intelligente**: Ripeti solo su fallimenti ripetibili (ad esempio, errori di rete/emittente, fondi insufficienti); non riprovare mai per rifiuti rigidi.
+- **Prevenzione del test di carte**: Non riprovare fallimenti come `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Varietà di metadata (opzionale)**: Se mantieni il tuo sistema di ripetizione, differenzia le ripetizioni tramite metadata (ad esempio, `retry_attempt`).
 
-### Programma di ripetizione suggerito (sottoscrizioni)
+### Programma di ripetizione suggerito (abbonamenti)
 
-- **1° tentativo**: Immediato quando crei l'addebito
-- **2° tentativo**: Dopo 3 giorni
-- **3° tentativo**: Dopo altri 7 giorni (10 giorni totali)
-- **4° tentativo (finale)**: Dopo altri 7 giorni (17 giorni totali)
+- **1º tentativo**: Immediato quando crei l'addebito
+- **2º tentativo**: Dopo 3 giorni
+- **3º tentativo**: Dopo altri 7 giorni (10 giorni totali)
+- **4º tentativo (finale)**: Dopo altri 7 giorni (17 giorni totali)
 
-Passaggio finale: se ancora non pagato, contrassegna la sottoscrizione come non pagata o annullala, in base alla tua politica. Notifica il cliente durante il periodo per aggiornare il proprio metodo di pagamento.
+Passo finale: se ancora non pagato, segna l'abbonamento come non pagato o annullalo, in base alla tua politica. Notifica il cliente durante la finestra per aggiornare il metodo di pagamento.
 
-### Evita ripetizioni a raffica; allineati all'orario di autorizzazione
+### Evitare ripetizioni a raffica; allinea al tempo di autorizzazione
 
-- Ancorare i retry al timestamp originale dell’autorizzazione per evitare comportamenti a «raffica» nel tuo portfolio.
-- Esempio: se il cliente avvia una prova o un mandato alle 13:10 di oggi, pianifica i retry successivi alle 13:10 dei giorni successivi secondo il tuo backoff (es. +3 giorni → 13:10, +7 giorni → 13:10).
-- In alternativa, se conservi l’ultimo pagamento riuscito `T`, programma il tentativo successivo all’`T + X days` per mantenere l’allineamento con l’orario del giorno.
+- Ancora le ripetizioni al timestamp di autorizzazione originale per evitare comportamenti a "raffica" su tutto il portafoglio.
+- Esempio: Se il cliente avvia una prova o un mandato alle 13:10 di oggi, programma le ripetizioni successive alle 13:10 nei giorni successivi secondo il tuo backoff (ad esempio, +3 giorni → 13:10, +7 giorni → 13:10).
+- In alternativa, se memorizzi l'ora dell'ultimo pagamento riuscito `T`, programma il tentativo successivo a `T + X days` per preservare l'allineamento dell'orario.
 
 <Note>
-Fuso orario e ora legale: usa uno standard temporale coerente per la pianificazione e converti solo per la visualizzazione, per mantenere gli intervalli.
+Fuso orario e DST: usa un standard di tempo coerente per la pianificazione e converti per la visualizzazione solo per mantenere gli intervalli.
 </Note>
 
-### Codici di rifiuto che non dovresti ripetere
+### Codici di declino che non dovresti riprovare
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -379,53 +428,53 @@ Fuso orario e ora legale: usa uno standard temporale coerente per la pianificazi
 - `LOST_CARD`
 
 <Note>
-Per un elenco completo dei motivi di rifiuto e se sono correggibili dall’utente, consulta la documentazione su
-[Transaction Failures](/api-reference/transaction-failures).
+Per un elenco completo delle motivazioni di declino e se sono correggibili dall'utente, vedi la documentazione su
+[Fallimenti delle transazioni](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Riprova solo su problemi soft/temporanei (es. `insufficient_funds`, `issuer_unavailable`, `processing_error`, timeout di rete). Se lo stesso rifiuto si ripete, interrompi ulteriori retry.
+Ripeti solo su problemi soft/temporanei (ad esempio, `insufficient_funds`, `issuer_unavailable`, `processing_error`, timeout di rete). Se lo stesso declino si ripete, sospendi ulteriori ripetizioni.
 </Tip>
 
 ### Linee guida per l'implementazione (senza codice)
 
-- Usa un scheduler/queue che conservi timestamp precisi; calcola il prossimo tentativo allo stesso offset orario (es. `T + 3 days` alla stessa HH:MM).
-- Mantieni e fai riferimento all’ultimo timestamp di pagamento riuscito `T` per calcolare il tentativo successivo; non concentrare più abbonamenti nello stesso istante.
-- Valuta sempre l’ultimo motivo di rifiuto; interrompi i retry per i rifiuti hard nella lista di esclusione sopra.
-- Limita i retry concorrenti per cliente e per account per evitare picchi accidentali.
+- Utilizza un gestore di code che mantiene timestamp precisi; calcola il tentativo successivo all'esatto offset orario (ad esempio, `T + 3 days` alla stessa HH:MM).
+- Mantieni e riferisci il timestamp dell'ultimo pagamento riuscito `T` per calcolare il tentativo successivo; non raggruppare più abbonamenti allo stesso istante.
+- Valuta sempre il motivo dell'ultimo declino; interrompi le ripetizioni per declini rigidi nella lista di skip sopra.
+- Limita le ripetizioni concorrenti per cliente e per account per prevenire picchi accidentali.
 - Comunica proattivamente: invia email/SMS al cliente per aggiornare il metodo di pagamento prima del prossimo tentativo programmato.
-- Usa i metadata solo per l’osservabilità (es. `retry_attempt`); non cercare di «eludere» i sistemi antifrode/rischio ruotando campi irrilevanti.
+- Usa metadata solo per osservabilità (ad esempio, `retry_attempt`); non cercare mai di "evadere" i sistemi di frode/rischio ruotando campi irrilevanti.
 
-## Monitora i risultati con i webhook
+## Tracciare i risultati con i webhook
 
-Implementa la gestione dei webhook per monitorare il percorso del cliente. Consulta [Implementazione dei webhook](/developer-resources/integration-guide#implementing-webhooks).
+Implementa la gestione webhook per tracciare il percorso del cliente. Vedi [Implementazione Webhook](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Mandato autorizzato e sottoscrizione attivata
-- **subscription.failed**: Creazione fallita (ad es., fallimento del mandato)
-- **subscription.on_hold**: Sottoscrizione messa in attesa (ad es., stato non pagato)
+- **subscription.active**: Mandato autorizzato e abbonamento attivato
+- **subscription.failed**: Creazione fallita (ad esempio, fallimento del mandato)
+- **subscription.on_hold**: Abbonamento sospeso (ad esempio, stato non pagato)
 - **payment.succeeded**: Addebito riuscito
 - **payment.failed**: Addebito fallito
 
 <Tip>
-Per i flussi on-demand, concentra l’attenzione su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull’utilizzo.
+Per i flussi su richiesta, concentrati su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull'uso. Quando `payment.failed` è seguito da `subscription.on_hold`, vedi [Gestione delle transazioni fallite](#handling-failed-charges) per recuperare l'abbonamento.
 </Tip>
 
-## Test e prossimi passi
+## Test e passaggi successivi
 
 <Steps>
 <Step title="Create in test mode">
-Usa la tua chiave API di test per creare l’abbonamento con `payment_link: true`, poi apri il link e completa il mandato.
+Usa la tua chiave API di test per creare l'abbonamento con `payment_link: true`, quindi apri il link e completa il mandato.
 </Step>
 <Step title="Trigger a charge">
-Chiama l’endpoint degli addebiti con un piccolo `product_price` (es. `100`) e verifica di ricevere `payment.succeeded`.
+Chiama l'endpoint di addebito con un piccolo `product_price` (ad esempio, `100`) e verifica di ricevere `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Passa alla tua chiave API live una volta validati gli eventi e gli aggiornamenti dello stato interno.
+Passa alla tua chiave API live una volta che hai convalidato gli eventi e gli aggiornamenti di stato interno.
 </Step>
 </Steps>
 
 ## Risoluzione dei problemi
 
-- **422 Invalid Request**: Assicurati che `on_demand.mandate_only` venga fornito alla creazione e `product_price` venga fornito per gli addebiti.
+- **422 Richiesta non valida**: Assicurati che `on_demand.mandate_only` sia fornito in fase di creazione e `product_price` sia fornito per gli addebiti.
 - **Errori di valuta**: Se sovrascrivi `product_currency`, conferma che sia supportato per il tuo account e cliente.
 - **Nessun webhook ricevuto**: Verifica la configurazione del tuo URL webhook e del segreto di firma.

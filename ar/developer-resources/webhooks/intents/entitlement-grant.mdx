@@ -1,0 +1,279 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: منح الاستحقاق
+description: الحمولة المرسلة إلى نقطة نهاية الويب هوك الخاصة بك عند إنشاء أو
+  تسليم أو فشل أو إلغاء منحة الاستحقاق.
+icon: gift
+keywords:
+  - Dodo Payments
+  - webhook الاستحقاق
+  - أحداث المنح
+  - الوفاء
+  - webhook مفتاح ترخيص
+  - webhook ملف رقمي
+---
+
+## أحداث منح الاستحقاق عبر webhook
+
+يتم إطلاق هذه الأحداث كلما تغيرت حالة منحة استحقاق العميل، على سبيل المثال عند إنشاء مفتاح ترخيص، أو تعيين دور Discord، أو توفير رابط تنزيل، أو سحب الوصول. اشترك في هذه الأحداث للحفاظ على توافق تطبيقك مع ما يمكن لكل عميل الوصول إليه.
+
+| الحدث | الوصف |
+|-------|-------------|
+| `entitlement_grant.created` | تم إنشاء صف منح جديد. الحالة هي `delivered` بشكل فوري لمفاتيح الترخيص، و`pending` لكل تكامل آخر. |
+| `entitlement_grant.delivered` | المنحة تنتقل إلى حالة التسليم. العميل لديه الآن وصول إلى المنصة المستحقة، أو الملف، أو مفتاح الترخيص. |
+| `entitlement_grant.failed` | فشل التسليم ولا يتم المحاولة مرة أخرى. تحقق من `error_code` و`error_message`. |
+| `entitlement_grant.revoked` | تم سحب الوصول. تحقق من `revocation_reason` لفهم السبب. |
+
+تشترك جميع الأحداث الأربعة في نفس الحمولة `EntitlementGrantResponse` الموثقة في المخطط أدناه.
+
+---
+
+## محفزات الأحداث
+
+### entitlement_grant.created
+
+تم إدخال صف المنحة للتو. يكون للمنحة دائمًا `id` ثابت من هذه النقطة فصاعدًا، حتى لو تغيرت حالتها. استخدم هذا الحدث لتسجيل أن الإنجاز قيد التقدم.
+
+بالنسبة إلى **مفاتيح الترخيص** يتم إدخال الصف مباشرة مع `status: "delivered"` و`delivered_at` معبأة، لذا يتم اتباع حدث `created` واحد دون تغييرات حالة إضافية إلا إذا تم إلغاء المنحة لاحقًا.
+
+بالنسبة إلى **كل تكامل آخر** يصل الصف مع `status: "pending"`. يتبع حدث `delivered` أو `failed` بمجرد اكتمال التسليم:
+
+- **التكاملات المستندة إلى OAuth** (Discord، GitHub، Notion) تتضمن `oauth_url` يجب على العميل زيارته لإكمال الموافقة. تبقى المنحة `pending` حتى يسمح العميل بذلك.
+- **التكاملات المباشرة للمنصة** (Telegram، Framer، ملفات رقمية) تبقى في `pending` لفترة وجيزة فقط أثناء تنفيذ اتصال المنصة، ثم تنتقل إلى `delivered`.
+
+### entitlement_grant.delivered
+
+انتقلت المنحة من `pending` إلى `delivered`. لدى العميل الآن الوصول الموصوف بواسطة الاستحقاق. استخدم هذا الحدث لفتح الميزات التابعة في أنظمتك الخاصة، على سبيل المثال لتوفير مساحة عمل، إرسال بريد ترحيبي مخصص، أو وضع علامة "منجز".
+
+تلتقط حقل الحمولة `delivered_at` عندما اكتمل التسليم. للمنح التي وصلت `delivered` عند الإنشاء، ستتلقى أحداث `created` و`delivered` متتالية.
+
+### entitlement_grant.failed
+
+تمت المحاولة وفشل التسليم بخطأ غير قابل لإعادة المحاولة. تشرح الحقول `error_code` و`error_message` الفشل. تشمل الأسباب الشائعة إلغاء رمز OAuth، أو رفض إذن المنصة، أو الهدف المفقود (على سبيل المثال، تم حذف خادم Discord).
+
+<Tip>
+اعتبر `entitlement_grant.failed` قابلاً للتنفيذ. دفع العميل ولكن لم يحصل على الوصول. عرض الفشل على فريق الدعم الخاص بك أو أعد المنح بمجرد حل المشكلة الأساسية.
+</Tip>
+
+### entitlement_grant.revoked
+
+تم سحب الوصول على مستوى المنصة: تمت إزالة دور Discord، تمت إزالة المتعاون في GitHub، تم تعطيل مفتاح الترخيص، لم يعد يتم إصدار روابط تنزيل الملفات. يسجل الحقل `revocation_reason` المحفز.
+
+| `revocation_reason` | المحفز |
+|---|---|
+| `subscription_cancelled` | تم إلغاء اشتراك العميل (حدث `subscription.cancelled`). |
+| `subscription_on_hold` | الاشتراك معلق بسبب فشل التجديد (`subscription.on_hold`). قابل للاسترداد: تولد المحاولة الناجحة إعادة منح. |
+| `subscription_expired` | وصل الاشتراك إلى نهاية مدته (`subscription.expired`). |
+| `plan_changed` | تم تغيير الخطة؛ يتم إلغاء المنح القديمة قبل إصدار الجديدة (`subscription.plan_changed`). |
+| `refund` | تم معالجة استرداد للدفعة الأصلية لمرة واحدة (`refund.succeeded`). |
+| `manual` | ألغى التاجر المنحة عبر API أو اللوحة. عمليات الإلغاء اليدوية لا تُمنح تلقائيًا عند تجديد الاشتراك. |
+| `license_key_disabled` | تم تعطيل مفتاح الترخيص خلف منحته. يتم إعادة تنشيط المنحة تلقائيًا إذا أُعيد تمكين المفتاح. |
+| `platform_external` | خرج الجانب المتكامل من النظام من التزامن (على سبيل المثال، تمت إزالة دور Discord يدويًا، فقد تطبيق GitHub وصولاً للمستودع، أو تم اكتشاف عدم وجود هدف في عملية التسوية). لا يُعاد منحها تلقائيًا عند تجديد الاشتراك حتى يتم حل مشكلة النظام الأساسية. |
+
+---
+
+## أنواع الحمولة
+
+حقل `data` دائمًا عبارة عن كائن `EntitlementGrantResponse`. نوعين من التكامل يرفقان كائنات متداخلة إضافية:
+
+- **`license_key`** يتم تضمينه عند نوع تكامل الاستحقاق هو `license_key`. يحتوي على المفتاح المُولد، فترة الانتهاء، واستخدام التفعيل.
+- **`digital_product_delivery`** يتم تضمينه عندما يكون نوع التكامل `digital_files`. يحتوي على روابط تنزيل موقعة مسبقًا، `instructions` اختياريًا، و`external_url` اختياريًا.
+
+بالنسبة لجميع أنواع التكامل الأخرى (Discord، GitHub، Telegram، Framer، Notion) كلا الحقلين `null`؛ يتم التقاط التكوين ذي الصلة في الاستحقاق نفسه، وليس في المنحة.
+
+---
+
+## نماذج حمولة
+
+### تم تسليم مفتاح ترخيص (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### تم تسليم الملفات الرقمية (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### إنشاء دور Discord معلق (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### تم إلغاء المنحة عند إلغاء الاشتراك (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### فشل التسليم (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## نصائح للتكامل
+
+- **انتظر حتى `entitlement_grant.delivered` قبل فتح الميزات التابعة.** يخبرك حدث `payment.succeeded` بأن المال قد تم تسديدة؛ لا يخبرك أن العميل قد حصل على مستودع GitHub أو دور Discord بعد. الحدث `delivered` هو المصدر الحقيقي للوفاء.
+- **خريطة `revocation_reason` للتدفقات التفاعلية.** عادةً ما يعني حدث `subscription_on_hold` أن بطاقة العميل قد فشلت وستعيد التجديد التالي الوصول. حدث `manual` أو `subscription_cancelled` هو متعمد. عاملهم بشكل مختلف في الرسائل الموجهة للعملاء.
+- **استخدم منح `id` كمفتاح لعدم التكرار.** تصدر منحة واحدة على الأكثر حدث `created` واحد وعلى الأكثر حدث واحد نهائي (`delivered` أو `failed`)، وعلى الأكثر حدث `revoked` واحد. يمكن أن تتكرر إعادة التوجيهات من نظام webhook؛ قم بإزالة الازدواجية على `id` بالإضافة إلى `type`.
+- **افحص `license_key` و`digital_product_delivery` للتعرف على نوع التكامل.** لا يحمل حمولة المنحة نوع التكامل، ولكن واحدة من هذه الكائنات المتداخلة بالضبط مليئة بالاستحقاقات ذات المفاتيح الرقمية والملفات الرقمية.
+- **بالنسبة إلى المنح المستندة إلى OAuth، امسح `oauth_url` إلى العميل.** يتضمن الحدث `entitlement_grant.created` لتدفقات المشتركين في Discord، GitHub، أو Notion `oauth_url` و`oauth_expires_at`. قم بإرسالها بالبريد الإلكتروني إلى العميل أو عرضها في تطبيقك لفتح التسليم.

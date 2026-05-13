@@ -1,0 +1,279 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: Concessione di Diritti
+description: Il payload inviato al tuo endpoint webhook quando una concessione
+  di diritti è creata, consegnata, fallita o revocata.
+icon: gift
+keywords:
+  - Dodo Payments
+  - webhook di concessione diritti
+  - eventi di concessione
+  - adempimento
+  - webhook chiave di licenza
+  - webhook file digitale
+---
+
+## Eventi Webhook di Concessione di Diritti
+
+Questi eventi vengono attivati ogni volta che lo stato della concessione di diritti di un cliente cambia, ad esempio quando viene generata una chiave di licenza, viene assegnato un ruolo Discord, viene fornito un link di download, o l'accesso viene revocato. Abbonati a questi eventi per mantenere la tua applicazione sincronizzata con ciò a cui ogni cliente può accedere.
+
+| Evento | Descrizione |
+|-------|-------------|
+| `entitlement_grant.created` | È stata creata una nuova riga di concessione. Lo stato è `delivered` immediatamente per le chiavi di licenza, e `pending` per ogni altra integrazione. |
+| `entitlement_grant.delivered` | La concessione passa a consegnato. Il cliente ora ha accesso alla piattaforma, al file o alla chiave di licenza concessi. |
+| `entitlement_grant.failed` | La consegna è fallita e non viene ripetuta. Controlla `error_code` e `error_message`. |
+| `entitlement_grant.revoked` | L'accesso è stato ritirato. Controlla `revocation_reason` per capire perché. |
+
+Tutti e quattro gli eventi condividono lo stesso payload `EntitlementGrantResponse` documentato nello schema qui sotto.
+
+---
+
+## Trigger degli Eventi
+
+### entitlement_grant.created
+
+È stata appena inserita una riga di concessione. La concessione ha sempre un `id` stabile da questo momento in poi, anche se il suo stato cambia. Usa questo evento per registrare che l'adempimento è in corso.
+
+Per **chiavi di licenza** la riga viene inserita direttamente con `status: "delivered"` e `delivered_at` popolati, quindi un singolo evento `created` è seguito da nessun altro cambiamento di stato a meno che la concessione venga successivamente revocata.
+
+Per **ogni altra integrazione** la riga arriva con `status: "pending"`. Un evento `delivered` o `failed` segue una volta che la consegna è completata:
+
+- **Integrazioni basate su OAuth** (Discord, GitHub, Notion) includono un `oauth_url` che il cliente deve visitare per completare il consenso. La concessione rimane `pending` fino a quando il cliente autorizza.
+- **Integrazioni dirette alla piattaforma** (Telegram, Framer, File Digitali) restano `pending` solo brevemente mentre la chiamata alla piattaforma è in corso, poi si spostano a `delivered`.
+
+### entitlement_grant.delivered
+
+La concessione è passata da `pending` a `delivered`. Il cliente ora ha l'accesso descritto dal diritto. Usa questo evento per sbloccare funzionalità dipendenti nei tuoi sistemi, per esempio per fornire uno spazio di lavoro, inviare un'email di benvenuto personalizzata, o segnare un flag "adempiuto".
+
+Il campo `delivered_at` del payload cattura quando la consegna è stata completata. Per le concessioni che sono arrivate `delivered` alla creazione, riceverai eventi `created` e `delivered` consecutivi.
+
+### entitlement_grant.failed
+
+La consegna è stata tentata e fallita con un errore non ripetibile. I campi `error_code` e `error_message` spiegano il fallimento. Cause comuni includono un token OAuth revocato, un permesso della piattaforma negato, o un target mancante (es. una gilda Discord eliminata).
+
+<Tip>
+Tratta il codice `entitlement_grant.failed` come azionabile. Il cliente ha pagato ma non ha ottenuto l'accesso. Metti in evidenza i fallimenti al tuo team di supporto o attiva una nuova concessione una volta risolto il problema di base.
+</Tip>
+
+### entitlement_grant.revoked
+
+L'accesso è stato revocato a livello di piattaforma: ruolo Discord rimosso, collaboratore GitHub rimosso, chiave di licenza disabilitata, URL di download del file non più emessi. Il campo `revocation_reason` registra il trigger.
+
+| `revocation_reason` | Trigger |
+|---|---|
+| `subscription_cancelled` | L'abbonamento del cliente è stato cancellato (evento `subscription.cancelled`). |
+| `subscription_on_hold` | L'abbonamento è in sospeso a causa di un rinnovo fallito (event `subscription.on_hold`). Recuperabile: un ritentativo riuscito produce una nuova concessione. |
+| `subscription_expired` | L'abbonamento ha raggiunto la fine del suo termine (evento `subscription.expired`). |
+| `plan_changed` | Il piano è cambiato; le vecchie concessioni sono revocate prima che ne vengano emesse di nuove (evento `subscription.plan_changed`). |
+| `refund` | Un rimborso è stato elaborato per il pagamento originale unico (evento `refund.succeeded`). |
+| `manual` | Un commerciante ha revocato la concessione tramite l'API o la dashboard. Le revoche manuali non vengono automaticamente concesse nuovamente al rinnovo dell'abbonamento. |
+| `license_key_disabled` | La chiave di licenza dietro una concessione di chiavi di licenza è stata disabilitata. La concessione è riattivata automaticamente se la chiave è riabilitata. |
+| `platform_external` | Il lato della piattaforma di un'integrazione è uscito dalla sincronizzazione (per esempio, un ruolo Discord è stato rimosso manualmente, l'app GitHub ha perso l'accesso al repository, o un passaggio di riconciliazione ha rilevato un target mancante). La concessione non viene automaticamente ripristinata al rinnovo dell'abbonamento fino a quando il problema di base della piattaforma non viene risolto. |
+
+---
+
+## Varianti di Payload
+
+Il campo `data` è sempre un oggetto `EntitlementGrantResponse`. Due tipi di integrazione allegano oggetti annidati extra:
+
+- **`license_key`** è incluso quando il tipo di integrazione di concessione è `license_key`. Contiene la chiave generata, la scadenza e l'utilizzo di attivazione.
+- **`digital_product_delivery`** è incluso quando il tipo di integrazione è `digital_files`. Contiene URL di download presigned, l'opzionale `instructions`, e l'opzionale `external_url`.
+
+Per tutti gli altri tipi di integrazione (Discord, GitHub, Telegram, Framer, Notion) entrambi i campi sono `null`; la configurazione rilevante è catturata nel diritto stesso, non nella concessione.
+
+---
+
+## Esempi di Payload
+
+### Chiave di licenza consegnata (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### File digitali consegnati (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Ruolo Discord creato e in sospeso (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### Concessione revocata al momento della cancellazione dell'abbonamento (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### Consegna fallita (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## Consigli per l'Integrazione
+
+- **Aspetta `entitlement_grant.delivered` prima di sbloccare funzionalità dipendenti.** Un evento `payment.succeeded` ti dice che il pagamento è stato completato; non ti dice ancora se il cliente ha il repository GitHub o il ruolo Discord. L'evento `delivered` è la fonte di verità per l'adempimento.
+- **Mappa `revocation_reason` ai flussi di retention.** Una revoca `subscription_on_hold` di solito significa che la carta del cliente ha fallito e il prossimo rinnovo concederà nuovamente l'accesso. Una revoca `manual` o `subscription_cancelled` è intenzionale. Trattali in modo diverso nella messaggistica al cliente.
+- **Usa il grant `id` come tua chiave di idempotenza.** Una singola concessione emette al massimo un evento `created` e al massimo un evento terminale (`delivered` o `failed`), e al massimo un evento `revoked`. Le riedizioni dal sistema webhook possono ripetere eventi; deduplicali sulla concessione `id` più `type`.
+- **Esamina `license_key` e `digital_product_delivery` per riconoscere il tipo di integrazione.** Il payload della concessione stessa non trasporta il tipo di integrazione, ma esattamente uno di questi oggetti annidati è popolato per le concessioni di chiavi di licenza e file digitali.
+- **Per concessioni basate su OAuth, metti in evidenza `oauth_url` al cliente.** L'evento `entitlement_grant.created` per i flussi di abbonati a Discord, GitHub, o Notion include un `oauth_url` e `oauth_expires_at`. Invia un'email al cliente o mostrala nella tua app per sbloccare la consegna.

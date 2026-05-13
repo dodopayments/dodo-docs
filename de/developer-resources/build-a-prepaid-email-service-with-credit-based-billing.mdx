@@ -1,0 +1,734 @@
+---
+title: Erstellen Sie einen Prepaid-E-Mail-Dienst mit kreditbasierter Abrechnung
+description: Entwickeln Sie MailKit, eine transaktionale E-Mail-Plattform mit
+  Prepaid-E-Mail-Guthaben. Ein monatlicher Abonnementplan, einmalige
+  Aufladungspakete, sofortiger Guthabenabzug bei jedem Versand und proaktive
+  Warnungen bei niedrigem Guthaben, unterstützt von Resend und Dodo Payments.
+icon: envelope
+keywords:
+  - Dodo Payments
+  - Entwicklerhandbuch
+  - kreditbasierte Abrechnung
+  - transaktionale E-Mail
+  - Resend
+  - Prepaid-Guthaben
+---
+
+<Tip>
+  <strong>Lassen Sie Sentra Ihren Integrationscode für Sie schreiben.</strong><br />
+  Verwenden Sie unseren KI-Assistenten in VS Code, Cursor oder Windsurf, um SDK/API-Code, Webhook-Handler und mehr zu erstellen, indem Sie einfach beschreiben, was Sie möchten.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Probieren Sie Sentra: KI-gesteuerte Integration &rarr;
+  </a>
+</Tip>
+
+In diesem Tutorial erstellen Sie **MailKit**, eine transaktionale E-Mail-Plattform, auf der Kunden im Voraus für ein Pool von E-Mail-Guthaben zahlen. Der Plan gewährt ein monatliches E-Mail-Kontingent; wenn Kunden knapp werden, können sie anstelle des Wartens auf den nächsten Zyklus ein Aufladungspaket kaufen. Jeder Versand zieht automatisch ein Guthaben ab.
+
+<Note>
+Dieses Tutorial verwendet [Resend](https://resend.com) als E-Mail-Anbieter. Die kostenlose Stufe (3.000 E-Mails/Monat) reicht aus, um den gesamten Ablauf ohne ein kostenpflichtiges Konto zu erstellen und zu testen. Das Muster funktioniert mit jedem Anbieter; tauschen Sie `resend.emails.send` für SendGrid, Postmark, SES oder Ihr eigenes SMTP-Relay aus.
+</Note>
+
+Am Ende dieses Tutorials werden Sie wissen, wie man:
+
+- Ein benutzerdefiniertes Guthabenrecht (E-Mails) in Ihrem Dashboard erstellt
+- Guthaben an einen Abonnementplan und ein einmaliges Aufladeprodukt anhängt
+- Echte E-Mails über Resend sendet und ein Guthaben pro Sendung über einen Hauptbucheintrag abbucht
+- Einen Live-Guthabenstand von Ihrem Frontend abfragt
+- Dodo-Webhooks korrekt verifiziert und `credit.balance_low` verwendet, um Kunden zu bitten, bevor sie Null erreichen
+
+## Was wir bauen
+
+Hier ist das Preismodell für MailKit:
+
+| Produkt | Preis | E-Mails |
+|---------|-------|--------|
+| MailKit-Plan | $19/Monat | 5.000 E-Mails/Zyklus |
+| Aufladepaket | $9 einmalig | +5.000 E-Mails |
+
+Die Einheit ist **eine E-Mail = ein Guthaben**. Kunden müssen nicht über Token, Chargen oder gewichtete Einheiten nachdenken. Sie sehen einfach "Sie haben diesen Monat noch 4.231 E-Mails übrig."
+
+<Info>
+Bevor Sie beginnen, stellen Sie sicher, dass Sie haben:
+- Ein Dodo Payments-Konto (Testmodus ist in Ordnung)
+- Ein kostenloses [Resend](https://resend.com)-Konto und API-Schlüssel
+- Node.js 18+ und grundlegende Kenntnisse in TypeScript
+</Info>
+
+## Schritt 1: Erstellen Sie Ihr E-Mail-Guthabenrecht
+
+Das Guthabenrecht definiert die Einheit, die Ihre Plattform verkauft: in diesem Fall eine E-Mail-Sendung.
+
+<Frame caption="The Credits tab under Products lists all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Guthabenauflistungsseite" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Steps>
+<Step title="Open the Credits section">
+1. Melden Sie sich in Ihrem Dodo Payments-Dashboard an
+2. Klicken Sie auf **Produkte** in der linken Seitenleiste
+3. Wählen Sie die Registerkarte **Guthaben**
+4. Klicken Sie auf **Guthaben erstellen**
+</Step>
+
+<Step title="Configure the credit unit">
+Füllen Sie die Guthabendetails aus:
+
+**Guthabenname**: `Email Credits`
+
+**Guthabentyp**: Wählen Sie **Benutzerdefinierte Einheit**
+
+**Einheitenname**: `email`
+
+**Präzision**: `0` (eine E-Mail ist immer eine ganze Einheit; Sie können keine halbe E-Mail senden)
+
+**Guthabenablauf**: `30 days` (das Kontingent jedes Zyklus wird zurückgesetzt)
+
+<Warning>
+Präzision kann nach der Erstellung nicht geändert werden. Für diskrete Einheiten wie E-Mails, Nachrichten oder Sitzungen ist `0` korrekt.
+</Warning>
+</Step>
+
+<Step title="Leave the other defaults as-is">
+Wir werden kein Rollover oder Überschreitungen in diesem Kochbuch aktivieren; das Ziel ist der einfachste mögliche CBB-Fluss. Sie können diese später in der Guthabenanheftung erneut besuchen.
+</Step>
+
+<Step title="Save and copy the credit ID">
+Klicken Sie auf **Guthaben erstellen**. Öffnen Sie das Guthaben und kopieren Sie seine ID. Sie werden es für Backend-Guthabenabfragen benötigen. Es sieht aus wie `cent_xxxxxxxxxxxx`.
+<Check>
+Ihr `Email Credits`-Guthabenrecht ist bereit. Als nächstes: die Produkte, die Kunden Guthaben gewähren.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 2: Erstellen Sie den Plan und das Aufladepaket
+
+Sie werden zwei Produkte erstellen: einen wiederkehrenden **Abonnement**-Plan und ein **einmaliges** Aufladeprodukt. Der Plan gewährt 5.000 E-Mails pro Zyklus; das Aufladen fügt auf Anforderung weitere 5.000 hinzu. Beide hängen dasselbe `Email Credits`-Guthabenrecht an.
+
+<Tip>
+Dieses Kochbuch zieht Guthaben mit direkten Haupteinträgen ab, anstatt zählerbasierter Nutzung. Haupteinträge sind sofort (das Guthaben wird in Millisekunden aktualisiert), benötigen keine zusätzlichen Einstellungen und sind die richtige Wahl, wenn eine Benutzeraktion genau einem Guthaben entspricht. Wenn Sie eine automatische Abnahme von erfassten Nutzungsevents bevorzugen (nützlich für gewichtete Einheiten wie "Tokens" oder "MB verarbeitet"), siehe [Kreditbasierte Abrechnung → Nutzung mit Guthaben](/features/credit-based-billing) für das zählerbasierte Muster.
+</Tip>
+
+### MailKit-Plan ($19/Monat, 5.000 E-Mails)
+
+<Steps>
+<Step title="Create the subscription">
+1. Gehen Sie zu **Produkte → Produkt erstellen**
+2. Füllen Sie die Produktdetails aus:
+
+**Produktname**: `MailKit Plan`
+
+**Beschreibung**: `5,000 transactional emails per month.`
+
+3. Wählen Sie **Abonnement** als Produkttyp
+4. Setzen Sie den wiederkehrenden Preis:
+
+**Wiederkehrender Preis**: `19.00`
+
+**Abrechnungszyklus**: `Monthly`
+
+**Währung**: `USD`
+</Step>
+
+<Step title="Attach the email credit entitlement">
+Scrollen Sie zu **Ansprüche → Guthaben → Anhängen** und konfigurieren Sie:
+
+**Guthabenanspruch**: `Email Credits`
+
+**Gutgeschriebene Guthaben pro Abrechnungszyklus**: `5000`
+
+**Niedriges Guthabenschwellenwert**: `20` (Prozent; feuert `credit.balance_low` ab, wenn das Guthaben unter 20 % des Zyklus-Kontingents fällt, d.h. 1.000 E-Mails)
+
+**Standard-Guthabeneinstellungen importieren**: aktiviert (verwendet den 30-Tage-Ablauf aus Schritt 1)
+
+Klicken Sie auf **Zum Produkt hinzufügen**, dann **Speichern** des Produkts. Kopieren Sie die Produkt-ID (`pdt_xxxxxxxxxxxx`).
+
+<Check>
+Plan: $19/Monat → 5.000 E-Mails werden bei jedem Zyklus aufgefrischt.
+</Check>
+</Step>
+</Steps>
+
+### Aufladepaket ($9 einmalig, 5.000 E-Mails)
+
+<Steps>
+<Step title="Create a one-time product">
+1. Gehen Sie zu **Produkte → Produkt erstellen**
+2. Füllen Sie die Produktdetails aus:
+
+**Produktname**: `Email Top-Up Pack`
+
+**Beschreibung**: `Add 5,000 emails to your MailKit balance instantly.`
+
+3. Wählen Sie **Einmalzahlung** als Produkttyp
+4. Setzen Sie den Preis:
+
+**Preis**: `9.00`
+
+**Währung**: `USD`
+</Step>
+
+<Step title="Attach the credit grant">
+In **Ansprüche → Guthaben → Anhängen**:
+- Guthabenanspruch: `Email Credits`
+- Gutgeschriebene Guthaben: `5000`
+
+<Info>
+Einmalprodukte gewähren Guthaben mit einem eigenen Ablauf (30 Tage ab Kauf, gemäß Schritt 1). Aufladungen stapeln sich auf Abonnementguthaben; sie ersetzen sie nicht.
+</Info>
+
+Speichern und die Produkt-ID kopieren.
+
+<Check>
+Aufladepaket: $9 → +5.000 E-Mails, sofort verfügbar.
+</Check>
+</Step>
+</Steps>
+
+## Schritt 3: Richten Sie das Backend ein
+
+Erstellen Sie nun den Express-Server, der Checkout, Senden, Guthabenabfragen und Webhooks bearbeitet.
+
+<Steps>
+<Step title="Initialize the project">
+
+```bash
+mkdir mailkit && cd mailkit
+npm init -y
+npm install dodopayments resend express dotenv
+npm install -D tsx @types/node @types/express
+```
+
+Fügen Sie ein Entwickler-Skript zu `package.json` hinzu:
+
+```json
+{
+  "scripts": {
+    "dev": "tsx watch server.ts"
+  }
+}
+```
+
+<Tip>
+[`tsx`](https://tsx.is) führt TypeScript direkt ohne Build-Schritt oder `tsconfig.json` aus, was für ein Tutorial perfekt ist. Für die Produktion fügen Sie ein `tsconfig.json` und ein `build` Skript hinzu.
+</Tip>
+</Step>
+
+<Step title="Configure environment variables">
+Erstellen Sie `.env`:
+
+```bash .env
+# Dodo Payments
+DODO_PAYMENTS_API_KEY=your_dodo_test_api_key
+DODO_WEBHOOK_KEY=your_dodo_webhook_signing_key
+CREDIT_ENTITLEMENT_ID=cent_xxxxxxxxxxxx
+PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
+TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
+
+# Resend
+RESEND_API_KEY=re_xxxxxxxxxxxx
+
+# App
+BASE_URL=http://localhost:3000
+PORT=3000
+```
+
+Sie werden die `DODO_WEBHOOK_KEY` in Schritt 4 ausfüllen, nachdem Sie den Endpunkt erstellt haben. Der Resend API-Schlüssel stammt von [resend.com/api-keys](https://resend.com/api-keys).
+
+<Warning>
+Fügen Sie `.env` sofort zu `.gitignore` hinzu. API-Schlüssel niemals comitten.
+</Warning>
+</Step>
+
+<Step title="Build the server">
+Erstellen Sie `server.ts` im Projektstamm:
+
+<CodeGroup>
+
+```typescript server.ts expandable
+import 'dotenv/config';
+import express, { Request, Response } from 'express';
+import DodoPayments from 'dodopayments';
+import { Resend } from 'resend';
+
+const app = express();
+
+const dodo = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY!,
+  webhookKey: process.env.DODO_WEBHOOK_KEY!,
+  environment: 'test_mode',
+});
+
+const resend = new Resend(process.env.RESEND_API_KEY!);
+
+const CREDIT_ENTITLEMENT_ID = process.env.CREDIT_ENTITLEMENT_ID!;
+const BASE_URL = process.env.BASE_URL!;
+
+// ---------------------------------------------------------------
+// Webhook endpoint MUST receive the raw body for signature
+// verification. Register it BEFORE express.json().
+// ---------------------------------------------------------------
+app.post(
+  '/webhooks/dodo',
+  express.raw({ type: 'application/json' }),
+  async (req: Request, res: Response) => {
+    const headers = {
+      'webhook-id': req.headers['webhook-id'] as string,
+      'webhook-signature': req.headers['webhook-signature'] as string,
+      'webhook-timestamp': req.headers['webhook-timestamp'] as string,
+    };
+
+    let event: any;
+    try {
+      event = await dodo.webhooks.unwrap(req.body.toString('utf8'), { headers });
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err);
+      return res.status(401).json({ error: 'invalid signature' });
+    }
+
+    switch (event.type) {
+      case 'credit.balance_low': {
+        const { customer_id, credit_entitlement_name, available_balance, threshold_percent } =
+          event.data;
+        console.log(
+          `[low-balance] ${customer_id} has ${available_balance} ${credit_entitlement_name} ` +
+            `left (under ${threshold_percent}%)`
+        );
+        await notifyCustomerLowBalance(customer_id, Number(available_balance));
+        break;
+      }
+      case 'credit.added':
+        console.log('[credit.added]', event.data);
+        break;
+      case 'credit.rolled_over':
+        console.log('[rolled_over]', event.data);
+        break;
+    }
+
+    res.json({ received: true });
+  }
+);
+
+// JSON parsing for everything else.
+app.use(express.json());
+
+// ---------------------------------------------------------------
+// POST /checkout/subscribe → start the MailKit subscription.
+// ---------------------------------------------------------------
+app.post('/checkout/subscribe', async (req, res) => {
+  const { email, name } = req.body as { email: string; name: string };
+
+  const session = await dodo.checkoutSessions.create({
+    product_cart: [{ product_id: process.env.PLAN_PRODUCT_ID!, quantity: 1 }],
+    customer: { email, name },
+    return_url: `${BASE_URL}/?subscribed=1`,
+  });
+
+  res.json({ checkout_url: session.checkout_url });
+});
+
+// ---------------------------------------------------------------
+// POST /checkout/topup → buy a 5,000-email top-up for an existing
+// customer. In a real app, customer_id is resolved from the
+// authenticated session, never trusted from request input.
+// ---------------------------------------------------------------
+app.post('/checkout/topup', async (req, res) => {
+  const { customer_id } = req.body as { customer_id: string };
+
+  const session = await dodo.checkoutSessions.create({
+    product_cart: [{ product_id: process.env.TOPUP_PRODUCT_ID!, quantity: 1 }],
+    customer: { customer_id },
+    return_url: `${BASE_URL}/?topped_up=1`,
+  });
+
+  res.json({ checkout_url: session.checkout_url });
+});
+
+// ---------------------------------------------------------------
+// GET /credits/:customerId → live balance for the dashboard widget.
+// ---------------------------------------------------------------
+app.get('/credits/:customerId', async (req, res) => {
+  const balance = await dodo.creditEntitlements.balances.retrieve(req.params.customerId, {
+    credit_entitlement_id: CREDIT_ENTITLEMENT_ID,
+  });
+
+  res.json({ balance: balance.balance });
+});
+
+// ---------------------------------------------------------------
+// POST /send → send an email via Resend, then write a ledger entry
+// to debit 1 credit from the customer's balance. The deduction is
+// instant; the next /credits call reflects it.
+// ---------------------------------------------------------------
+app.post('/send', async (req, res) => {
+  const { customer_id, to, subject, html } = req.body as {
+    customer_id: string;
+    to: string;
+    subject: string;
+    html: string;
+  };
+
+  // 1. Pre-flight balance check: refuse to send if the balance is at zero.
+  const balance = await dodo.creditEntitlements.balances.retrieve(customer_id, {
+    credit_entitlement_id: CREDIT_ENTITLEMENT_ID,
+  });
+
+  if (Number(balance.balance) <= 0) {
+    return res.status(402).json({
+      error: 'No email credits remaining. Buy a top-up pack or upgrade your plan.',
+    });
+  }
+
+  // 2. Send via Resend.
+  const { data, error } = await resend.emails.send({
+    from: 'MailKit <onboarding@resend.dev>', // swap for your verified domain
+    to: [to],
+    subject,
+    html,
+  });
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  // 3. Debit 1 credit. Resend's message id is the idempotency key, so if
+  //    the client retries this request, Dodo deduplicates and the
+  //    customer is only debited once for that send.
+  await dodo.creditEntitlements.balances.createLedgerEntry(customer_id, {
+    credit_entitlement_id: CREDIT_ENTITLEMENT_ID,
+    amount: '1',
+    entry_type: 'debit',
+    reason: `email send ${data!.id}`,
+    idempotency_key: data!.id,
+  });
+
+  res.json({ id: data!.id });
+});
+
+async function notifyCustomerLowBalance(customerId: string, available: number) {
+  // In production: send an email to the account owner, push a banner,
+  // open an in-app modal, etc. For the demo we just log.
+  console.log(`[NOTIFY] ${customerId}: ${available} emails left. Consider topping up.`);
+}
+
+app.use(express.static('public'));
+
+const port = Number(process.env.PORT) || 3000;
+app.listen(port, () => {
+  console.log(`MailKit running on http://localhost:${port}`);
+});
+```
+
+</CodeGroup>
+
+<Warning>
+**Webhook-Inhalte müssen roh sein.** `express.json()` interpretiert und serialisiert den Inhalt erneut, was die Signaturüberprüfung bricht. Definieren Sie `/webhooks/dodo` mit `express.raw()` *vor* der `app.use(express.json())`-Zeile.
+</Warning>
+
+<Check>
+Backend bereit: abonnieren, aufladen, Guthaben, senden und Webhook-Handler sind alle verkabelt.
+</Check>
+</Step>
+
+<Step title="Add a demo UI">
+Erstellen Sie `public/index.html`:
+
+<CodeGroup>
+
+```html public/index.html expandable
+<!doctype html>
+<html>
+  <head>
+    <title>MailKit Demo</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 20px;
+        color: #1a1a2e;
+      }
+      h1 { font-size: 28px; margin-bottom: 4px; }
+      h2 { font-size: 16px; margin-top: 32px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+      label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+      input, select, textarea {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-family: inherit;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      button {
+        background: #1a1a2e;
+        color: white;
+        padding: 10px 18px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        margin-top: 12px;
+      }
+      button:hover { background: #2d2d4a; }
+      .out {
+        background: #f6f6fa;
+        padding: 12px;
+        border-radius: 6px;
+        margin-top: 12px;
+        font-size: 13px;
+        font-family: ui-monospace, monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .balance { font-size: 36px; font-weight: 700; color: #4f46e5; }
+      .balance-sub { color: #888; font-size: 13px; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>MailKit</h1>
+    <p>Prepaid transactional email, billed per send.</p>
+
+    <h2>1. Subscribe to MailKit ($19/mo, 5,000 emails)</h2>
+    <label>Email</label>
+    <input id="subEmail" type="email" placeholder="you@example.com" />
+    <label>Name</label>
+    <input id="subName" type="text" placeholder="Your name" />
+    <button onclick="subscribe()">Get checkout link</button>
+    <div id="subOut" class="out" hidden></div>
+
+    <h2>2. Check your balance</h2>
+    <label>Customer ID</label>
+    <input id="balCust" type="text" placeholder="cus_xxxxxxxxxxxx" />
+    <button onclick="checkBalance()">Refresh</button>
+    <div id="balOut" class="out" hidden></div>
+
+    <h2>3. Send a transactional email</h2>
+    <label>Customer ID</label>
+    <input id="sendCust" type="text" placeholder="cus_xxxxxxxxxxxx" />
+    <label>To (Resend's sandbox accepts delivered@resend.dev)</label>
+    <input id="sendTo" type="email" value="delivered@resend.dev" />
+    <label>Subject</label>
+    <input id="sendSubj" type="text" value="Hello from MailKit" />
+    <label>HTML body</label>
+    <textarea id="sendBody" rows="3">&lt;strong&gt;It works!&lt;/strong&gt;</textarea>
+    <button onclick="sendEmail()">Send</button>
+    <div id="sendOut" class="out" hidden></div>
+
+    <h2>4. Run low? Buy a top-up pack</h2>
+    <label>Customer ID</label>
+    <input id="topCust" type="text" placeholder="cus_xxxxxxxxxxxx" />
+    <button onclick="topup()">Buy 5,000 emails ($9)</button>
+    <div id="topOut" class="out" hidden></div>
+
+    <script>
+      const show = (id, content) => {
+        const el = document.getElementById(id);
+        el.hidden = false;
+        el.innerHTML = content;
+      };
+
+      async function subscribe() {
+        const r = await fetch('/checkout/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('subEmail').value,
+            name: document.getElementById('subName').value,
+          }),
+        });
+        const data = await r.json();
+        show('subOut', r.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open checkout →</a>`
+          : `Error: ${data.error}`);
+      }
+
+      async function checkBalance() {
+        const id = document.getElementById('balCust').value;
+        const r = await fetch(`/credits/${id}`);
+        const data = await r.json();
+        show('balOut', r.ok
+          ? `<div class="balance">${Number(data.balance).toLocaleString()}</div>
+             <div class="balance-sub">emails available</div>`
+          : `Error: ${data.error}`);
+      }
+
+      async function sendEmail() {
+        const r = await fetch('/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: document.getElementById('sendCust').value,
+            to: document.getElementById('sendTo').value,
+            subject: document.getElementById('sendSubj').value,
+            html: document.getElementById('sendBody').value,
+          }),
+        });
+        const data = await r.json();
+        show('sendOut', r.ok ? `Sent. Message id: ${data.id}` : `Error: ${data.error}`);
+      }
+
+      async function topup() {
+        const r = await fetch('/checkout/topup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customer_id: document.getElementById('topCust').value }),
+        });
+        const data = await r.json();
+        show('topOut', r.ok
+          ? `<a href="${data.checkout_url}" target="_blank">Open top-up checkout →</a>`
+          : `Error: ${data.error}`);
+      }
+    </script>
+  </body>
+</html>
+```
+
+</CodeGroup>
+</Step>
+</Steps>
+
+## Schritt 4: Verkabeln Sie den Webhook-Endpunkt
+
+Das `credit.balance_low` Ereignis ermöglicht es Ihnen, Kunden *vor* dem Auslaufen zu benachrichtigen. Ohne es bemerken sie das Problem das erste Mal, wenn eine E-Mail nicht gesendet werden kann.
+
+<Steps>
+<Step title="Expose your local server">
+Webhooks benötigen eine öffentliche URL. Verwenden Sie [ngrok](https://ngrok.com) (oder jeden anderen Tunnel) während der Entwicklung:
+
+```bash
+ngrok http 3000
+```
+
+Kopieren Sie die HTTPS-Weiterleitungs-URL (z.B. `https://1234abcd.ngrok-free.app`).
+</Step>
+
+<Step title="Register the endpoint in Dodo">
+1. Gehen Sie zu **Entwickler → Webhooks → Endpunkt hinzufügen**
+2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
+3. **Ereignisse**: Abonnieren Sie `credit.added`, `credit.balance_low` und `credit.rolled_over`
+4. Speichern und kopieren Sie dann den **Signierschlüssel** in Ihre `.env` als `DODO_WEBHOOK_KEY`
+5. Starten Sie Ihren Server neu
+</Step>
+</Steps>
+
+## Schritt 5: Testen Sie den vollständigen Ablauf
+
+<Steps>
+<Step title="Start the server">
+
+```bash
+npm run dev
+```
+
+Sie sollten `MailKit running on http://localhost:3000` sehen. Öffnen Sie es in Ihrem Browser.
+</Step>
+
+<Step title="Subscribe a test customer">
+1. Geben Sie in Abschnitt 1 eine Test-E-Mail und einen Namen ein, klicken Sie auf **Checkout-Link abrufen**
+2. Öffnen Sie den Link, schließen Sie den Checkout mit einer [Testkarte](/miscellaneous/testing-process) ab
+3. Nach der Zahlung finden Sie die `customer_id` in Ihrem Dashboard unter **Kunden**
+
+<Check>
+Der Kunde sollte jetzt **5.000 E-Mails** in seinem Guthaben haben. Überprüfen Sie **Kunden → [Kunde] → Guthaben**.
+</Check>
+</Step>
+
+<Step title="Send a real email">
+1. Fügen Sie die `customer_id` in Abschnitt 3 ein
+2. Lassen Sie `to` auf `delivered@resend.dev` gesetzt (Resend's Sandbox-Posteingang, der alles akzeptiert)
+3. Klicken Sie auf **Senden**
+
+Sie erhalten eine Resend-Nachrichten-ID zurück. Aktualisieren Sie das Guthaben in Abschnitt 2 und die Zahl sinkt sofort auf 4.999. Jede Hauptbuchabbuchung spiegelt sich im Live-Guthaben wider, sobald sie geschrieben ist.
+</Step>
+
+<Step title="Trigger the low-balance webhook">
+Der Schwellenwert beträgt 20 % (1.000 von den 5.000 E-Mail-Kontingent). Um ihn auszulösen, ohne 4.000 echte E-Mails zu senden, **ziehen Sie das Guthaben manuell vom Dashboard ab:**
+
+1. Gehen Sie zu **Kunden → [Kunde] → Guthaben → E-Mail-Guthaben**
+2. Klicken Sie auf **Guthaben anpassen** und belasten Sie `4000`
+3. Senden Sie eine weitere E-Mail über die Demo
+
+Ihr Server sollte innerhalb weniger Sekunden protokollieren:
+
+```
+[low-balance] cus_xxx has 999 Email Credits left (under 20%)
+[NOTIFY] cus_xxx: 999 emails left. Consider topping up.
+```
+
+<Check>
+Ihr Server hat den Webhook erhalten und verifiziert. In der Produktion würden Sie hier den Kunden per E-Mail benachrichtigen oder ein App-Banner anzeigen.
+</Check>
+</Step>
+
+<Step title="Buy a top-up pack">
+1. Fügen Sie die `customer_id` in Abschnitt 4 ein
+2. Klicken Sie auf **5.000 E-Mails kaufen**, schließen Sie den Test-Checkout ab
+3. Aktualisieren Sie das Guthaben, und es springt um 5.000 nach oben
+
+<Check>
+Ein `credit.added`-Event wird mit `grant_source: one_time` ausgelöst. Die Aufladung stapelt sich auf die Abonnementguthaben; beide Pools werden FIFO verbraucht (ältester nicht abgelaufener Anspruch zuerst).
+</Check>
+</Step>
+
+<Step title="Test the hard stop">
+Belasten Sie das Guthaben manuell auf Null und versuchen Sie, eine weitere E-Mail zu senden. Sie erhalten:
+
+```json
+{ "error": "No email credits remaining. Buy a top-up pack or upgrade your plan." }
+```
+
+Dieses 402 ist Ihre Anwendungsebene-Durchsetzung. Die Dodo-Guthaben-API ist die Wahrheit; cachen Sie sie niemals auf dem Client.
+</Step>
+</Steps>
+
+## Fehlerbehebung
+
+<AccordionGroup>
+<Accordion title="Webhook signature verification fails (401)">
+Die Signatur wird über den rohen HTTP-Inhalt berechnet. `express.json()` interpretiert und serialisiert die Nutzlast erneut, was den HMAC bricht. Stellen Sie sicher, dass `/webhooks/dodo` mit `express.raw({ type: 'application/json' })` *über* der `app.use(express.json())`-Zeile registriert wird und dass `DODO_WEBHOOK_KEY` mit dem auf der Endpunkt-Detailseite angezeigten Signierschlüssel übereinstimmt.
+</Accordion>
+
+<Accordion title="Balance is 0, customer not found, or credits don't deduct">
+Drei Dinge, die Sie in dieser Reihenfolge überprüfen sollten:
+
+1. Der Kunde hat den **Checkout abgeschlossen** (Guthaben werden bei erfolgreicher Zahlung und nicht bei Sitzungsbeginn gewährt)
+2. `CREDIT_ENTITLEMENT_ID` in Ihrer `.env` stimmt mit dem an das Produkt angehängten Guthaben überein (falsch zugeordnete IDs schreiben stillschweigend zum falschen Guthaben)
+3. Die `customer_id`, die Sie übergeben, stammt von Dodo (die `customers`-Tabelle im Dashboard), nicht aus Ihrer eigenen Datenbank
+</Accordion>
+
+<Accordion title="Resend rejects the recipient">
+Der Sandbox-Absender `onboarding@resend.dev` liefert nur an die E-Mail auf Ihrem Resend-Konto oder an `delivered@resend.dev`. Um an andere zu senden, [verifizieren Sie eine Domain](https://resend.com/docs/dashboard/domains/introduction) und verwenden Sie eine `from`-Adresse darauf.
+</Accordion>
+</AccordionGroup>
+
+## Was Sie gebaut haben
+
+<CardGroup cols={2}>
+<Card title="One reusable credit unit" icon="envelope">
+`Email Credits`, einmal definiert und sowohl am Abonnementplan als auch am Aufladepaket angehängt.
+</Card>
+
+<Card title="Subscription with prepaid allowance" icon="layer-group">
+$19/Monat gewährt 5.000 E-Mails pro Zyklus. Kunden wissen, wofür sie zahlen, und Sie kennen Ihre schlimmstenfalligen Kosten.
+</Card>
+
+<Card title="Top-up pack" icon="circle-plus">
+Ein einmaliges Produkt, das 5.000 E-Mails gewährt. Stapelt sich auf Abonnementguthaben ohne erforderlichen Planwechsel.
+</Card>
+
+<Card title="Instant ledger debits" icon="bolt">
+Ein einzelner `createLedgerEntry`-Aufruf nach jedem Senden. Kein Zähler, keine Aggregationsverzögerung, idempotent bei wiederholtem Versand über Resend-Nachrichten-ID.
+</Card>
+</CardGroup>
+
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Lesen Sie die vollständige CBB-Dokumentation für Rollover-, Überschreitungsmodi, Hauptbuchverwaltung und die vollständige API-Oberfläche.
+</Card>
+
+Brauchen Sie Hilfe?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- support@dodopayments.com
+
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- support@dodopayments.com
