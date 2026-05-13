@@ -1,0 +1,280 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: Entitlement-Gewährung
+description: Die Nutzlast, die an Ihren Webhook-Endpunkt gesendet wird, wenn
+  eine Entitlement-Gewährung erstellt, geliefert, fehlschlägt oder widerrufen
+  wird.
+icon: gift
+keywords:
+  - Dodo Payments
+  - Entitlement-Webhook
+  - Gewährungsveranstaltungen
+  - Erfüllung
+  - Lizenzschlüssel-Wehbhook
+  - Digitale Datei-Webhook
+---
+
+## Entitlement-Gewährung Webhook-Ereignisse
+
+Diese Ereignisse werden ausgelöst, wann immer sich der Status einer Entitlement-Gewährung eines Kunden ändert, zum Beispiel wenn ein Lizenzschlüssel generiert wird, eine Discord-Rolle zugewiesen wird, ein Download-Link bereitgestellt wird oder der Zugriff widerrufen wird. Abonnieren Sie diese Ereignisse, um Ihre Anwendung mit dem zu synchronisieren, worauf jeder Kunde zugreifen kann.
+
+| Ereignis | Beschreibung |
+|-------|-------------|
+| `entitlement_grant.created` | Eine neue Gewährungszeile wurde erstellt. Der Status ist `delivered` sofort für Lizenzschlüssel und `pending` für jede andere Integration. |
+| `entitlement_grant.delivered` | Die Gewährung wechselt zu „geliefert“. Der Kunde hat jetzt Zugriff auf die berechtigte Plattform, Datei oder den Lizenzschlüssel. |
+| `entitlement_grant.failed` | Die Lieferung ist fehlgeschlagen und wird nicht erneut versucht. Überprüfen Sie `error_code` und `error_message`. |
+| `entitlement_grant.revoked` | Der Zugriff wurde entzogen. Überprüfen Sie `revocation_reason`, um zu verstehen warum. |
+
+Alle vier Ereignisse teilen sich die gleiche `EntitlementGrantResponse` Nutzlast, die im untenstehenden Schema dokumentiert ist.
+
+---
+
+## Ereignisauslöser
+
+### entitlement_grant.created
+
+Eine Gewährungszeile wurde gerade eingefügt. Die Gewährung hat ab diesem Zeitpunkt immer einen stabilen `id`, auch wenn sich ihr Status ändert. Verwenden Sie dieses Ereignis, um zu protokollieren, dass die Erfüllung in Arbeit ist.
+
+Für **Lizenzschlüssel** wird die Zeile direkt mit `status: "delivered"` und `delivered_at` eingefügt, sodass ein einziges `created` Ereignis keiner weiteren Statusänderungen folgt, es sei denn, die Gewährung wird später widerrufen.
+
+Für **jede andere Integration** kommt die Zeile mit `status: "pending"` an. Ein `delivered` oder `failed` Ereignis folgt, sobald die Lieferung abgeschlossen ist:
+
+- **OAuth-basierte Integrationen** (Discord, GitHub, Notion) enthalten ein `oauth_url`, das der Kunde besuchen muss, um die Zustimmung abzuschließen. Die Gewährung bleibt `pending`, bis der Kunde autorisiert.
+- **Plattform-direkte Integrationen** (Telegram, Framer, Digitale Dateien) bleiben nur kurzzeitig `pending`, während der Plattformaufruf läuft, und wechseln dann zu `delivered`.
+
+### entitlement_grant.delivered
+
+Die Gewährung ist von `pending` zu `delivered` übergegangen. Der Kunde hat jetzt den Zugriff, der durch die Berechtigung beschrieben wird. Verwenden Sie dieses Ereignis, um abhängige Funktionen in Ihren eigenen Systemen freizuschalten, z. B. um einen Arbeitsbereich bereitzustellen, eine benutzerdefinierte Willkommens-E-Mail zu senden oder eine "erfüllt"-Flagge zu setzen.
+
+Das `delivered_at` Feld der Nutzlast erfasst, wann die Lieferung abgeschlossen wurde. Für Gewährungen, die bei Erstellung `delivered` angekommen sind, erhalten Sie `created` und `delivered` Ereignisse hintereinander.
+
+### entitlement_grant.failed
+
+Die Lieferung wurde versucht und ist mit einem nicht wiederholbaren Fehler fehlgeschlagen. Die Felder `error_code` und `error_message` erklären das Scheitern. Häufige Ursachen sind ein widerrufenes OAuth-Token, eine verweigerte Plattformberechtigung oder ein fehlendes Ziel (z. B. eine gelöschte Discord-Gilde).
+
+<Tip>
+Behandeln Sie `entitlement_grant.failed` als umsetzbar. Der Kunde hat bezahlt, aber keinen Zugriff erhalten. Leiten Sie Misserfolge an Ihr Support-Team weiter oder lösen Sie eine Neuerteilung aus, sobald das zugrunde liegende Problem gelöst ist.
+</Tip>
+
+### entitlement_grant.revoked
+
+Der Zugriff wurde auf Plattformebene widerrufen: Discord-Rolle entfernt, GitHub-Kollaborateur entfernt, Lizenzschlüssel deaktiviert, Download-URLs für Dateien werden nicht mehr ausgegeben. Das `revocation_reason` Feld zeichnet den Auslöser auf.
+
+| `revocation_reason` | Auslöser |
+|---|---|
+| `subscription_cancelled` | Das Abonnement des Kunden wurde storniert (`subscription.cancelled` Ereignis). |
+| `subscription_on_hold` | Das Abonnement ist aufgrund eines fehlgeschlagenen Erneuerungsversuchs angehalten (`subscription.on_hold`). Wiederherstellbar: Ein erfolgreicher erneuter Versuch führt zu einer Neugewährung. |
+| `subscription_expired` | Das Abonnement hat sein Ende der Laufzeit erreicht (`subscription.expired`). |
+| `plan_changed` | Der Plan hat sich geändert; alte Gewährungen werden widerrufen, bevor neue ausgestellt werden (`subscription.plan_changed`). |
+| `refund` | Eine Rückerstattung wurde für die ursprüngliche Einmalzahlung verarbeitet (`refund.succeeded`). |
+| `manual` | Ein Händler hat die Gewährung über die API oder das Dashboard widerrufen. Manuelle Widerrufe werden bei Abonnementerneuerung nicht automatisch neu gewährt. |
+| `license_key_disabled` | Der Lizenzschlüssel hinter einer Lizenzschlüssel-Gewährung wurde deaktiviert. Die Gewährung wird automatisch reaktiviert, wenn der Schlüssel wieder aktiviert wird. |
+| `platform_external` | Die Plattform-Seite einer Integration ist aus der Synchronisation geraten (zum Beispiel wurde eine Discord-Rolle manuell entfernt, die GitHub-App hat den Repository-Zugriff verloren, oder ein Abgleichsprozess hat ein fehlendes Ziel erkannt). Die Gewährung wird bei Abonnementerneuerung nicht automatisch neu gewährt, bis das zugrunde liegende Plattformproblem gelöst ist. |
+
+---
+
+## Nutzlastvarianten
+
+Das `data` Feld ist immer ein `EntitlementGrantResponse` Objekt. Zwei Integrationstypen hängen zusätzliche verschachtelte Objekte an:
+
+- **`license_key`** wird beigefügt, wenn der Typ der Entitlement-Integration `license_key` ist. Es enthält den generierten Schlüssel, das Ablaufdatum und die Aktivierungsnutzung.
+- **`digital_product_delivery`** wird beigefügt, wenn der Integrationstyp `digital_files` ist. Es enthält signierte Download-URLs, das optionale `instructions` und das optionale `external_url`.
+
+Für alle anderen Integrationstypen (Discord, GitHub, Telegram, Framer, Notion) sind beide Felder `null`; die relevante Konfiguration wird in der Berechtigung selbst erfasst, nicht in der Gewährung.
+
+---
+
+## Beispiel-Nutzlasten
+
+### Lizenzschlüssel geliefert (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### Digitale Dateien geliefert (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Discord-Rolle erstellt und ausstehend (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### Gewährung bei Abonnementstornierung widerrufen (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### Lieferung fehlgeschlagen (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## Integrationstipps
+
+- **Warten Sie auf `entitlement_grant.delivered`, bevor Sie abhängige Funktionen freischalten.** Ein `payment.succeeded` Ereignis sagt Ihnen, dass das Geld eingegangen ist; es sagt Ihnen nicht, dass der Kunde das GitHub-Repo oder die Discord-Rolle bereits hat. Das `delivered` Ereignis ist die maßgebliche Quelle für die Erfüllung.
+- **Ordnen Sie `revocation_reason` Retentionsflüssen zu.** Ein `subscription_on_hold` Widerruf bedeutet normalerweise, dass die Karte des Kunden fehlgeschlagen ist und die nächste Erneuerung den Zugriff neu gewährt. Ein `manual` oder `subscription_cancelled` Widerruf ist beabsichtigt. Behandeln Sie sie in der Kundenkommunikation unterschiedlich.
+- **Verwenden Sie die `id` der Gewährung als Ihre Idempotenzschlüssel.** Eine einzelne Gewährung löst maximal ein `created` Ereignis, ein Terminalereignis (`delivered` oder `failed`) und ein `revoked` Ereignis aus. Wiederholungen aus dem Webhook-System können Ereignisse wiederholen; entdoppeln Sie anhand der Gewährung `id` plus `type`.
+- **Untersuchen Sie `license_key` und `digital_product_delivery`, um den Integrationstyp zu erkennen.** Die Nutzlast der Gewährung selbst trägt nicht den Integrationstyp, aber genau eines dieser verschachtelten Objekte wird für Lizenzschlüssel- und digitale Datei-Berechtigungen ausgefüllt.
+- **Für OAuth-basierte Gewährungen, zeigen Sie `oauth_url` dem Kunden an.** Das `entitlement_grant.created` Ereignis für Discord-, GitHub- oder Notion-Abonnentenflüsse enthält ein `oauth_url` und `oauth_expires_at`. Senden Sie es per E-Mail an den Kunden oder zeigen Sie es in Ihrer App an, um die Lieferung zu ermöglichen.

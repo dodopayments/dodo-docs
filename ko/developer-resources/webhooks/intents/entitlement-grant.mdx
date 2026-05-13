@@ -1,0 +1,278 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: 자격 부여
+description: 자격 부여가 생성, 전달, 실패 또는 취소될 때 웹훅 엔드포인트로 전송되는 페이로드입니다.
+icon: gift
+keywords:
+  - Dodo Payments
+  - 자격 웹훅
+  - 부여 이벤트
+  - 이행
+  - 라이선스 키 웹훅
+  - 디지털 파일 웹훅
+---
+
+## 자격 부여 웹훅 이벤트
+
+고객의 자격 부여가 상태를 변경할 때마다 예를 들어 라이선스 키가 생성되거나, Discord 역할이 할당되거나, 다운로드 링크가 제공되거나, 액세스가 취소될 때 트리거됩니다. 이러한 이벤트에 구독하여 각 고객이 액세스할 수 있는 내용을 지속적으로 동기화하세요.
+
+| 이벤트 | 설명 |
+|-------|-------------|
+| `entitlement_grant.created` | 새 부여 행이 생성되었습니다. 상태는 라이선스 키의 경우 즉시 `delivered`이고, 다른 모든 통합의 경우 `pending`입니다. |
+| `entitlement_grant.delivered` | 부여가 전달로 전환됩니다. 이제 고객은 자격 부여된 플랫폼, 파일, 또는 라이선스 키에 액세스할 수 있습니다. |
+| `entitlement_grant.failed` | 전달 실패, 재시도되지 않습니다. `error_code`과 `error_message`를 검사하세요. |
+| `entitlement_grant.revoked` | 액세스가 철회되었습니다. 그 이유를 이해하려면 `revocation_reason`를 검사하세요. |
+
+모든 네 개의 이벤트는 아래 스키마에 문서화된 동일한 `EntitlementGrantResponse` 페이로드를 공유합니다.
+
+---
+
+## 이벤트 트리거
+
+### entitlement_grant.created
+
+방금 부여 행이 삽입되었습니다. 이 시점부터 부여는 안정적인 `id`를 항상 가지고 있으며, 상태가 변경되더라도 마찬가지입니다. 이 이벤트를 사용하여 이행이 진행 중임을 기록하세요.
+
+**라이선스 키**의 경우, 행은 `status: "delivered"`와 `delivered_at`가 채워진 상태로 직접 삽입되므로, 단일 `created` 이벤트가 따르고 부여가 나중에 철회되지 않는 한 추가 상태 변경이 없습니다.
+
+**다른 모든 통합**의 경우, 행은 `status: "pending"`와 함께 도착합니다. 전달이 완료되면 `delivered` 또는 `failed` 이벤트가 다음과 같습니다:
+
+- **OAuth 기반 통합** (Discord, GitHub, Notion)에는 고객이 동의를 완료하기 위해 방문해야 하는 `oauth_url`가 포함되어 있습니다. 고객이 승인할 때까지 부여는 `pending`에 머무릅니다.
+- **플랫폼 직접 통합** (Telegram, Framer, Digital Files)은 플랫폼 호출이 실행되는 동안에만 잠시 `pending`에 머물고, 그 후 `delivered`로 이동합니다.
+
+### entitlement_grant.delivered
+
+부여는 `pending`에서 `delivered`로 전환되었습니다. 이제 고객은 자격 부여된 액세스를 받았습니다. 이 이벤트를 사용하여 작업 공간을 제공하거나, 맞춤 환영 이메일을 보내거나, "이행 완료" 플래그를 표시하는 등의 종속 기능을 잠금 해제하세요.
+
+페이로드의 `delivered_at` 필드는 전달이 완료된 시간을 캡처합니다. 생성 시에 `delivered`에 도달한 부여의 경우, `created`와 `delivered` 이벤트를 연속해서 받게 됩니다.
+
+### entitlement_grant.failed
+
+전달이 시도되었으나 다시 시도할 수 없는 오류로 실패했습니다. `error_code`와 `error_message` 필드는 실패 원인을 설명합니다. 일반적인 원인으로는 철회된 OAuth 토큰, 허가된 플랫폼 권한 거부 또는 삭제된 Discord 길드와 같은 대상 누락이 포함됩니다.
+
+<Tip>
+`entitlement_grant.failed`를 실행 가능한 문제로 처리하십시오. 고객은 지불했으나 액세스를 받지 못했습니다. 지원 팀에 실패를 알리거나 근본적인 문제가 해결된 후 재부여를 트리거하십시오.
+</Tip>
+
+### entitlement_grant.revoked
+
+플랫폼 수준에서 액세스가 철회되었습니다: Discord 역할 제거, GitHub 협력자 제거, 라이선스 키 비활성화, 파일 다운로드 URL 더 이상 발행되지 않음. `revocation_reason` 필드는 트리거를 기록합니다.
+
+| `revocation_reason` | 트리거 |
+|---|---|
+| `subscription_cancelled` | 고객의 구독이 취소되었습니다 (`subscription.cancelled` 이벤트). |
+| `subscription_on_hold` | 갱신 실패로 구독이 보류 중입니다 (`subscription.on_hold`). 회복 가능: 성공적인 재시도는 재부여를 발생시킵니다. |
+| `subscription_expired` | 구독이 기한 만료에 도달했습니다 (`subscription.expired`). |
+| `plan_changed` | 플랜이 변경되었습니다; 기존 부여는 새로운 부여가 발행되기 전에 취소됩니다 (`subscription.plan_changed`). |
+| `refund` | 원타임 결제에 대한 환불이 처리되었습니다 (`refund.succeeded`). |
+| `manual` | 판매자가 API 또는 대시보드를 통해 부여를 철회했습니다. 수동 철회는 구독 갱신 시 자동 재부여되지 않습니다. |
+| `license_key_disabled` | 라이선스 키 부여의 라이선스 키가 비활성화되었습니다. 키가 다시 활성화되면 부여가 자동으로 재활성화됩니다. |
+| `platform_external` | 통합의 플랫폼 측이 동기에서 벗어났습니다 (예: Discord 역할이 수동으로 제거됨, GitHub 앱이 리포지토리 접근 권한 상실, 혹은 대상을 찾을 수 없는 조정 통과). 근본적인 플랫폼 문제가 해결될 때까지 구독 갱신 시 부여가 자동 재부여되지 않습니다. |
+
+---
+
+## 페이로드 변형
+
+`data` 필드는 항상 `EntitlementGrantResponse` 객체입니다. 두 가지 통합 유형은 추가 중첩 객체를 첨부합니다:
+
+- **`license_key`**는 자격 통합 유형이 `license_key`일 때 포함됩니다. 생성된 키, 만료 및 활성화 사용을 포함합니다.
+- **`digital_product_delivery`**는 통합 유형이 `digital_files`일 때 포함됩니다. 서명된 다운로드 URL, 선택적 `instructions` 및 선택적 `external_url`를 포함합니다.
+
+Discord, GitHub, Telegram, Framer, Notion의 다른 모든 통합 유형에 대해서는 두 필드 모두 `null`이며, 관련 설정은 부여에 캡처되며, 부여 자체가 아닙니다.
+
+---
+
+## 샘플 페이로드
+
+### 라이선스 키 전송 완료 (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### 디지털 파일 전송 완료 (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Discord 역할 생성 및 보류 중 (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### 구독 취소 시 부여 철회됨 (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### 전달 실패 (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## 통합 팁
+
+- **종속 기능 잠금 해제를 위해 `entitlement_grant.delivered`를 기다리세요.** `payment.succeeded` 이벤트는 금액이 정산되었다는 것을 알려줄 뿐이며, 고객이 GitHub 리포지토리나 Discord 역할을 가졌다는 것을 알려주지 않습니다. `delivered` 이벤트가 이행을 위한 신뢰할 수 있는 출처입니다.
+- **`revocation_reason`를 유지 흐름에 매핑하세요.** `subscription_on_hold` 철회는 일반적으로 고객의 카드가 실패했고, 다음 갱신이 액세스를 재부여할 것이라는 것을 의미합니다. `manual` 또는 `subscription_cancelled` 철회는 의도적입니다. 고객 메시지에서 이들을 다르게 처리하십시오.
+- **그랜트 `id`를 불변성 키로 사용하십시오.** 단일 그랜트는 최대 하나의 `created` 이벤트와 최대 하나의 터미널 이벤트 (`delivered` 또는 `failed`), 최대 하나의 `revoked` 이벤트를 발생시킵니다. 웹훅 시스템의 재전달은 이벤트를 반복할 수 있습니다. 그랜트 `id` 플러스 `type`에서 중복을 제거하십시오.
+- **통합 유형을 인식하기 위해 `license_key`와 `digital_product_delivery`를 검사하세요.** 그랜트 페이로드 자체에는 통합 유형이 포함되어 있지 않지만, 라이선스 키 및 디지털 파일 자격에서는 이 중 하나의 중첩 객체가 정확히 채워집니다.
+- **OAuth 기반 부여의 경우 `oauth_url`를 고객에게 노출하세요.** Discord, GitHub, Notion 가입자 흐름에 대한 `entitlement_grant.created` 이벤트에는 `oauth_url` 및 `oauth_expires_at`가 포함됩니다. 이메일로 보내거나 앱에 표시하여 전달을 차단 해제하세요.

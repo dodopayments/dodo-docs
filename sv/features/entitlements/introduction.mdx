@@ -1,0 +1,277 @@
+---
+title: Introduktion
+sidebarTitle: Introduktion
+description: Leverera automatiskt licensnycklar, nedladdningsbara filer och
+  tillgång till plattformar som Discord, GitHub, Telegram, Framer och Notion när
+  kunder betalar.
+icon: box-archive
+keywords:
+  - Dodo Payments
+  - entitlements
+  - uppfyllelse
+  - licensnycklar
+  - digital leverans
+  - plattformåtkomst
+---
+
+<Info>
+Behörighet förvandlar en lyckad betalning eller aktiv prenumeration till verklig åtkomst: en licensnyckel i din kunds inkorg, en Discord-roll, ett GitHub-repository, en Notion-mall, en Framer remix-länk, en Telegram-chattinbjudan eller ett nedladdningsbart filpaket. Dodo Payments hanterar och återkallar den åtkomsten automatiskt när betalningscykeln förändras.
+</Info>
+
+<Frame caption="The Entitlements dashboard. Each entitlement is a reusable template; the right pane shows individual customer grants.">
+<img src="/images/entitlements/list.png" alt="Entitlements dashboard med en lista över entitlements till vänster och grant-aktiviteter till höger" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+## Vad är Entitlements?
+
+En **entitlement** är en återanvändbar definition av något du levererar till en kund: en Pro licensnyckel, en "Patrons"-roll i Discord, åtkomst till ditt privata GitHub-repository, ett nedladdningsbart e-bokpaket. Du fäster entitlements till produkter, och Dodo Payments hanterar resten.
+
+När en kund köper produkten skapar Dodo Payments ett **grant**, en enskild kunds tilldelning av den entitlement. Grants rör sig genom ett litet antal statusar: `pending` medan leveransen pågår, `delivered` när kunden har tillgång, `failed` om leveransen inte kunde slutföras, och `revoked` när åtkomst återkallas.
+
+<Tip>
+Entitlements avgränsar **uppfyllelse** (har kunden tillgång?). Krediter avgränsar **förbrukning** (hur mycket kan de använda?). Båda kan fästas till samma produkt. Se [Kreditbaserad Fakturering](/features/credit-based-billing) för krediter.
+</Tip>
+
+## Tillgängliga Integrationer
+
+Dodo Payments levererar varje entitlement genom en dedikerad integration. Välj integrationen som matchar det du säljer.
+
+<CardGroup cols={2}>
+<Card title="License Keys" icon="key" href="/features/license-keys">
+Generera unika licensnycklar med aktiveringsgränser och utgångsdatum. Bäst för mjukvara, plugins och CLI:er.
+</Card>
+
+<Card title="Digital Files" icon="download" href="/features/digital-product-delivery">
+Leverera nedladdningsbara filer (e-böcker, mallar, media) med undertecknade nedladdnings-URL:er och valfria instruktioner.
+</Card>
+
+<Card title="Discord" icon="discord" href="/features/entitlements/discord">
+Ge en kund en roll i din Discord-server när de köper. Återkallas automatiskt vid avbokning.
+</Card>
+
+<Card title="GitHub" icon="github" href="/features/entitlements/github">
+Lägg till kunder som medarbetare till ett privat repository på den behörighetsnivå du väljer.
+</Card>
+
+<Card title="Telegram" icon="telegram" href="/features/entitlements/telegram">
+Lägg till kunder i en privat Telegram-chatt eller -kanal efter köp.
+</Card>
+
+<Card title="Framer" icon="puzzle-piece" href="/features/entitlements/framer">
+Lås upp en Framer-mall remix-länk för betalande kunder.
+</Card>
+
+<Card title="Notion" icon="book" href="/features/entitlements/notion">
+Duplicera en Notion-mall in i kundens arbetsyta vid köp.
+</Card>
+</CardGroup>
+
+---
+
+## Hur Grants Fungerar
+
+Grants drivs av samma betalnings- och prenumerationshändelser som du redan får som webhooks. Du behöver inte anropa grant-API:et själv för köp. Dodo Payments skapar och återkallar grants automatiskt baserat på den underliggande betalningscykeln.
+
+### Grant Lifecycle
+
+<Steps>
+<Step title="Created">
+Ett grant skapas när en betalning slutförs eller en prenumeration blir aktiv. Licensnycklar hoppar direkt till `delivered`. Alla andra integrationer börjar i `pending`. OAuth-baserade integrationer (Discord, GitHub, Notion) inkluderar en `oauth_url` som kunden måste besöka för att slutföra samtycke. Plattform-direkta integrationer (Telegram, Framer, Digitala Filer) sitter endast kortvarigt i `pending` medan leverans tillhandahålls, och övergår sedan till `delivered`.
+</Step>
+
+<Step title="Delivered">
+När leveransen slutförs (licensnyckel genererad, roll tilldelad, repository-åtkomst beviljad, fillänkar lösta, OAuth slutförd), flyttas granten till `delivered` och `delivered_at` sätts.
+</Step>
+
+<Step title="Failed">
+Om integrationsanropet returnerar ett icke-återförsökbart fel (återkallad OAuth-token, nekad behörighet, filen finns inte längre), flyttas granten till `failed`. Fälten `error_code` och `error_message` fångar upp anledningen.
+</Step>
+
+<Step title="Revoked">
+När åtkomsten återkallas (prenumeration annullerad, återbetalning utfärdad, eller återkallning som initierats av handlare) flyttas granten till `revoked`. Fältet `revocation_reason` registrerar utlösaren.
+</Step>
+</Steps>
+
+### Grant-beteende per Händelse
+
+| Händelse | Beteende |
+|---|---|
+| `payment.succeeded` (engångsbetalning) | Utfärda en grant per tillagd entitlement. |
+| `payment.succeeded` (prenumerationslänkad betalning) | No-op. Grants drivs av prenumerationshändelsen nedan. |
+| `subscription.active` | Utfärda grants för eventuella tillagda entitlements som inte redan har en. Tilldela om alla grants som tidigare återkallats för samma prenumeration. |
+| `subscription.renewed` | No-op. Befintliga grants kvarstår vid förnyelser. |
+| `subscription.on_hold` | Återkalla alla levererade och väntande grants. `revocation_reason: subscription_on_hold`. |
+| `subscription.cancelled` | Återkalla alla. `revocation_reason: subscription_cancelled`. |
+| `subscription.expired` | Återkalla alla. `revocation_reason: subscription_expired`. |
+| `subscription.plan_changed` | Återkalla alla nuvarande grants och utfärda sedan grants för den nya planens entitlements. `revocation_reason: plan_changed`. |
+| `refund.succeeded` (engångsbetalning) | Återkalla grants för den betalningen. `revocation_reason: refund`. |
+| Manuell API-återkallelse | Återkalla med `revocation_reason: manual`. Manuella återkallelser återställdes inte automatiskt vid prenumerationsförnyelse. |
+| Licensnyckel inaktiverad | För licensnyckel-grants, inaktivering av den underliggande nyckeln återkallar granten med `revocation_reason: license_key_disabled`. Granten återaktiveras automatiskt om nyckeln återaktiveras. |
+| Plattform-drift upptäckt | Om plattformssidan av en integration drar ut ur synkorn (en Discord-roll borttagen manuellt, GitHub-appen förlorar repository-åtkomst, eller en avstämningspass upptäcker ett saknat mål), återkallas granten med `revocation_reason: platform_external`. Återställdes inte automatiskt vid prenumerationsförnyelse tills det underliggande plattformsproblemet löses. |
+
+<Note>
+Prenumerationsdrivna grants är idempotenta per `(entitlement, customer, subscription)`; förnyelser och återaktiveringar skapar inte dubblett grants. Engångsgrants är idempotenta per `(entitlement, customer, payment)`.
+</Note>
+
+---
+
+## Skapa din första Entitlement
+
+<Steps>
+<Step title="Open Entitlements">
+Gå till **Entitlements** i din Dodo Payments-instrumentpanel och klicka på **+** för att skapa en ny entitlement.
+</Step>
+
+<Step title="Pick an integration">
+Välj integrationstyp: Licensnyckel, Digitala filer, Discord, GitHub, Telegram, Framer eller Notion. För plattformsintegrationer, anslut ditt konto först om du inte redan har gjort det.
+</Step>
+
+<Step title="Configure delivery">
+Fyll i de integrationsspecifika fälten. Till exempel, GitHub ber om ett repository och en behörighetsnivå; Discord ber om en server och en eventuell roll; Licensnyckel ber om aktiveringsgränser och utgångsdatum.
+
+<Frame caption="Creating a GitHub entitlement. Each integration shows the fields it needs.">
+<img src="/images/entitlements/github/create.png" alt="Ny Entitlement-formulär med integrationsväljare och konfigurationsfält" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+
+<Step title="Save">
+Spara entitlementen. Du kan nu fästa den till valfri produkt.
+</Step>
+</Steps>
+
+## Fäst Entitlements till Produkter
+
+Öppna en produkt, expandera **Avancerade Inställningar → Entitlements & Krediter**, och välj de entitlements som ska levereras när produkten köps. En enda produkt kan leverera flera entitlements på en gång. Till exempel, en Pro-plan kan inkludera en licensnyckel, GitHub-åtkomst och en Discord-roll.
+
+<Frame caption="Attaching entitlements to a product. Selected entitlements are delivered on every successful purchase or active subscription.">
+<img src="/images/entitlements/attach-to-product.png" alt="Produktentitlement urvalspanel som visar kryssrutor för varje tillgänglig entitlement" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+---
+
+## Kundupplevelse
+
+### E-post och kundportal
+
+Kunderna får ett leveransbrev efter köp som innehåller licensnyckeln, nedladdningslänkar, OAuth-inbjudningslänkar eller plattforminbjudan, beroende på vad som gäller för entitlements på produkten. Samma detaljer är tillgängliga på obestämd tid från [Kundportalen](/features/customer-portal) under deras orderhistorik.
+
+### OAuth-baserad leverans
+
+Discord, GitHub och Notion abonnentåtkomst kräver att kunden godkänner Dodo Payments att ge dem tillgång. Dessa grants stannar i `pending` status tills kunden slutför OAuth-flödet med länken från deras e-post eller kundportal. När de godkänner, flyttas granten till `delivered` och plattformstillgången tillhandahålls omedelbart.
+
+### Återkallelse
+
+Återkallade grants tas bort på plattformnivå: Discord-rollen tas bort, GitHub-kollaboratören tas bort, licensnyckeln inaktiveras. Kunderna ser ändringen återspeglas i kundportalen.
+
+<Warning>
+För Digitala Filer, återkallelse tar bort tillgången till de undertecknade URL:erna framöver men ogiltigförklarar inte kopior som en kund redan har laddat ner. Planera innehållsgränserna därefter.
+</Warning>
+
+---
+
+## Hantera Grants
+
+Öppna vilken entitlement som helst från instrumentpanelen för att se dess grants. Grant-detaljpanelen visar totala grants, statusfilter, kundinformation, leveransdatum och en återkallelseåtgärd.
+
+Du kan också hantera grants programmatiskt:
+
+<CodeGroup>
+
+```typescript TypeScript theme={null}
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env['DODO_PAYMENTS_API_KEY'],
+});
+
+// List grants for an entitlement
+const grants = await client.entitlements.grants.list('ent_abc123', {
+  status: 'delivered',
+});
+
+// Revoke a single grant
+await client.entitlements.grants.revoke('grant_xyz789', {
+  path_id: 'ent_abc123',
+});
+```
+
+```python Python theme={null}
+client.entitlements.grants.list(
+    "ent_abc123",
+    status="delivered",
+)
+
+client.entitlements.grants.revoke(
+    "grant_xyz789",
+    path_id="ent_abc123",
+)
+```
+
+```go Go theme={null}
+grants, _ := client.Entitlements.Grants.List(
+  ctx, "ent_abc123",
+  dodopayments.EntitlementGrantListParams{Status: dodopayments.F("delivered")},
+)
+
+_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+```
+
+</CodeGroup>
+
+---
+
+## API-hantering
+
+<CardGroup cols={2}>
+<Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
+Skapa en ny entitlement av valfri integrationstyp.
+</Card>
+<Card title="List Entitlements" icon="list" href="/api-reference/entitlements/list-entitlements">
+Lista entitlements med filtrering efter integrationstyp.
+</Card>
+<Card title="Get Entitlement" icon="magnifying-glass" href="/api-reference/entitlements/get-entitlement">
+Hämta en entitlement och dess lösta konfiguration.
+</Card>
+<Card title="Update Entitlement" icon="pen" href="/api-reference/entitlements/update-entitlement">
+Uppdatera namn, beskrivning eller integrationskonfiguration.
+</Card>
+<Card title="Delete Entitlement" icon="trash" href="/api-reference/entitlements/delete-entitlement">
+Mjuk-radera en entitlement; befintliga grants påverkas inte.
+</Card>
+<Card title="Upload File" icon="upload" href="/api-reference/entitlements/upload-file">
+Ladda upp en fil till en Digitala Filer-entitlement (upp till 100 MB).
+</Card>
+<Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
+Lista alla grants för en entitlement med status och kundfilter.
+</Card>
+<Card title="Revoke Grant" icon="ban" href="/api-reference/entitlements/revoke-grant">
+Återkalla en enskild grant manuellt.
+</Card>
+</CardGroup>
+
+---
+
+## Webhooks
+
+Dodo Payments skickar fyra webhook-händelser för grant-livscykeln. Prenumerera på dessa händelser för att hålla din applikation synkroniserad med vad varje kund kan komma åt.
+
+| Händelse | Skickas när |
+|---|---|
+| `entitlement_grant.created` | Ett nytt grant skapas. Licensnyckel-grants anländer `delivered`; varje annan integration anländer `pending` och övergår till `delivered` när plattformsanropet lyckas (eller, för OAuth-baserade integrationer, när kunden auktoriserar). |
+| `entitlement_grant.delivered` | Granten övergår till levererad. Kunden har nu åtkomst. |
+| `entitlement_grant.failed` | Granten kunde inte levereras. Inspektera `error_code` och `error_message`. |
+| `entitlement_grant.revoked` | Åtkomst har återkallats. Inspektera `revocation_reason`. |
+
+<Card title="Entitlement Grant Webhook Payloads" icon="bell" href="/developer-resources/webhooks/intents/entitlement-grant">
+Visa hela payload-schemat, exempelhändelser och `revocation_reason`-referens.
+</Card>
+
+---
+
+## Bästa praxis
+
+- **Använd en entitlement per leveranskanal.** Dela inte en enda Discord-entitlement över produkter med olika rollintentioner; skapa en per roll för ren återkallelse.
+- **Testa i testläge först.** Skapa entitlemen, fäst den till en testprodukt, kör en kassa och se granten övergå genom `pending → delivered`. Bekräfta att annullering av testprenumerationen återkallar granten.
+- **Lyssna på `entitlement_grant.delivered`, inte `payment.succeeded`.** En betalning kan lyckas innan uppfyllelse är klar (speciellt för OAuth-flöden). Vänta på levererad händelse innan du låser upp beroende funktioner i dina egna system.
+- **Behandla `entitlement_grant.failed` som åtgärdsbar.** Ett misslyckat grant betyder att en kund har betalat men inte fick tillgång. Flagga dessa till ditt supportteam eller starta en omgrant.
+- **Kartlägg `revocation_reason` till dina kvarhållningsflöden.** En `subscription_on_hold` återkallelse är återställbar (kunden kan uppdatera sitt kort). En `manual` återkallelse är avsiktlig. Behandla dem olika i kundkommunikation.

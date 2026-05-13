@@ -1,0 +1,288 @@
+---
+title: Bygg en Förbetald E-posttjänst med Kreditbaserad Fakturering
+description: Bygg MailKit, en transaktionsbaserad e-postplattform med förbetalda
+  e-postkrediter. En månadsabonnemangsplan, engångsuppfyllnadspaket, omedelbar
+  kredittdragning vid varje sändning, och proaktiva varningar om låg balans
+  drivet av Resend och Dodo Payments.
+icon: envelope
+keywords:
+  - Dodo Payments
+  - utvecklarguide
+  - kreditbaserad fakturering
+  - transaktionsbaserad e-post
+  - Resend
+  - förbetalda krediter
+---
+
+<Tip>
+  <strong>Låt Sentra skriva din integrationskod åt dig.</strong><br />
+  Använd vår AI-assistent i VS Code, Cursor, eller Windsurf för att generera SDK/API-kod, webhook-hanterare, och mer, bara genom att beskriva vad du vill.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Prova Sentra: AI-driven Integration &rarr;
+  </a>
+</Tip>
+
+I denna handledning kommer du att bygga **MailKit**, en transaktionsbaserad e-postplattform där kunder betalar i förskott för en pool av e-postkrediter. Planen ger en månads e-posttilldelning; när kunderna har låg balans kan de köpa ett påfyllnadspaket istället för att vänta på nästa cykel. Varje sändning drar automatiskt en kredit.
+
+<Note>
+Denna handledning använder [Resend](https://resend.com) som e-postleverantör. Dess fria nivå (3,000 e-mails/månad) är tillräcklig för att bygga och testa hela flödet utan ett betalt konto. Mönstret fungerar med vilken leverantör som helst; byt ut `resend.emails.send` mot SendGrid, Postmark, SES, eller din egen SMTP-relä.
+</Note>
+
+I slutet av denna handledning kommer du att kunna:
+
+- Skapa en anpassad kredittilldelning (e-postmeddelanden) i din dashboard
+- Fästa krediter till en abonnemangsplan och en engångsuppfyllnadsprodukt
+- Skicka riktiga e-postmeddelanden via Resend och debitera en kredit per skickad med en huvudbokspost
+- Fråga en aktuell kreditbalans från din frontend
+- Verifiera Dodo-webhooks korrekt och hantera `credit.balance_low` för att varna kunder innan de når noll
+
+## Vad Vi Bygger
+
+Här är prismodellen för MailKit:
+
+| Produkt | Pris | E-post |
+|---------|-------|--------|
+| MailKit Plan | $19/månad | 5,000 e-post/cykel |
+| Påfyllnadspaket | $9 engångsavgift | +5,000 e-post |
+
+Enheten är **en e-post = en kredit**. Kunder behöver inte tänka på tokens, omgångar, eller viktade enheter. De ser bara "du har 4,231 e-postmeddelanden kvar denna månad."
+
+<Info>
+Innan du börjar, se till att du har:
+- Ett Dodo Payments-konto (testläge är okej)
+- Ett gratis [Resend](https://resend.com) konto och API-nyckel
+- Node.js 18+ och grundläggande TypeScript-färdigheter
+</Info>
+
+## Steg 1: Skapa Din E-postkredittilldelning
+
+Kredittilldelningen definierar enheten som din plattform säljer: i detta fall, en e-postsändning.
+
+<Frame caption="The Credits tab under Products lists all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Kreditlistningssida" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+1. Logga in i din Dodo Payments dashboard
+2. Klicka på **Produkter** i vänstra sidofältet
+3. Välj fliken **Krediter**
+4. Klicka på **Skapa Kredit**
+
+Ange kreditdetaljerna:
+
+**Kreditnamn**: `Email Credits`
+
+**Kredittype**: Välj **Anpassad Enhet**
+
+**Enhetsnamn**: `email`
+
+**Precision**: `0` (en e-post är alltid en hel enhet; du kan inte skicka en halv e-post)
+
+**Kredittid**: `30 days` (tilldelningen för varje cykel återställs)
+
+Precision kan inte ändras efter skapande. För diskreta enheter som e-post, meddelanden, eller sessioner är `0` korrekt.
+
+Vi kommer inte att aktivera överföring eller överskridande i denna kokbok; målet är det enklaste möjliga CBB flödet. Du kan gå tillbaka till dessa på kreditkopplingen senare.
+
+Klicka på **Skapa Kredit**. Öppna krediten och kopiera dess ID. Du behöver den för backend-balanserfrågor. Det ser ut som `cent_xxxxxxxxxxxx`.
+
+Din `Email Credits` tilldelning är redo. Nästa: produkterna som ger krediter till kunder.
+
+## Steg 2: Skapa Planen och Påfyllnadspaketet
+
+Du kommer att skapa två produkter: en återkommande **Abonnemangs**plan och en **Engångsbetald** påfyllnad. Planen ger 5,000 e-postmeddelanden varje cykel; påfyllnaden lägger till ytterligare 5,000 vid behov. Båda bifogar samma `Email Credits` tilldelning.
+
+Denna kokbok drar av krediter med direkt huvudboksposter istället för användarbaserade mätare. Huvudboksposter är omedelbara (balansen uppdateras på millisekunder), kräver ingen extra inställning, och är rätt passar när en användarhandling är exakt en kredit. Om du föredrar automatisk avdrag från inkapslade användarhändelser (praktiskt för viktade enheter som "tokens" eller "MB bearbetad"), se [Kreditbaserad Fakturering → Användarbaserad Fakturering med Krediter](/features/credit-based-billing) för mätarbaserat mönster.
+
+### MailKit Plan ($19/månad, 5,000 e-post)
+
+1. Gå till **Produkter → Skapa Produkt**
+2. Fyll i produktdetaljerna:
+
+**Produktnamn**: `MailKit Plan`
+
+**Beskrivning**: `5,000 transactional emails per month.`
+
+3. Välj **Abonnemang** som produkttyp
+4. Ställ in det återkommande priset:
+
+**Återkommande Pris**: `19.00`
+
+**Faktureringscykel**: `Monthly`
+
+**Valuta**: `USD`
+
+Scrolla till **Tildelningar → Krediter → Fäst** och konfigurera:
+
+**Kredittildelning**: `Email Credits`
+
+**Krediter som ges per faktureringscykel**: `5000`
+
+**Tröskel för Låg Balans**: `20` (procent; utlöser `credit.balance_low` när balansen faller under 20% av cykeltilldelningen, dvs. 1,000 e-post)
+
+**Importera Standard Kreditinställningar**: aktiverad (använder 30-dagars utgång från steg 1)
+
+Klicka på **Lägg till i Produkt**, sedan **Spara** produkten. Kopiera produkt-ID (`pdt_xxxxxxxxxxxx`).
+
+Plan: $19/månad → 5,000 e-post uppdaterade varje cykel.
+
+### Påfyllnadspaket ($9 engångsavgift, 5,000 e-post)
+
+1. Gå till **Produkter → Skapa Produkt**
+2. Fyll i produktdetaljerna:
+
+**Produktnamn**: `Email Top-Up Pack`
+
+**Beskrivning**: `Add 5,000 emails to your MailKit balance instantly.`
+
+3. Välj **Engångsbetalning** som produkttyp
+4. Ställ in prissättningen:
+
+**Pris**: `9.00`
+
+**Valuta**: `USD`
+
+I **Tildelningar → Krediter → Fäst**:
+- Kredittildelning: `Email Credits`
+- Krediter utfärdade: `5000`
+
+Engångsprodukter ger krediter med egen utgångstid (30 dagar från köp, enligt steg 1). Påfyllningar staplas ovanpå abonnemangskrediter; de ersätter dem inte.
+
+Spara och kopiera produkt-ID.
+
+Påfyllnadspaket: $9 → +5,000 e-post, tillgängligt omedelbart.
+
+## Steg 3: Ställ in Backend
+
+Bygg nu Express-servern som hanterar checkout, sändning, balansfrågor, och webhooks.
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+Lägg till ett utvecklingsskript till `package.json`:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+`tsx` kör TypeScript direkt utan byggsteg eller `tsconfig.json`, vilket är perfekt för en handledning. För produktion, lägg till en `tsconfig.json` och ett `build` script.
+
+Skapa `.env`:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+Du kommer att fylla i `DODO_WEBHOOK_KEY` i steg 4 efter att ha skapat slutpunkten. Resend API-nyckeln kommer från [resend.com/api-keys](https://resend.com/api-keys).
+
+Lägg till `.env` till `.gitignore` omedelbart. Lämna aldrig ut API-nycklar.
+
+Skapa `server.ts` i projektroten:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+**Webhook-kroppen måste vara rå.** `express.json()` analyserar och återserialiserar kroppen, vilket bryter signaturverifieringen. Definiera `/webhooks/dodo` med `express.raw()` *före* raden `app.use(express.json())`.
+
+Backend redo: prenumerera, fyll på, balans, skicka och webhook-hanterare alla sammankopplade.
+
+Skapa `public/index.html`:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+## Steg 4: Knyt Webhook-slutpunkten
+
+`credit.balance_low` evenemanget är det som låter dig uppmana kunder *innan* de tar slut. Utan det märker de först problemet när ett e-postmeddelande inte kan skickas.
+
+Webhooks behöver en offentlig URL. Använd [ngrok](https://ngrok.com) (eller någon annan tunnel) under utveckling:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+Kopiera HTTPS-framåtadress (t.ex. `https://1234abcd.ngrok-free.app`).
+
+1. Gå till **Utvecklare → Webhooks → Lägg till Slutpunkt**
+2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
+3. **Evenemang**: prenumerera på `credit.added`, `credit.balance_low` och `credit.rolled_over`
+4. Spara, kopiera sedan **signeringsnyckel** till din `.env` som `DODO_WEBHOOK_KEY`
+5. Starta om din server
+
+## Steg 5: Testa Hela Flödet
+
+```bash
+npm run dev
+```
+
+Du bör se `MailKit running on http://localhost:3000`. Öppna den i din webbläsare.
+
+1. I avsnitt 1, skriv in en test-e-post och namn, klicka **Få checkout-länk**
+2. Öppna länken, slutför checkout med ett [testkort](/miscellaneous/testing-process)
+3. Efter betalning, hitta `customer_id` i din dashboard under **Kunder**
+
+Kunden bör nu ha **5,000 e-post** i sin balans. Kontrollera **Kunder → [Kund] → Krediter**.
+
+1. Klistra in `customer_id` i avsnitt 3
+2. Lämna `to` satt till `delivered@resend.dev` (Resend's sandbox inkorg som accepterar allt)
+3. Klicka **Skicka**
+
+Du får ett Resend-meddelande tillbaka. Uppdatera balansen i avsnitt 2 och räkningen faller omedelbart till 4,999. Varje huvudbokadebit återspeglas i den aktuella balansen den sekund den skrivs.
+
+Tröskeln är 20% (1,000 av de 5,000 e-postmeddelanden). För att utlösa det utan att skicka 4,000 riktiga e-postmeddelanden, **debitera manuellt balansen** från dashboarden:
+
+1. Gå till **Kunder → [Kund] → Krediter → E-postkrediter**
+2. Klicka på **Juster Balans** och debitera `4000`
+3. Skicka ytterligare ett e-postmeddelande genom demo
+
+Din server ska logga inom några sekunder:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+Din server mottog och verifierade webhooken. I produktion är detta där du skulle e-posta kunden eller visa en banner i appen.
+
+1. Klistra in `customer_id` i avsnitt 4
+2. Klicka **Köp 5,000 e-post**, slutför testcheckouten
+3. Uppdatera balansen, och den hoppar med 5,000
+
+Ett `credit.added` evenemang utlöses med `grant_source: one_time`. Påfyllningen staplas ovanpå abonnemangskrediterna; båda poolerna förbrukas FIFO (äldsta icke-utgångna tilldelning först).
+
+Debitera manuellt saldot till noll, försök sedan att skicka ytterligare ett e-postmeddelande. Du får:
+
+// Kodexempel uteslutet för att bevara renskriften.
+
+Den 402 är din applikationsnivå-enforcement. Dodo balanser API är sanningskällan; cachera det aldrig på klienten.
+
+## Felsökning
+
+Signaturen beräknas över den råa HTTP-kroppen. `express.json()` analyserar och återserialiserar nyttolasten, vilket bryter HMAC. Se till att `/webhooks/dodo` är registrerad med `express.raw({ type: 'application/json' })` *ovan* raden `app.use(express.json())`, och att `DODO_WEBHOOK_KEY` matchar signeringsnyckeln som visas på slutpunktsdetalsidan.
+
+Tre saker att validera, i denna ordning:
+
+1. Kunden **fullbordade checkouten** (krediter utfärdas vid lyckad betalning, inte vid sessionens skapande)
+2. `CREDIT_ENTITLEMENT_ID` i din `.env` matchar krediten som fästs vid produkten (matchande ID:n skriver tyst till fel kredit)
+3. Den `customer_id` du skickar kom från Dodo (tabellen `customers` i dashboarden), inte din egen databas
+
+Sandlådesändaren `onboarding@resend.dev` levererar endast till e-posten på ditt Resend-konto eller till `delivered@resend.dev`. För att skicka till någon annan, [verifiera en domän](https://resend.com/docs/dashboard/domains/introduction) och använd en `from` adress på den.
+
+## Vad Du Byggde
+
+`Email Credits`, definierad en gång och kopplad till både abonnemangsplanen och påfyllnadspaketet.
+
+$19/månad ger 5,000 e-postmeddelanden per cykel. Kunder vet vad de betalar för, du vet din värsta fallkostnad.
+
+En engångsprodukt som ger 5,000 e-postmeddelanden. Staplas på abonnemangskrediter utan att behöva ändra planen.
+
+Ett enda `createLedgerEntry` samtal efter varje skick. Ingen mätare, ingen aggregeringsfördröjning, idempotent vid omretryck via Resend's meddelande-ID.
+
+Läs den fullständiga CBB-dokumentationen för överföring, överskridningslägen, huvudbokshantering och hela API-ytan.
+
+Behöver du hjälp?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- support@dodopayments.com
+
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Read the full CBB documentation for rollover, overage modes, ledger management, and the complete API surface.
+</Card>
+
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- support@dodopayments.com

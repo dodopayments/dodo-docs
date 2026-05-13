@@ -1,0 +1,279 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: Octroi de droits
+description: La charge utile envoyée à votre point de terminaison webhook
+  lorsqu'un octroi de droits est créé, livré, échoue, ou est révoqué.
+icon: gift
+keywords:
+  - Dodo Payments
+  - webhook d'octroi de droits
+  - événements d'octroi
+  - exécution
+  - webhook de clé de licence
+  - webhook de fichier numérique
+---
+
+## Événements Webhook d'Octroi de Droits
+
+Ces événements se déclenchent chaque fois que l'état de l'octroi de droits d'un client change, par exemple lorsqu'une clé de licence est générée, un rôle Discord est attribué, un lien de téléchargement est provisionné, ou l'accès est révoqué. Abonnez-vous à ces événements pour garder votre application synchronisée avec ce à quoi chaque client peut accéder.
+
+| Événement | Description |
+|-------|-------------|
+| `entitlement_grant.created` | Une nouvelle ligne d'octroi a été créée. Le statut est `delivered` immédiatement pour les clés de licence, et `pending` pour toute autre intégration. |
+| `entitlement_grant.delivered` | L'octroi passe à l'état livré. Le client a désormais accès à la plateforme, au fichier ou à la clé de licence octroyé(e). |
+| `entitlement_grant.failed` | La livraison a échoué et n'est pas réessayée. Inspectez `error_code` et `error_message`. |
+| `entitlement_grant.revoked` | L'accès a été retiré. Inspectez `revocation_reason` pour comprendre pourquoi. |
+
+Les quatre événements partagent la même charge utile `EntitlementGrantResponse` documentée dans le schéma ci-dessous.
+
+---
+
+## Déclencheurs d'Événements
+
+### entitlement_grant.created
+
+Une ligne d'octroi vient d'être insérée. L'octroi a toujours une `id` stable à partir de ce moment, même si son statut change. Utilisez cet événement pour enregistrer que l'exécution est en cours.
+
+Pour **les clés de licence**, la ligne est insérée directement avec `status: "delivered"` et `delivered_at` remplis, donc un seul événement `created` est suivi de pas de changement d'état supplémentaire, sauf si l'octroi est révoqué ultérieurement.
+
+Pour **toute autre intégration**, la ligne arrive avec `status: "pending"`. Un événement `delivered` ou `failed` suit une fois la livraison terminée :
+
+- **Intégrations basées sur OAuth** (Discord, GitHub, Notion) incluent un `oauth_url` que le client doit visiter pour compléter le consentement. L'octroi reste `pending` jusqu'à ce que le client autorise.
+- **Intégrations directes** (Telegram, Framer, Fichiers Numériques) restent `pending` brièvement pendant que l'appel de la plateforme s'exécute, puis passent à `delivered`.
+
+### entitlement_grant.delivered
+
+L'octroi est passé de `pending` à `delivered`. Le client a maintenant l'accès décrit par l'octroi. Utilisez cet événement pour débloquer des fonctionnalités dépendantes dans vos propres systèmes, par exemple pour provisionner un espace de travail, envoyer un email de bienvenue personnalisé, ou marquer un indicateur "accompli".
+
+Le champ `delivered_at` de la charge utile capture quand la livraison a été complétée. Pour les octrois arrivés `delivered` à la création, vous recevrez des événements `created` et `delivered` consécutivement.
+
+### entitlement_grant.failed
+
+La livraison a été tentée et a échoué avec une erreur non récupérable. Les champs `error_code` et `error_message` expliquent l'échec. Les causes courantes incluent un jeton OAuth révoqué, une permission de plateforme refusée, ou une cible manquante (par exemple, une guilde Discord supprimée).
+
+<Tip>
+Traitez `entitlement_grant.failed` comme une action à mener. Le client a payé mais n'a pas obtenu l'accès. Remontez les échecs à votre équipe de support ou déclenchez une nouvelle tentative une fois le problème sous-jacent résolu.
+</Tip>
+
+### entitlement_grant.revoked
+
+L'accès a été retiré au niveau de la plateforme: rôle Discord supprimé, collaborateur GitHub retiré, clé de licence désactivée, URLs de téléchargement de fichiers non émises. Le champ `revocation_reason` enregistre le déclencheur.
+
+| `revocation_reason` | Déclencheur |
+|---|---|
+| `subscription_cancelled` | L'abonnement du client a été annulé (événement `subscription.cancelled`). |
+| `subscription_on_hold` | L'abonnement est en pause en raison d'un échec de renouvellement (`subscription.on_hold`). Récupérable : un nouvel essai réussi produit une nouvelle tentative d'octroi. |
+| `subscription_expired` | L'abonnement a atteint la fin de sa durée (`subscription.expired`). |
+| `plan_changed` | Le plan a changé; les anciens octrois sont révoqués avant que les nouveaux ne soient émis (`subscription.plan_changed`). |
+| `refund` | Un remboursement a été traité pour le paiement original unique (`refund.succeeded`). |
+| `manual` | Un marchand a révoqué l'octroi via l'API ou le tableau de bord. Les révocations manuelles ne sont pas automatiquement octroyées sur renouvellement d'abonnement. |
+| `license_key_disabled` | La clé de licence derrière un octroi de clé de licence a été désactivée. L'octroi est réactivé automatiquement si la clé est réactivée. |
+| `platform_external` | Le côté plateforme d'une intégration a dérivé hors de synchronisation (par exemple, un rôle Discord a été supprimé manuellement, l'App GitHub a perdu l'accès au dépôt, ou un passage de réconciliation a détecté une cible manquante). L'octroi n'est pas automatiquement ré-octroyé au renouvellement de l'abonnement jusqu'à ce que le problème sous-jacent de la plateforme soit résolu. |
+
+---
+
+## Variantes de Charge Utile
+
+Le champ `data` est toujours un objet `EntitlementGrantResponse`. Deux types d'intégration ajoutent des objets imbriqués supplémentaires :
+
+- **`license_key`** est inclus lorsque le type d'intégration d'octroi est `license_key`. Il contient la clé générée, l'expiration et l'utilisation d'activation.
+- **`digital_product_delivery`** est inclus lorsque le type d'intégration est `digital_files`. Il contient des URLs de téléchargement présignées, l'optionnel `instructions`, et l'optionnel `external_url`.
+
+Pour tous les autres types d'intégration (Discord, GitHub, Telegram, Framer, Notion) les deux champs sont `null`; la configuration pertinente est capturée dans l'octroi lui-même, pas dans l'octroi spécifique.
+
+---
+
+## Charges Utiles d'Exemple
+
+### Clé de licence livrée (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### Fichiers numériques livrés (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Rôle Discord créé et en attente (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### Octroi révoqué à l'annulation de l'abonnement (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### Livraison échouée (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## Conseils d'Intégration
+
+- **Attendez `entitlement_grant.delivered` avant de débloquer des fonctionnalités dépendantes.** Un événement `payment.succeeded` vous indique que l'argent a été encaissé ; il ne vous dit pas que le client dispose du dépôt GitHub ou du rôle Discord. L'événement `delivered` est la source de vérité pour l'exécution.
+- **Mappez `revocation_reason` vers des flux de rétention.** Une révocation `subscription_on_hold` signifie généralement que la carte du client a échoué et que le prochain renouvellement ré-octroiera l'accès. Une révocation `manual` ou `subscription_cancelled` est intentionnelle. Traitez-les différemment dans la communication client.
+- **Utilisez l'`id` d'octroi comme votre clé d'idempotence.** Un seul octroi émet au plus un événement `created` et au plus un événement terminal (`delivered` ou `failed`), et au plus un événement `revoked`. Les nouvelles livraisons du système webhook peuvent répéter les événements ; dédupliquez sur l'`id` d'octroi plus `type`.
+- **Inspectez `license_key` et `digital_product_delivery` pour reconnaître le type d'intégration.** La charge utile d'octroi elle-même ne transporte pas le type d'intégration, mais exactement un de ces objets imbriqués est rempli pour les octrois de type clé de licence et fichiers numériques.
+- **Pour les octrois basés sur OAuth, affichez `oauth_url` au client.** L'événement `entitlement_grant.created` pour les flux d'abonnés Discord, GitHub, ou Notion inclut un `oauth_url` et `oauth_expires_at`. Envoyez-le par email au client ou affichez-le dans votre application pour débloquer la livraison.

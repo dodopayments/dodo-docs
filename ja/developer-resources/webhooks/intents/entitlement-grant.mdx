@@ -1,0 +1,278 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: 権利付与
+description: 権利付与が作成、配送、失敗、または取り消された時にウェブフックエンドポイントに送信されるペイロードです。
+icon: gift
+keywords:
+  - Dodo Payments
+  - 権利ウェブフック
+  - 付与イベント
+  - 履行
+  - ライセンスキーウェブフック
+  - デジタルファイルウェブフック
+---
+
+## 権利付与ウェブフックイベント
+
+これらのイベントは、顧客の権利付与の状態が変化するたびに発生します。例えば、ライセンスキーが生成された時、Discordの役割が割り当てられた時、ダウンロードリンクが提供された時、またはアクセスが取り消された時です。これらのイベントを購読して、各顧客がアクセスできる内容とアプリケーションを同期させましょう。
+
+| イベント | 説明 |
+|-------|-------------|
+| `entitlement_grant.created` | 新しい付与行が作成されました。ステータスはライセンスキーの場合は即座に `delivered` であり、その他の統合では `pending` です。 |
+| `entitlement_grant.delivered` | 付与が配信状態に移行しました。顧客は現在、権利を付与されたプラットフォーム、ファイル、またはライセンスキーへのアクセスを持っています。 |
+| `entitlement_grant.failed` | 配信が失敗し、再試行されていません。`error_code` と `error_message` を確認してください。 |
+| `entitlement_grant.revoked` | アクセスが取り消されました。理由を理解するために `revocation_reason` を確認してください。 |
+
+すべての4つのイベントは、以下のスキーマに記載されている同じ `EntitlementGrantResponse` ペイロードを共有しています。
+
+---
+
+## イベントトリガー
+
+### entitlement_grant.created
+
+付与行が挿入されました。この時点から、たとえそのステータスが変わっても、付与には安定した `id` があります。このイベントを使って、履行が進行中であることを記録します。
+
+**ライセンスキー**の場合、行は直接 `status: "delivered"` と `delivered_at` が入力された状態で挿入され、単一の `created` イベントの後に、付与が後に取り消されない限り、さらなる状態変化はありません。
+
+**その他すべての統合**の場合、行は `status: "pending"` で到着します。配信が完了すると、`delivered` または `failed` イベントが続きます：
+
+- **OAuthベースの統合**（Discord、GitHub、Notion）は、顧客が同意を完了するために訪れる必要がある `oauth_url` を含みます。顧客が承認するまで、付与は `pending` のままです。
+- **プラットフォーム直接統合**（Telegram、Framer、デジタルファイル）は、プラットフォーム呼び出しが実行される間にのみ `pending` にあり、その後 `delivered` に移動します。
+
+### entitlement_grant.delivered
+
+付与が `pending` から `delivered` へ移行しました。顧客は権利で示されるアクセスを現在持っています。このイベントを使用して、独自のシステム内で依存機能を解除するために使用します。例えば、ワークスペースのプロビジョニングやカスタムウェルカムメールの送信、「fulfilled」フラグの設定などです。
+
+ペイロードの `delivered_at` フィールドは、配信が完了した時刻を記録します。作成時に `delivered` で到着した付与については、`created` と `delivered` イベントが連続して届きます。
+
+### entitlement_grant.failed
+
+配信が試行され、再試行不可能なエラーで失敗しました。フィールド `error_code` と `error_message` が失敗の原因を説明します。一般的な原因には、OAuthトークンの取り消し、プラットフォーム権限の拒否、またはターゲットの欠落（例：削除されたDiscordギルド）があります。
+
+<Tip>
+`entitlement_grant.failed` を実行可能として扱います。顧客は支払いをしましたが、アクセスを得られていません。あなたのサポートチームに失敗を告知するか、基盤の問題が解決された後に再付与を起動します。
+</Tip>
+
+### entitlement_grant.revoked
+
+プラットフォームレベルでアクセスが取り消されました：Discord役割が削除され、GitHub協力者が削除され、ライセンスキーが無効化され、ファイルダウンロードURLが発行されなくなりました。`revocation_reason` フィールドはトリガーを記録します。
+
+| `revocation_reason` | トリガー |
+|---|---|
+| `subscription_cancelled` | 顧客のサブスクリプションがキャンセルされました（`subscription.cancelled` イベント）。 |
+| `subscription_on_hold` | サブスクリプションが失敗した更新のために保留中です（`subscription.on_hold`）。回復可能：成功した再試行は再付与を生む。 |
+| `subscription_expired` | サブスクリプションがその期間の終わりに達しました（`subscription.expired`）。 |
+| `plan_changed` | プランが変更されました。古い付与は新しいものが発行される前に取り消されます（`subscription.plan_changed`）。 |
+| `refund` | 元の一回払いの返金が処理されました（`refund.succeeded`）。 |
+| `manual` | 商人がAPIまたはダッシュボード経由で付与を取り消しました。手動の取り消しはサブスクリプション更新時に自動再付与されません。 |
+| `license_key_disabled` | ライセンスキーの後ろのライセンスキー付与が無効化されました。キーが再び有効になれば付与は自動的に再アクティブ化されます。 |
+| `platform_external` | 統合のプラットフォーム側が同期から外れました（例えば、Discord役割が手動で削除された、GitHubアプリはリポジトリアクセスを失った、または再調整パスは欠落したターゲットを検出した）。基礎的なプラットフォーム問題が解決されるまで、サブスクリプション更新時には自動再付与されません。 |
+
+---
+
+## ペイロードバリアント
+
+`data` フィールドは常に `EntitlementGrantResponse` オブジェクトです。2つの統合タイプが追加のネストオブジェクトを含みます：
+
+- **`license_key`** は、権利統合タイプが `license_key` である場合に含まれます。それは生成されたキー、有効期限、およびアクティベーション使用を含みます。
+- **`digital_product_delivery`** は、統合タイプが `digital_files` である場合に含まれます。それは事前署名付きダウンロードURL、オプションの `instructions`、およびオプションの `external_url` を含んでいます。
+
+その他の全ての統合タイプ（Discord、GitHub、Telegram、Framer、Notion）について、どちらのフィールドも `null` です；関連構成は、付与自体ではなく、権利に記録されています。
+
+---
+
+## サンプルペイロード
+
+### ライセンスキー配送（`entitlement_grant.delivered`）
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### デジタルファイル配送（`entitlement_grant.delivered`）
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Discord役割が作成され保留中（`entitlement_grant.created`）
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### サブスクリプションキャンセルで付与が取り消されました（`entitlement_grant.revoked`）
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### 配送失敗（`entitlement_grant.failed`）
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## 統合のヒント
+
+- **依存機能を解除する前に `entitlement_grant.delivered` を待ちます。** `payment.succeeded` イベントはお金がクリアされたことを伝えますが、顧客がGitHubリポジトリやDiscord役割をまだ持っていないことを伝えません。`delivered` イベントは、履行の真実の情報源です。
+- **`revocation_reason` を保持フローにマッピングします。** `subscription_on_hold` の取り消しは通常、顧客のカードが失敗し、次の更新が再付与することを意味します。`manual` または `subscription_cancelled` の取り消しは意図的です。顧客メッセージングで異なる扱いをしてください。
+- **付与 `id` を冪等性キーとして使用します。** 単一の付与は最大で1つの `created` イベント、最大で1つのターミナルイベント（`delivered` または `failed`）、最大で1つの `revoked` イベントを発します。ウェブフックシステムからの再配信はイベントを繰り返することがあります；付与の `id` と `type` で重複を排除してください。
+- **`license_key` と `digital_product_delivery` を検査して統合タイプを認識します。** 付与ペイロード自体は統合タイプを保持しませんが、ライセンスキーおよびデジタルファイルの権利に対してこれらのネストされたオブジェクトのどちらか1つが含まれています。
+- **OAuthベースの付与の場合、`oauth_url` を顧客に表示します。** Discord、GitHub、またはNotionのサブスクリバーフローの`entitlement_grant.created` イベントには、`oauth_url` と `oauth_expires_at` が含まれます。お客様にメールしたり、アプリ内に表示して配信を解除してください。

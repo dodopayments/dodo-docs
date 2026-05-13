@@ -334,42 +334,91 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 Cobrar una suscripción que no es bajo demanda puede fallar. Asegúrate de que la suscripción tenga `on_demand: true` en sus detalles antes de cobrar.
 </Warning>
 
-## Reintentos de pago
+## Manejo de cargos fallidos
 
-Nuestro sistema de detección de fraude puede bloquear patrones de reintento agresivos (y puede marcarlos como pruebas de tarjeta potenciales). Sigue una política de reintento segura.
+Cuando un cargo contra una suscripción bajo demanda falla, decides qué ocurre a continuación. A diferencia de las suscripciones programadas — donde una renovación fallida detiene la facturación automática — **las suscripciones bajo demanda permanecen cargables tras un fallo**. Puedes llamar al endpoint de carga nuevamente como parte de tu propia lógica de reintento.
+
+### Qué sucede en caso de fallo
+
+<Steps>
+{/* LOCKED_PATTERN_27812a4e645bd63379a2691bd2668c06 */}
+La solicitud `POST /subscriptions/{subscription_id}/charge` ya sea devuelve una respuesta de error o se completa de forma asincrónica y emite un webhook `payment.failed` con la razón del rechazo.
+</Step>
+
+{/* LOCKED_PATTERN_5bb78244416a7384da9d0cd3729b0072 */}
+La suscripción puede pasar al estado `on_hold` y emitir un webhook `subscription.on_hold` (ver [Estados de Suscripción → En Espera](/features/subscription#on-hold-state)). Esto es una señal, no un bloqueo. Para suscripciones bajo demanda, `on_hold` **no** impide que vuelvas a cobrar.
+</Step>
+
+{/* LOCKED_PATTERN_a97bddc2ac10c16a3987fc7474a2b4fb */}
+Para flujos bajo demanda, Dodo **no** realiza reintentos automáticos. Puedes llamar a `POST /subscriptions/{subscription_id}/charge` en cualquier momento para intentar de nuevo. Aplica la [política de reintentos segura](#payment-retries) a continuación: usa retroceso exponencial, omite rechazos fuertes y evita patrones de ráfaga, para que los reintentos no sean señalados por nuestros sistemas de fraude y riesgo.
+</Step>
+
+{/* LOCKED_PATTERN_08feecc9471e6c6a42b55bf09d415d34 */}
+Si los reintentos siguen fallando porque el método de pago en sí está roto (tarjeta expirada, cuenta cerrada, etc.), usa [`POST /subscriptions/{id}/payment-method`](/api-reference/subscriptions/update-payment-method) para recoger uno nuevo del cliente. Al tener éxito, la suscripción regresa a `active` y se emiten `payment.succeeded` seguido de `subscription.active` webhooks.
+</Step>
+</Steps>
+
+{/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */}
+**Bajo demanda vs programadas**: Para suscripciones programadas, Dodo gestiona sus propios reintentos de renovación y gestión del cobro. Para suscripciones bajo demanda, tú controlas la política de reintentos porque solo tú sabes cuándo debe ocurrir el siguiente cobro (está impulsado por tus eventos de uso, no por un calendario).
+{/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */}
+
+### Secuencia de webhook en un cobro fallido bajo demanda
+
+| Orden | Evento | Significado |
+|-------|-------|---------|
+| 1 | `payment.failed` | El intento de cobro bajo demanda no tuvo éxito (incluye la razón del rechazo) |
+| 2 | `subscription.on_hold` | La suscripción fue puesta en espera (informativo; no bloquea más cargos) |
+| 3* | `payment.succeeded` | Un cobro posterior, ya sea tu reintento o después de una actualización del método de pago, tuvo éxito |
+| 4* | `subscription.active` | La suscripción regresó a `active` después de un cobro exitoso |
+
+{/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */}
+Los eventos 3 y 4 solo se activan después de que un cobro de seguimiento tiene éxito.
+{/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */}
+
+### Responsabilidad de reintentos
 
 <Warning>
-Los patrones de reintentos en ráfaga pueden ser señalados como fraudulentos o como prueba de tarjetas por nuestros sistemas de riesgo y procesadores. Evita reintentos agrupados; sigue el cronograma de retroceso y la orientación de alineación de tiempo a continuación.
+Dodo Payments **no realiza reintentos automáticos de cargos fallidos bajo demanda**. Tú controlas la política de reintentos. Sigue las pautas de reintentos seguros a continuación para evitar ser señalado por nuestros sistemas de detección de fraude como prueba de tarjetas.
 </Warning>
 
-### Principios para políticas de reintento seguras
+[Gestión del Cobro de Suscripciones](/features/recovery/subscription-dunning) — la secuencia de recuperación por correo electrónico integrada — se aplica a pagos de *renovación* fallidos en suscripciones programadas y cancelaciones iniciadas por el cliente. No está diseñada para fallos de cargos bajo demanda. Comunícate con el cliente directamente (por ejemplo, correo electrónico transaccional o mensaje en app) cuando decidas que se necesita actualizar el método de pago.
+
+## Reintentos de pago
+
+Nuestro sistema de detección de fraude puede bloquear patrones de reintento agresivos (y puede señalarlos como posible prueba de tarjetas). Sigue una política de reintentos segura.
+
+<Warning>
+Patrones de reintentos en ráfaga pueden ser señalados como fraudulentos o sospechosos de ser pruebas de tarjetas por nuestros sistemas de riesgo y procesadores. Evita reintentos agrupados; sigue las guías de horario de retroceso y alineación de tiempo a continuación.
+</Warning>
+
+### Principios para políticas de reintentos seguros
 
 - **Mecanismo de retroceso**: Usa retroceso exponencial entre reintentos.
-- **Límites de reintento**: Limita los reintentos totales (máx. 3–4 intentos).
-- **Filtrado inteligente**: Reintenta solo en fallos reintentables (p. ej., errores de red/emisor, fondos insuficientes); nunca reintentes rechazos definitivos.
+- **Límites de reintentos**: Limita los reintentos totales (máximo 3–4 intentos).
+- **Filtrado inteligente**: Reintenta solo en fallos que se pueden reintentar (por ejemplo, errores de red/emisor, fondos insuficientes); nunca reintentes rechazos fuertes.
 - **Prevención de pruebas de tarjetas**: No reintentes fallos como `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Varía los metadatos (opcional)**: Si mantienes tu propio sistema de reintentos, diferencia los reintentos mediante metadatos (p. ej., `retry_attempt`).
+- **Varía metadatos (opcional)**: Si mantienes tu propio sistema de reintentos, diferencia los reintentos mediante metadatos (por ejemplo, `retry_attempt`).
 
-### Cronograma de reintentos sugerido (suscripciones)
+### Horario de reintentos sugerido (suscripciones)
 
 - **1er intento**: Inmediato cuando creas el cargo
-- **2do intento**: Después de 3 días
+- **2º intento**: Después de 3 días
 - **3er intento**: Después de 7 días más (10 días en total)
-- **4to intento (final)**: Después de otros 7 días (17 días en total)
+- **4º intento (final)**: Después de otros 7 días (17 días en total)
 
-Paso final: si aún no se ha pagado, marca la suscripción como impaga o cancélala, según tu política. Notifica al cliente durante el período para actualizar su método de pago.
+Paso final: si aún está impago, marca la suscripción como impaga o cancélala, según tu política. Notifica al cliente durante el intervalo para que actualice su método de pago.
 
-### Evita reintentos en ráfaga; alinea al tiempo de autorización
+### Evita reintentos en ráfaga; alinea con el tiempo de autorización
 
-- Ancla los reintentos al sello de tiempo original de autorización para evitar comportamientos de "ráfaga" en todo tu portafolio.
-- Ejemplo: si el cliente inicia una prueba o mandato a la 1:10 p. m. de hoy, programa reintentos de seguimiento a la 1:10 p. m. en días posteriores según tu retroceso (p. ej., +3 días → 1:10 p. m., +7 días → 1:10 p. m.).
-- Alternativamente, si almacenas la hora del último pago exitoso `T`, programa el próximo intento en `T + X days` para mantener la alineación horaria.
+- Ancla los reintentos a la marca de tiempo de la autorización original para evitar comportamiento de "ráfaga" en tu portafolio.
+- Ejemplo: Si el cliente inicia una prueba o mandato a la 1:10 pm hoy, programa reintentos de seguimiento a la 1:10 pm en días posteriores según tu retroceso (por ejemplo, +3 días → 1:10 pm, +7 días → 1:10 pm).
+- Alternativamente, si almacenas el tiempo del último pago exitoso `T`, programa el siguiente intento en `T + X days` para preservar la alineación del tiempo del día.
 
 <Note>
-Zona horaria y horario de verano: usa un estándar de tiempo consistente para programar y convierte solo para visualización para mantener los intervalos.
+Zona horaria y DST: usa un estándar de tiempo consistente para programar y convierte para mostrar solo para mantener los intervalos.
 </Note>
 
-### Códigos de rechazo que no debes reintentar
+### Códigos de rechazo que no deberías volver a intentar
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -379,53 +428,52 @@ Zona horaria y horario de verano: usa un estándar de tiempo consistente para pr
 - `LOST_CARD`
 
 <Note>
-Para una lista completa de razones de rechazo y si se pueden corregir por el usuario, consulta la documentación de
-[Transaction Failures](/api-reference/transaction-failures).
+Para una lista completa de razones de rechazo y si son corregibles por el usuario, consulta la documentación de [Fallos de Transacciones](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Reintenta solo en problemas suaves/temporales (p. ej., `insufficient_funds`, `issuer_unavailable`, `processing_error`, tiempos de espera de red). Si se repite el mismo rechazo, detén los reintentos adicionales.
+Solo reintente en problemas suaves/temporales (por ejemplo, `insufficient_funds`, `issuer_unavailable`, `processing_error`, tiempos de espera de red). Si el mismo rechazo se repite, pausa más reintentos.
 </Tip>
 
-### Directrices de implementación (sin código)
+### Pautas de implementación (sin código)
 
-- Usa un programador/cola que persista sellos de tiempo precisos; calcula el próximo intento en el mismo desplazamiento de hora del día exacto (p. ej., `T + 3 days` a la misma HH:MM).
-- Mantén y consulta el sello de tiempo del último pago exitoso `T` para calcular el siguiente intento; no aglomeres múltiples suscripciones al mismo instante.
-- Evalúa siempre la última razón de rechazo; detén los reintentos para rechazos definitivos en la lista de exclusión anterior.
-- Limita los reintentos simultáneos por cliente y por cuenta para evitar aumentos accidentales.
-- Comunica de forma proactiva: envía un correo electrónico/SMS al cliente para que actualice su método de pago antes del siguiente intento programado.
-- Usa metadatos solo para observabilidad (p. ej., `retry_attempt`); nunca intentes "evadir" los sistemas de fraude/riesgo rotando campos sin importancia.
+- Usa un programador/cola que persista marcas de tiempo precisas; calcula el próximo intento con el mismo desfase de hora del día (por ejemplo, `T + 3 days` a la misma HH:MM).
+- Mantén y consulta la última marca de tiempo de pago exitoso `T` para calcular el próximo intento; no agrupe múltiples suscripciones al mismo instante.
+- Siempre evalúa la última razón de rechazo; detén los reintentos para rechazos fuertes en la lista de omisión arriba.
+- Límite de reintentos concurrentes por cliente y por cuenta para prevenir aumentos accidentales.
+- Comunica proactivamente: envía correo electrónico/SMS al cliente para actualizar su método de pago antes del próximo intento programado.
+- Usa metadatos solo para observabilidad (por ejemplo, `retry_attempt`); nunca intentes "evadir" sistemas de fraude/riesgo rotando campos inconsecuentes.
 
 ## Rastrear resultados con webhooks
 
-Implementa el manejo de webhooks para rastrear el viaje del cliente. Consulta [Implementación de Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Implementa la gestión de webhooks para rastrear el recorrido del cliente. Consulta [Implementación de Webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
 - **subscription.active**: Mandato autorizado y suscripción activada
-- **subscription.failed**: Creación fallida (por ejemplo, fallo del mandato)
-- **subscription.on_hold**: Suscripción en espera (por ejemplo, estado impago)
-- **payment.succeeded**: Cargo exitoso
-- **payment.failed**: Cargo fallido
+- **subscription.failed**: Creación fallida (por ejemplo, fallo de mandato)
+- **subscription.on_hold**: Suscripción puesta en espera (por ejemplo, estado no pagado)
+- **payment.succeeded**: Cobro exitoso
+- **payment.failed**: Cobro fallido
 
 <Tip>
-Para flujos bajo demanda, enfócate en `payment.succeeded` e `payment.failed` para conciliar cargos basados en uso.
+Para flujos bajo demanda, enfócate en `payment.succeeded` y `payment.failed` para conciliar cargos basados en uso. Cuando `payment.failed` es seguido por `subscription.on_hold`, consulta [Manejo de cargos fallidos](#handling-failed-charges) para recuperar la suscripción.
 </Tip>
 
 ## Pruebas y próximos pasos
 
 <Steps>
 <Step title="Create in test mode">
-Usa tu clave de API de prueba para crear la suscripción con `payment_link: true`, luego abre el enlace y completa el mandato.
+Usa tu clave API de prueba para crear la suscripción con `payment_link: true`, luego abre el enlace y completa el mandato.
 </Step>
 <Step title="Trigger a charge">
-Llama al endpoint de carga con un pequeño `product_price` (p. ej., `100`) y verifica que recibes `payment.succeeded`.
+Llama al endpoint de carga con un pequeño `product_price` (por ejemplo, `100`) y verifica que recibes `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Cambia a tu clave de API activa una vez que hayas validado eventos y actualizaciones del estado interno.
+Cambia a tu clave API en vivo una vez que hayas validado eventos y actualizaciones de estado interno.
 </Step>
 </Steps>
 
 ## Solución de problemas
 
-- **422 Invalid Request**: Asegúrate de que `on_demand.mandate_only` se proporciona al crear y `product_price` se proporciona para los cargos.
-- **Errores de moneda**: Si anulas `product_currency`, confirma que está soportado para tu cuenta y cliente.
-- **No se reciben webhooks**: Verifica la configuración de tu URL de webhook y el secreto de firma.
+- **422 Solicitud Inválida**: Asegúrate de que `on_demand.mandate_only` se proporciona al crear y `product_price` se proporciona para cargos.
+- **Errores de moneda**: Si sobrescribes `product_currency`, confirma que está soportado para tu cuenta y cliente.
+- **No se recibieron webhooks**: Verifica la configuración de URL de webhook y el secreto de firma.

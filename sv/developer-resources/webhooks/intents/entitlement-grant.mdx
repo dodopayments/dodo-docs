@@ -1,0 +1,279 @@
+---
+openapi-schema: EntitlementGrantResponse
+title: Rättighetsbeviljande
+description: Den nyttolast som skickas till din webhook-endpoint när ett
+  rättighetsbeviljande skapas, levereras, misslyckas eller återkallas.
+icon: gift
+keywords:
+  - Dodo Payments
+  - entitlement webhook
+  - grant events
+  - fulfillment
+  - license key webhook
+  - digital file webhook
+---
+
+## Webhook-händelser för rättighetsbeviljande
+
+Dessa händelser utlöses när en kunds rättighetsbeviljande ändrar tillstånd, till exempel när en licensnyckel genereras, en Discord-roll tilldelas, en nedladdningslänk tillhandahålls eller åtkomst återkallas. Prenumerera på dessa händelser för att hålla din applikation synkroniserad med vad varje kund kan komma åt.
+
+| Händelse | Beskrivning |
+|-------|-------------|
+| `entitlement_grant.created` | En ny beviljande rad skapades. Status är `delivered` omedelbart för licensnycklar, och `pending` för varje annan integration. |
+| `entitlement_grant.delivered` | Beviljandet övergår till levererat. Kunden har nu åtkomst till den berättigade plattformen, filen eller licensnyckeln. |
+| `entitlement_grant.failed` | Leverans misslyckades och försöks inte igen. Inspektera `error_code` och `error_message`. |
+| `entitlement_grant.revoked` | Åtkomst drogs tillbaka. Inspektera `revocation_reason` för att förstå varför. |
+
+Alla fyra händelser delar samma `EntitlementGrantResponse` nyttolast dokumenterad i schemat nedan.
+
+---
+
+## Händelsetriggare
+
+### entitlement_grant.created
+
+En beviljanderad infogades just. Beviljandet har alltid en stabil `id` från och med nu, även om dess status ändras. Använd denna händelse för att registrera att uppfyllande pågår.
+
+För **licensnycklar** infogas raden direkt med `status: "delivered"` och `delivered_at` ifyllda, så en enda `created`-händelse följs av inga ytterligare tillståndsändringar om inte beviljandet senare återkallas.
+
+För **alla andra integrationer** anländer raden med `status: "pending"`. En `delivered` eller `failed`-händelse följer när leveransen slutförs:
+
+- **OAuth-baserade integrationer** (Discord, GitHub, Notion) inkluderar en `oauth_url` som kunden måste besöka för att slutföra samtycket. Beviljandet förblir `pending` tills kunden godkänner.
+- **Plattformsdirekta integrationer** (Telegram, Framer, Digitala Files) förblir i `pending` endast kort medan plattformsanropet körs, för att sedan flytta till `delivered`.
+
+### entitlement_grant.delivered
+
+Beviljandet övergick från `pending` till `delivered`. Kunden har nu åtkomsten som beskrivs av rättigheterna. Använd denna händelse för att låsa upp beroende funktioner i dina egna system, till exempel för att tillhandahålla en arbetsyta, skicka ett anpassat välkomstmail eller markera en "uppfylld" flagga.
+
+Nyttolastens `delivered_at`-fält fångar när leveransen slutfördes. För beviljanden som anlände `delivered` vid skapandet, kommer du att få `created` och `delivered`-händelser back-to-back.
+
+### entitlement_grant.failed
+
+Leverans försöktes och misslyckades med ett icke-återprovbart fel. Fälten `error_code` och `error_message` förklarar felet. Vanliga orsaker inkluderar en återkallad OAuth-token, en nekad plattformsbehörighet eller ett saknat mål (t.ex., en raderad Discord-gille).
+
+<Tip>
+Behandla `entitlement_grant.failed` som åtgärdsbar. Kunden betalade men fick inte åtkomst. Framhäv misslyckanden för din supportteam eller utlös en ombeviljning när den underliggande frågan är löst.
+</Tip>
+
+### entitlement_grant.revoked
+
+Åtkomst drogs tillbaka på plattformsnivån: Discord-roll borttagen, GitHub-samarbetare borttagen, licensnyckel inaktiverad, filnedladdnings-URL:er ej längre tillhandahållna. Fältet `revocation_reason` registrerar utlösaren.
+
+| `revocation_reason` | Utlösare |
+|---|---|
+| `subscription_cancelled` | Kundens prenumeration avbröts (`subscription.cancelled` händelse). |
+| `subscription_on_hold` | Prenumerationen är på paus på grund av misslyckad förnyelse (`subscription.on_hold`). Återhämtbar: En lyckad omprovning leder till en ombeviljning. |
+| `subscription_expired` | Prenumerationen nådde slutet av dess period (`subscription.expired`). |
+| `plan_changed` | Planen ändrades; gamla beviljanden återkallas innan nya utfärdas (`subscription.plan_changed`). |
+| `refund` | En återbetalning behandlades för den ursprungliga engångsbetalningen (`refund.succeeded`). |
+| `manual` | En handlare återkallade beviljandet via API eller instrumentpanelen. Manuella återkallelser återbeviljas inte automatiskt vid prenumerationsförnyelser. |
+| `license_key_disabled` | Licensnyckeln bakom en licensnyckel-beviljande inaktiverades. Beviljandet återaktiveras automatiskt om nyckeln återaktiveras. |
+| `platform_external` | Plattformsidan av en integration gick ur synk (till exempel, en Discord-roll togs bort manuellt, GitHub-appen förlorade repository-åtkomst, eller en avstämningspass upptäckte ett saknat mål). Beviljandet återbeviljas inte automatiskt vid prenumerationsförnyelser förrän den underliggande plattformsfrågan är löst. |
+
+---
+
+## Nyttolastvarianter
+
+Fältet `data` är alltid ett `EntitlementGrantResponse`-objekt. Två integrationstyper bifogar extra kapslade objekt:
+
+- **`license_key`** ingår när rättighetsintegrationstypen är `license_key`. Det innehåller den genererade nyckeln, utgångsdatum och aktiveringsanvändning.
+- **`digital_product_delivery`** ingår när integrationstypen är `digital_files`. Det innehåller försignerade nedladdnings-URL:er, den valfria `instructions`, och den valfria `external_url`.
+
+För alla andra integrationstyper (Discord, GitHub, Telegram, Framer, Notion) är båda fälten `null`; den relevanta konfigurationen fångas i själva rättigheten, inte i beviljandet.
+
+---
+
+## Exempel på nyttolaster
+
+### Licensnyckel levererad (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "lk_AAA111BBB222",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
+
+### Digitala filer levererade (`entitlement_grant.delivered`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "delivered",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Discord-roll skapad och väntande (`entitlement_grant.created`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:31:00.000000Z",
+  "data": {
+    "id": "grant_DiscordPending5L",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_discord_patrons",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "pending",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": "https://discord.com/oauth2/authorize?...",
+    "oauth_expires_at": "2026-05-08T10:31:00Z",
+    "metadata": null,
+    "created_at": "2026-05-01T10:31:00Z",
+    "updated_at": "2026-05-01T10:31:00Z"
+  }
+}
+```
+
+### Beviljande återkallat vid prenumerationsavslut (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.revoked",
+  "timestamp": "2026-06-15T08:12:44.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": "sub_pro_monthly_001",
+    "payment_id": null,
+    "subscription_id": "sub_pro_monthly_001",
+    "status": "revoked",
+    "revocation_reason": "subscription_cancelled",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": null,
+      "activations_used": 1,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": "2026-06-15T08:12:44Z",
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-06-15T08:12:44Z"
+  }
+}
+```
+
+### Leverans misslyckades (`entitlement_grant.failed`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.failed",
+  "timestamp": "2026-05-01T10:36:21.000000Z",
+  "data": {
+    "id": "grant_GhFailed7Z",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_github_repo",
+    "customer_id": "cus_abc123",
+    "external_id": "pay_a1b2c3d4",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "failed",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": "github_permission_denied",
+    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:36:00Z",
+    "updated_at": "2026-05-01T10:36:21Z"
+  }
+}
+```
+
+---
+
+## Integrationstips
+
+- **Vänta på `entitlement_grant.delivered` innan du låser upp beroende funktioner.** En `payment.succeeded` händelse talar om för dig att pengarna gått igenom; det talar inte om för dig att kunden har GitHub-repot eller Discord-rollen än. `delivered`-händelsen är den sanningskälla för uppfyllande.
+- **Kartlägg `revocation_reason` till retention flöden.** En `subscription_on_hold` återkallelse innebär vanligtvis att kundens kort misslyckades och nästa förnyelse kommer att nybevilja åtkomst. En `manual` eller `subscription_cancelled` återkallelse är avsiktlig. Behandla dem olika i kundmeddelandena.
+- **Använd grant `id` som din idempotensnyckel.** Ett enda beviljande avger högst ett `created`-händelse och högst en slutlig händelse (`delivered` eller `failed`), och högst ett `revoked`-händelse. Återleveranser från webhooksystemet kan upprepa händelser; dupplikat på grant `id` plus `type`.
+- **Inspektera `license_key` och `digital_product_delivery` för att känna igen integrationstypen.** Grant nyttolasten i sig bär inte integrationstypen, men exakt ett av dessa kapslade objekt fylls i för licensnyckel och digitala filer rättigheter.
+- **För OAuth-baserade beviljanden, visa `oauth_url` för kunden.** `entitlement_grant.created`-händelsen för Discord, GitHub, eller Notion prenumerantflöden inkluderar en `oauth_url` och `oauth_expires_at`. Maila det till kunden eller visa det i din app för att låsa upp leveransen.

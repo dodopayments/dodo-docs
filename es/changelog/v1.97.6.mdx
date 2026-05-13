@@ -1,0 +1,331 @@
+---
+title: v1.97.6 (7 de mayo de 2026)
+description: Lanzamiento de Entitlements con cinco nuevas integraciones de
+  cumplimiento (Discord, GitHub, Telegram, Framer, Notion), razones de
+  cancelación de suscripción en el portal del cliente, umbral configurable de
+  e-mandato INR, ajuste inclusivo de tarifas de moneda adaptativa, aplicación de
+  escritorio de Dodo Payments para macOS/Windows/Linux, pagos con stablecoins
+  (USDC/USDP/USDG), importar claves de licencia existentes, require_phone_number
+  para sesiones de pago, y corrección de errores
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - changelog
+  - notas de versión
+  - actualizaciones de producto
+  - v1.97.6 (7 de mayo de 2026)
+---
+
+## Nuevas Funcionalidades
+
+### 1. **Entitlements**
+
+Dodo Payments ahora incluye **Entitlements** unificados: una capa única que impulsa la entrega automática para cada integración de cumplimiento. Un solo producto puede entregar múltiples entitlements en cada compra exitosa o suscripción activa.
+
+```jsx
+<Frame>
+<img src="/images/entitlements/list.png" alt="Panel de Entitlements con la lista de entitlements a la izquierda y actividad de concesión a la derecha" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+```
+
+**Cinco nuevas integraciones de plataformas**
+
+Hasta ahora, Dodo Payments entregaba **claves de licencia** y **archivos digitales** automáticamente al comprar. Entitlements amplía ese alcance a cinco plataformas adicionales, para que los clientes que pagan puedan obtener acceso a tu comunidad, tu código o tu contenido en el momento en que el pago sea exitoso, sin necesidad de cumplimiento manual de tu parte:
+
+| Integración | Qué entrega | Comportamiento de revocación |
+|---|---|---|
+| **Discord** | Asigna un rol elegido en tu servidor de Discord después de que el cliente complete OAuth | Rol eliminado en cancelación/reembolso |
+| **GitHub** | Agrega al cliente como colaborador a un repositorio privado en el nivel de permiso que elijas | Colaborador eliminado en cancelación/reembolso |
+| **Telegram** | Emite un enlace de invitación de solicitud de unión única para un chat o canal privado a través de tu bot de Telegram | Cliente expulsado del chat en cancelación/reembolso |
+| **Framer** | Desbloquea un enlace de remix de plantilla de Framer protegido por un código de acceso | Código de acceso desactivado en cancelación/reembolso |
+| **Notion** | Duplica una página de plantilla de Notion en el espacio de trabajo del cliente después de que autoricen vía OAuth | Página entregada archivada en cancelación/reembolso |
+
+Estos se unen a las integraciones existentes de **Claves de Licencia** (claves únicas con límites de activación y caducidad) y **Archivos Digitales** (URLs de descarga presignadas para libros electrónicos, plantillas, medios), todas ahora gestionadas a través del mismo ciclo de vida de concesión.
+
+**Lo que obtienes de inmediato**
+
+| Capacidad | Descripción |
+|---|---|
+| **Plantillas reutilizables** | Define un entitlement una vez (límites de activación, paquetes de archivos, rol de Discord, permiso de repositorio, etc.) y adjúntalo a cualquier producto |
+| **Concesiones automáticas** | Emitidas en `payment.succeeded` e `subscription.active`, idempotentes a través de renovaciones y reactivaciones |
+| **Revocación consciente del ciclo de vida** | Revocado en `subscription.cancelled`, `subscription.on_hold`, `subscription.expired`, `refund.succeeded`, `subscription.plan_changed`, o revocación manual a través de la API/panel, con un `revocation_reason` poblado |
+| **OAuth + flujos directos de plataforma** | OAuth para el consentimiento del suscriptor de Discord, GitHub y Notion; llamadas directas a la plataforma para Telegram, Framer y Archivos Digitales |
+| **Detección de deriva** | Detecta cuando un rol de Discord, colaborador de GitHub o página de Notion se desincroniza a nivel de plataforma y revoca con `revocation_reason: platform_external` |
+| **Cifrado en reposo** | Todos los tokens de plataforma (OAuth, bot, instalaciones de aplicaciones) almacenados con AES-256-GCM |
+
+**Webhooks**
+
+Cuatro nuevos eventos de ciclo de vida se disparan para cada concesión:
+
+| Evento | Se ejecuta cuando |
+|---|---|
+| `entitlement_grant.created` | Se crea una nueva concesión para un cliente |
+| `entitlement_grant.delivered` | Se provisiona el acceso al cliente |
+| `entitlement_grant.failed` | La entrega no pudo completarse; inspecciona `error_code` e `error_message` |
+| `entitlement_grant.revoked` | Se retira el acceso; inspecciona `revocation_reason` |
+
+```jsx
+<Tip>
+Para nuevas integraciones, escucha `entitlement_grant.delivered` en lugar de `payment.succeeded`. El éxito del pago no significa que la entrega haya terminado, especialmente para integraciones basadas en OAuth.
+</Tip>
+```
+
+Aprende más: [Entitlements](/features/entitlements/introduction) | [Entitlement Grant Webhooks](/developer-resources/webhooks/intents/entitlement-grant)
+
+### 2. **Razones de Cancelación de Suscripción en el Portal del Cliente**
+
+Cuando los clientes cancelan una suscripción desde el Portal del Cliente, ahora se les solicita que compartan **por qué están cancelando** antes de confirmar. La razón capturada se almacena en la suscripción como `cancellation_feedback`, se muestra en las cargas de API y webhook, y está disponible en el panel para que puedas detectar patrones de cancelación de un vistazo.
+
+```jsx
+<Frame>
+<img src="/images/customer-portal/cancellation-reasons.png" alt="Modal de cancelación del Portal del Cliente con el menú desplegable '¿Por qué estás cancelando?' mostrando razones como Demasiado caro, Faltan funciones y Otra" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+```
+
+**Opciones de razón**
+
+| Valor | Etiqueta para el cliente |
+|-------|-------------------------|
+| `too_expensive` | Demasiado caro |
+| `missing_features` | Faltan funciones |
+| `switched_service` | Cambiado a otro servicio |
+| `unused` | No lo uso lo suficiente |
+| `customer_service` | Mal servicio al cliente |
+| `low_quality` | Baja calidad |
+| `too_complex` | Demasiado complejo |
+| `other` | Otro |
+
+**Dónde aparece**
+
+- **Objeto de suscripción**: Nuevo campo `cancellation_feedback` (uno de los valores anteriores) e `cancellation_comment` (texto libre opcional), llenados cuando el cliente cancela
+- **Webhook `subscription.cancelled`**: Ambos campos están incluidos en la carga
+- **API**: Pasa `cancellation_feedback` e `cancellation_comment` a `PATCH /subscriptions/{id}` al programar o ejecutar una cancelación de manera programática
+
+```typescript
+// Reading the captured feedback
+const subscription = await client.subscriptions.retrieve('sub_123');
+console.log(subscription.cancellation_feedback); // e.g., "too_expensive"
+console.log(subscription.cancellation_comment);  // e.g., "Switching to a competitor"
+```
+
+```jsx
+<Tip>
+Combina `cancellation_feedback` con [Subscription Dunning](/features/recovery/subscription-dunning) para personalizar tus correos electrónicos de recuperación: por ejemplo, envía un código de descuento a los canceladores `too_expensive` y una encuesta de "¿qué falta?" a los canceladores `missing_features`.
+</Tip>
+```
+
+Aprende más: [Portal del Cliente](/features/customer-portal#cancelling-a-subscription) | [Subscription Webhooks](/developer-resources/webhooks/intents/subscription)
+
+### 3. **Monto Mínimo de Mandato Configurable para E-Mandatos INR**
+
+Ahora puedes configurar el **umbral del mandato** para los e-mandatos INR en suscripciones recurrentes con tarjeta india. Anteriormente, cada suscripción con tarjeta india por debajo de ₹15,000 usaba un mandato a demanda fijo de ₹15,000. Ahora puedes sobrescribir este umbral a nivel de comerciante, y por sesión de pago o suscripción si es necesario.
+
+El monto del mandato registrado con el banco del cliente es `max(mandate_min_amount_inr_paise, billing_amount)`, por lo que este valor actúa como el **techo de autorización** para el cliente siempre que la facturación sea menor al umbral.
+
+```typescript
+// Per-subscription override
+const subscription = await client.subscriptions.create({
+  product_id: 'prod_inr_monthly',
+  customer: { email: 'customer@example.in' },
+  billing: { country: 'IN' /* ... */ },
+  mandate_min_amount_inr_paise: 2_000_000 // ₹20,000 ceiling for this subscription
+});
+
+// Or via a checkout session
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_inr_monthly', quantity: 1 }],
+  mandate_min_amount_inr_paise: 2_000_000,
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Prioridad de resolución**
+
+1. Sobrescribir por solicitud (`mandate_min_amount_inr_paise` en la sesión de pago, el pago o la suscripción)
+2. Configuración a nivel de comerciante en las configuraciones del negocio
+3. Valor predeterminado del sistema de **₹15,000** (1,500,000 paise)
+
+| Campo | Tipo | Rango | Aplica a |
+|-------|------|-------|---------|
+| `mandate_min_amount_inr_paise` | `integer` (paise INR) | `>= 1` | Suscripciones INR con tarjeta india en conectores no-Airwallex |
+
+```jsx
+<Info>
+Esta configuración solo afecta a los e-mandatos registrados para tarjetas emitidas en India (Visa, Mastercard, RuPay) en suscripciones INR. Las suscripciones UPI siguen su propio flujo de AutoPay y no se ven afectadas.
+</Info>
+```
+
+Aprende más: [Métodos de Pago en India](/features/payment-methods/india#mandate-types) | [Suscripciones con Mandatos RBI](/features/subscription#subscriptions-with-rbi-compliant-mandates)
+
+### 4. **Configuración Inclusiva de Tarifas de Moneda Adaptativa**
+
+Adaptive Currency es la característica que te permite cobrar a los clientes en su moneda local. Por defecto, la **tarifa de moneda adaptativa del 2–4%** es asumida por el cliente y se añade a tu precio mostrado. Con la nueva configuración **Fees Inclusive**, puedes cambiar esto: mantener el precio mostrado inalterado para el cliente y absorber la tarifa tú mismo.
+
+**Dónde configurar**
+
+Ve a **Configuraciones → Negocio**, asegúrate de que **Adaptive Pricing** esté habilitado, y activa **Fees Inclusive** en la sección de Moneda Adaptativa.
+
+**Sobrescribir por solicitud**
+
+También puedes sobrescribir el valor predeterminado del comerciante para checkouts individuales, pagos y suscripciones a demanda usando el booleano `adaptive_currency_fees_inclusive`:
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  adaptive_currency_fees_inclusive: true, // override business default
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+| Modo | El cliente ve | El comerciante liquida |
+|------|---------------|-----------------------|
+| Exclusivo (predeterminado) | Precio local + 2–4% de tarifa extra | Precio base completo |
+| Inclusivo | Precio local (sin cambios) | Precio base menos la tarifa del 2–4% |
+
+```jsx
+<Info>
+Las transacciones INR → INR siempre se tratan como inclusivas independientemente de la configuración del negocio o sobrescribir por solicitud.
+</Info>
+```
+
+Aprende más: [Adaptive Currency](/features/adaptive-currency)
+
+### 5. **Aplicación de Escritorio de Dodo Payments**
+
+La aplicación oficial **Dodo Payments Desktop** ahora está disponible para **macOS, Windows y Linux**. Ejecuta tu panel de pagos como una aplicación nativa rápida: no se requiere pestaña de navegador.
+
+| Plataforma | Descargar |
+|------------|-----------|
+| macOS (Apple Silicon) | `Dodo.Payments_<version>_aarch64.dmg` |
+| macOS (Intel) | `Dodo.Payments_<version>_x64.dmg` |
+| Windows | `Dodo.Payments_<version>_x64-setup.exe` (o `.msi`) |
+| Linux (Debian/Ubuntu) | `Dodo.Payments_<version>_amd64.deb` |
+| Linux (Fedora/RHEL) | `Dodo.Payments-<version>-1.x86_64.rpm` |
+| Linux (AppImage, actualización automática) | `Dodo.Payments_<version>_amd64.AppImage` |
+
+**Qué contiene**
+
+- **Pequeño binario nativo** — construido con Tauri en el webview nativo del sistema, ~5 MB en total (sin Chromium incluido)
+- **Firmado y notarizado** — las compilaciones de macOS están firmadas con Apple Developer ID y notarizadas, sin advertencias de Gatekeeper
+- **Actualización automática** — verifica cada 4 horas y aplica actualizaciones firmadas automáticamente desde las Releases de GitHub (funciona en macOS, Windows y Linux AppImage)
+- **Bandeja del sistema + barra de menú** — ocultar en bandeja en macOS, menús completos de Archivo/Edición/Vista/Ayuda con atajos de teclado (`⌘⇧H` va al tablero, `⌘L` copia la URL actual, `⌘⌥I` herramientas de desarrollo)
+- **Soporte de enlaces profundos** — los enlaces de autenticación por enlace mágico se abren directamente en la aplicación
+- **Ventanas múltiples** — abre múltiples paneles de control lado a lado
+
+```jsx
+<Tip>
+Obtén el instalador más reciente para tu plataforma desde la [página de Releases de la Aplicación de Escritorio](https://github.com/dodopayments/dodo-desktop/releases/latest). El repositorio es completamente de código abierto.
+</Tip>
+```
+
+### 6. **Pagos con Stablecoins (USDC, USDP, USDG)**
+
+Acepta **pagos con stablecoin a nivel global** con liquidación en USD. Los clientes pagan desde su billetera de stablecoin preferida en la red de su elección, tú recibes USD fiduciario sin exposición a la volatilidad de criptomonedas, sin devoluciones de cargo y sin infraestructura bancaria requerida del lado del cliente.
+
+**Monedas y redes compatibles**
+
+| Stablecoin | Redes |
+|------------|-------|
+| **USDC** | Ethereum, Solana, Polygon, Base |
+| **USDP** | Ethereum, Solana |
+| **USDG** | Ethereum |
+
+**Cobertura**
+
+| Detalle | Valor |
+|---------|-------|
+| Moneda de facturación | USD |
+| Países compatibles | Global (excepto India) |
+| Suscripciones | No compatible (solo pagos únicos) |
+| Monto mínimo | $0.50 |
+| Liquidación | USD |
+
+**Configuración**
+
+Pasa `crypto` en `allowed_payment_method_types` al crear una sesión de pago:
+
+```javascript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_123', quantity: 1 }],
+  allowed_payment_method_types: ['crypto', 'credit', 'debit'],
+  return_url: 'https://example.com/success'
+});
+```
+
+Se muestra al cliente una dirección de billetera y un código QR con el monto de stablecoin calculado a la tasa de cambio en tiempo real; una vez que la blockchain confirma la transacción, tu webhook `payment.succeeded` se dispara y el cliente es redirigido a tu página de éxito.
+
+```jsx
+<Info>
+Los pagos con stablecoins son irreversibles por diseño: no hay devoluciones de cargo. Recomendamos ofrecer siempre `credit` e `debit` como métodos alternativos para clientes sin una billetera de stablecoin.
+</Info>
+```
+
+Aprende más: [Pagos con Stablecoins](/features/payment-methods/stablecoins)
+
+### 7. **Importar Claves de Licencia Existentes**
+
+Ahora puedes **importar claves de licencia de otro sistema** en Dodo Payments usando la [API de Creación de Claves de Licencia](/api-reference/licenses/create-license-key). Esto habilita la migración sin interrupciones desde cualquier proveedor externo de claves de licencia, para que tus clientes existentes puedan continuar activando, validando y desactivando sus claves contra Dodo Payments sin nueva emisión.
+
+```typescript
+const licenseKey = await client.licenseKeys.create({
+  customer_id: 'cus_abc123',
+  product_id: 'prod_456',
+  key: 'YOUR-EXISTING-LICENSE-KEY',
+  activations_limit: 5,
+  expires_at: '2026-12-31T23:59:59Z',
+});
+```
+
+Las claves importadas están etiquetadas con `source: "import"` (vs. `source: "auto"` para claves generadas automáticamente al pago), para que puedas distinguir el inventario migrado de las claves emitidas orgánicamente al consultar `GET /license_keys`. El `payment_id` en claves importadas es `null` porque no están vinculadas a una transacción de Dodo Payments.
+
+```jsx
+<Warning>
+Las claves de licencia creadas o actualizadas a través de la API no desencadenan notificaciones por correo electrónico a los clientes. Si necesitas notificar a los clientes sobre una clave importada, maneja eso por separado en tu aplicación.
+</Warning>
+```
+
+```jsx
+<Tip>
+¿Migrando desde Polar.sh o Lemon Squeezy? El [CLI `dodo-migrate`](/migrate-to-dodo) automatiza importaciones masivas de productos, clientes, descuentos y claves de licencia en un solo comando.
+</Tip>
+```
+
+Aprende más: [Claves de Licencia](/features/license-keys#import-existing-license-keys-via-api) | [API de Creación de Claves de Licencia](/api-reference/licenses/create-license-key)
+
+### 8. **`require_phone_number` para Sesiones de Pago**
+
+Obliga a los clientes a proporcionar un número de teléfono durante el pago configurando `feature_flags.require_phone_number: true` al crear una sesión de pago. El número de teléfono se convierte en un campo obligatorio en el formulario de pago, con la validación del formulario mostrando "Se requiere número de teléfono" si el cliente lo deja en blanco.
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  feature_flags: {
+    allow_phone_number_collection: true,
+    require_phone_number: true
+  },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+| Bandera | Predeterminado | Comportamiento |
+|---------|---------------|---------------|
+| `allow_phone_number_collection` | `true` | Muestra el campo de número de teléfono en el pago |
+| `require_phone_number` | `false` | Hace que el campo de número de teléfono sea obligatorio |
+
+```jsx
+<Warning>
+`require_phone_number: true` requiere `allow_phone_number_collection: true`. La API rechaza sesiones donde `require_phone_number` es verdadero mientras la recopilación de teléfonos está deshabilitada.
+</Warning>
+```
+
+```jsx
+<Tip>
+Útil para SaaS B2B, industrias reguladas o cualquier flujo donde necesites un canal de contacto verificado para soporte, revisión de fraude o cumplimiento.
+</Tip>
+```
+
+Aprende más: [Características de Pago](/features/checkout) | [API de Creación de Sesión de Pago](/api-reference/checkout-sessions/create)
+
+## Corrección de Errores y Mejoras
+
+- Pequeñas correcciones de errores y mejoras de estabilidad en toda la plataforma

@@ -1,0 +1,464 @@
+---
+title: Bygg en AI API-plattform med krediteringsbaserad fakturering
+description: Bygg en nivåindelad AI API-tjänst med tokenkrediter — tilldela
+  krediter via prenumerationsplaner och engångspaket, och dra automatiskt av när
+  kunder anropar ditt API.
+icon: coins
+keywords:
+  - Dodo Payments
+  - utvecklare guide
+  - krediteringsbaserad fakturering
+  - tokenfakturering
+  - AI API
+  - krediter
+  - överspill
+---
+
+<Tip>
+  <strong>Låt Sentra skriva din integrationskod åt dig.</strong><br />
+  Använd vår AI-assistent i VS Code, Cursor eller Windsurf för att generera SDK/API-kod, webhook-hanterare, kreditbidrag och mer — bara genom att beskriva vad du vill ha.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Prova Sentra: AI-driven integration &rarr;
+  </a>
+</Tip>
+
+I denna handledning bygger du **NeuralAPI** — en nivåindelad AI-plattform där varje prenumerationsplan kommer med en månatlig tokenkreditkvot, kunder kan köpa toppningspaket när de har lågt saldo, och din backend drar automatiskt av krediter eftersom begäran behandlas av OpenAI.
+
+<Note>
+Denna handledning använder Node.js/Express + OpenAI SDK. Dodo Payments-koncept (krediter, mätare, webhooks) gäller för alla ramverk eller AI-leverantörer — anpassa fritt.
+</Note>
+
+I slutet av denna handledning kommer du att veta hur man:
+
+- Skapa ett anpassat kreditberättigande (tokens) och en mätare som automatiskt drar ifrån det
+- Fästa krediter på prenumerationsplaner (med och utan överspill) och en engångs topprodukt
+- Ansluta en riktig OpenAI-kompletterande slutpunkt som fakturerar tokens genom Dodo Payments
+- Fråga en kunds aktuella kreditsaldo via SDK
+- Verifiera webhook-signaturer och dirigera Dodo Payments kredithändelser
+
+## Vad Vi Bygger
+
+Här är prismodellen för NeuralAPI:
+
+| Produkt | Pris | Tokens | Överspill |
+|---------|-------|--------|---------|
+| Startplan | $29/månad | 10,000,000 tokens/cykel | Blockerat vid noll |
+| Pro Plan | $99/månad | 40,000,000 tokens/cykel | $0,005 per 1K tokens |
+| Token Top-Up Pack | $19 engångsavgift | +5,000,000 tokens | — |
+
+<Info>
+Innan du börjar, se till att du har:
+- Ett Dodo Payments-konto (testläge är okej)
+- En OpenAI API-nyckel
+- Node.js 18+
+- Grundläggande kunskaper i TypeScript/Node.js
+</Info>
+
+## Steg 1: Skapa Ditt Token Krediteringsberättigande
+
+Först skapar du kreditberättigandet som både prenumerationsplanerna och toppningspaketet delar. Tänk på detta som att definiera den "token"-enhet din plattform använder.
+
+<Frame caption="The Credits tab under Products shows all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Sida för krediter som visar skapade kreditberättiganden" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Steps>
+<Step title="Navigate to Credits">
+1. Logga in på din Dodo Payments-instrumentpanel
+2. Klicka på **Produkter** i den vänstra sidopanelen
+3. Välj fliken **Krediter**
+4. Klicka på **Skapa Kredit**
+</Step>
+
+<Step title="Configure the credit unit">
+Fyll i de grundläggande detaljerna för din tokenkredit:
+
+**Kreditnamn**: `API Tokens`
+
+**Kredittype**: Välj **Anpassad Enhet**
+
+**Enhetsnamn**: `token`
+
+**Precision**: `0` (tokens är alltid hela nummer)
+
+**Kredits Utgång**: `30 days` (krediter återställs varje faktureringscykel)
+
+<Warning>
+Precision kan inte ändras efter att en kredit har skapats. För tokenantal, `0` (hela nummer) är nästan alltid korrekt.
+</Warning>
+</Step>
+
+<Step title="Skip overage at the credit level">
+Lämna överspill **avaktiverad** här — du kommer att konfigurera det per plan när du fäster krediten på produkter. Detta gör att startplanen blockerar användning vid noll medan Pro-planen tillåter överspill.
+<Tip>
+Överspill-inställningar som konfigurerats här är *standard*. Varje produktkoppling kan åsidosätta dem — vilket är precis vad vi kommer att göra i Steg 3.
+</Tip>
+</Step>
+
+Click **Skapa Kredit**. När den är sparad, öppna krediten och kopiera dess ID — det ser ut som `cent_xxxxxxxxxxxx`.
+
+Your `API Tokens` kreditberättigande är klart. Nästa steg är att skapa en mätare så att användningshändelser kan driva avdrag automatiskt.
+
+## Steg 2: Skapa en Mätare för Tokenanvändning
+
+En mätare aggregerar inkommande användningshändelser och omvandlar dem till kreditavdrag. Du behöver detta *innan* du skapar planprodukterna, eftersom du kommer att fästa det under produktens skapande i Steg 3.
+
+1. I instrumentpanelsens sidopanel, gå till **Produkter → Mätare**
+2. Klicka på **Skapa Mätare**
+
+**Mätnamn**: `Token Usage Meter`
+
+**Händelsenamn**: `api.tokens_used` *(detta måste exakt matcha vad din app skickar)*
+
+**Aggregeringstyp**: `Sum` — vi summan räknar antalet tokens från varje händelse
+
+**Över Egenskap**: `tokens` — metadatanyckeln på varje händelse vars värde kommer att summeras
+
+**Mätningsenhet**: `tokens`
+
+Event-namn är skiftlägeskänsliga. `api.tokens_used` ≠ `Api.Tokens.Used` — välj ett och håll dig till det.
+
+Spara mätaren och kopiera dess ID — du kommer att referera till det när du fäster till produkter.
+
+Mätaren är skapad. Nu kan vi ansluta den till krediten när vi konfigurerar produkter.
+
+## Steg 3: Skapa Planprodukterna
+
+Båda planerna behöver vara **Användningsbaserade faktureringsprodukter**, inte vanliga prenumerationer — mätare kan endast fästas vid UBB-produkter, och du behöver mätaren för att automatiskt dra av krediter när kunder anropar ditt API. UBB-produkter stöder fortfarande en återkommande grundavgift (den `$29` / `$99`); användning ovanpå det faktureras i krediter.
+
+### Startplan ($29/månad — 10M tokens, inget överspill)
+
+1. Gå till **Produkter → Skapa Produkt**
+2. Välj **Användningsbaserad fakturering** som prissättningstyp
+3. Fyll i:
+
+**Produktnamn**: `NeuralAPI Starter`
+
+**Beskrivning**: `10 million API tokens per month. Perfect for individual developers and small projects.`
+
+**Fast Pris**: `29.00` (den återkommande grundavgiften – debiteras månatligen även innan någon användning)
+
+**Faktureringscykel**: `Monthly`
+
+**Valuta**: `USD`
+
+I avsnittet **Välj mätare**, klicka på **+** och lägg till `Token Usage Meter`. Aktivera sedan på mätaren:
+
+1. Växla **Fakturera användning i krediter** på
+2. **Kreditberättigande**: välj `API Tokens`
+3. **Mätare enheter per kredit**: `1` — varje token i händelsen kartläggs till 1 kredit som dras av
+4. **Fri Tröskel**: `0` — kreditallokeringen i sig är kundens "fria nivå"; vi behöver inte ett extra gratisband
+
+Detta är kopplingen som gör att inkommande `api.tokens_used` händelser faktiskt drar av från kundens saldo.
+
+Fortsätt på produkten, scrolla till kreditkonfigurationsavsnittet som visas när en kreditfakturerad mätare är fäst:
+
+**Krediter utfärdade per faktureringscykel**: `10000000`
+
+**Tillåt överspill**: **Inaktiverad** — Startkunder blockeras när tokens tar slut
+
+**Importera Standardkreditinställningar**: Aktiverat — använd 30 dagars förfallodatum från kreditberättigandet
+
+Klicka på **Spara** och kopiera produkt-ID:t.
+
+Startplan: $29/månad grundavgift, 10M tokens/cykel, blockerat vid noll, automatisk avdrag via mätare.
+
+### Pro Plan ($99/månad — 40M tokens, överspill aktiverat)
+
+Samma flöde som Start, med större siffror:
+
+**Produktnamn**: `NeuralAPI Pro`
+
+**Beskrivning**: `40 million API tokens per month with overage. Built for production applications.`
+
+**Fast Pris**: `99.00`
+
+**Faktureringscykel**: `Monthly`
+
+**Valuta**: `USD`
+
+Identisk med Start: lägg till `Token Usage Meter`, växla **Fakturera användning i krediter** på, välj `API Tokens`, **Mätare enheter per kredit** `1`, **Fri Tröskel** `0`.
+
+Konfigurera kreditutfärdandet, den här gången aktiverar du överspill:
+
+**Krediter utfärdade per faktureringscykel**: `40000000`
+
+**Importera Standardkreditinställningar**: **Inaktiverad** — vi behöver anpassa överspillinställningar per produkt
+
+**Tillåt överspill**: **Aktiverad**
+
+**Pris Per Enhet**: `0.000005` USD per token (dvs. $0,005 per 1K tokens, eller $5 per 1M tokens — över planens effektiva per-token-pris för att avskräcka överspill)
+
+**Överspill Beteende**: `Bill overage at billing` — överspill faktureras på nästa faktura, sedan återställs saldot
+
+Spara produkten och kopiera produkt-ID:t.
+
+Pro Plan: $99/månad grundavgift, 40M tokens/cykel, överspill vid $0,005/1K tokens, automatisk avdrag via mätare.
+
+## Steg 4: Skapa Token Top-Up Pack
+
+Topppaketet är ett engångsköp som ger 5,000,000 tokens till en befintlig kunds saldo.
+
+1. Gå till **Produkter → Skapa Produkt**
+2. Välj **Engångsbetalning** som prissättningstyp
+3. Fyll i:
+
+**Produktnamn**: `Token Top-Up Pack`
+
+**Beskrivning**: `Instantly add 5 million tokens to your NeuralAPI balance.`
+
+**Pris**: `19.00`
+
+**Valuta**: `USD`
+
+1. I avsnittet **Berättiganden**, klicka på **Fäst** bredvid **Krediter**
+2. Välj `API Tokens`
+3. Ange **Utfärdade Krediter**: `5000000`
+4. **Inaktivera** *Importera Standardkreditinställningar* — vi vill åsidosätta standard 30-dagars förfallodatum
+5. Ställ in **Kredits Utgång**: `365 days`
+6. Spara produkten
+
+Kopiera produkt-ID:t.
+
+Varför längre utgång på toppningar? Prenumerationskrediter återställs var 30 dag eftersom det är cykeln. Toppningar är *förbetalda köp* — kunden betalade $19 i förskott och förväntar sig rimligen att de tokens ska hålla längre än en månad. 365 dagar matchar hur riktiga förbetalda krediter fungerar på OpenAI, AWS och Anthropic, medan de ändå begränsar ditt ansvar så att kunderna inte kan lagra obegränsat.
+
+Top-Up Pack konfigurerad — att köpa det ger 5,000,000 tokens som förblir giltiga i 365 dagar.
+
+## Steg 5: Bygg Backend
+
+Nu ska vi bygga Express-servern som hanterar prenumerationsutcheckning, topputcheckning, verkliga OpenAI-kompletteringar med tokenfakturering, balansfrågor och kredit-webhook-händelser.
+
+Skapa en `tsconfig.json`:
+
+Uppdatera `package.json` scripts:
+
+Skapa `.env` med dina referenser och ID från tidigare steg:
+
+Inga krediteras `.env` till versionshantering. Lägg till det i `.gitignore` direkt.
+
+Du fyller i `DODO_PAYMENTS_WEBHOOK_KEY` i Steg 7 efter att ha registrerat din webhook-endpoint.
+
+Skapa `src/server.ts`:
+
+Backend klar: prenumerationsutcheckning, topputcheckning, OpenAI-komplettering med mätt tokenfakturering, balansfråga och en verifierad webhook-hanterare.
+
+Du kanske har märkt att det inte finns någon uttrycklig "dra av N krediter"-anrop. Det är avsiktligt:
+
+1. Din hanterare anropar OpenAI och får tillbaka `usage.total_tokens` (t.ex. 1532).
+2. Du registrerar en enda användningshändelse: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
+3. `Token Usage Meter` aggregerar händelser per kund.
+4. Eftersom mätaren är kopplad till `API Tokens` kredit med **Fakturera användning i Krediter**, drar Dodo Payments av 1532 krediter från kundens äldsta obegränsade beviljning (FIFO).
+5. Om överspill är aktiverat och kunden går under noll, spåras underskottet och faktureras på nästa faktura.
+
+## Steg 6: Lägg till en Demo-Frontend
+
+Skapa `public/index.html` för att testa alla flöden i din webbläsare. Vi sparar kund-ID:t till `localStorage` så att prenumerera → generera → topp alla delar samma identitet, vilket mimar en inloggad app:
+
+## Steg 7: Anslut Webhook
+
+Webhooks låter din server reagera på saldoförändringar — du använder dem för att skicka "lågt saldo"-mail innan kunderna når noll.
+
+Webhooks behöver en offentlig URL. För lokal utveckling, använd [ngrok](https://ngrok.com) eller någon tunnel:
+
+Kopiera `https://...ngrok-free.app` URL.
+
+1. I instrumentpanelen, gå till **Utvecklare → Webhooks → Lägg till Endpoint**
+2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
+3. Prenumerera på (minst):
+   - `credit.added`
+   - `credit.deducted`
+   - `credit.overage_charged`
+4. Spara och kopiera **Signeringshemlighet**
+5. Klistra in det i `.env` som `DODO_PAYMENTS_WEBHOOK_KEY`, starta sedan om `npm run dev`
+
+SDK:n `dodo.webhooks.unwrap()` validerar `webhook-id`, `webhook-timestamp` och `webhook-signature` headers med din signeringshemlighet. Du behöver inte rolla din egen HMAC-verifiering - och du borde inte, för Dodo Payments använder [Standard Webhooks](https://www.standardwebhooks.com/), som signerar `id.timestamp.body` snarare än bara kroppen.
+
+## Steg 8: Testa Fullt Flöde
+
+1. Kör `npm run dev`
+2. Öppna `http://localhost:3000`
+3. Välj **Pro Plan**, ange en test e-postadress + namn, klicka på **Get Checkout Link**, slutför utcheckning med [testkortuppgifter](/miscellaneous/testing-process)
+4. I instrumentpanelen, gå till **Kunder → senaste** och kopiera `cus_...` ID
+5. Klistra in det i "Inloggad kund-ID"-fältet på demot och klicka på **Spara**
+
+ Kunden bör ha 40,000,000 tokens. Klicka på **Uppdatera Saldo** för att bekräfta.
+
+Skriv en prompt och klicka på **Generera**. Servern anropar OpenAI, får tillbaka den faktiska `total_tokens`, registrerar en användningshändelse och returnerar svaret.
+
+Användningshändelser behandlas av en bakgrundsarbetare varje ~minut. Balansen kommer inte att ticka ner direkt — vänta 30–90 sekunder och klicka **Uppdatera Saldo** igen. Dra inte slutsatsen att det är trasigt om första uppdateringen inte visar någon rörelse.
+
+Klicka på **Köp 5M Tokens — $19** och slutför utcheckning. Efter att betalningen lyckas, uppdatera saldot — det bör hoppa med 5,000,000 tokens. Din serverlogg bör visa en `credit.added` händelse.
+
+## Felsökning
+
+**Möjliga orsaker:**
+- Mätarens händelsenamn matchar inte det `event_name` du skickar (`api.tokens_used` är skiftlägeskänsligt)
+- Mätaren är inte länkad till `API Tokens` kredit på produkten — gå till produktens mätarkonfiguration och bekräfta **Fakturera användning i Krediter** är på
+- `metadata.tokens` nyckel matchar inte mätarens "Över Egenskap"-fält
+- Kundens beviljande har gått ut (kontrollera kundens kredithistorik)
+
+**Vad man ska kontrollera:**
+1. **Produkter → Mätare**: öppna mätaren och bekräfta att den visar det länkade kreditnamnet på produktkopplingen
+2. Fliken **Händelser** på mätaren — registrerade händelser ska visas där även innan avdrag
+3. **Kunder → \[Kund\] → Krediter**: redovisningsposter ska visas inom en minut eller två
+
+**Möjliga orsaker:**
+- Kunden har inte slutfört utcheckning än — krediter ges endast efter en lyckad betalning
+- Du frågar med fel `customer_id` (använd `cus_...` ID från instrumentpanelen, inte din egen databass ID)
+- `CREDIT_ENTITLEMENT_ID` i `.env` matchar inte krediten kopplad till produkten
+
+**Vad man ska kontrollera:**
+Öppna **Kunder → \[Kund\] → Krediter**. Om inga krediter visas där, kopplades inte produktberättigandet eller betalningen slutfördes inte.
+
+**Möjliga orsaker:**
+- Överspill aktiverades inte på **Pro produktens kreditkoppling** (kreditnivån är bara en standardinställning)
+- Kunden är faktiskt på Start, inte Pro
+- Överspillsgränsen sattes till 0
+
+**Vad man ska kontrollera:**
+Redigera Pro → Berättiganden → Krediter → bekräfta **Tillåt Överspill** är på och **Pris Per Enhet** är `0.000005` (= $5 per miljoner tokens; dubbelkontrollera de ledande nollorna — fältet tar per-tokenpriset, inte per-1K).
+
+**Möjliga orsaker:**
+- Kroppsanalysordning: `express.json()` tillämpades på `/webhooks/dodo` före `express.raw()` — SDK:n behöver **råbytes** av förfrågan, inte analyserad JSON
+- Fel på signeringshemlighet i `DODO_PAYMENTS_WEBHOOK_KEY`
+- Omvänd proxy skriver om headers
+
+**Vad man ska kontrollera:**
+Bekräfta att raden `app.use('/webhooks/dodo', express.raw(...))` kommer *före* `app.use(express.json())` i `server.ts`.
+
+## Behöver du hjälp?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- [support@dodopayments.com](mailto:support@dodopayments.com)
+
+## Grattis! Du har Skapat Krediteringsbaserad Fakturering för NeuralAPI
+
+Din plattform har nu ett komplett, produktionsklart krediteringssystem:
+
+En återanvändbar `API Tokens` kredit med 30 dagars förfallodatum, delad över alla planer och toppningspaket
+
+Start (10M, hård gräns) och Pro (40M + överspill) konfigureras per produkt utan duplicering av krediten
+
+Kunder lägger till 5M tokens för $19 utan att ändra deras prenumeration
+
+Riktiga OpenAI token-konton registrerade som händelser; mätaren drar av krediter FIFO utan manuell spårning
+
+Realtidssaldo via SDK för att styra åtkomst, visa användning eller varna kunder i appen
+
+Kreditkontohändelser (`credit.added`, `credit.deducted`, `credit.overage_charged`) dirigerad genom en signaturverifierad hanterare med hjälp av SDK:s Standard Webhooks-hjälpare
+
+Går till produktion? Skärp dessa:
+- **Auth på `/credits/:customerId` och `/api/generate`** — för närvarande kan vem som helst slå dessa med valfritt kund-ID. Autentisera användare och slå upp *deras* kund-ID server-side.
+- **Stabila `event_id`s** — exemplet använder `Date.now() + random`. I produktion, använd ditt förfrågan-ID så att upprepningar är idempotenta (Dodo Payments avduplikerar genom `event_id`).
+- **Persistens av kund↔användar mappning** — lagra `customer_id` i din DB efter första utcheckningen så du behöver inte ett manuellt klivste.
+- **Bestäm vad som händer när en prenumeration upphör.** Plankrediter förblir i kundens redovisning tills deras naturliga förfall (30 dagar från utfärdande) och toppkrediter förblir giltiga i 365 dagar — men kokbokens `/api/generate` kontrollerar endast *saldot*, inte prenumerationsstatusen. Så en annullerad kund kan fortfarande använda sina kvarvarande tokens. Det är den konsumentvänliga standardinställningen. Om du vill ha strängare åtkomstkontroll, antingen (a) lyssna på `subscription.cancelled` webhook och gate `/api/generate` på prenumerationsstatus, eller (b) ring Dodos redovisnings-API för att debitera oanvända plankrediter vid avbokning medan toppkrediter lämnas intakta.
+- **Övervaka användningsfakturerings-instrumentpanelen** för att tidigt upptäcka mätarfel.
+
+Fullständig CBB-dokumentation: rullning, överspill-lägen, redovisningshantering, alla API-slutpunkter.
+
+Struktur scheman för varje kredithändelse din server kan ta emot.
+
+<Step title="Test the top-up flow">
+Click **Buy 5M Tokens — $19** and complete checkout. After the payment succeeds, refresh the balance — it should jump by 5,000,000 tokens. Your server log should show a `credit.added` event.
+</Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="Credits not deducting after usage events">
+**Possible causes:**
+- The meter's event name doesn't match the `event_name` you're sending (`api.tokens_used` is case-sensitive)
+- The meter isn't linked to the `API Tokens` credit on the product — go to the product's meter configuration and confirm **Bill usage in Credits** is on
+- The `metadata.tokens` key doesn't match the meter's "Over Property" field
+- The customer's grant has expired (check the customer's credit history)
+
+**What to check:**
+1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
+2. The **Events** tab on the meter — ingested events should appear there even before deduction
+3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
+</Accordion>
+
+<Accordion title="Balance always shows 0 or 'customer not found'">
+**Possible causes:**
+- The customer hasn't completed checkout yet — credits are only issued after a successful payment
+- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
+- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
+
+**What to check:**
+Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
+</Accordion>
+
+<Accordion title="Overage not working for Pro plan customers">
+**Possible causes:**
+- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
+- The customer is actually on Starter, not Pro
+- Overage limit was set to 0
+
+**What to check:**
+Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
+</Accordion>
+
+<Accordion title="`Webhook verification failed` in logs">
+**Possible causes:**
+- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
+- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
+- Reverse proxy is rewriting headers
+
+**What to check:**
+Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
+</Accordion>
+</AccordionGroup>
+
+## Need help?
+
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- [support@dodopayments.com](mailto:support@dodopayments.com)
+
+## Congratulations! You've Built Credit-Based Billing for NeuralAPI
+
+Your platform now has a complete, production-ready credit billing system:
+
+<CardGroup cols={2}>
+<Card title="Token Credit Entitlement" icon="coins">
+A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
+</Card>
+
+<Card title="Tiered Plans, One Credit" icon="layer-group">
+Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
+</Card>
+
+<Card title="One-Time Top-Up Pack" icon="circle-plus">
+Customers add 5M tokens for $19 without changing their subscription
+</Card>
+
+<Card title="Auto-Deduction via Meter" icon="bolt">
+Real OpenAI token counts ingested as events; the meter deducts credits FIFO with no manual tracking
+</Card>
+
+<Card title="Live Balance API" icon="gauge">
+Real-time balance via the SDK to gate access, display usage, or warn customers in-app
+</Card>
+
+<Card title="Verified Webhook Pipeline" icon="bell">
+Credit ledger events (`credit.added`, `credit.deducted`, `credit.overage_charged`) routed through a signature-verified handler using the SDK's Standard Webhooks helper
+</Card>
+</CardGroup>
+
+<Info>
+**Going to production?** Tighten these:
+- **Auth on `/credits/:customerId` and `/api/generate`** — currently anyone can hit these with any customer ID. Authenticate users and look up *their* customer ID server-side.
+- **Stable `event_id`s** — the example uses `Date.now() + random`. In production, use your request ID so retries are idempotent (Dodo Payments deduplicates by `event_id`).
+- **Persist the customer↔user mapping** — store `customer_id` in your DB after the first checkout so you don't need a manual paste step.
+- **Decide what happens when a subscription ends.** Plan credits remain in the customer's ledger until their natural expiry (30 days from issuance) and top-up credits stay valid for 365 days — but the cookbook's `/api/generate` only checks *balance*, not subscription status. So a cancelled customer can still consume their remaining tokens. That's the consumer-friendly default. If you want stricter access control, either (a) listen to the `subscription.cancelled` webhook and gate `/api/generate` on subscription status, or (b) call Dodo's ledger API to debit unused plan credits on cancel while leaving top-up credits intact.
+- **Monitor the Usage Billing dashboard** to catch metering anomalies early.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Full CBB documentation: rollover, overage modes, ledger management, all API endpoints.
+</Card>
+
+<Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
+Payload schemas for every credit event your server might receive.
+</Card>
+</CardGroup>

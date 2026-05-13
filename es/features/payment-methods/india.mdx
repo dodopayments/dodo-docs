@@ -121,15 +121,58 @@ sequenceDiagram
 ### Tipos de Mandatos
 
 | Monto de Suscripción | Tipo de Mandato | Límite |
-| :------------------ | :----------- | :---- |
-| **Menos de Rs 15,000** | Mandato bajo demanda | Rs 15,000 |
-| **Rs 15,000 o más** | Mandato de monto fijo | Monto exacto de suscripción |
+| :------------------- | :-------------- | :----- |
+| **Por debajo del piso del mandato** | Mandato a demanda | Piso del mandato (₹15,000 por defecto) |
+| **En o por encima del piso del mandato** | Mandato de monto fijo | Monto exacto de suscripción |
 
-**Importante para cambios de plan:** Si una actualización resulta en un cargo que excede el límite del mandato existente, el cargo fallará y el cliente deberá re-autorización.
+La cantidad registrada con el banco del cliente es `max(mandate_floor, billing_amount)`. Así que el piso es efectivamente el **techo de autorización** para el cliente siempre que la facturación sea menor que el piso.
 
-### El Retraso de Procesamiento de 48 Horas
+**Importante para cambios de plan:** Si una actualización resulta en un cargo que excede el límite del mandato existente, el cargo fallará y el cliente debe reautorizar.
 
-Esta es la diferencia más importante con respecto a los pagos con tarjetas internacionales:
+### Piso de Mandato Configurable
+
+El piso de mandato para e-mandatos en INR es configurable a través del campo `mandate_min_amount_inr_paise` (en **INR paise** — 1 INR = 100 paise). Puedes sobreescribir el valor por defecto del sistema de ₹15,000 en tres niveles:
+
+| Nivel | Dónde configurar | Alcance |
+|-------|-----------------|--------|
+| **Por solicitud** | `mandate_min_amount_inr_paise` en una sesión de pago, pago o suscripción | Una transacción |
+| **Comerciante** | Configuración de negocio | Todas tus suscripciones en INR |
+| **Sistema** | — | ₹15,000 por defecto |
+
+Prioridad de resolución: sobreescritura por solicitud → configuración del comerciante → valor por defecto del sistema.
+
+```typescript
+// Per-checkout override
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_inr_monthly', quantity: 1 }],
+  mandate_min_amount_inr_paise: 2_000_000, // ₹20,000 ceiling
+  return_url: 'https://yoursite.com/return'
+});
+
+// Per-subscription override
+const subscription = await client.subscriptions.create({
+  product_id: 'prod_inr_monthly',
+  customer: { email: 'customer@example.in' },
+  billing: { country: 'IN', /* ... */ },
+  mandate_min_amount_inr_paise: 2_000_000
+});
+```
+
+| Campo | Tipo | Validación | Se aplica a |
+|-------|------|-----------|------------|
+| `mandate_min_amount_inr_paise` | `integer` (INR paise) | `>= 1` | Suscripciones de tarjetas indias en INR en conectores no-Airwallex |
+
+{/* LOCKED_PATTERN_6fa96040307d68e9fa44436559d63ee8 */}
+Establecer un piso más alto te permite admitir cargos únicos más grandes más adelante (por ejemplo, actualizaciones de plan o excesos basados en el uso) sin obligar a los clientes a reautorizar. Establecer un piso más bajo acerca la autorización del cliente al monto real de facturación, pero limita el margen para futuros cargos variables.
+{/* LOCKED_PATTERN_07427f62e4e59df6149fbd24d60de439 */}
+
+<Warning>
+Esta configuración solo afecta a los e-mandatos registrados para tarjetas emitidas en India (Visa, Mastercard, RuPay) en suscripciones en INR. Las suscripciones UPI siguen su propio flujo AutoPay y no se ven afectadas.
+</Warning>
+
+### El Retardo de Procesamiento de 48 Horas
+
+Esta es la diferencia más importante respecto a los pagos con tarjetas internacionales:
 
 <Steps>
 <Step title="Charge Initiated (Day 0)">
@@ -137,24 +180,24 @@ En la fecha de renovación programada, Dodo inicia el cargo con el banco.
 </Step>
 
 <Step title="Pre-Debit Notification">
-El cliente recibe una notificación de su banco sobre el próximo débito.
+El cliente recibe notificación de su banco sobre el próximo débito.
 </Step>
 
 <Step title="48-Hour Window">
-El cliente puede cancelar el mandato durante este período a través de su aplicación bancaria.
+El cliente puede cancelar el mandato durante este período vía su aplicación bancaria.
 </Step>
 
 <Step title="Debit Completed (~48-51 hours)">
-Después de 48 horas (más hasta 3 horas adicionales por el procesamiento bancario), se debitan los fondos.
+Después de 48 horas (más hasta 3 horas adicionales por procesamiento bancario), los fondos son debitados.
 </Step>
 
 <Step title="Webhook Sent">
-`payment.succeeded` webhook se envía después del débito real, no al iniciar.
+`payment.succeeded` webhook se envía después del débito real, no en la iniciación.
 </Step>
 </Steps>
 
 <Warning>
-**No otorgues beneficios al iniciar el cargo.** Espera el webhook `payment.succeeded`, que llega aproximadamente 48-51 horas después de la fecha programada de cobro.
+**No otorgues beneficios en la iniciación del cargo.** Espera al webhook `payment.succeeded`, que llega aproximadamente de 48 a 51 horas después de la fecha de cargo programada.
 </Warning>
 
 ### Manejo de la Ventana de 48 Horas
@@ -180,29 +223,29 @@ async function handlePaymentWebhook(event) {
 }
 ```
 
-### Eventos de Webhook para Suscripciones en India
+### Eventos Webhook para Suscripciones en India
 
 | Evento | Cuándo | Acción |
-| :---- | :--- | :----- |
+| :----- | :----- | :----- |
 | `subscription.active` | Mandato autorizado | Registrar inicio de suscripción |
-| `payment.succeeded` | ~48 h después de la fecha de cargo | Conceder/continuar acceso |
+| `payment.succeeded` | ~48h después de la fecha de cargo | Otorgar/continuar acceso |
 | `payment.failed` | Débito fallido | Notificar al cliente, pausar acceso |
-| `subscription.on_hold` | Pago fallido | Solicitar actualización del método de pago |
-| `subscription.active` | Reactivada después del pago | Restaurar acceso |
+| `subscription.on_hold` | Pago fallido | Soliciar actualización del método de pago |
+| `subscription.active` | Reactivado después de pago | Restaurar acceso |
 
 ## Pruebas
 
-### ID de Prueba de UPI
+### IDs de Prueba de UPI
 
-| Estado | UPI ID |
-| :----- | :----- |
+| Estado | ID de UPI |
+| :----- | :-------- |
 | Éxito | `success@upi` |
 | Fallo | `failure@upi` |
 
-### Números de Prueba de Tarjeta India
+### Números de Prueba de Tarjetas Indias
 
-| Marca | Escenario | Número de tarjeta | Expiración | CVV |
-| :---- | :------- | :---------- | :----- | :-- |
+| Marca | Escenario | Número de Tarjeta | Expiración | CVV |
+| :---- | :-------- | :--------------- | :---------- | :--- |
 | Visa | Éxito | `4576238912771450` | 06/32 | 123 |
 | Visa | Rechazada | `4706131211212123` | 06/32 | 123 |
 | Mastercard | Éxito | `5409162669381034` | 06/32 | 123 |
@@ -212,22 +255,22 @@ async function handlePaymentWebhook(event) {
 
 <AccordionGroup>
 <Accordion title="Plan for the 48-hour delay">
-Construye tu aplicación para manejar la brecha entre la iniciación del cobro y el pago real. Considera:
-- Períodos de gracia para el acceso a la suscripción
+Construye tu aplicación para manejar la brecha entre la iniciación del cargo y el pago real. Considera:
+- Períodos de gracia para el acceso a suscripciones
 - Comunicación clara a los clientes sobre el tiempo de procesamiento
-- Cumplimiento impulsado por webhooks, no por fechas
+- Cumplimiento basado en webhooks, no en fechas
 </Accordion>
 
 <Accordion title="Handle mandate cancellations">
-Los clientes pueden cancelar los mandatos a través de sus aplicaciones bancarias en cualquier momento. Supervisa los webhooks `subscription.on_hold` y solicita a los clientes que vuelvan a suscribirse o actualicen sus métodos de pago.
+Los clientes pueden cancelar mandatos a través de sus aplicaciones bancarias en cualquier momento. Monitorea los webhooks `subscription.on_hold` y pide a los clientes que se resuscriban o actualicen los métodos de pago.
 </Accordion>
 
 <Accordion title="Set appropriate mandate amounts">
-Para precios variables (por ejemplo, basados en el uso), considera si un mandato bajo demanda de Rs 15,000 es suficiente. Si los cargos podrían superar ese monto, los clientes tendrán que volver a autorizarlo.
+Para tarifas variables (por ejemplo, basadas en uso), considera si un mandato a demanda de Rs 15,000 es suficiente. Si los cargos pueden exceder esto, los clientes necesitarán reautorizar.
 </Accordion>
 
 <Accordion title="Offer UPI prominently">
-Para clientes indios, UPI debe ser la opción de pago principal. Muchos usuarios lo prefieren a las tarjetas debido a la familiaridad y la menor fricción.
+Para clientes indios, UPI debería ser la opción de pago principal. Muchos usuarios lo prefieren sobre las tarjetas debido a su familiaridad y menor fricción.
 </Accordion>
 </AccordionGroup>
 
@@ -236,36 +279,36 @@ Para clientes indios, UPI debe ser la opción de pago principal. Muchos usuarios
 <AccordionGroup>
 <Accordion title="UPI not appearing at checkout">
 **Verifica:**
-1. ¿El país de facturación está establecido en `IN`?
-2. ¿La moneda está configurada en `INR`?
-3. Si eres un comerciante no indio: ¿Adaptive Currency está habilitada?
-4. ¿`upi_collect` está incluido en `allowed_payment_method_types`?
+1. ¿País de facturación configurado en `IN`?
+2. ¿Moneda configurada en `INR`?
+3. Si no es comerciante indio: ¿Moneda Adaptativa habilitada?
+4. ¿`upi_collect` incluido en `allowed_payment_method_types`?
 
-**Solución:** Verifica que la dirección de facturación tenga `country: "IN"` y `billing_currency: "INR"`.
+**Solución:** Verifica que la dirección de facturación tenga `country: "IN"` e `billing_currency: "INR"`.
 </Accordion>
 
 <Accordion title="Subscription charge failed after upgrade">
-**Causa:** El nuevo monto del cobro supera el límite del mandato existente (umbral de Rs 15,000).
+**Causa:** El nuevo monto del cargo excede el límite del mandato existente (umbral de Rs 15,000).
 
 **Solución:** El cliente debe actualizar el método de pago para establecer un nuevo mandato con el límite correcto.
 </Accordion>
 
 <Accordion title="Subscription on hold but customer claims they didn't cancel">
-**Causa:** El cliente pudo haber cancelado el mandato durante la ventana de 48 horas, o su banco rechazó el débito.
+**Causa:** El cliente pudo haber cancelado el mandato durante el período de 48 horas, o su banco rechazó el débito.
 
-**Solución:** El cliente necesita volver a autorizar el mandato o actualizar su método de pago.
+**Solución:** El cliente necesita reautorizar el mandato o actualizar su método de pago.
 </Accordion>
 
 <Accordion title="Payment deduction delayed beyond 48 hours">
-**Causa:** Las demoras en la API del banco pueden extender el procesamiento de 2 a 3 horas adicionales.
+**Causa:** Los retrasos en la API del banco pueden extender el procesamiento en 2-3 horas adicionales.
 
-**Solución:** Esto es esperado. Diseña tu sistema para manejar demoras variables de hasta ~51 horas en total.
+**Solución:** Esto es esperado. Construye tu sistema para manejar retrasos variables de hasta ~51 horas en total.
 </Accordion>
 
 <Accordion title="Mandate cancelled but subscription still active">
-**Causa:** Caso límite en las regulaciones del RBI: la cancelación del mandato durante la ventana de procesamiento no cancela inmediatamente la suscripción.
+**Causa:** Caso límite en las regulaciones del RBI — la cancelación del mandato durante la ventana de procesamiento no cancela inmediatamente la suscripción.
 
-**Solución:** El siguiente cobro fallará y la suscripción pasará a `on_hold`. Supervisa los webhooks `payment.failed`.
+**Solución:** El próximo cargo fallará y la suscripción pasará a `on_hold`. Monitorea los webhooks para `payment.failed`.
 </Accordion>
 </AccordionGroup>
 
@@ -273,11 +316,11 @@ Para clientes indios, UPI debe ser la opción de pago principal. Muchos usuarios
 
 <CardGroup cols={2}>
 <Card title="Payment Methods Overview" icon="credit-card" href="/features/payment-methods">
-Consulta todos los métodos de pago compatibles.
+Ver todos los métodos de pago soportados.
 </Card>
 
 <Card title="Subscriptions" icon="repeat" href="/features/subscription">
-Documentación completa de suscripciones, incluidos los mandatos del RBI.
+Documentación completa de suscripción incluyendo mandatos del RBI.
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
@@ -285,6 +328,6 @@ Manejo de webhooks para eventos de pago.
 </Card>
 
 <Card title="Testing Process" icon="flask" href="/miscellaneous/testing-process">
-Todos los datos de prueba, incluidos UPI IDs y tarjetas indias.
+Todos los datos de prueba, incluyendo IDs de UPI y tarjetas indias.
 </Card>
 </CardGroup>
