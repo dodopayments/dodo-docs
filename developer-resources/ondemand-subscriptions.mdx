@@ -327,6 +327,55 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
 </Warning>
 
+## Handling failed charges
+
+When a charge against an on-demand subscription fails, you decide what happens next. Unlike scheduled subscriptions — where a failed renewal stops further automatic billing — **on-demand subscriptions remain chargeable after a failure**. You can call the charge endpoint again as part of your own retry logic.
+
+### What happens on failure
+
+<Steps>
+<Step title="Charge attempt fails">
+The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook with the decline reason.
+</Step>
+
+<Step title="Subscription may transition to on_hold">
+The subscription may move to the `on_hold` state and emit a `subscription.on_hold` webhook (see [Subscription States → On Hold](/features/subscription#on-hold-state)). This is a signal — not a lock. For on-demand subscriptions, `on_hold` does **not** prevent you from charging again.
+</Step>
+
+<Step title="Retry the charge (your call)">
+For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscriptions/{subscription_id}/charge` again at any time to retry. Apply the [safe retry policy](#payment-retries) below — use exponential backoff, skip hard declines, and avoid burst patterns — so retries are not flagged by our fraud and risk systems.
+</Step>
+
+<Step title="Optionally, ask the customer for a new payment method">
+If retries keep failing because the payment method itself is broken (expired card, closed account, etc.), use [`POST /subscriptions/{id}/payment-method`](/api-reference/subscriptions/update-payment-method) to collect a new one from the customer. On success, the subscription returns to `active` and `payment.succeeded` followed by `subscription.active` webhooks are emitted.
+</Step>
+</Steps>
+
+<Info>
+**On-demand vs scheduled**: For scheduled subscriptions, Dodo runs its own renewal retries and dunning. For on-demand subscriptions, you own the retry policy because only you know when the next charge should occur (it's driven by your usage events, not a calendar).
+</Info>
+
+### Webhook sequence on a failed on-demand charge
+
+| Order | Event | Meaning |
+|-------|-------|---------|
+| 1 | `payment.failed` | The on-demand charge attempt did not succeed (includes the decline reason) |
+| 2 | `subscription.on_hold` | The subscription was placed on hold (informational; does not block further charges) |
+| 3* | `payment.succeeded` | A subsequent charge — either your retry or after a payment method update — succeeded |
+| 4* | `subscription.active` | The subscription returned to `active` after a successful charge |
+
+<Info>
+Events 3 and 4 only fire after a follow-up charge succeeds.
+</Info>
+
+### Retry responsibility
+
+<Warning>
+Dodo Payments **does not auto-retry failed on-demand charges**. You own the retry policy. Follow the safe retry guidelines below to avoid being flagged by our fraud detection systems as card testing.
+</Warning>
+
+[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) when you decide the payment method needs to be updated.
+
 ## Payment retries
 
 Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
@@ -400,7 +449,7 @@ Implement webhook handling to track the customer journey. See [Implementing Webh
 - **payment.failed**: Charge failed
 
 <Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges.
+For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
 </Tip>
 
 ## Testing and next steps
