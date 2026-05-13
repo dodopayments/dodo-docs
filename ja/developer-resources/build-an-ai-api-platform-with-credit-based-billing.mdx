@@ -1,226 +1,290 @@
 ---
-title: クレジットベースの請求を備えたAI APIプラットフォームを構築する
-description: トークンクレジットを使用した階層型AI
-  APIサービスを構築します。サブスクリプションプランや一時購入パックでクレジットを発行し、顧客がAPIを呼び出す際に自動的に控除します。
-icon: coins
-keywords:
-  - Dodo Payments
-  - developer guide
-  - credit-based billing
-  - token billing
-  - AI API
-  - credits
-  - overage
+title: "Build an AI API Platform with Credit-Based Billing"
+description: "Build a tiered AI API service with token credits — issue credits via subscription plans and one-time top-up packs, and auto-deduct as customers call your API."
+icon: "coins"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "token billing", "AI API", "credits", "overage"]
 ---
 
 <Tip>
-  <strong>Sentraに統合コードを書かせましょう。</strong><br />
-  VS Code、Cursor、またはWindsurfでAIアシスタントを使用して、SDK/APIコード、Webhookハンドラー、クレジット付与などを生成できます。<br/>
-  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer">
-    Sentraを試す: AIによる統合 &rarr;
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, credit grants, and more — just by describing what you want.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-このチュートリアルでは、各サブスクリプションプランに月次トークンクレジットが付与され、不足時には追加パックを購入でき、バックエンドがOpenAIによるリクエスト処理中に自動控除する階層型AIプラットフォーム**NeuralAPI**を構築します。
+In this tutorial, you'll build **NeuralAPI** — a tiered AI platform where each subscription plan comes with a monthly token credit allowance, customers can buy top-up packs when they run low, and your backend automatically deducts credits as requests are processed by OpenAI.
 
-このチュートリアルでは、Node.js/Express + OpenAI SDKを使用します。Dodo Paymentsのコンセプト（クレジット、メーター、Webhook）は、どのフレームワークやAIプロバイダーにも適用可能なので、自由に適応してください。
+<Note>
+This tutorial uses Node.js/Express + the OpenAI SDK. The Dodo Payments concepts (credits, meters, webhooks) apply to any framework or AI provider — adapt freely.
+</Note>
 
-このチュートリアルの終わりまでに以下のことができるようになります:
+By the end of this tutorial, you'll know how to:
 
-- カスタムクレジット権利（トークン）と自動控除するメーターを作成する
-- サブスクリプションプランにクレジットを付与し（超過なし、あり）、一度限りの追加購入商品を設定する
-- OpenAIの完了エンドポイントをDodo Paymentsを通じてトークン請求するよう配線する
-- SDKを通じて顧客のライブクレジット残高を照会する
-- Webhookシグネチャを確認し、Dodo Paymentsクレジットイベントをルートする
+- Create a custom credit entitlement (tokens) and a meter that auto-deducts from it
+- Attach credits to subscription plans (with and without overage) and a one-time top-up product
+- Wire a real OpenAI completion endpoint that bills tokens through Dodo Payments
+- Query a customer's live credit balance via the SDK
+- Verify webhook signatures and route Dodo Payments credit events
 
-## 建設しているもの
+## What We're Building
 
-NeuralAPIの価格モデルは以下の通りです:
+Here's the pricing model for NeuralAPI:
 
-| 製品 | 価格 | トークン | 超過 |
+| Product | Price | Tokens | Overage |
 |---------|-------|--------|---------|
-| スタータープラン | 29ドル/月 | 10,000,000トークン/サイクル | ゼロでブロック |
-| プロプラン | 99ドル/月 | 40,000,000トークン/サイクル | $0.005 / 1Kトークン |
-| トークン追加パック | 19ドル一度限り | +5,000,000トークン | — |
+| Starter Plan | $29/month | 10,000,000 tokens/cycle | Blocked at zero |
+| Pro Plan | $99/month | 40,000,000 tokens/cycle | $0.005 per 1K tokens |
+| Token Top-Up Pack | $19 one-time | +5,000,000 tokens | — |
 
-開始する前に、次を確認してください:
-- Dodo Paymentsアカウント（テストモードで可）
-- OpenAI APIキー
+<Info>
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- An OpenAI API key
 - Node.js 18+
-- TypeScript/Node.jsの基本的な知識
+- Basic familiarity with TypeScript/Node.js
+</Info>
 
-## ステップ 1: トークンクレジット権利を作成する
+## Step 1: Create Your Token Credit Entitlement
 
-まず、サブスクリプションプランと追加購入パックで共有されるクレジット権利を作成します。これをプラットフォームが使用する「トークン」単位として定義するように考えてください。
+First, create the credit entitlement that both subscription plans and the top-up pack will share. Think of this as defining the "token" unit your platform uses.
 
-<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="クレジット権利が表示されたクレジット一覧ページ" style={{ maxHeight: '500px', width: 'auto' }} />
+<Frame caption="The Credits tab under Products shows all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Credits listing page showing created credit entitlements" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-1. Dodo Payments ダッシュボードにログイン
-2. 左のサイドバーで**製品**をクリック
-3. **クレジット**タブを選択
-4. **クレジット作成**をクリック
+<Steps>
+<Step title="Navigate to Credits">
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
+</Step>
 
-トークンクレジットの基本情報を入力してください:
+<Step title="Configure the credit unit">
+Fill in the basic details for your token credit:
 
-**クレジット名**: `API Tokens`
+**Credit Name**: `API Tokens`
 
-**クレジットタイプ**: **カスタムユニット**を選択
+**Credit Type**: Select **Custom Unit**
 
-**単位名**: `token`
+**Unit Name**: `token`
 
-**精度**: `0`（トークンは常に整数です）
+**Precision**: `0` (tokens are always whole numbers)
 
-**クレジット有効期限**: `30 days`（クレジットは各請求サイクルでリセットされます）
+**Credit Expiry**: `30 days` (credits reset each billing cycle)
 
-精度はクレジット作成後に変更できません。トークンカウントの場合、`0`（整数）がほとんど常に正しいです。
+<Warning>
+Precision cannot be changed after a credit is created. For token counts, `0` (whole numbers) is almost always correct.
+</Warning>
+</Step>
 
-ここでは超過を**無効**のままにします。製品にクレジットを付けるときにプランごとに設定します。これにより、スタータープランではゼロで使用がブロックされ、プロプランでは超過が許可されます。
+<Step title="Skip overage at the credit level">
+Leave overage **disabled** here — you'll configure it per-plan when attaching the credit to products. This lets the Starter plan block usage at zero while the Pro plan allows overage.
 
-ここで設定された超過設定は*デフォルト*です。各製品の添付はそれを上書きすることができ、これはステップ3でまさに行うことです。
+<Tip>
+Overage settings configured here are *defaults*. Each product attachment can override them — which is exactly what we'll do in Step 3.
+</Tip>
+</Step>
 
-**クレジット作成**をクリックします。保存後、クレジットを開き、そのIDをコピーします — `cent_xxxxxxxxxxxx`のように見えます。
+<Step title="Save and copy the credit ID">
+Click **Create Credit**. Once saved, open the credit and copy its ID — it looks like `cent_xxxxxxxxxxxx`.
 
-`API Tokens`のクレジット権利が準備されました。次に、使用イベントが自動的に控除されるようにメーターを作成します。
+<Check>
+Your `API Tokens` credit entitlement is ready. Next, create a meter so usage events can drive deductions automatically.
+</Check>
+</Step>
+</Steps>
 
-## ステップ 2: トークン使用のメーターを作成する
+## Step 2: Create a Meter for Token Usage
 
-メーターは、受信した使用イベントを集計し、クレジット控除に変換します。これをプランの製品を作成する前に作成する必要があります。メーターは製品作成時に取り付けます。
+A meter aggregates incoming usage events and converts them into credit deductions. You need this *before* creating the plan products, since you'll attach it during product creation in Step 3.
 
-1. ダッシュボードのサイドバーで**製品** → **メーター**に移動
-2. **メーター作成**をクリック
+<Steps>
+<Step title="Open the Meters section">
+1. In the dashboard sidebar, go to **Products** → **Meters**
+2. Click **Create Meter**
+</Step>
 
-以下を入力します:
+<Step title="Configure the meter">
+Fill in:
 
-**メーター名**: `Token Usage Meter`
+**Meter Name**: `Token Usage Meter`
 
-**イベント名**: `api.tokens_used` *(これはアプリが送信するものと正確に一致する必要があります)*
+**Event Name**: `api.tokens_used` *(this must match exactly what your app sends)*
 
-**集計タイプ**: `Sum` — 各イベントからのトークン数を合計します
+**Aggregation Type**: `Sum` — we sum the token count from each event
 
-**プロパティ**: `tokens` — 各イベントのメタデータキーで合計される値
+**Over Property**: `tokens` — the metadata key on each event whose value will be summed
 
-**測定単位**: `tokens`
+**Measurement Unit**: `tokens`
 
-イベント名は大文字小文字を区別します。`api.tokens_used` ≠ `Api.Tokens.Used` — 一つを選んでそれに従ってください。
+<Warning>
+Event names are case-sensitive. `api.tokens_used` ≠ `Api.Tokens.Used` — pick one and stick to it.
+</Warning>
 
-メーターを保存し、そのIDをコピーします — 製品に取り付けるときに参照します。
+Save the meter and copy its ID — you'll reference it when attaching to products.
 
-メーターは作成されました。クレジットを設定する際にこれを結び付けることができます。
+<Check>
+Meter is created. Now we can wire it to the credit when we configure products.
+</Check>
+</Step>
+</Steps>
 
-## ステップ 3: プラン製品を作成する
+## Step 3: Create the Plan Products
 
-両方のプランは**Usage Based Billing**製品でなければなりません。通常のサブスクリプションではありません — メーターはUBB製品のみに取り付けることができ、メーターを使用することで、顧客がAPIを呼び出すたびにクレジットが自動的に控除されます。UBB製品は依然として定期的な基本料金（`$29` / `$99`）をサポートしています。使用量に応じてクレジットで請求されます。
+Both plans need to be **Usage Based Billing** products, not plain Subscriptions — meters can only attach to UBB products, and you need the meter to auto-deduct credits as customers call your API. UBB products still support a recurring base fee (the `$29` / `$99`); usage on top of that gets billed in credits.
 
-<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billingの価格設定構成" style={{ maxHeight: '500px', width: 'auto' }} />
+<Frame caption="Usage Based Billing pricing type with meter configuration.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billing pricing configuration" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-### スタータープラン ($29/月 — 10M トークン、超過なし)
+### Starter Plan ($29/month — 10M tokens, no overage)
 
-1. **製品 → 製品作成**に移動
-2. **Usage Based Billing**を価格タイプとして選択
-3. 入力:
+<Steps>
+<Step title="Create the Starter UBB product">
+1. Go to **Products → Create Product**
+2. Select **Usage Based Billing** as the pricing type
+3. Fill in:
 
-**製品名**: `NeuralAPI Starter`
+**Product Name**: `NeuralAPI Starter`
 
-**説明**: `10 million API tokens per month. Perfect for individual developers and small projects.`
+**Description**: `10 million API tokens per month. Perfect for individual developers and small projects.`
 
-**固定価格**: `29.00` (定期的な基本料金 — 使用前に月額で請求)
+**Fixed Price**: `29.00` (the recurring base fee — billed monthly even before any usage)
 
-**請求サイクル**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**通貨**: `USD`
+**Currency**: `USD`
+</Step>
 
-「メーター選択」セクションで**+**をクリックして`Token Usage Meter`を追加します。その後、メーターで:
+<Step title="Attach the meter">
+In the **Select meter** section, click **+** and add `Token Usage Meter`. Then on the meter:
 
-1. **Bill usage in Credits**をオンに切り替える
-2. **クレジット権利**: `API Tokens`を選択
-3. **メーター単位あたりのクレジット**: `1` — イベント内の各トークンが1クレジット控除される
-4. **無料閾値**: `0` — クレジット配分自体が顧客の「無料ティア」; 追加の無料バンドは必要ありません
+1. Toggle **Bill usage in Credits** on
+2. **Credit Entitlement**: select `API Tokens`
+3. **Meter units per credit**: `1` — each token in the event maps to 1 credit deducted
+4. **Free Threshold**: `0` — the credit allocation itself is the customer's "free tier"; we don't need an extra free band
 
-<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Bill usage in Credits を有効にし、APIトークンを選択したメーター" style={{ maxHeight: '500px', width: 'auto' }} />
+<Frame caption="Toggle 'Bill usage in Credits' on the meter and pick the credit entitlement.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Meter with Bill usage in Credits enabled and API Tokens selected" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-これが実際に顧客のバランスを控除するために受信した`api.tokens_used`イベントを作動させる配線です。
+This is the wiring that makes incoming `api.tokens_used` events actually deduct from the customer's balance.
+</Step>
 
-製品上で、クレジット請求がメーターに接続されると表示されるクレジット構成セクションにスクロールします。
+<Step title="Configure credit issuance for Starter">
+Still on the product, scroll to the credit configuration section that appears once a credit-billed meter is attached:
 
-**請求サイクルごとに発行されたクレジット**: `10000000`
+**Credits issued per billing cycle**: `10000000`
 
-**超過を許可**: **無効** — スターター顧客はトークンが切れたときにブロックされます
+**Allow Overage**: **Disabled** — Starter customers are blocked when tokens run out
 
-**既定のクレジット設定のインポート**: 有効 — クレジット権利の30日間有効期限を使用します
+**Import Default Credit Settings**: Enabled — use the 30-day expiry from the credit entitlement
 
-<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="サイクルごとの量と超過設定を含むクレジット構成フォーム" style={{ maxHeight: '500px', width: 'auto' }} />
+<Frame caption="Configure credit issuance per cycle on the UBB product.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="Credit configuration form with per-cycle amount and overage settings" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-「保存」をクリックし、製品IDをコピーします。
+Click **Save** and copy the product ID.
 
-スタータープラン: 月額$29基本料金、サイクルあたり10Mトークン、ゼロでブロックされ、メーターによって自動的に控除されます。
+<Check>
+Starter Plan: $29/month base fee, 10M tokens/cycle, blocked at zero, auto-deducts via meter.
+</Check>
+</Step>
+</Steps>
 
-### プロプラン ($99/月 — 40M トークン、超過有効)
+### Pro Plan ($99/month — 40M tokens, overage enabled)
 
-スターターと同じフロー、数値が大きいだけです:
+<Steps>
+<Step title="Create the Pro UBB product">
+Same flow as Starter, with bigger numbers:
 
-**製品名**: `NeuralAPI Pro`
+**Product Name**: `NeuralAPI Pro`
 
-**説明**: `40 million API tokens per month with overage. Built for production applications.`
+**Description**: `40 million API tokens per month with overage. Built for production applications.`
 
-**固定価格**: `99.00`
+**Fixed Price**: `99.00`
 
-**請求サイクル**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**通貨**: `USD`
+**Currency**: `USD`
+</Step>
 
-スターターと同じにします: `Token Usage Meter`を追加し、**Bill usage in Credits**をオンに切り替え、`API Tokens`を選択し、**メーター単位あたりのクレジット** `1` を設定し、**無料閾値** `0` を設定します。
+<Step title="Attach the meter">
+Identical to Starter: add `Token Usage Meter`, toggle **Bill usage in Credits** on, select `API Tokens`, **Meter units per credit** `1`, **Free Threshold** `0`.
+</Step>
 
-クレジット発行を設定します。今回超過を許可します:
+<Step title="Configure credit issuance with overage">
+Configure the credit issuance, this time enabling overage:
 
-**請求サイクルごとに発行されたクレジット**: `40000000`
+**Credits issued per billing cycle**: `40000000`
 
-**既定のクレジット設定のインポート**: **無効** — 製品ごとに超過設定をカスタマイズする必要があります
+**Import Default Credit Settings**: **Disable** — we need to customize overage settings per product
 
-**超過を許可**: **有効**
+**Allow Overage**: **Enabled**
 
-**単位あたりの価格**: `0.000005` USD/トークン (すなわち、1Kトークンあたり$0.005、または1Mトークンあたり$5 — プランの有効なトークンあたりの料金より高く、溢れるのを抑制するため)
+**Price Per Unit**: `0.000005` USD per token (i.e., $0.005 per 1K tokens, or $5 per 1M tokens — above the plan's effective per-token rate to discourage spillover)
 
-**超過動作**: `Bill overage at billing` — 超過は次の請求書に請求され、残高がリセットされます
+**Overage Behavior**: `Bill overage at billing` — overage is charged on the next invoice, then the balance resets
 
-製品を保存し、製品IDをコピーします。
+Save the product and copy the product ID.
 
-プロプラン: 月額$99基本料金、サイクルあたり40Mトークン、超過は1Kトークンあたり$0.005で、メーターによって自動的に控除されます。
+<Check>
+Pro Plan: $99/month base fee, 40M tokens/cycle, overage at $0.005/1K tokens, auto-deducts via meter.
+</Check>
+</Step>
+</Steps>
 
-## ステップ 4: トークン追加パックを作成する
+## Step 4: Create the Token Top-Up Pack
 
-トップアップパックは、一度の購入で既存の顧客の残高に5,000,000トークンを提供します。
+The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existing customer's balance.
 
-<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="単一支払いが選択された製品価格設定セクション" style={{ maxHeight: '500px', width: 'auto' }} />
+<Frame caption="Single Payment pricing selected for a one-time credit product.">
+<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Product pricing section with Single Payment selected" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-1. **製品 → 製品作成**に移動
-2. **単一支払い(Single Payment)**を価格タイプとして選択
-3. 入力:
+<Steps>
+<Step title="Create a one-time product">
+1. Go to **Products → Create Product**
+2. Select **Single Payment** as the pricing type
+3. Fill in:
 
-**製品名**: `Token Top-Up Pack`
+**Product Name**: `Token Top-Up Pack`
 
-**説明**: `Instantly add 5 million tokens to your NeuralAPI balance.`
+**Description**: `Instantly add 5 million tokens to your NeuralAPI balance.`
 
-**価格**: `19.00`
+**Price**: `19.00`
 
-**通貨**: `USD`
+**Currency**: `USD`
+</Step>
 
-1. **権利(Entitlements)**セクションで、**クレジット**の横の**添付(Attach)**をクリック
-2. `API Tokens`を選択
-3. **発行クレジット**: `5000000`を設定
-4. *既定のクレジット設定のインポート*を**無効**にする — デフォルトの30日間有効期限を上書き
-5. **クレジット有効期限**を設定: `365 days`
-6. 製品を保存
+<Step title="Attach the token credit">
+1. In the **Entitlements** section, click **Attach** next to **Credits**
+2. Select `API Tokens`
+3. Set **Credits issued**: `5000000`
+4. **Disable** *Import Default Credit Settings* — we want to override the default 30-day expiry
+5. Set **Credit Expiry**: `365 days`
+6. Save the product
 
-製品IDをコピーします。
+Copy the product ID.
 
-なぜトップアップに長い有効期限があるのですか? サブスクリプションクレジットはサイクルだから30 日ごとにリセットされます。トップアップは*前払いの購入*です — 顧客は $19 支払いましたし、そのトークンは1か月以上持続すると合理的に期待されます。365 日は、OpenAI、AWS、Anthropic のリアルな前払いクレジットの動作に合致し、顧客が無期限に貯蓄できないようにしながら、責任を制限します。
+<Tip>
+Why a longer expiry on top-ups? Subscription credits reset every 30 days because that's the cycle. Top-ups are *prepaid purchases* — the customer paid $19 upfront and reasonably expects those tokens to last beyond a month. 365 days matches how real prepaid credits work at OpenAI, AWS, and Anthropic, while still capping your liability so customers can't stockpile indefinitely.
+</Tip>
 
-トップアップパックの設定完了 — 購入すると 5,000,000 トークンが付与され、365 日間有効です。
+<Check>
+Top-Up Pack configured — purchasing it grants 5,000,000 tokens that remain valid for 365 days.
+</Check>
+</Step>
+</Steps>
 
-## ステップ 5: バックエンドを構築する
+## Step 5: Build the Backend
 
-次に、サブスクリプションチェックアウト、トップアップチェックアウト、トークン請求を伴う実際の OpenAI コンプリーション、バランス照会、クレジットWebhookイベントを処理するExpressサーバーを構築しましょう。
+Now let's build the Express server that handles subscription checkout, top-up checkout, real OpenAI completions with token billing, balance queries, and credit webhook events.
 
+<Steps>
+<Step title="Set up your project">
 ```bash
 mkdir neural-api-billing
 cd neural-api-billing
@@ -229,7 +293,7 @@ npm install dodopayments openai express dotenv
 npm install -D @types/node @types/express typescript tsx
 ```
 
-`tsconfig.json` を作成します:
+Create a `tsconfig.json`:
 
 ```json tsconfig.json
 {
@@ -245,7 +309,7 @@ npm install -D @types/node @types/express typescript tsx
 }
 ```
 
-`package.json` スクリプトを更新します:
+Update `package.json` scripts:
 
 ```json package.json
 {
@@ -256,8 +320,10 @@ npm install -D @types/node @types/express typescript tsx
   }
 }
 ```
+</Step>
 
-`.env` を作成し、前のステップのクレデンシャルとIDを持たせてください:
+<Step title="Set up environment variables">
+Create `.env` with your credentials and IDs from the previous steps:
 
 ```bash .env
 DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
@@ -271,12 +337,17 @@ TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
 BASE_URL=http://localhost:3000
 ```
 
-`.env` をバージョン管理にコミットしないでください。即座に `.gitignore` に追加してください。
+<Warning>
+Never commit `.env` to version control. Add it to `.gitignore` immediately.
+</Warning>
 
-WEBHOOKエンドポイントを登録した後に `DODO_PAYMENTS_WEBHOOK_KEY` を入力します。
+You'll fill in `DODO_PAYMENTS_WEBHOOK_KEY` in Step 7 after registering your webhook endpoint.
+</Step>
 
-`src/server.ts` を作成します:
+<Step title="Implement the server">
+Create `src/server.ts`:
 
+<CodeGroup>
 ```typescript src/server.ts expandable
 import 'dotenv/config';
 import DodoPayments from 'dodopayments';
@@ -500,25 +571,35 @@ app.listen(3000, () => {
   }
 }
 ```
+</CodeGroup>
 
-バックエンド完了: サブスクリプションチェックアウト、トップアップチェックアウト、メーター化されたトークン請求を含むOpenAI完了、バランス照会、および検証されたWebhookハンドラー。
+<Check>
+Backend done: subscription checkout, top-up checkout, OpenAI completion with metered token billing, balance query, and a verified webhook handler.
+</Check>
 
-[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) は、使用イベントを送信する必要なしに自動化するトラッカーを提供します — [LLMブループリント](/developer-resources/ingestion-blueprints/llm)、[APIゲートウェイ](/developer-resources/ingestion-blueprints/api-gateway)、[オブジェクトストレージ](/developer-resources/ingestion-blueprints/object-storage)、[ストリーム](/developer-resources/ingestion-blueprints/stream)、[時間範囲](/developer-resources/ingestion-blueprints/time-range)使用を含めて。
+<Tip>
+[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) provides drop-in trackers that automate the `usageEvents.ingest` call for you — including the [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), and [time-range](/developer-resources/ingestion-blueprints/time-range) usage.
+</Tip>
+</Step>
 
-特定の "クレジット N を控除する" 呼び出しがないことに気づいたかもしれません。これは設計上です:
+<Step title="A note on how deductions actually happen">
+You may have noticed there's no explicit "deduct N credits" call. That's by design:
 
-1. ハンドラーが OpenAI を呼び出し、`usage.total_tokens` から戻されたものを受け取ります（例: 1532）。
-2. 単一の使用イベントを取り込みます: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`。
-3. `Token Usage Meter`が顧客ごとにイベントを集計します。
-4. メーターが `API Tokens` クレジットに**Bill usage in Credits**機能で接続されているため、Dodo Paymentsが顧客の最も古い有効期限切れでない付与から1532クレジットを控除します（FIFO）。
-5. 超過が有効で、顧客がゼロを下回った場合、赤字は次の請求書で追跡されて請求されます。
+1. Your handler calls OpenAI and gets back `usage.total_tokens` (e.g., 1532).
+2. You ingest a single usage event: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
+3. The `Token Usage Meter` aggregates events by customer.
+4. Because the meter is wired to the `API Tokens` credit with **Bill usage in Credits**, Dodo Payments deducts 1532 credits from the customer's oldest non-expired grant (FIFO).
+5. If overage is enabled and the customer goes below zero, the deficit is tracked and billed on the next invoice.
 
-メーターはすべてを処理します。コードはイベントの取り込みのみを行います。
+The meter handles all of that. Your code only ingests events.
+</Step>
+</Steps>
 
-## ステップ 6: デモフロントエンドを追加する
+## Step 6: Add a Demo Frontend
 
-`public/index.html` を作成して、ブラウザで全てのフローをテストしてください。顧客IDを `localStorage` に永続化するので、購読→生成→トップアップがすべて同じIDを共有します。ログイン済みのアプリを模倣しています:
+Create `public/index.html` to test all the flows in your browser. We persist the customer ID to `localStorage` so subscribe → generate → top-up all share the same identity, mimicking a logged-in app:
 
+<CodeGroup>
 ```html public/index.html expandable
 <!DOCTYPE html>
 <html>
@@ -688,109 +769,131 @@ app.listen(3000, () => {
 </body>
 </html>
 ```
+</CodeGroup>
 
-## ステップ 7: Webhookを接続する
+## Step 7: Wire Up the Webhook
 
-Webhookを使用すると、サーバーがバランスの変動に反応できます — 残りが少なくなったときに顧客にメールを送信するのに使用します。
+Webhooks let your server react to balance changes — you'll use them to send "running low" emails before customers hit zero.
 
-Webhookには公開URLが必要です。ローカル開発では、[ngrok](https://ngrok.com) や任意のトンネルを使用してください:
+<Steps>
+<Step title="Expose your local server">
+Webhooks need a public URL. For local development, use [ngrok](https://ngrok.com) or any tunnel:
 
-`https://...ngrok-free.app` のURLをコピーします。
+```bash
+ngrok http 3000
+```
 
-1. ダッシュボードで、**デベロッパー → Webhook → エンドポイント追加**に移動
+Copy the `https://...ngrok-free.app` URL.
+</Step>
+
+<Step title="Register the webhook in Dodo Payments">
+1. In the dashboard, go to **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
-3. 次に最低限のサブスクリプションを行う:
+3. Subscribe to (at minimum):
    - `credit.added`
    - `credit.deducted`
    - `credit.overage_charged`
-4. 保存して**署名秘密**をコピー
-5. `.env`に貼り付け、`DODO_PAYMENTS_WEBHOOK_KEY`として保存し、`npm run dev`を再起動
+4. Save and copy the **Signing Secret**
+5. Paste it into `.env` as `DODO_PAYMENTS_WEBHOOK_KEY`, then restart `npm run dev`
 
-SDKの `dodo.webhooks.unwrap()` は、署名秘密を使って`webhook-id`, `webhook-timestamp`、`webhook-signature`ヘッダーを検証します。HMAC 検証を自分で手作業で実行する必要はありません — Dodo Paymentsは[Standard Webhooks](https://www.standardwebhooks.com/)を使用しており、ボディだけでなく、`id.timestamp.body`を署名します。
+<Tip>
+The SDK's `dodo.webhooks.unwrap()` validates the `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers using your signing secret. You don't need to hand-roll HMAC verification — and you shouldn't, because Dodo Payments uses [Standard Webhooks](https://www.standardwebhooks.com/), which signs `id.timestamp.body` rather than just the body.
+</Tip>
+</Step>
+</Steps>
 
-## ステップ 8: 全体の流れをテストする
+## Step 8: Test the Full Flow
 
-1. `npm run dev`を実行
-2. `http://localhost:3000`を開く
-3. **プロプラン**を選択し、テストメールと名前を入力、**チェックアウトリンクを取得**をクリックし、[テストカードの詳細](/miscellaneous/testing-process)でチェックアウトを完了
-4. ダッシュボードで、**顧客 → 最新** に移動し、`cus_...` IDをコピー
-5. デモの「ログイン済み顧客ID」フィールドに貼り付けて**保存**をクリック
+<Steps>
+<Step title="Subscribe a test customer">
+1. Run `npm run dev`
+2. Open `http://localhost:3000`
+3. Pick **Pro Plan**, enter a test email + name, click **Get Checkout Link**, complete checkout with [test card details](/miscellaneous/testing-process)
+4. In the dashboard, go to **Customers → most recent** and copy the `cus_...` ID
+5. Paste it into the "Logged-in customer ID" field on the demo and click **Save**
 
-顧客は40,000,000トークンを持っているはずです。**バランスを更新** をクリックして確認してください。
+<Check>
+The customer should have 40,000,000 tokens. Click **Refresh Balance** to confirm.
+</Check>
+</Step>
 
-プロンプトを入力し、**生成**をクリックします。サーバーはOpenAIを呼び出し、実際の `total_tokens` を取得し、使用イベントを取り込み、応答を返します。
+<Step title="Generate a real AI response">
+Type a prompt and click **Generate**. The server calls OpenAI, gets back the actual `total_tokens`, ingests a usage event, and returns the response.
 
-使用イベントは約1分ごとにバックグラウンドワーカーで処理されます。バランスはすぐには減りません — 30–90秒待ってもう一度**バランスを更新**をクリックしてください。最初の更新で動きが見られないからといって、それが故障していると結論付けないでください。
+<Info>
+Usage events are processed by a background worker every ~minute. The balance won't tick down instantly — wait 30–90 seconds and click **Refresh Balance** again. Don't conclude it's broken if the first refresh doesn't show movement.
+</Info>
+</Step>
 
-クリックして **5Mトークンを購入 - $19** をクリックし、チェックアウトを完了します。支払いが成功すると、バランスを更新します — 5,000,000 トークン増加するはずです。サーバーログには `credit.added` イベントが表示されるはずです。
+<Step title="Test the top-up flow">
+Click **Buy 5M Tokens — $19** and complete checkout. After the payment succeeds, refresh the balance — it should jump by 5,000,000 tokens. Your server log should show a `credit.added` event.
+</Step>
+</Steps>
 
-## トラブルシューティング
+## Troubleshooting
 
-**考えられる原因:**
-- メーターのイベント名が送信している`event_name` と一致していません（`api.tokens_used`は大文字小文字を区別します）
-- メーターが製品の`API Tokens` クレジットにリンクされていません — 製品のメーター設定に進み、**Bill usage in Credits**がオンであることを確認
-- `metadata.tokens`キーがメーターの「Over Property」フィールドと一致しません
-- 顧客の付与が期限切れ（顧客のクレジット履歴を確認）
+<AccordionGroup>
+<Accordion title="Credits not deducting after usage events">
+**Possible causes:**
+- The meter's event name doesn't match the `event_name` you're sending (`api.tokens_used` is case-sensitive)
+- The meter isn't linked to the `API Tokens` credit on the product — go to the product's meter configuration and confirm **Bill usage in Credits** is on
+- The `metadata.tokens` key doesn't match the meter's "Over Property" field
+- The customer's grant has expired (check the customer's credit history)
 
-**確認すべきこと:**
-1. **製品 → メーター**: メーターを開き、保存されているクレジット名が製品のリンクに表示されることを確認
-2. メーターの**イベント**タブ — 控除前でも取り込まれたイベントはそこに表示されるべきです
-3. **顧客 → \[顧客\] → クレジット**: 1, 2分以内に元帳の記入が表示されるべきです
+**What to check:**
+1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
+2. The **Events** tab on the meter — ingested events should appear there even before deduction
+3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
+</Accordion>
 
-**考えられる原因:**
-- 顧客がまだチェックアウトを完了していません — クレジットは成功した支払い後にのみ発行されます
-- 間違った`customer_id`でクエリを実行しています（ダッシュボードの`cus_...` ID を使用してください、自分のDB IDではありません）
-- `CREDIT_ENTITLEMENT_ID`が製品に関連付けられたクレジットと一致していません
+<Accordion title="Balance always shows 0 or 'customer not found'">
+**Possible causes:**
+- The customer hasn't completed checkout yet — credits are only issued after a successful payment
+- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
+- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
 
-**確認すべきこと:**
-**顧客 → \[顧客\] → クレジット**を開いてください。そこにクレジットが表示されていない場合、製品権限が添付されていないか、支払いが完了していなかった可能性があります。
+**What to check:**
+Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
+</Accordion>
 
-**考えられる原因:**
-- 超過は**プロ製品のクレジット添付**で有効になっていません（クレジットレベル設定はデフォルトです）
-- 顧客が実際にスターターにいるのではなく、プロではありません
-- 超過制限が0に設定されていました
+<Accordion title="Overage not working for Pro plan customers">
+**Possible causes:**
+- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
+- The customer is actually on Starter, not Pro
+- Overage limit was set to 0
 
-**確認すべきこと:**
-プロ → 権利 → クレジット → **超過を許可** がオンになっていることと、**単位あたりの価格**が `0.000005` (= 1Mトークンあたり $5; 先頭のゼロをダブルチェックしてください — フィールドは1Kあたりの価格ではなく、トークンあたりの価格を取ります)であることを確認してください。
+**What to check:**
+Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
+</Accordion>
 
-**考えられる原因:**
-- ボディパース順序: `express.json()`が`/webhooks/dodo`に適用され、`express.raw()`前に適用されました — SDKはリクエストの**生のバイト**を必要とします、解析されたJSONではありません
-- `DODO_PAYMENTS_WEBHOOK_KEY` で間違った署名秘密
+<Accordion title="`Webhook verification failed` in logs">
+**Possible causes:**
+- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
+- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
+- Reverse proxy is rewriting headers
 
-**確認すべきこと:**
-`app.use('/webhooks/dodo', express.raw(...))`行が`app.use(express.json())`前に`server.ts`であることを確認してください。
+**What to check:**
+Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
+</Accordion>
+</AccordionGroup>
 
-## 助けが必要ですか？
+## Need help?
 
 - [Discord Community](https://discord.gg/bYqAp4ayYh)
 - [support@dodopayments.com](mailto:support@dodopayments.com)
 
-## おめでとうございます！NeuralAPIのクレジットベースの課金を構築しました
+## Congratulations! You've Built Credit-Based Billing for NeuralAPI
 
-プラットフォームは、完全なクレジット請求システムを備えました。
+Your platform now has a complete, production-ready credit billing system:
 
-30日間の有効期限を持つ共通の `API Tokens` クレジットがすべてのプランとトップアップパックで共有されています。
+<CardGroup cols={2}>
+<Card title="Token Credit Entitlement" icon="coins">
+A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
+</Card>
 
-スターター（10M、ハードリミット）とプロ（40M + 超過）が製品ごとに設定され、クレジットを重複せずに実装されました。
-
-顧客は$19で5Mトークンを追加し、サブスクリプションを変更することなく購入できます。
-
-実際のOpenAIトークンカウントはイベントとして取り込まれ、メーターはFIFOでクレジットを手動追跡なしで控除します。
-
-実際のバランスはSDKを介して即時に提供され、アクセス制御、使用表示、またはアプリ内で顧客に警告します。
-
-クレジット元帳イベント（`credit.added`、`credit.deducted`、`credit.overage_charged`）はSDKのStandard Webhooksヘルパーを使用して署名検証済みのハンドラーを通じてルーティングされます。
-
-**本番に移行しますか？** 以下の項目を強化してください:
-- **`/credits/:customerId`と`/api/generate`での認証** — 現在、誰でも任意の顧客IDでこれにアクセスできます。ユーザーを認証し、*彼らの*顧客IDをサーバー側で検索します。
-- **安定した `event_id`** — この例では`Date.now() + random`を使用しています。 本番ではリクエストIDを使用してリトライが冪等になります（Dodo Paymentsは`event_id`で重複を削除します）。
-- **顧客↔ユーザーのマッピングを永続化する** — 最初のチェックアウト後に`customer_id`をDBに保存し、手動貼り付けステップを省略します。
-- **サブスクリプションが終了した時に何が起こるかを決定する。** プランのクレジットは発行後30日まで顧客の元帳に残りますが、トップアップクレジットは365日間有効です — しかし、クックブックの`/api/generate`は*バランス*しかチェックしません。したがって、キャンセルされた顧客は残りのトークンを消費し続けることができます。それが消費者親和的なデフォルトです。より厳しいアクセス制御を望む場合は、(a) `subscription.cancelled` Webhookをリッスンしてサブスクリプション状態を基にアクセスを制御するか、(b) Dodoの元帳APIを使用して未使用のプランクレジットをキャンセル時にデビットしますが、トップアップクレジットはそのままにします。
-- **Usage Billing ダッシュボードを監視して異常を早期に検知する。**
-
-完全なCBBドキュメント: ロールオーバー、超過モード、元帳管理、すべてのAPIエンドポイント。
-
-サーバーが受信する可能性があるすべてのクレジットイベントのペイロードスキーマ。
+<Card title="Tiered Plans, One Credit" icon="layer-group">
+Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
+</Card>
 
 <Card title="One-Time Top-Up Pack" icon="circle-plus">
 Customers add 5M tokens for $19 without changing their subscription

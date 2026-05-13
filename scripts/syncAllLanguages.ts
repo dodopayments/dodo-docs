@@ -27,7 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { restoreLockedPatterns, repairBrokenCodeFences, validateAndReplace } = require('./validateAndRepairTranslations.ts');
+const { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, validateAndReplace } = require('./validateAndRepairTranslations.ts');
 
 const ROOT = path.join(__dirname, '..');
 const I18N_PATH = path.join(ROOT, 'i18n.json');
@@ -393,6 +393,7 @@ function main() {
     console.log('\n[repair] Running post-translation repair...');
     restoreLockedPatterns(mintlifyLangs, dryRun);
     repairBrokenCodeFences(mintlifyLangs, dryRun);
+    repairHtmlComments(mintlifyLangs, dryRun);
     validateAndReplace(mintlifyLangs, dryRun);
 
     // Step 4: Remove orphaned files from target languages (using Mintlify codes)
