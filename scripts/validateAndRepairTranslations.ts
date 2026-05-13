@@ -593,7 +593,8 @@ const SELF_TEST_CASES = [
 ];
 
 function runSelfTest() {
-  const tmpFile = path.join(require('os').tmpdir(), `mdx-self-test-${process.pid}.mdx`);
+  const tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'mdx-self-test-'));
+  const tmpFile = path.join(tmpDir, 'case.mdx');
   let passed = 0;
   let failed = 0;
 
@@ -615,7 +616,7 @@ function runSelfTest() {
     }
   }
 
-  try { fs.unlinkSync(tmpFile); } catch {}
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
   console.log(`\n[self-test] ${passed} passed, ${failed} failed`);
   return failed === 0;
