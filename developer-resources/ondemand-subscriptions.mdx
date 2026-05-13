@@ -327,6 +327,51 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
 </Warning>
 
+## Handling failed charges
+
+When a charge against an on-demand subscription fails (either the API call returns a non-success response, or a subsequent `payment.failed` webhook fires), Dodo Payments transitions the subscription to the `on_hold` state. While `on_hold`, no further charges will be processed against the subscription until it is reactivated.
+
+### State transitions on failure
+
+<Steps>
+<Step title="Charge attempt fails">
+The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook.
+</Step>
+
+<Step title="Subscription moves to on_hold">
+Dodo automatically transitions the subscription to `on_hold` and fires a `subscription.on_hold` webhook. The subscription will not accept new charges in this state.
+
+See [Subscription States → On Hold](/features/subscription#on-hold-state) for the full definition of this state.
+</Step>
+
+<Step title="Reactivate by updating the payment method">
+Use [`POST /subscriptions/{id}/payment-method`](/api-reference/subscriptions/update-payment-method) to collect a new payment method from the customer. On success, Dodo automatically creates a charge for any outstanding dues, processes it, and transitions the subscription back to `active`.
+
+You'll then receive `payment.succeeded` followed by `subscription.active` webhooks.
+</Step>
+</Steps>
+
+### Webhook sequence on a failed on-demand charge
+
+| Order | Event | Meaning |
+|-------|-------|---------|
+| 1 | `payment.failed` | The on-demand charge attempt did not succeed |
+| 2 | `subscription.on_hold` | The subscription was placed on hold |
+| 3* | `payment.succeeded` | (After reactivation) The new payment method was charged successfully |
+| 4* | `subscription.active` | (After reactivation) The subscription resumed |
+
+<Info>
+Events 3 and 4 only fire after the customer updates their payment method and the resulting charge succeeds.
+</Info>
+
+### Retry responsibility
+
+<Warning>
+For on-demand subscriptions, Dodo Payments **does not auto-retry failed charges**. You are responsible for deciding whether and when to retry. Follow the safe retry policy below to avoid being flagged by our fraud detection systems.
+</Warning>
+
+[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) to recover from a failed on-demand charge.
+
 ## Payment retries
 
 Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
@@ -400,7 +445,7 @@ Implement webhook handling to track the customer journey. See [Implementing Webh
 - **payment.failed**: Charge failed
 
 <Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges.
+For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
 </Tip>
 
 ## Testing and next steps
