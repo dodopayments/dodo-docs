@@ -1,0 +1,133 @@
+---
+title: v1.98.0 (May 14, 2026)
+description: "Stackable discount codes on checkout sessions, payments, subscriptions, and plan changes; per-checkout-session credit entitlement overrides; and three new subscription lifecycle webhooks (cancellation_scheduled, trial_ending, upcoming_renewal)."
+icon: "arrows-turn-right"
+keywords: ["Dodo Payments", "changelog", "release notes", "product updates", "v1.98.0 (may 14, 2026)", "discount stacking", "credit entitlements", "subscription webhooks"]
+---
+
+## New Features
+
+### 1. **Stackable Discount Codes**
+
+You can now apply **up to 20 stacked discount codes** in a single checkout session, payment, subscription, or plan change. Codes are applied in array order — the first eligible code reduces the base price, the next reduces the already-discounted price, and so on — letting you combine campaigns (e.g. `WELCOME10` + `BLACKFRIDAY20`) without minting bespoke codes for every overlap.
+
+**Request**
+
+A new `discount_codes` array replaces the singular `discount_code` field on every endpoint that accepted a discount:
+
+| Endpoint | Old field (deprecated) | New field |
+|----------|------------------------|-----------|
+| `POST /checkouts` | `discount_code` | `discount_codes` (max 20) |
+| `POST /checkouts/preview` | `discount_code` | `discount_codes` (max 20) |
+| `POST /payments` | `discount_code` | `discount_codes` (max 20) |
+| `POST /subscriptions` | `discount_code` | `discount_codes` (max 20) |
+| `POST /subscriptions/{id}/change-plan` | `discount_code` | `discount_codes` (max 20) |
+| `POST /subscriptions/{id}/change-plan/preview` | `discount_code` | `discount_codes` (max 20) |
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  discount_codes: ['WELCOME10', 'BLACKFRIDAY20'], // applied in this order
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Response**
+
+Payment and subscription objects gain a richer `discounts` array (with `position`, `cycles_remaining`, codes, and metadata for each applied discount) plus a flat `discount_ids` list. The singular `discount_id` / `discount_cycles_remaining` fields on these responses still echo the first discount but are now **deprecated**.
+
+```typescript
+const subscription = await client.subscriptions.retrieve('sub_123');
+subscription.discounts.forEach(d =>
+  console.log(d.position, d.code, d.cycles_remaining)
+);
+```
+
+**Plan-change semantics**
+
+On `POST /subscriptions/{id}/change-plan`, the `discount_codes` array gives you explicit control over what happens to existing discounts:
+
+| `discount_codes` value | Behavior |
+|------------------------|----------|
+| Not provided (`null` / omitted) | Existing discounts with `preserve_on_plan_change=true` are preserved if applicable to the new product. |
+| `[]` (empty array) | **All** existing discounts are removed from the subscription. |
+| `["CODE_A", "CODE_B", ...]` | Replaces existing discounts with this stacked set, applied in array order. |
+
+<Warning>
+The singular `discount_code` request field and `discount_id` / `discount_cycles_remaining` response fields are **deprecated** and cannot be combined with their plural counterparts. Migrate to the array form — pass `discount_codes: ['CODE']` even when applying a single code.
+</Warning>
+
+Learn more: [Discounts](/features/discount-codes) | [Checkout Sessions Guide](/developer-resources/checkout-session) | [Change Plan API](/api-reference/subscriptions/change-plan)
+
+### 2. **Per-Checkout-Session Credit Entitlement Overrides**
+
+Credit entitlements attached to a product define how many credits a customer receives on fulfilment. You can now **override `credits_amount` for a single checkout session** using a new `credit_entitlements` array on each `product_cart` item — perfect for promotional bundles, top-up offers, and one-off enterprise deals without cloning the product.
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [
+    {
+      product_id: 'prod_api_access',
+      quantity: 1,
+      credit_entitlements: [
+        {
+          credit_entitlement_id: 'ce_api_credits',
+          credits_amount: '1000' // override the product-default for this session only
+        }
+      ]
+    }
+  ],
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `credit_entitlement_id` | string (required) | Must already be attached to the product. |
+| `credits_amount` | string (required) | Number of credits to grant for this session. Must be greater than zero. |
+
+<Info>
+The override only changes `credits_amount` for this checkout session. Product-level configuration on the credit entitlement (expiration, rollover, overage rules, etc.) still applies.
+</Info>
+
+Learn more: [Credit-Based Billing](/features/credit-based-billing) | [Create Checkout Session API](/api-reference/checkout-sessions/create)
+
+### 3. **Three New Subscription Lifecycle Webhooks**
+
+Three new webhook events give you better visibility into upcoming subscription transitions, so you can run pre-billing logic, send renewal reminders, and drive trial-to-paid conversion without polling.
+
+| Event | Fires when |
+|-------|-----------|
+| `subscription.cancellation_scheduled` | A cancellation has been scheduled for a future date (e.g., end of current billing period) rather than taking effect immediately. |
+| `subscription.trial_ending` | Ahead of trial expiry — use this to drive trial-ending reminders and conversion campaigns. |
+| `subscription.upcoming_renewal` | Ahead of a scheduled renewal — use this to notify customers, validate payment methods, or run pre-billing checks. |
+
+```javascript
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'subscription.trial_ending':
+      await sendTrialEndingEmail(event.data.customer.email, event.data);
+      break;
+    case 'subscription.upcoming_renewal':
+      await preflightPaymentMethod(event.data.subscription_id);
+      break;
+    case 'subscription.cancellation_scheduled':
+      await scheduleWinBackCampaign(event.data);
+      break;
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+These events complement the existing `subscription.cancelled`, `subscription.renewed`, and `subscription.expired` events — listen to the new pre-event variants when you want to act *before* a transition takes effect.
+</Tip>
+
+Learn more: [Webhook Events Guide](/developer-resources/webhooks/intents/webhook-events-guide) | [Subscription Webhooks](/developer-resources/webhooks/intents/subscription)
+
+## Bug Fixes & Improvements
+
+- Minor bug fixes and stability improvements across the platform
