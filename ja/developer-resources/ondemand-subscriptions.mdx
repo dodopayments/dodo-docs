@@ -427,3 +427,63 @@ Webhook処理を実装して顧客の旅を追跡します。[Webhookの実装](
 - **422 Invalid Request**：作成時に `on_demand.mandate_only`、チャージ時に `product_price` が提供されていることを確認してください。
 - **通貨エラー**：`product_currency` をオーバーライドする場合、その通貨がアカウントおよび顧客に対してサポートされていることを確認してください。
 - **Webhook を受信しない**：Webhook URL と署名シークレットの設定を確認してください。
+
+### 再試行してはいけない拒否コード
+
+- `STOLEN_CARD`
+- `DO_NOT_HONOR`
+- `FRAUDULENT`
+- `PICKUP_CARD`
+- `AUTHENTICATION_FAILURE`
+- `LOST_CARD`
+
+<Note>
+拒否理由の包括的なリストと、それらがユーザーによって修正可能かどうかについては、[取引失敗](/api-reference/transaction-failures)ドキュメントを参照してください。
+</Note>
+
+<Tip>
+ソフト/一時的な問題 (例: `insufficient_funds`, `issuer_unavailable`, `processing_error`, ネットワークタイムアウト) の場合のみ再試行してください。同じ拒否が繰り返される場合は、再試行を一時停止します。
+</Tip>
+
+### 実装ガイドライン（コードなし）
+
+- 正確なタイムスタンプを保持するスケジューラー/キューを使用し、次回の試行を同じ時間帯のオフセットで計算します (例: `T + 3 days` の同じ HH:MM)。
+- 最後に成功した支払いのタイムスタンプ `T` を維持し参照して次回の試行を計算します。同時に複数のサブスクリプションを行わないでください。
+- 常に最後の拒否理由を評価し、上記のスキップリストにあるハード拒否の再試行を停止します。
+- 事故的な急増を防ぐため、顧客およびアカウントごとに同時再試行の数を制限します。
+- 事前に積極的に通知します: 次回の予定された試行の前に、顧客にメール/SMSで支払い方法の更新を依頼します。
+- メタデータは観測可能性のみのために使用し (例: `retry_attempt`)、詐欺/リスクシステムを避けるために重要でないフィールドを変更することはありません。
+
+## Webhooksで結果を追跡
+
+Webhook処理を実装して、顧客のジャーニーを追跡します。[Webhookの実装](/developer-resources/integration-guide#implementing-webhooks)を参照してください。
+
+- **subscription.active**: 認証とサブスクリプション開始が必要
+- **subscription.failed**: 作成に失敗 (例: 認証失敗)
+- **subscription.on_hold**: サブスクリプションが保留状態に (例: 未払い状態)
+- **payment.succeeded**: 支払い成功
+- **payment.failed**: 支払い失敗
+
+<Tip>
+オンデマンドフローでは、`payment.succeeded` と `payment.failed` に焦点を当てて、使用ベースの料金を調整します。 `payment.failed` の後に `subscription.on_hold` が続くとき、サブスクリプションを回復するために [失敗した支払いの処理](#handling-failed-charges) を参照してください。
+</Tip>
+
+## テストおよび次のステップ
+
+<Steps>
+<Step title="Create in test mode">
+テストAPIキーを使用して、`payment_link: true` でサブスクリプションを作成し、リンクを開いて認証を完了します。
+</Step>
+<Step title="Trigger a charge">
+小さな`product_price` (例: `100`) でチャージエンドポイントを呼び出し、`payment.succeeded` を受け取ることを確認します。
+</Step>
+<Step title="Go live">
+イベントと内部状態の更新を確認したら、ライブAPIキーに切り替えます。
+</Step>
+</Steps>
+
+## トラブルシューティング
+
+- **422 Invalid Request**: 作成時に`on_demand.mandate_only`を提供し、チャージには`product_price`を提供していることを確認します。
+- **通貨エラー**: `product_currency`を上書きする場合、それがアカウントと顧客に対してサポートされていることを確認します。
+- **Webhookが受信されない**: Webhook URLと署名のシークレット設定を確認してください。
