@@ -480,6 +480,53 @@ function repairHtmlComments(langDirs, dryRun) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2c: Repair literal "</n" escape sequences emitted between tags
+// ---------------------------------------------------------------------------
+
+// Translator sometimes emits the literal characters `</n` (or `\n`) between
+// adjacent JSX tags instead of an actual newline character. This produces
+// invalid MDX like `</Card></n<Card title="...">` which the MDX parser sees
+// as an unexpected `<` inside a tag name. Replace the literal `</n` (when
+// sandwiched between a closing tag `>` and an opening tag `<`) with a real
+// newline. Also handle the bare `\n` literal in the same position.
+function repairLiteralNewlines(langDirs, dryRun) {
+  console.log('\n[repair:literal-newlines] Scanning for literal "</n" / "\\n" between tags...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  // Match `></n<` or `>\n<` (the literal characters, not a real newline).
+  // We require the surrounding `>` and `<` so we only touch tag boundaries.
+  const literalNewlineRe = /(>)(<\/n|\\n)(<)/g;
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      const original = fs.readFileSync(f, 'utf8');
+      let fixes = 0;
+
+      const repaired = original.replace(literalNewlineRe, (full, gt, junk, lt) => {
+        fixes++;
+        return `${gt}\n${lt}`;
+      });
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, repaired, 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No literal newline sequences found.');
+  } else {
+    console.log(`  Fixed ${totalFixes} literal newline(s) in ${filesFixed} file(s)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 3: Validate and replace structurally broken files
 // ---------------------------------------------------------------------------
 
@@ -664,6 +711,7 @@ function main() {
   restoreLockedPatterns(langDirs, dryRun);
   repairBrokenCodeFences(langDirs, dryRun);
   repairHtmlComments(langDirs, dryRun);
+  repairLiteralNewlines(langDirs, dryRun);
   const remaining = validateAndReplace(langDirs, dryRun);
 
   if (remaining > 0) {
@@ -675,7 +723,7 @@ function main() {
 }
 
 // Export for use from syncAllLanguages.ts
-module.exports = { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, validateAndReplace, validateMdx, stripCodeAndFrontmatter };
+module.exports = { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, repairLiteralNewlines, validateAndReplace, validateMdx, stripCodeAndFrontmatter };
 
 // Run directly if executed as a script
 if (require.main === module) {
