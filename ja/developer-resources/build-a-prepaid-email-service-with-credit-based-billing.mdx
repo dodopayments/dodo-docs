@@ -1,160 +1,187 @@
 ---
-title: クレジットベースの請求によるプリペイド型メールサービスの構築
-description: MailKit、プリペイドメールクレジットを備えたトランザクションメールプラットフォームを構築します。毎月のサブスクリプションプラン、一回限りの追加パック、送信ごとの即時クレジット差し引き、ResendとDodo
-  Paymentsによる残高不足のアラートを活用します。
-icon: envelope
-keywords:
-  - Dodo Payments
-  - 開発者ガイド
-  - クレジットベースの請求
-  - トランザクションメール
-  - Resend
-  - プリペイドクレジット
+title: "Build a Prepaid Email Service with Credit-Based Billing"
+description: "Build MailKit, a transactional email platform with prepaid email credits. A monthly subscription plan, one-time top-up packs, instant credit deduction on every send, and proactive low-balance alerts powered by Resend and Dodo Payments."
+icon: "envelope"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "transactional email", "Resend", "prepaid credits"]
 ---
 
 <Tip>
-  <strong>Sentraにインテグレーションコードを書かせましょう。</strong><br />
-  VS Code、Cursor、WindsurfでAIアシスタントを使用し、必要な内容を説明するだけでSDK/APIコード、Webhookハンドラなどを生成できます。
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, and more, just by describing what you want.
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    Sentraを試す: AIによるインテグレーション &rarr;
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-このチュートリアルでは、顧客がメールクレジットのプールを前払いするトランザクションメールプラットフォームである**MailKit**を構築します。このプランは毎月のメール許容量を提供し、顧客が残量不足になった際は次のサイクルを待たずに追加パックを購入できます。送信ごとにクレジットが自動で1つ差し引かれます。
+In this tutorial, you'll build **MailKit**, a transactional email platform where customers pay upfront for a pool of email credits. The plan grants a monthly email allowance; when customers run low, they can buy a top-up pack instead of waiting for the next cycle. Every send deducts one credit automatically.
 
 <Note>
-このチュートリアルではメールプロバイダーとして[Resend](https://resend.com)を使用します。無料プラン（3,000メール/月）は、有料アカウントなしで全フローを構築・テストするのに十分です。このパターンは他のプロバイダーでも機能します。SendGrid、Postmark、SES、または独自のSMTPリレーに置き換えてください。
+This tutorial uses [Resend](https://resend.com) as the email provider. Its free tier (3,000 emails/month) is enough to build and test the entire flow without a paid account. The pattern works with any provider; swap `resend.emails.send` for SendGrid, Postmark, SES, or your own SMTP relay.
 </Note>
 
-このチュートリアルの終わりには、次のことができるようになります：
+By the end of this tutorial, you'll know how to:
 
-- ダッシュボードでカスタムクレジット権利（メール）を作成する
-- クレジットをサブスクリプションプランと一回限りのトップアップ製品に添付する
-- Resend経由で実際のメールを送信し、台帳エントリ経由で1送信ごとにクレジットを差し引く
-- フロントエンドからライブクレジット残高を照会する
-- Dodo Webhookを正しく確認し、残高がゼロに達する前に顧客に通知する
+- Create a custom credit entitlement (emails) in your dashboard
+- Attach credits to a subscription plan and a one-time top-up product
+- Send real emails via Resend and debit one credit per send via a ledger entry
+- Query a live credit balance from your frontend
+- Verify Dodo webhooks correctly and handle `credit.balance_low` to nudge customers before they hit zero
 
-## 構築するもの
+## What We're Building
 
-MailKitの料金モデルは以下の通りです：
+Here's the pricing model for MailKit:
 
-| 製品 | 価格 | メール数 |
+| Product | Price | Emails |
 |---------|-------|--------|
-| MailKitプラン | $19/月 | 5,000 メール/サイクル |
-| トップアップパック | $9 一回限り | +5,000 メール |
+| MailKit Plan | $19/month | 5,000 emails/cycle |
+| Top-Up Pack | $9 one-time | +5,000 emails |
 
-単位は**1メール = 1クレジット**です。顧客はトークン、バッチ、加重単位を考える必要はありません。「今月はあと4,231メール残っています」と表示されるだけです。
+The unit is **one email = one credit**. Customers don't have to think about tokens, batches, or weighted units. They just see "you have 4,231 emails left this month."
 
 <Info>
-始める前に、以下を確認してください：
-- Dodo Paymentsのアカウント（テストモードで構いません）
-- 無料の[Resend](https://resend.com)アカウントおよびAPIキー
-- Node.js 18+と基本的なTypeScriptの知識
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- A free [Resend](https://resend.com) account and API key
+- Node.js 18+ and basic TypeScript familiarity
 </Info>
 
-## ステップ1: メールクレジット権利の作成
+## Step 1: Create Your Email Credit Entitlement
 
-クレジット権利はプラットフォームが販売する単位を定義します: この場合、1回のメール送信です。
+The credit entitlement defines the unit your platform sells: in this case, one email send.
 
 <Frame caption="The Credits tab under Products lists all your credit entitlements.">
 <img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Credits listing page" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-1. Dodo Paymentsのダッシュボードにログインしてください
-   2. 左側のサイドバーで**Products**をクリック
-   3. **Credits**タブを選択
-   4. **Create Credit**をクリック
+<Steps>
+<Step title="Open the Credits section">
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
+</Step>
 
-クレジットの詳細を記入してください：
+<Step title="Configure the credit unit">
+Fill in the credit details:
 
-**クレジット名**: `Email Credits`
+**Credit Name**: `Email Credits`
 
-**クレジットタイプ**: **Custom Unit**を選択
+**Credit Type**: Select **Custom Unit**
 
-**ユニット名**: `email`
+**Unit Name**: `email`
 
-**精度**: `0`（メールは常に全体の単位です；半分のメールを送信することはできません）
+**Precision**: `0` (an email is always a whole unit; you can't send half an email)
 
-**クレジット有効期限**: `30 days`（各サイクルの許容量はリセットされます）
+**Credit Expiry**: `30 days` (each cycle's allowance resets)
 
-精度は作成後に変更できません。メール、メッセージ、セッションなどの個別単位の場合、`0`が正しいです。
+<Warning>
+Precision cannot be changed after creation. For discrete units like emails, messages, or sessions, `0` is correct.
+</Warning>
+</Step>
 
-このクックブックではロールオーバーや超過を有効にしません; 目標は可能な限り簡単なCBBフローです。クレジットアタッチメントについては後で再訪できます。
+<Step title="Leave the other defaults as-is">
+We won't enable rollover or overage in this cookbook; the goal is the simplest possible CBB flow. You can revisit these on the credit attachment later.
+</Step>
 
-**Create Credit**をクリックしてください。クレジットを開き、そのIDをコピーしてください。バックエンドの残高照会で必要になります。これは `cent_xxxxxxxxxxxx` のように見えます。
+<Step title="Save and copy the credit ID">
+Click **Create Credit**. Open the credit and copy its ID. You'll need it for backend balance queries. It looks like `cent_xxxxxxxxxxxx`.
 
-あなたの`Email Credits`エンタイトルメントが準備できました。次は顧客にクレジットを与える製品です。
+<Check>
+Your `Email Credits` entitlement is ready. Next: the products that grant credits to customers.
+</Check>
+</Step>
+</Steps>
 
-## ステップ2: プランとトップアップパックの作成
+## Step 2: Create the Plan and Top-Up Pack
 
-2つの製品を作成します： 定期的な**サブスクリプション**プランと**一回限りの支払い**トップアップ。プランは各サイクルに5,000メールを提供し、トップアップは要求に応じて追加の5,000を追加します。両方とも同じ`Email Credits`エンタイトルメントを添付します。
+You'll create two products: a recurring **Subscription** plan and a **Single Payment** top-up. The plan grants 5,000 emails each cycle; the top-up adds another 5,000 on demand. Both attach the same `Email Credits` entitlement.
 
-このクックブックでは、使用量に基づくメーターではなく、直接の台帳項目でクレジットを差し引きます。台帳エントリは即時（残高はミリ秒で更新されます）で、追加設定が不要で、1つのユーザーアクションが正確に1クレジットに相当する場合に適しています。インジェストされた使用量イベントからの自動差し引きを好む場合（「トークン」や「MB処理済み」などの重み付け単位に便利です）、メーターベースのパターンについては[Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing)をご覧ください。
+<Tip>
+This cookbook deducts credits with direct ledger entries instead of usage-based meters. Ledger entries are immediate (the balance updates in milliseconds), need no extra setup, and are the right fit when one user action equals exactly one credit. If you'd prefer auto-deduction from ingested usage events (handy for weighted units like "tokens" or "MB processed"), see [Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing) for the meter-based pattern.
+</Tip>
 
-### MailKitプラン ($19/月, 5,000メール)
+### MailKit Plan ($19/month, 5,000 emails)
 
-1. **Products → Create Product**に移動
-   2. 製品の詳細を入力：
+<Steps>
+<Step title="Create the subscription">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**製品名**: `MailKit Plan`
+**Product Name**: `MailKit Plan`
 
-**説明**: `5,000 transactional emails per month.`
+**Description**: `5,000 transactional emails per month.`
 
-3. 製品タイプとして**サブスクリプション**を選択
-   4. 定期価格を設定：
+3. Select **Subscription** as the product type
+4. Set the recurring price:
 
-**定期価格**: `19.00`
+**Recurring Price**: `19.00`
 
-**請求サイクル**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**通貨**: `USD`
+**Currency**: `USD`
+</Step>
 
-スクロールして**Entitlements → Credits → Attach**を設定：
+<Step title="Attach the email credit entitlement">
+Scroll to **Entitlements → Credits → Attach** and configure:
 
-**クレジットエンタイトルメント**: `Email Credits`
+**Credit Entitlement**: `Email Credits`
 
-**請求サイクルごとに発行されるクレジット**: `5000`
+**Credits issued per billing cycle**: `5000`
 
-**低残高閾値**: `20`（パーセント; 残高がサイクル許容量の20％未満になると`credit.balance_low`が発動します。例: 1,000メール）
+**Low Balance Threshold**: `20` (percent; fires `credit.balance_low` when the balance drops below 20% of the cycle allowance, i.e. 1,000 emails)
 
-**デフォルトクレジット設定をインポート**: 有効（ステップ1からの30日間の有効期限を使用）
+**Import Default Credit Settings**: enabled (uses the 30-day expiry from Step 1)
 
-**Add to Product**をクリックし、製品を**保存**してください。製品IDをコピーしてください（`pdt_xxxxxxxxxxxx`）。
+Click **Add to Product**, then **Save** the product. Copy the product ID (`pdt_xxxxxxxxxxxx`).
 
-プラン: $19/月 → 各サイクルで5,000メールが更新されます。
+<Check>
+Plan: $19/month → 5,000 emails refreshed each cycle.
+</Check>
+</Step>
+</Steps>
 
-### トップアップパック ($9 一回限り, 5,000メール)
+### Top-Up Pack ($9 one-time, 5,000 emails)
 
-1. **Products → Create Product**に移動
-   2. 製品の詳細を入力：
+<Steps>
+<Step title="Create a one-time product">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**製品名**: `Email Top-Up Pack`
+**Product Name**: `Email Top-Up Pack`
 
-**説明**: `Add 5,000 emails to your MailKit balance instantly.`
+**Description**: `Add 5,000 emails to your MailKit balance instantly.`
 
-3. 製品タイプとして**一回限りの支払い**を選択
-   4. 価格設定を行う：
+3. Select **Single Payment** as the product type
+4. Set the pricing:
 
-**価格**: `9.00`
+**Price**: `9.00`
 
-**通貨**: `USD`
+**Currency**: `USD`
+</Step>
 
-**Entitlements → Credits → Attach**で：
-   - クレジットエンタイトルメント: `Email Credits`
-   - 発行されるクレジット: `5000`
+<Step title="Attach the credit grant">
+In **Entitlements → Credits → Attach**:
+- Credit Entitlement: `Email Credits`
+- Credits issued: `5000`
 
-一回限りの製品は、独自の有効期限（購入から30日以内）を持つクレジットを付与します。トップアップはサブスクリプションクレジットの上に積み重なり、置き換えません。
+<Info>
+One-time products grant credits with their own expiry (30 days from purchase, per Step 1). Top-ups stack on top of subscription credits; they don't replace them.
+</Info>
 
-保存して製品IDをコピーしてください。
+Save and copy the product ID.
 
-トップアップパック: $9 → +5,000メール、すぐに利用可能。
+<Check>
+Top-Up Pack: $9 → +5,000 emails, available immediately.
+</Check>
+</Step>
+</Steps>
 
-## ステップ3: バックエンドを設定
+## Step 3: Set Up the Backend
 
-チェックアウト、送信、残高のクエリ、Webhookを処理するExpressサーバーを構築します。
+Now build the Express server that handles checkout, sending, balance queries, and webhooks.
 
-
-
+<Steps>
+<Step title="Initialize the project">
 ```bash
 mkdir mailkit && cd mailkit
 npm init -y
@@ -162,7 +189,7 @@ npm install dodopayments resend express dotenv
 npm install -D tsx @types/node @types/express
 ```
 
-**dev script**を `package.json`に追加してください：
+Add a dev script to `package.json`:
 
 ```json
 {
@@ -172,9 +199,13 @@ npm install -D tsx @types/node @types/express
 }
 ```
 
-[`tsx`](https://tsx.is) は、ビルドステップや`tsconfig.json`なしでTypeScriptを直接実行します。チュートリアルに最適です。本番環境向けには`tsconfig.json`と`build`スクリプトを追加してください。
+<Tip>
+[`tsx`](https://tsx.is) runs TypeScript directly without a build step or `tsconfig.json`, which is perfect for a tutorial. For production, add a `tsconfig.json` and a `build` script.
+</Tip>
+</Step>
 
-`.env`を作成：
+<Step title="Configure environment variables">
+Create `.env`:
 
 ```bash .env
 # Dodo Payments
@@ -192,14 +223,17 @@ BASE_URL=http://localhost:3000
 PORT=3000
 ```
 
-エンドポイントを作成した後でステップ4にて`DODO_WEBHOOK_KEY`を埋めます。Resend APIキーは[resend.com/api-keys](https://resend.com/api-keys)から取得します。
+You'll fill in the `DODO_WEBHOOK_KEY` in Step 4 after creating the endpoint. The Resend API key comes from [resend.com/api-keys](https://resend.com/api-keys).
 
-`.env`をすぐに`.gitignore`に追加してください。APIキーを決してコミットしないでください。
+<Warning>
+Add `.env` to `.gitignore` immediately. Never commit API keys.
+</Warning>
+</Step>
 
-プロジェクトルートで`server.ts`を作成：
+<Step title="Build the server">
+Create `server.ts` in the project root:
 
-
-
+<CodeGroup>
 ```typescript server.ts expandable
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
@@ -373,17 +407,21 @@ app.listen(port, () => {
   console.log(`MailKit running on http://localhost:${port}`);
 });
 ```
+</CodeGroup>
 
+<Warning>
+**Webhook body must be raw.** `express.json()` parses and re-serializes the body, which breaks signature verification. Define `/webhooks/dodo` with `express.raw()` *before* the `app.use(express.json())` line.
+</Warning>
 
+<Check>
+Backend ready: subscribe, top-up, balance, send, and webhook handler all wired up.
+</Check>
+</Step>
 
-**Webhookのボディは生のままでなければなりません。** `express.json()`はボディを解析して再シリアル化し、署名検証を破壊します。`/webhooks/dodo`を`app.use(express.json())`行の*前*に定義します。
+<Step title="Add a demo UI">
+Create `public/index.html`:
 
-バックエンド準備完了：サブスクライブ、トップアップ、残高、送信、Webhookハンドラがすべて接続されます。
-
-`public/index.html`を作成：
-
-
-
+<CodeGroup>
 ```html public/index.html expandable
 <!doctype html>
 <html>
@@ -532,102 +570,147 @@ app.listen(port, () => {
   </body>
 </html>
 ```
+</CodeGroup>
+</Step>
+</Steps>
 
+## Step 4: Wire Up the Webhook Endpoint
 
+The `credit.balance_low` event is what lets you nudge customers *before* they run out. Without it, the first time they notice the problem is when an email fails to send.
 
-## ステップ4: Webhookエンドポイントを接続
-
-`credit.balance_low`イベントは、顧客がなくなる前に促すものです。これなしでは、メール送信が失敗したときに初めて問題に気づきます。
-
-Webhooksは公開URLが必要です。[ngrok](https://ngrok.com)（または任意のトンネル）を使用して開発中に：
+<Steps>
+<Step title="Expose your local server">
+Webhooks need a public URL. Use [ngrok](https://ngrok.com) (or any tunnel) while developing:
 
 ```bash
 ngrok http 3000
 ```
 
-HTTPS転送URLをコピー（例：`https://1234abcd.ngrok-free.app`）。
+Copy the HTTPS forwarding URL (e.g. `https://1234abcd.ngrok-free.app`).
+</Step>
 
-1. **Developers → Webhooks → Add Endpoint**に移動
-   2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
-   3. **イベント**: `credit.added`、`credit.balance_low`、`credit.rolled_over`に登録
-   4. 保存し、**署名キー**を`.env`に`DODO_WEBHOOK_KEY`としてコピー
-   5. サーバーを再起動
+<Step title="Register the endpoint in Dodo">
+1. Go to **Developers → Webhooks → Add Endpoint**
+2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
+3. **Events**: subscribe to `credit.added`, `credit.balance_low`, and `credit.rolled_over`
+4. Save, then copy the **signing key** into your `.env` as `DODO_WEBHOOK_KEY`
+5. Restart your server
+</Step>
+</Steps>
 
-## ステップ5: フルフローをテスト
+## Step 5: Test the Full Flow
 
-
-
+<Steps>
+<Step title="Start the server">
 ```bash
 npm run dev
 ```
 
-`MailKit running on http://localhost:3000`が見えるはずです。ブラウザで開いてください。
+You should see `MailKit running on http://localhost:3000`. Open it in your browser.
+</Step>
 
-1. セクション1でテストメールと名前を入力し、**Get checkout link**をクリック
-   2. リンクを開き、[テストカード](/miscellaneous/testing-process)でチェックアウトを完了
-   3. 支払い後、ダッシュボードで**Customers**にて`customer_id`を見つけてください
+<Step title="Subscribe a test customer">
+1. In section 1, enter a test email and name, click **Get checkout link**
+2. Open the link, complete checkout with a [test card](/miscellaneous/testing-process)
+3. After payment, find the `customer_id` in your dashboard under **Customers**
 
-顧客は現在**5,000メール**の残高があります。[**Customer] → Credits**で確認。
+<Check>
+The customer should now have **5,000 emails** in their balance. Check **Customers → [Customer] → Credits**.
+</Check>
+</Step>
 
-1. セクション3に`customer_id`をペースト
-   2. `to`を`delivered@resend.dev`（Resendのすべて受け入れるサンドボックスインボックス）に設定したまま
-   3. **Send**をクリック
+<Step title="Send a real email">
+1. Paste the `customer_id` into section 3
+2. Leave `to` set to `delivered@resend.dev` (Resend's sandbox inbox that accepts everything)
+3. Click **Send**
 
-ResendのメッセージIDが返されます。セクション2で残高を更新するとすぐに4,999に減ります。各台帳の引き落としは記録されるとすぐにライブバランスに反映されます。
+You'll get a Resend message id back. Refresh the balance in section 2 and the count immediately drops to 4,999. Each ledger debit is reflected in the live balance the moment it's written.
+</Step>
 
-閾値は20%（5,000メール許容量の1,000メール）です。4,000メールを実際に送信せずにトリガーするために、ダッシュボードから**残高を手動で引き落とし**してください：
+<Step title="Trigger the low-balance webhook">
+The threshold is 20% (1,000 of the 5,000-email allowance). To trigger it without sending 4,000 real emails, **manually debit the balance** from the dashboard:
 
-1. **Customers → [Customer] → Credits → Email Credits**に移動
-   2. **残高を調整**をクリックし、`4000`を引き落とし
-   3. デモを通じてもう一通のメールを送信
+1. Go to **Customers → [Customer] → Credits → Email Credits**
+2. Click **Adjust Balance** and debit `4000`
+3. Send one more email through the demo
 
-あなたのサーバーは数秒以内にログを記録するはずです：
+Your server should log within a few seconds:
 
 ```
 [low-balance] cus_xxx has 999 Email Credits left (under 20%)
 [NOTIFY] cus_xxx: 999 emails left. Consider topping up.
 ```
 
-サーバーはWebhookを受信し検証しました。本番環境では、ここで顧客にメールを送信するか、アプリ内バナーを表示します。
+<Check>
+Your server received and verified the webhook. In production this is where you'd email the customer or show an in-app banner.
+</Check>
+</Step>
 
-1. セクション4に`customer_id`をペースト
-   2. **Buy 5,000 emails**をクリックし、テストチェックアウトを完了
-   3. 残高を更新すると5,000増加します
+<Step title="Buy a top-up pack">
+1. Paste the `customer_id` into section 4
+2. Click **Buy 5,000 emails**, complete the test checkout
+3. Refresh the balance, and it jumps by 5,000
 
-`credit.added`イベントが`grant_source: one_time`で発火します。トップアップはサブスクリプションクレジットに積み重なり、プラン変更なしで両方のプールがFIFO（最古の未失効グラントから順に）で消費されます。
+<Check>
+A `credit.added` event fires with `grant_source: one_time`. The top-up stacks on top of the subscription credits; both pools are consumed FIFO (oldest non-expired grant first).
+</Check>
+</Step>
 
-残高をゼロに手動で引き落とし、その後もう一通のメールを送信してください。以下が表示されます：
+<Step title="Test the hard stop">
+Manually debit the balance to zero, then try to send one more email. You'll get:
 
 ```json
 { "error": "No email credits remaining. Buy a top-up pack or upgrade your plan." }
 ```
 
-この402はアプリケーションレベルの強制です。Dodoの残高APIが真の情報源です；クライアントにキャッシュしないでください。
+That 402 is your application-level enforcement. The Dodo balance API is the source of truth; never cache it on the client.
+</Step>
+</Steps>
 
-## トラブルシューティング
+## Troubleshooting
 
-署名は生のHTTPボディを用いて計算されます。`express.json()`はペイロードを解析しシリアル化し直します、HMACを破壊します。`/webhooks/dodo`を`app.use(express.json())`行の*上*に登録し、`DODO_WEBHOOK_KEY`がエンドポイント詳細ページに表示される署名キーと一致するようにしてください。
+<AccordionGroup>
+<Accordion title="Webhook signature verification fails (401)">
+The signature is computed over the raw HTTP body. `express.json()` parses and re-serializes the payload, which breaks the HMAC. Make sure `/webhooks/dodo` is registered with `express.raw({ type: 'application/json' })` *above* the `app.use(express.json())` line, and that `DODO_WEBHOOK_KEY` matches the signing key shown on the endpoint detail page.
+</Accordion>
 
-まず確認すべき3点：
+<Accordion title="Balance is 0, customer not found, or credits don't deduct">
+Three things to verify, in this order:
 
-1. 顧客が**チェックアウトを完了**したか（クレジットは支払い成功時に発行され、セッション作成時ではありません）
-   2. `CREDIT_ENTITLEMENT_ID`が`.env`で製品に添付されたクレジットと一致するか（IDの不一致は、間違ったクレジットに書き込まれます）
-   3. 渡す`customer_id`がDodoから来たものか（ダッシュボードの`customers`テーブル）、あなたのデータベースではないか
+1. The customer **completed checkout** (credits are issued on successful payment, not on session creation)
+2. `CREDIT_ENTITLEMENT_ID` in your `.env` matches the credit attached to the product (mismatched IDs silently write to the wrong credit)
+3. The `customer_id` you're passing came from Dodo (the `customers` table in the dashboard), not your own database
+</Accordion>
 
-サンドボックス送信者`onboarding@resend.dev`は、Resendアカウントのメールまたは`delivered@resend.dev`にのみ配信します。誰にでも送信するには、[ドメインを確認](https://resend.com/docs/dashboard/domains/introduction)し、そこにある`from`アドレスを使用してください。
+<Accordion title="Resend rejects the recipient">
+The sandbox sender `onboarding@resend.dev` only delivers to the email on your Resend account or to `delivered@resend.dev`. To send to anyone else, [verify a domain](https://resend.com/docs/dashboard/domains/introduction) and use a `from` address on it.
+</Accordion>
+</AccordionGroup>
 
-## あなたが構築したもの
+## What You Built
 
-`Email Credits`、1回定義してサブスクリプションプランとトップアップパックに添付。
+<CardGroup cols={2}>
+<Card title="One reusable credit unit" icon="envelope">
+`Email Credits`, defined once and attached to both the subscription plan and the top-up pack.
+</Card>
 
-$19/月は1サイクルごとに5,000メールを提供します。顧客は何に支払っているかを知り、あなたは最悪の場合のコストを把握します。
+<Card title="Subscription with prepaid allowance" icon="layer-group">
+$19/month grants 5,000 emails per cycle. Customers know what they're paying for, you know your worst-case cost.
+</Card>
 
-一回限りの製品で5,000メールを提供。サブスクリプションクレジットに追加積みされ、プラン変更は不要。
+<Card title="Top-up pack" icon="circle-plus">
+A one-time product that grants 5,000 emails. Stacks on subscription credits with no plan change required.
+</Card>
 
-各送信後の単一の`createLedgerEntry`呼び出し。メーター不要、集約遅延なし、ResendのメッセージIDを介してリトライ時に冪等性。
+<Card title="Instant ledger debits" icon="bolt">
+A single `createLedgerEntry` call after each send. No meter, no aggregation lag, idempotent on retry via Resend's message id.
+</Card>
+</CardGroup>
 
-ロールオーバー、超過モード、台帳管理、完全なAPIサーフェスについてはCBBドキュメント全体をお読みください。
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Read the full CBB documentation for rollover, overage modes, ledger management, and the complete API surface.
+</Card>
 
-ヘルプが必要ですか？
-- [Discordコミュニティ](https://discord.gg/bYqAp4ayYh)
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
 - support@dodopayments.com
