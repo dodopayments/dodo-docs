@@ -1,159 +1,187 @@
 ---
-title: بناء خدمة بريد إلكتروني مسبق الدفع بفواتير تستند إلى الرصيد
-description: قم ببناء MailKit، منصة بريد إلكتروني تجارية مع أرصدة بريد إلكتروني
-  مسبقة الدفع. خطة اشتراك شهرية، حزم تعبئة لمرة واحدة، خصم فوري من الرصيد مع كل
-  إرسال، وتنبيهات توازن منخفضة مدعومة بواسطة Resend وDodo Payments.
-icon: envelope
-keywords:
-  - Dodo Payments
-  - دليل المطور
-  - فواتير تستند إلى الرصيد
-  - بريد إلكتروني تجاري
-  - Resend
-  - أرصدة مسبقة الدفع
+title: "Build a Prepaid Email Service with Credit-Based Billing"
+description: "Build MailKit, a transactional email platform with prepaid email credits. A monthly subscription plan, one-time top-up packs, instant credit deduction on every send, and proactive low-balance alerts powered by Resend and Dodo Payments."
+icon: "envelope"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "transactional email", "Resend", "prepaid credits"]
 ---
 
 <Tip>
-  <strong>دع Sentra تكتب لك رمز التكامل.</strong><br />
-  استخدم مساعدنا بالذكاء الاصطناعي في VS Code، Cursor، أو Windsurf لتوليد رمز SDK/API، معالجات webhook، والمزيد، بكتابة ما تريد.
-  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer">
-    جرّب Sentra: التكامل المدعوم بالذكاء الاصطناعي &rarr;
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, and more, just by describing what you want.
+  <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-في هذا الدليل، ستقوم ببناء **MailKit**، منصة بريد إلكتروني تجارية حيث يدفع العملاء مقدمًا للحصول على مجموعة من أرصدة البريد الإلكتروني. تمنح الخطة بدلًا شهريًا للبريد الإلكتروني؛ وعندما ينخفض رصيد العملاء، يمكنهم شراء حزمة تعبئة بدلاً من الانتظار للدورة التالية. يتم خصم رصيد واحد تلقائيًا مع كل إرسال.
+In this tutorial, you'll build **MailKit**, a transactional email platform where customers pay upfront for a pool of email credits. The plan grants a monthly email allowance; when customers run low, they can buy a top-up pack instead of waiting for the next cycle. Every send deducts one credit automatically.
 
 <Note>
-  هذا الدليل يستخدم [Resend](https://resend.com) كمزود بريد إلكتروني. تكفي خطته المجانية (3000 بريد إلكتروني/شهر) لبناء واختبار العملية بالكامل دون حساب مدفوع. النمط يعمل مع أي مزود؛ قم بتبديل `resend.emails.send` لخدمات مثل SendGrid أو Postmark أو SES أو جهاز إرسال SMTP الخاص بك.
+This tutorial uses [Resend](https://resend.com) as the email provider. Its free tier (3,000 emails/month) is enough to build and test the entire flow without a paid account. The pattern works with any provider; swap `resend.emails.send` for SendGrid, Postmark, SES, or your own SMTP relay.
 </Note>
 
-بنهاية هذا الدليل، ستتعلم كيفية:
+By the end of this tutorial, you'll know how to:
 
-- إنشاء حق ائتمان مخصص (البريد الإلكتروني) في لوحة التحكم الخاصة بك
-- إرفاق الأرصدة بخطة اشتراك ومنتج تعبئة لمرة واحدة
-- إرسال رسائل بريد إلكتروني حقيقية عبر Resend واقتطاع رصيد واحد لكل إرسال عبر إدخال دفتر الأستاذ
-- استعلام عن رصيد ائتمان مباشر من واجهتك الأمامية
-- التحقق من صحة webhooks الخاصة بـ Dodo والتعامل `credit.balance_low` لتنبيه العملاء قبل الوصول إلى الصفر
+- Create a custom credit entitlement (emails) in your dashboard
+- Attach credits to a subscription plan and a one-time top-up product
+- Send real emails via Resend and debit one credit per send via a ledger entry
+- Query a live credit balance from your frontend
+- Verify Dodo webhooks correctly and handle `credit.balance_low` to nudge customers before they hit zero
 
-## ما سنقوم ببنائه
+## What We're Building
 
-إليك نموذج التسعير لMailKit:
+Here's the pricing model for MailKit:
 
-| المنتج | السعر | الرسائل |
+| Product | Price | Emails |
 |---------|-------|--------|
-| خطة MailKit | $19/شهر | 5000 رسالة/دورة |
-| حزمة تعبئة | $9 لمرة واحدة | +5000 رسالة |
+| MailKit Plan | $19/month | 5,000 emails/cycle |
+| Top-Up Pack | $9 one-time | +5,000 emails |
 
-الوحدة هي **رسالة واحدة = رصيد واحد**. لا يحتاج العملاء للتفكير في الرموز أو الحزم أو الوحدات الموزونة. يرون فقط "لديك 4231 رسالة متبقية هذا الشهر."
+The unit is **one email = one credit**. Customers don't have to think about tokens, batches, or weighted units. They just see "you have 4,231 emails left this month."
 
 <Info>
-قبل أن تبدأ، تأكد من أن لديك:
-- حساب Dodo Payments (وضع الاختبار كاف)
-- حساب [Resend](https://resend.com) مجاني ومفتاح API
-- Node.js 18+ ومعرفة أساسية بـ TypeScript
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- A free [Resend](https://resend.com) account and API key
+- Node.js 18+ and basic TypeScript familiarity
 </Info>
 
-## الخطوة 1: إنشاء واجب ائتمان البريد الإلكتروني الخاص بك
+## Step 1: Create Your Email Credit Entitlement
 
-يحدد واجب الائتمان الوحدة التي تبيعها منصتك: في هذه الحالة، إرسال بريد إلكتروني واحد.
+The credit entitlement defines the unit your platform sells: in this case, one email send.
 
 <Frame caption="The Credits tab under Products lists all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="صفحة قائمة الأرصدة" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Credits listing page" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-1. قم بتسجيل الدخول إلى لوحة التحكم في Dodo Payments الخاصة بك
-2. انقر على **المنتجات** في الشريط الجانبي الأيسر
-3. اختر علامة التبويب **الأرصدة**
-4. انقر على **إنشاء ائتمان**
+<Steps>
+<Step title="Open the Credits section">
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
+</Step>
 
-املأ تفاصيل الائتمان:
+<Step title="Configure the credit unit">
+Fill in the credit details:
 
-**اسم الائتمان**: `Email Credits`
+**Credit Name**: `Email Credits`
 
-**نوع الائتمان**: اختر **وحدة مخصصة**
+**Credit Type**: Select **Custom Unit**
 
-**اسم الوحدة**: `email`
+**Unit Name**: `email`
 
-**الدقة**: `0` (رسالة البريد الإلكتروني هي وحدة كاملة دائمًا؛ لا يمكنك إرسال نصف رسالة)
+**Precision**: `0` (an email is always a whole unit; you can't send half an email)
 
-**انتهاء الصلاحية**: `30 days` (يتم إعادة ضبط بدل كل دورة)
+**Credit Expiry**: `30 days` (each cycle's allowance resets)
 
-الدقة لا يمكن تغييرها بعد الإنشاء. للوحدات المتقطعة مثل رسائل البريد الإلكتروني أو الجلسات، `0` هو الصحيح.
+<Warning>
+Precision cannot be changed after creation. For discrete units like emails, messages, or sessions, `0` is correct.
+</Warning>
+</Step>
 
-لن نقوم بتمكين التمديد أو الغرامات الزائدة في هذا الدليل؛ الهدف هو أبسط تدفق CBB ممكن. يمكنك مراجعتها في وقت لاحق على مرفق الائتمان.
+<Step title="Leave the other defaults as-is">
+We won't enable rollover or overage in this cookbook; the goal is the simplest possible CBB flow. You can revisit these on the credit attachment later.
+</Step>
 
-انقر على **إنشاء الائتمان**. افتح الائتمان ونسخ هويته. ستحتاجها لاستفسارات الرصيد الخلفية. يبدو مثل `cent_xxxxxxxxxxxx`.
+<Step title="Save and copy the credit ID">
+Click **Create Credit**. Open the credit and copy its ID. You'll need it for backend balance queries. It looks like `cent_xxxxxxxxxxxx`.
 
-جاهز `Email Credits` تملكك. التالي: المنتجات التي تمنح الأرصدة للعملاء.
+<Check>
+Your `Email Credits` entitlement is ready. Next: the products that grant credits to customers.
+</Check>
+</Step>
+</Steps>
 
-## الخطوة 2: إنشاء الخطة وحزمة التعبئة
+## Step 2: Create the Plan and Top-Up Pack
 
-ستقوم بإنشاء منتجين: خطة اشتراك متجددة و حزمة تعبئة دفع واحد. تمنح الخطة 5000 رسالة لكل دورة؛ تضيف التعبئة 5000 رسالة أخرى عند الطلب. كلاهما يرفق نفس `Email Credits` الواجب.
+You'll create two products: a recurring **Subscription** plan and a **Single Payment** top-up. The plan grants 5,000 emails each cycle; the top-up adds another 5,000 on demand. Both attach the same `Email Credits` entitlement.
 
-هذا الدليل يخصم الأرصدة من خلال إدخالات دفتر الأستاذ المباشرة بدلاً من العدادات المعتمدة على الاستخدام. إدخالات دفتر الأستاذ فورية (يحدث تحديث الرصيد في ميلي ثانية)، لا تحتاج إلى إعداد إضافي، وتناسب بشكل جيد عندما تساوي حركة المستخدم في الرصيد. إذا كنت تفضل التخصيم التلقائي من أحداث الاستخدام التي تم ابتلاعها (مفيد للوحدات الموزونة مثل "الرموز" أو " MB المصنعة")، راجع [الفوترة المعتمدة على الرصيد → الفوترة المعتمدة على الاستخدام في الرصيد](/features/credit-based-billing) للنمط المعتمد على العدادات.
+<Tip>
+This cookbook deducts credits with direct ledger entries instead of usage-based meters. Ledger entries are immediate (the balance updates in milliseconds), need no extra setup, and are the right fit when one user action equals exactly one credit. If you'd prefer auto-deduction from ingested usage events (handy for weighted units like "tokens" or "MB processed"), see [Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing) for the meter-based pattern.
+</Tip>
 
-### خطة MailKit ($19/شهر، 5000 بريد إلكتروني)
+### MailKit Plan ($19/month, 5,000 emails)
 
-1. انتقل إلى **المنتجات → إنشاء منتج**
-2. املأ تفاصيل المنتج:
+<Steps>
+<Step title="Create the subscription">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**اسم المنتج**: `MailKit Plan`
+**Product Name**: `MailKit Plan`
 
-**الوصف**: `5,000 transactional emails per month.`
+**Description**: `5,000 transactional emails per month.`
 
-3. حدد **الاشتراك** كنوع للمنتج
-4. حدد السعر المتكرر:
+3. Select **Subscription** as the product type
+4. Set the recurring price:
 
-**سعر متكرر**: `19.00`
+**Recurring Price**: `19.00`
 
-**دورة الفوترة**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**العملة**: `USD`
+**Currency**: `USD`
+</Step>
 
-انتقل إلى **حقوق → أرصدة → إرفاق** وقم بالتكوين:
+<Step title="Attach the email credit entitlement">
+Scroll to **Entitlements → Credits → Attach** and configure:
 
-**حق الائتمان**: `Email Credits`
+**Credit Entitlement**: `Email Credits`
 
-**الأرصدة الصادرة لكل دورة فوترة**: `5000`
+**Credits issued per billing cycle**: `5000`
 
-**عتبة الرصيد المنخفض**: `20` (النسبة المئوية؛ يتم تشغيل `credit.balance_low` عند انخفاض الرصيد إلى أقل من 20٪ من بدل الدورة، أي 1000 رسالة)
+**Low Balance Threshold**: `20` (percent; fires `credit.balance_low` when the balance drops below 20% of the cycle allowance, i.e. 1,000 emails)
 
-**استيراد إعدادات الائتمان الافتراضية**: تمكين (يستخدم صلاحية 30 يومًا من الخطوة 1)
+**Import Default Credit Settings**: enabled (uses the 30-day expiry from Step 1)
 
-اضغط على **إضافة إلى المنتج**، ثم **حفظ** المنتج. انسخ معرف المنتج (`pdt_xxxxxxxxxxxx`).
+Click **Add to Product**, then **Save** the product. Copy the product ID (`pdt_xxxxxxxxxxxx`).
 
-الخطة: $19/شهر → 5000 رسالة يتم تحديثها في كل دورة.
+<Check>
+Plan: $19/month → 5,000 emails refreshed each cycle.
+</Check>
+</Step>
+</Steps>
 
-### حزمة التعبئة ($9 لمرة واحدة، 5000 رسالة)
+### Top-Up Pack ($9 one-time, 5,000 emails)
 
-1. اذهب إلى **المنتجات → إنشاء منتج**
-2. املأ تفاصيل المنتج:
+<Steps>
+<Step title="Create a one-time product">
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**اسم المنتج**: `Email Top-Up Pack`
+**Product Name**: `Email Top-Up Pack`
 
-**الوصف**: `Add 5,000 emails to your MailKit balance instantly.`
+**Description**: `Add 5,000 emails to your MailKit balance instantly.`
 
-3. حدد **دفعة فردية** كنوع للمنتج
-4. حدد التسعير:
+3. Select **Single Payment** as the product type
+4. Set the pricing:
 
-**السعر**: `9.00`
+**Price**: `9.00`
 
-**العملة**: `USD`
+**Currency**: `USD`
+</Step>
 
-في **الحقوق → الأرصدة → إرفاق**:
-- واجب الائتمان: `Email Credits`
-- الأرصدة الصادرة: `5000`
+<Step title="Attach the credit grant">
+In **Entitlements → Credits → Attach**:
+- Credit Entitlement: `Email Credits`
+- Credits issued: `5000`
 
-تمنح المنتجات لمرة واحدة أرصدة بصلاحية خاصة بها (30 يومًا من الشراء، حسب الخطوة 1). تتكدس التعبئة فوق أرصدة الاشتراك؛ لا تحل محلها.
+<Info>
+One-time products grant credits with their own expiry (30 days from purchase, per Step 1). Top-ups stack on top of subscription credits; they don't replace them.
+</Info>
 
-احفظ ونسخ معرف المنتج.
+Save and copy the product ID.
 
-حزمة التعبئة: $9 → +5000 رسالة، متاحة فورًا.
+<Check>
+Top-Up Pack: $9 → +5,000 emails, available immediately.
+</Check>
+</Step>
+</Steps>
 
-## الخطوة 3: إعداد الخلفية
+## Step 3: Set Up the Backend
 
-الآن قم ببناء خادم Express الذي يتعامل مع الدفع، الإرسال، استعلامات الرصيد، و webhooks.
+Now build the Express server that handles checkout, sending, balance queries, and webhooks.
 
+<Steps>
+<Step title="Initialize the project">
 ```bash
 mkdir mailkit && cd mailkit
 npm init -y
@@ -161,7 +189,7 @@ npm install dodopayments resend express dotenv
 npm install -D tsx @types/node @types/express
 ```
 
-أضف نصًا للتطوير إلى `package.json`:
+Add a dev script to `package.json`:
 
 ```json
 {
@@ -171,9 +199,13 @@ npm install -D tsx @types/node @types/express
 }
 ```
 
-[`tsx`](https://tsx.is) يشغل TypeScript مباشرة بدون خطوة بناء أو `tsconfig.json`، وهو مثالي لدليل. للإنتاج، أضف `tsconfig.json` ونص `build`.
+<Tip>
+[`tsx`](https://tsx.is) runs TypeScript directly without a build step or `tsconfig.json`, which is perfect for a tutorial. For production, add a `tsconfig.json` and a `build` script.
+</Tip>
+</Step>
 
-قم بإنشاء `.env`:
+<Step title="Configure environment variables">
+Create `.env`:
 
 ```bash .env
 # Dodo Payments
@@ -191,12 +223,17 @@ BASE_URL=http://localhost:3000
 PORT=3000
 ```
 
-ستملأ `DODO_WEBHOOK_KEY` في الخطوة 4 بعد إنشاء النقطة النهاية. مفتاح API لل Resend يأتي من [resend.com/api-keys](https://resend.com/api-keys).
+You'll fill in the `DODO_WEBHOOK_KEY` in Step 4 after creating the endpoint. The Resend API key comes from [resend.com/api-keys](https://resend.com/api-keys).
 
-أضف `.env` إلى `.gitignore` مباشرة. لا تقم بارتكاب مفاتيح API.
+<Warning>
+Add `.env` to `.gitignore` immediately. Never commit API keys.
+</Warning>
+</Step>
 
-قم بإنشاء `server.ts` في جذر المشروع:
+<Step title="Build the server">
+Create `server.ts` in the project root:
 
+<CodeGroup>
 ```typescript server.ts expandable
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
@@ -370,13 +407,21 @@ app.listen(port, () => {
   console.log(`MailKit running on http://localhost:${port}`);
 });
 ```
+</CodeGroup>
 
-**يجب أن يكون جسم Webhook خامًا.** `express.json()` يقوم بتحليل وإعادة تسلسل الجسم، مما يكسر التحقق من التوقيع. قم بتعريف `/webhooks/dodo` باستخدام `express.raw()` *قبل* سطر `app.use(express.json())`.
+<Warning>
+**Webhook body must be raw.** `express.json()` parses and re-serializes the body, which breaks signature verification. Define `/webhooks/dodo` with `express.raw()` *before* the `app.use(express.json())` line.
+</Warning>
 
-جهز الخلفية: الاشتراك، التعبئة، الرصيد، الإرسال، ومعالج الويب مرتبطة جميعًا.
+<Check>
+Backend ready: subscribe, top-up, balance, send, and webhook handler all wired up.
+</Check>
+</Step>
 
-قم بإنشاء `public/index.html`:
+<Step title="Add a demo UI">
+Create `public/index.html`:
 
+<CodeGroup>
 ```html public/index.html expandable
 <!doctype html>
 <html>
@@ -525,124 +570,147 @@ app.listen(port, () => {
   </body>
 </html>
 ```
+</CodeGroup>
+</Step>
+</Steps>
 
-## الخطوة 4: ربط نقطة نهاية Webhook
+## Step 4: Wire Up the Webhook Endpoint
 
-حدث `credit.balance_low` هو ما يسمح لك بتنبيه العملاء *قبل* نفادهم. بدونه، أول مرة يلاحظون فيها المشكلة هي عندما يفشل إرسال البريد الإلكتروني.
+The `credit.balance_low` event is what lets you nudge customers *before* they run out. Without it, the first time they notice the problem is when an email fails to send.
 
-تحتاج Webhooks إلى URL عام. استخدم [ngrok](https://ngrok.com) (أو أي نفق) أثناء التطوير:
+<Steps>
+<Step title="Expose your local server">
+Webhooks need a public URL. Use [ngrok](https://ngrok.com) (or any tunnel) while developing:
 
 ```bash
 ngrok http 3000
 ```
 
-انسخ URL التحويل HTTPS (مثل `https://1234abcd.ngrok-free.app`).
+Copy the HTTPS forwarding URL (e.g. `https://1234abcd.ngrok-free.app`).
+</Step>
 
-1. انتقل إلى **المطورون → Webhooks → إضافة نقطة نهاية**
+<Step title="Register the endpoint in Dodo">
+1. Go to **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
-3. **الأحداث**: اشترك في `credit.added`، `credit.balance_low`، و`credit.rolled_over`
-4. احفظ، ثم انسخ المفتاح إلى `.env` كـ `DODO_WEBHOOK_KEY`
-5. أعد تشغيل الخادم الخاص بك
+3. **Events**: subscribe to `credit.added`, `credit.balance_low`, and `credit.rolled_over`
+4. Save, then copy the **signing key** into your `.env` as `DODO_WEBHOOK_KEY`
+5. Restart your server
+</Step>
+</Steps>
 
-## الخطوة 5: اختبار التدفق الكامل
+## Step 5: Test the Full Flow
 
+<Steps>
+<Step title="Start the server">
 ```bash
 npm run dev
 ```
 
-يجب أن ترى `MailKit running on http://localhost:3000`. افتحه في متصفحك.
+You should see `MailKit running on http://localhost:3000`. Open it in your browser.
+</Step>
 
-1. في القسم 1، أدخل بريد إلكتروني واختبار الاسم، انقر على **الحصول على رابط الدفع**
-2. افتح الرابط، واستكمل دفع باستخدام [بطاقة اختبار](/miscellaneous/testing-process)
-3. بعد الدفع، اعثر على `customer_id` في لوحة القيادة الخاصة بك تحت **العملاء**
+<Step title="Subscribe a test customer">
+1. In section 1, enter a test email and name, click **Get checkout link**
+2. Open the link, complete checkout with a [test card](/miscellaneous/testing-process)
+3. After payment, find the `customer_id` in your dashboard under **Customers**
 
-يجب أن يكون لدى العميل الآن **5000 رسالة** في رصيده. تحقق من **العملاء → [العميل] → الأرصدة**.
+<Check>
+The customer should now have **5,000 emails** in their balance. Check **Customers → [Customer] → Credits**.
+</Check>
+</Step>
 
-1. استبدل `customer_id` في القسم 3
-2. اترك `to` مضبوطًا إلى `delivered@resend.dev` (صندوق إعادة الارتداد لResend الذي يقبل كل شيء)
-3. انقر فوق **إرسال**
+<Step title="Send a real email">
+1. Paste the `customer_id` into section 3
+2. Leave `to` set to `delivered@resend.dev` (Resend's sandbox inbox that accepts everything)
+3. Click **Send**
 
-ستحصل على معرف رسالة Resend. قم بتحديث الرصيد في القسم 2 وينخفض العدد فورًا إلى 4999. يتم عكس كل خصم للدفتر في الرصيد المباشر في اللحظة التي يتم فيها كتابته.
+You'll get a Resend message id back. Refresh the balance in section 2 and the count immediately drops to 4,999. Each ledger debit is reflected in the live balance the moment it's written.
+</Step>
 
-العتبة هي 20٪ (1000 من 5000 رسالة مسموح بها). لتشغيلها دون إرسال 4000 رسالة حقيقية، **قم بخصم الرصيد يدويًا** من لوحة التحكم:
+<Step title="Trigger the low-balance webhook">
+The threshold is 20% (1,000 of the 5,000-email allowance). To trigger it without sending 4,000 real emails, **manually debit the balance** from the dashboard:
 
-1. انتقل إلى **العملاء → [العميل] → الأرصدة → أرصدة البريد الإلكتروني**
-2. انقر على **تعديل الرصيد** وخصم `4000`
-3. أرسل بريدًا إلكترونيًا آخر عبر العرض التجريبي
+1. Go to **Customers → [Customer] → Credits → Email Credits**
+2. Click **Adjust Balance** and debit `4000`
+3. Send one more email through the demo
 
-يجب أن يسجل الخادم الخاص بك في غضون ثوانٍ:
+Your server should log within a few seconds:
 
 ```
 [low-balance] cus_xxx has 999 Email Credits left (under 20%)
 [NOTIFY] cus_xxx: 999 emails left. Consider topping up.
 ```
 
-تلقى خادمك وتحقق من صحة webhook. في بيئة الإنتاج، هنا سترسل بريدًا إلكترونيًا للعميل أو تعرض شريطًا في التطبيق.
+<Check>
+Your server received and verified the webhook. In production this is where you'd email the customer or show an in-app banner.
+</Check>
+</Step>
 
-1. أدخل `customer_id` في القسم 4
-2. انقر على **شراء 5000 رسالة**، وأكمل الدفع التجريبي
-3. قم بتحديث الرصيد، وسيرتفع بمقدار 5000
+<Step title="Buy a top-up pack">
+1. Paste the `customer_id` into section 4
+2. Click **Buy 5,000 emails**, complete the test checkout
+3. Refresh the balance, and it jumps by 5,000
 
-يتم تشغيل حدث `credit.added` مع `grant_source: one_time`. تتكدس التعبئة فوق أرصدة الاشتراك؛ يتم استهلاك كلا المجموعتين بطريقة FIFO (القدمى أولاً).
+<Check>
+A `credit.added` event fires with `grant_source: one_time`. The top-up stacks on top of the subscription credits; both pools are consumed FIFO (oldest non-expired grant first).
+</Check>
+</Step>
 
-قم بخصم الرصيد يدويًا حتى يصل إلى الصفر، ثم حاول إرسال رسالة أخرى. ستحصل على:
+<Step title="Test the hard stop">
+Manually debit the balance to zero, then try to send one more email. You'll get:
 
 ```json
 { "error": "No email credits remaining. Buy a top-up pack or upgrade your plan." }
 ```
 
-يعتبر خطأ 402 هو فرض على مستوى التطبيق. تُعد API رصيد Dodo مصدر الحقيقة؛ لا تقم بتخزينه مؤقتًا على العميل.
+That 402 is your application-level enforcement. The Dodo balance API is the source of truth; never cache it on the client.
+</Step>
+</Steps>
 
-## استكشاف الأخطاء وإصلاحها
+## Troubleshooting
 
-يتم حساب التوقيع على الجسد الرئيسي لHTTP الخام. `express.json()` يقوم بتحليل وتكرار الحمولة، مما يكسر HMAC. تأكد من أن `/webhooks/dodo` قد تم تسجيله مع `express.raw({ type: 'application/json' })` *فوق* سطر `app.use(express.json())`، وأن `DODO_WEBHOOK_KEY` يتطابق مع مفتاح التوقيع المعروض على صفحة تفاصيل النقطة النهاية.
+<AccordionGroup>
+<Accordion title="Webhook signature verification fails (401)">
+The signature is computed over the raw HTTP body. `express.json()` parses and re-serializes the payload, which breaks the HMAC. Make sure `/webhooks/dodo` is registered with `express.raw({ type: 'application/json' })` *above* the `app.use(express.json())` line, and that `DODO_WEBHOOK_KEY` matches the signing key shown on the endpoint detail page.
+</Accordion>
 
-ثلاثة أشياء لتأكيدها، بهذا الترتيب:
+<Accordion title="Balance is 0, customer not found, or credits don't deduct">
+Three things to verify, in this order:
 
-1. أكمل العميل **عملية الدفع** (يتم إصدار الأرصدة عند الدفع الناجح، وليس عند إنشاء الجلسة)
-2. `CREDIT_ENTITLEMENT_ID` في `.env` مطابق للائتمان الذي تم إرفاقه بالمنتج (الرموز الغير متطابقة تكتب بصمت إلى الائتمان الخطأ)
-3. أن `customer_id` الذي تمرره جاء من Dodo (جدول `customers` في لوحة القيادة)، وليس من قاعدتك الخاصة
+1. The customer **completed checkout** (credits are issued on successful payment, not on session creation)
+2. `CREDIT_ENTITLEMENT_ID` in your `.env` matches the credit attached to the product (mismatched IDs silently write to the wrong credit)
+3. The `customer_id` you're passing came from Dodo (the `customers` table in the dashboard), not your own database
+</Accordion>
 
-مرسل الصندوق رمل `onboarding@resend.dev` يسلم فقط إلى البريد الإلكتروني على حساب Resend الخاص بك أو إلى `delivered@resend.dev`. لإرسال إلى أي شخص آخر، [تحقق من نطاق](https://resend.com/docs/dashboard/domains/introduction) واستخدم عنوان `from` عليه.
+<Accordion title="Resend rejects the recipient">
+The sandbox sender `onboarding@resend.dev` only delivers to the email on your Resend account or to `delivered@resend.dev`. To send to anyone else, [verify a domain](https://resend.com/docs/dashboard/domains/introduction) and use a `from` address on it.
+</Accordion>
+</AccordionGroup>
 
-## ما قمت ببنائه
+## What You Built
 
-`Email Credits`، معرف مرة واحدة وملحق بكل من خطة الاشتراك وحزمة التعبئة.
+<CardGroup cols={2}>
+<Card title="One reusable credit unit" icon="envelope">
+`Email Credits`, defined once and attached to both the subscription plan and the top-up pack.
+</Card>
 
-$19/شهر يمنح 5000 رسالة لكل دورة. يعرف العملاء ما الذي يدفعون مقابله، وتعرف أنت تكلفتك القصوى.
+<Card title="Subscription with prepaid allowance" icon="layer-group">
+$19/month grants 5,000 emails per cycle. Customers know what they're paying for, you know your worst-case cost.
+</Card>
 
-منتج لمرة واحدة يمنح 5000 رسالة. يتكدس على أرصدة الاشتراك بدون تغيير في الخطة المطلوبة.
+<Card title="Top-up pack" icon="circle-plus">
+A one-time product that grants 5,000 emails. Stacks on subscription credits with no plan change required.
+</Card>
 
-استدعاء `createLedgerEntry` واحد بعد كل إرسال. لا مقياس، لا تأخر التجميع، غير معدل عند إعادة المحاولة عبر رقم الرسالة للResend.
+<Card title="Instant ledger debits" icon="bolt">
+A single `createLedgerEntry` call after each send. No meter, no aggregation lag, idempotent on retry via Resend's message id.
+</Card>
+</CardGroup>
 
-اقرأ كامل وثائق CBB للحصول على أوضاع التمديد، الإدارة المحاسبية، والسطح الكامل للAPI.
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Read the full CBB documentation for rollover, overage modes, ledger management, and the complete API surface.
+</Card>
 
-تحتاج إلى مساعدة؟
-- [مجتمع Discord](https://discord.gg/bYqAp4ayYh)
-- support@dodopayments.com
-
-{/* LOCKED_PATTERN_bd3b9ce11ef978f59c6eb5461169b62d */}
-{/* LOCKED_PATTERN_3dd3b9c32612a12cffe0a191a0244ebd */}
-`Email Credits`، يتم تعريفها مرة واحدة وربطها بخطة الاشتراك وحزمة الشحن العلوي.
-{/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */}
-
-{/* LOCKED_PATTERN_49a1eea087dd07c15ee24957419de561 */}
-19 دولارًا شهريًا تمنح 5,000 بريد إلكتروني لكل دورة. العملاء يعرفون ما يدفعون من أجله، وأنت تعرف تكلفتك في أسوأ الحالات.
-{/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */}
-
-{/* LOCKED_PATTERN_94b25477c0c8998aec62a5357c63816c */}
-منتج لمرة واحدة يمنح 5,000 بريد إلكتروني. يتراكم على رصيد الاشتراك دون الحاجة إلى تغيير الخطة.
-{/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */}
-
-{/* LOCKED_PATTERN_593fa2d9ea52197a1d9541cd91ee46e4 */}
-استدعاء واحد `createLedgerEntry` بعد كل إرسال. لا يوجد مقياس، لا تأخير في التجميع، يمكن تكراره على إعادة المحاولة عبر معرف رسالة Resend.
-{/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */}
-{/* LOCKED_PATTERN_639ec37665c9a30d7ddbd3a284a688a5 */}
-
-{/* LOCKED_PATTERN_c10919833b5f2b2159a0c76c1520f8a8 */}
-اقرأ وثائق CBB الكاملة لمعرفة أوضاع الترحيل، وتجاوز الحدود، وإدارة دفتر الأستاذ، والواجهة الكاملة لواجهة برمجة التطبيقات.
-{/* LOCKED_PATTERN_4ceaf3811b39bde3b7bfedbcf0487a0b */}
-
-هل تحتاج إلى مساعدة؟
-- [مجتمع Discord](https://discord.gg/bYqAp4ayYh)
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
 - support@dodopayments.com
