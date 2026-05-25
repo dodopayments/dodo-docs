@@ -445,36 +445,120 @@ Ripeti solo su problemi soft/temporanei (ad esempio, `insufficient_funds`, `issu
 - Comunica proattivamente: invia email/SMS al cliente per aggiornare il metodo di pagamento prima del prossimo tentativo programmato.
 - Usa metadata solo per osservabilità (ad esempio, `retry_attempt`); non cercare mai di "evadere" i sistemi di frode/rischio ruotando campi irrilevanti.
 
-## Tracciare i risultati con i webhook
+## Annullamento
 
-Implementa la gestione webhook per tracciare il percorso del cliente. Vedi [Implementazione Webhook](/developer-resources/integration-guide#implementing-webhooks).
+Gli abbonamenti on-demand seguono un flusso di annullamento diverso rispetto agli abbonamenti programmati perché non esiste un ciclo di fatturazione fisso per ancorare una data di fine immediata.
+
+### Comportamento del portale clienti
+
+Quando un cliente annulla un abbonamento on-demand dal [Portale Clienti](/features/customer-portal), l'annullamento è **programmato per la prossima data di fatturazione** per impostazione predefinita. L'opzione **Annulla Ora** non viene intenzionalmente mostrata per gli abbonamenti on-demand.
+
+La ragione è che gli abbonamenti on-demand non hanno date di rinnovo ricorrenti prevedibili — il prossimo tempo di addebito è guidato interamente dai tuoi eventi di utilizzo. Programmare l'annullamento alla prossima data di fatturazione mantiene il mandato attivo fino al limite del periodo in modo che qualsiasi utilizzo in corso possa ancora essere addebitato, quindi termina l'abbonamento in modo pulito.
+
+Dopo che il cliente conferma l'annullamento:
+- L'abbonamento rimane `active` e rimane addebitabile tramite `POST /subscriptions/{id}/charge` fino alla data di annullamento programmata.
+- `cancel_at_next_billing_date` è impostato su `true` sull'abbonamento.
+- Viene emesso un webhook `subscription.cancelled` quando l'annullamento ha effetto.
+
+<Info>
+Se hai bisogno di terminare l'abbonamento immediatamente (ad esempio, in risposta a un rimborso o a una richiesta di supporto), annullalo in modo programmatico tramite l'API invece di fare affidamento sul flusso del portale clienti.
+</Info>
+
+### Annullare programmaticamente
+
+Puoi annullare un abbonamento on-demand tramite l'API in qualsiasi momento. Controlli se l'annullamento è immediato o programmato.
+
+Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
+
+<Tabs>
+<Tab title="Cancel immediately">
+
+Imposta l'abbonamento `status` su `cancelled` per terminarlo subito. Il mandato è revocato e non possono essere creati ulteriori addebiti.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  status: 'cancelled',
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "cancelled" }'
+```
+
+</Tab>
+<Tab title="Cancel at next billing date">
+
+Rispecchia il comportamento del portale clienti — mantieni l'abbonamento attivo fino alla data di annullamento programmata, quindi concludilo.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  cancel_at_next_billing_date: true,
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "cancel_at_next_billing_date": true }'
+```
+
+</Tab>
+</Tabs>
+
+### Webhook su annullamento
+
+| Evento | Quando viene attivato |
+|-------|---------------------|
+| `subscription.cancelled` | Abbonamento completamente annullato e non più addebitabile |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` è stato attivato (annullamento programmato impostato o annullato) |
+
+<Tip>
+Per distinguere gli annullamenti on-demand dagli annullamenti degli abbonamenti programmati nel tuo handler, verifica il flag `on_demand` dell'abbonamento durante l'elaborazione del webhook.
+</Tip>
+
+## Monitora i risultati con i webhook
+
+Implementa la gestione dei webhook per tracciare il percorso del cliente. Vedi [Implementazione dei Webhook](/developer-resources/integration-guide#implementing-webhooks).
 
 - **subscription.active**: Mandato autorizzato e abbonamento attivato
-- **subscription.failed**: Creazione fallita (ad esempio, fallimento del mandato)
-- **subscription.on_hold**: Abbonamento sospeso (ad esempio, stato non pagato)
+- **subscription.failed**: Creazione fallita (es. fallimento del mandato)
+- **subscription.on_hold**: Abbonamento posto in sospeso (es. stato non pagato)
+- **subscription.cancelled**: Abbonamento completamente annullato (vedi [Annullamento](#cancellation))
 - **payment.succeeded**: Addebito riuscito
 - **payment.failed**: Addebito fallito
 
 <Tip>
-Per i flussi su richiesta, concentrati su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull'uso. Quando `payment.failed` è seguito da `subscription.on_hold`, vedi [Gestione delle transazioni fallite](#handling-failed-charges) per recuperare l'abbonamento.
+Per i flussi on-demand, concentrati su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull'uso. Quando `payment.failed` è seguito da `subscription.on_hold`, vedi [Gestione degli addebiti falliti](#handling-failed-charges) per recuperare l'abbonamento.
 </Tip>
 
-## Test e passaggi successivi
+## Test e prossimi passi
 
 <Steps>
 <Step title="Create in test mode">
-Usa la tua chiave API di test per creare l'abbonamento con `payment_link: true`, quindi apri il link e completa il mandato.
+Usa la tua chiave API di test per creare l'abbonamento con `payment_link: true`, poi apri il link e completa il mandato.
 </Step>
 <Step title="Trigger a charge">
-Chiama l'endpoint di addebito con un piccolo `product_price` (ad esempio, `100`) e verifica di ricevere `payment.succeeded`.
+Chiama l'endpoint di addebito con un piccolo `product_price` (ad es. `100`) e verifica di ricevere `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Passa alla tua chiave API live una volta che hai convalidato gli eventi e gli aggiornamenti di stato interno.
+Passa alla tua chiave API live una volta che hai convalidato gli eventi e aggiornamenti dello stato interno.
 </Step>
 </Steps>
 
 ## Risoluzione dei problemi
 
-- **422 Richiesta non valida**: Assicurati che `on_demand.mandate_only` sia fornito in fase di creazione e `product_price` sia fornito per gli addebiti.
-- **Errori di valuta**: Se sovrascrivi `product_currency`, conferma che sia supportato per il tuo account e cliente.
-- **Nessun webhook ricevuto**: Verifica la configurazione del tuo URL webhook e del segreto di firma.
+- **422 Richiesta Non Valida**: Assicurati che `on_demand.mandate_only` sia fornito alla creazione e `product_price` sia fornito per gli addebiti.
+- **Errori di valuta**: Se sovrascrivi `product_currency`, conferma che sia supportata per il tuo account e cliente.
+- **Nessun webhook ricevuto**: Verifica la tua configurazione dell'URL e del segreto di firma del webhook.
