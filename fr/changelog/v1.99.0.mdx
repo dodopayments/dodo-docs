@@ -1,0 +1,167 @@
+---
+title: v1.99.0 (25 mai 2026)
+description: Codes de réduction empilés (jusqu'à 20 par commande, paiement ou
+  abonnement), sept nouveaux e-mails de notification client pour les
+  remboursements et les événements du cycle de vie de l'abonnement, Sunbit BNPL
+  pour les clients américains, refonte de la page de paiement augmentant les
+  taux de succès de 2 à 3 %, révision du formulaire de produit avec aperçu en
+  direct et sauvegarde automatique, et refonte des paramètres d'entreprise
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - journal des modifications
+  - notes de version
+  - mises à jour du produit
+  - v1.99.0 (25 mai 2026)
+---
+## Nouvelles Fonctionnalités
+
+### 1. **Codes de Réduction Empilés**
+
+Les sessions de commande, paiements, abonnements et changements de plan acceptent désormais **jusqu'à 20 codes de réduction dans une seule requête** via le tableau `discount_codes`. Les codes sont appliqués **dans l'ordre du tableau** — le premier code éligible réduit le prix de base, le second réduit le prix déjà réduit, et ainsi de suite — vous pouvez donc superposer des campagnes sans créer de codes combinés sur mesure.
+
+<img src="/images/changelog/v1.99.0/stacked-discounts.png" alt="Dialogue de confirmation de changement de plan avec plusieurs codes de réduction empilés" style={{ maxHeight: '500px', width: 'auto' }} />
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  discount_codes: ['WELCOME10', 'BLACKFRIDAY20'], // applied in this order
+  customer: { email: 'user@example.com' },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Où cela s'applique**
+
+| Surface | Champ | Max codes |
+|---------|-------|-----------|
+| Sessions de Commande | `discount_codes` | 20 |
+| Paiements | `discount_codes` | 20 |
+| Abonnements | `discount_codes` | 20 |
+| Changements de Plan | `discount_codes` | 20 |
+
+**Comportement de changement de plan**
+
+| `discount_codes` valeur | Effet |
+|------------------------|--------|
+| Non fourni | Les réductions existantes avec `preserve_on_plan_change=true` sont conservées si applicables au nouveau produit |
+| `[]` (tableau vide) | Toutes les réductions existantes sont supprimées de l'abonnement |
+| `['CODE_A', 'CODE_B', ...]` | Remplace toutes les réductions existantes par cet ensemble empilé, appliqué dans l'ordre du tableau |
+
+**Structure de la réponse**
+
+L'ensemble complet des réductions appliquées est renvoyé sous le tableau `discounts` sur les paiements et les abonnements — chaque entrée inclut `discount_id`, `position`, et `cycles_remaining` (pour les abonnements). Le champ singulier hérité `discount_id` est obsolète mais toujours présent pour la compatibilité ascendante.
+
+Le champ singulier `discount_code` est **obsolète** mais toujours entièrement pris en charge — les intégrations existantes continuent de fonctionner sans changements. Il ne peut pas être combiné avec `discount_codes` dans la même requête. Nous recommandons de migrer vers `discount_codes` quand cela est pratique, même pour les codes uniques, afin de profiter de l'empilage et de la structure de réponse plus riche.
+
+En savoir plus : [Codes de Réduction](/features/discount-codes) | [Session de Commande](/developer-resources/checkout-session) | [Changements de Plan](/developer-resources/subscription-upgrade-downgrade)
+
+### 2. **Sept Nouveaux E-mails de Notification Client**
+
+Sept nouveaux e-mails transactionnels sont maintenant envoyés automatiquement à vos clients, couvrant les confirmations de remboursement, les jalons du cycle de vie des abonnements, et les échecs de paiement. Chaque e-mail peut être activé indépendamment depuis **Paramètres → Communication** dans la section **E-mails Client**.
+
+<img src="/images/changelog/v1.99.0/customer-notification-emails.png" alt="Panneau des paramètres des e-mails clients avec des bascules pour chaque e-mail de notification" style={{ maxHeight: '500px', width: 'auto' }} />
+
+**Opt-in (activé par défaut)**
+
+| E-mail | Quand il est envoyé |
+|-------|--------------------|
+| **Remboursement Réussi** | Un remboursement est traité avec succès et les fonds sont en cours de retour au client |
+| **Fin de Période d'Essai d'Abonnement** | ~2 jours avant la fin d'une période d'essai et le premier prélèvement |
+| **Abonnement Annulé Immédiatement** | Un abonnement est annulé avec effet immédiat |
+| **Abonnement Programmé pour Annulation à la Prochaine Date de Facturation** | Un abonnement est programmé pour être annulé à la fin de la période de facturation en cours |
+
+**Opt-out (désactivé par défaut)**
+
+| E-mail | Quand il est envoyé |
+|-------|--------------------|
+| **Paiement Échoué** | Une tentative de paiement échoue — activez-le si vous souhaitez que Dodo Payments informe le client directement plutôt que de le gérer dans votre propre système |
+| **Échec de Renouvellement d'Abonnement** | Un paiement de renouvellement d'abonnement échoue spécifiquement ; se déclenche au lieu de (et non en plus de) l'e-mail général de Paiement Échoué pour les paiements de renouvellement |
+| **Rappel de Renouvellement Imminent** | ~2 jours avant le renouvellement d'un abonnement |
+
+Si vous gérez vous-même la communication client via des webhooks, laissez les e-mails de désinscription désactivés pour éviter d'envoyer aux clients des notifications en double pour le même événement.
+
+Les e-mails clients sont distincts des e-mails de notification envoyés à votre équipe. Désactiver un e-mail client n'affecte pas les notifications de votre équipe pour le même événement.
+
+En savoir plus : [Préférences de Communication](/features/communication-preferences)
+
+### 3. **Sunbit — Financement par Versements pour les Clients US**
+
+**Sunbit** est désormais disponible comme méthode de paiement Acheter Maintenant, Payer Plus Tard, permettant aux clients américains de diviser les achats en mensualités gérables lors de la commande.
+
+| Fonctionnalité | Détails |
+|---------------|---------|
+| **Disponibilité** | États-Unis |
+| **Devise** | USD |
+| **Montant minimum** | $60.00 |
+| **Montant maximum** | $19,999.00 |
+| **Abonnements** | Non pris en charge (paiements uniques uniquement) |
+
+Passez `sunbit` dans `allowed_payment_method_types` pour l'activer lors d'une session de commande :
+
+```javascript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_123', quantity: 1 }],
+  allowed_payment_method_types: ['sunbit', 'credit', 'debit'],
+  return_url: 'https://example.com/success'
+});
+```
+
+Le client complète une courte demande de financement dans le modal Sunbit lors de la commande ; une fois approuvé, le paiement est confirmé et vous recevez les fonds normalement.
+
+Incluez toujours `credit` et `debit` comme solutions de secours. Tous les clients ne seront pas éligibles pour le financement Sunbit, et les transactions en dehors de la plage $60.00–$19,999.00 n'afficheront pas l'option.
+
+En savoir plus : [Méthodes de Paiement BNPL](/features/payment-methods/bnpl)
+
+## Améliorations
+
+### 4. **Refonte de la Page de Paiement de Commande**
+
+La page de paiement lors de la commande a été entièrement retravaillée — mise en page plus serrée, chargement perçu plus rapide, états de validation plus clairs, et expérience utilisateur affinée pour la saisie de carte. En ensemble, ces changements ont augmenté **les taux de succès de commande observés d'environ 2 à 3 %** sur le trafic mondial.
+
+<div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+      <img src="/images/changelog/v1.99.0/checkout-payment-before.png" alt="Ancienne page de paiement de commande" />
+  </div>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+      <img src="/images/changelog/v1.99.0/checkout-payment-after.png" alt="Nouvelle page de paiement de commande" />
+  </div>
+</div>
+
+Qu'est-ce qui a changé :
+
+- **Interactions des champs plus fluides** — autofocus, ordre d'onglets plus intelligent, et navigation au clavier améliorée sur le formulaire de carte
+- **États d'erreur et de chargement plus propres** — validation en ligne là où le client doit agir, remplaçant l'ancien modèle de bandeau d'erreur sur le formulaire complet
+- **Chargement plus rapide** — squelettes et hydratation progressive éliminent le scintillement d'état vide bref sur les réseaux lents
+- **Finition mobile** — cibles de frappe, comportement de défilement, et gestion du clavier spécialement optimisés pour la commande mobile, qui constitue désormais la majorité du trafic
+
+Aucun changement d'intégration n'est requis. Les sessions de commande existantes adoptent automatiquement la nouvelle page de paiement.
+
+### 5. **Révision du Formulaire de Produit**
+
+Les flux de **création**, **modification**, et **duplication** de produit ont été entièrement reconstruits autour d'une expérience de formulaire unique et cohérente.
+
+<img src="/images/changelog/v1.99.0/product-form.png" alt="Formulaire unifié de produit avec Détails de Base, Médias & Description, Prix, et un aperçu de commande en direct côte à côte" style={{ maxHeight: '500px', width: 'auto' }} />
+
+Points forts :
+
+- **Aperçu en direct** — voyez comment votre produit apparaît sur la commande et le portail client pendant que vous modifiez, côte à côte avec le formulaire
+- **Sauvegarde automatique** — les brouillons sont enregistrés automatiquement, donc quitter ou perdre votre onglet ne signifie plus perdre votre travail
+- **Éditeur Markdown** — les descriptions de produit prennent désormais en charge un éditeur markdown complet avec rendu en direct, aperçus de liens, et contrôles de formatage en ligne
+- **Parité du flux de duplication** — dupliquer un produit ouvre le même formulaire unifié pré-rempli, au lieu d'un dialogue simplifié, pour que vous puissiez ajuster chaque champ avant d'enregistrer la copie
+
+Utilisez **Dupliquer** pour créer des variantes régionales ou de niveau de prix d'un produit existant sans ressaisir les descriptions, les métadonnées ou la configuration de l'exécution.
+
+### 6. **Refonte de la Page des Paramètres d'Entreprise**
+
+La page **Paramètres → Entreprise** a été redessinée pour rendre la configuration plus facile à visualiser et plus rapide à mettre à jour. Les paramètres sont désormais regroupés en sections plus claires avec des textes explicatifs qui décrivent l'impact de chaque bascule avant de l'activer.
+
+Il n'y a **aucun changement comportemental** aux paramètres existants — seuls la mise en page, le regroupement, et les explications environnantes ont été améliorés.
+
+<img src="/images/changelog/v1.99.0/business-settings.png" alt="Nouvelle page des Paramètres d'Entreprise avec sections groupées pour Infos Entreprise, Marques, devise, sécurité, et suivi" style={{ maxHeight: '500px', width: 'auto' }} />
+
+## Améliorations
+
+- **`credits_amount` remplacement maintenant propagé correctement aux routes GET de session de commande et de lien de paiement** — lorsqu'une session de commande ou un lien de paiement était créé avec un remplacement par commande `credit_entitlements`, récupérer cette session ou ce lien via GET retournait la valeur par défaut de produit `credits_amount` au lieu de la valeur remplacée. Ceci est maintenant corrigé.
+- **Action de remboursement désactivée pour les paiements entièrement remboursés** — le bouton de remboursement sur un paiement est maintenant désactivé une fois qu'un paiement est entièrement remboursé, avec une infobulle expliquant pourquoi. Auparavant, le bouton restait actif et retournait une erreur seulement après soumission.
+- Corrections de bugs mineurs et améliorations de la stabilité sur toute la plateforme

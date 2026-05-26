@@ -1,0 +1,188 @@
+---
+title: v1.99.0 (2026年5月25日)
+description: 叠加折扣码（每次结账、支付或订阅可使用最多20个折扣码），七种新的客户通知邮件用于退款和订阅生命周期事件，美国客户的Sunbit
+  BNPL，结账支付页面大幅改进提高成功率2-3%，产品表单重做，支持实时预览和自动保存，以及商业设置重新设计
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - 更新日志
+  - 发行说明
+  - 产品更新
+  - v1.99.0 (2026年5月25日)
+---
+
+## 新功能
+
+### 1. **叠加折扣码**
+
+现在，结账会话、支付、订阅和计划更改可以通过 `discount_codes` 数组在单个请求中接受**最多20个折扣码**。码按照**数组顺序**应用——第一个符合条件的代码降低基础价格，第二个则降低已打折的价格，以此类推——这样可以叠加活动，而不需要创建定制的组合代码。
+
+<Frame>
+<img src="/images/changelog/v1.99.0/stacked-discounts.png" alt="确认计划更改对话框，包含多个叠加折扣码" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  discount_codes: ['WELCOME10', 'BLACKFRIDAY20'], // applied in this order
+  customer: { email: 'user@example.com' },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**适用范围**
+
+| 界面 | 字段 | 最大代码数量 |
+|---------|-------|-------------|
+| 结账会话 | `discount_codes` | 20 |
+| 支付 | `discount_codes` | 20 |
+| 订阅 | `discount_codes` | 20 |
+| 计划更改 | `discount_codes` | 20 |
+
+**计划更改行为**
+
+| `discount_codes` 值 | 效果 |
+|------------------------|--------|
+| 未提供 | 如果适用于新产品，保留现有的`preserve_on_plan_change=true` 折扣 |
+| `[]` (空数组) | 从订阅中移除所有现有折扣 |
+| `['CODE_A', 'CODE_B', ...]` | 用这个叠加集合替换任何现有折扣，以数组顺序应用 |
+
+**响应格式**
+
+完整的应用折扣集合在付款和订阅的 `discounts` 数组下返回——每个条目包括 `discount_id`、`position` 和 `cycles_remaining` （用于订阅）。遗留的单一字段 `discount_id` 已弃用但仍保留用于向后兼容。
+
+ <Info>
+单一字段 `discount_code` 已**弃用**但仍完全支持——现有集成可以不作修改继续工作。不能与 `discount_codes` 在同一请求中组合。我们建议在方便时迁移到 `discount_codes`，即使对于单个代码，也能利用叠加和更丰富的响应格式。
+</Info>
+
+了解更多：[折扣码](/features/discount-codes) | [结账会话](/developer-resources/checkout-session) | [计划更改](/developer-resources/subscription-upgrade-downgrade)
+
+### 2. **七种新的客户通知邮件**
+
+现在，您的客户会自动收到七种新的交易邮件，涵盖退款确认、订阅生命周期里程碑和支付失败。每封邮件可以在 **设置 → 通信** 下的 **客户邮件** 部分单独启用或禁用。
+
+ <Frame>
+<img src="/images/changelog/v1.99.0/customer-notification-emails.png" alt="带有每个通知邮件开关的客户邮件设置面板" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+**选择加入（默认启用）**
+
+| 邮件 | 触发时机 |
+|-------|-----------|
+| **退款成功** | 退款成功处理，资金返还至客户的过程中 |
+| **订阅试用即将结束** | 试用到期前约2天，首次计费将发生 |
+| **订阅立即取消** | 订阅立即取消 |
+| **订阅设定为下次账单日期取消** | 订阅计划在当前账单期结束时取消 |
+
+**选择退出（默认禁用）**
+
+| 邮件 | 触发时机 |
+|-------|-----------|
+| **支付失败** | 支付尝试失败——如果希望Dodo Payments直接通知客户而不是自己处理，启用此选项 |
+| **订阅续订失败** | 订阅续订支付失败，特定触发；而不是附加于常规支付失败邮件的续订支付失败 |
+| **即将到来的续订提醒** | 续订前约2天 |
+
+ <Tip>
+如果您通过网络钩子自行管理客户沟通，请保持选择退出邮件禁用，以避免给客户发送重复的事件通知。
+</Tip>
+
+ <Note>
+客户邮件与发送给您团队的通知邮件是分开的。禁用客户邮件不会影响您团队对相同事件的通知。
+</Note>
+
+了解更多：[通信偏好](/features/communication-preferences)
+
+### 3. **Sunbit — 面向美国客户的分期融资**
+
+**Sunbit** 现在可作为“先买后付”的支付方式，让美国客户在结账时将购买拆分为可管理的月度分期付款。
+
+| 特点 | 详情 |
+|-------|-------|
+| **可用性** | 美国 |
+| **货币** | USD |
+| **最低金额** | $60.00 |
+| **最高金额** | $19,999.00 |
+| **订阅** | 不支持（仅一次性付款） |
+
+在 `allowed_payment_method_types` 中传递 `sunbit` 以在结账会话中启用此功能：
+
+```javascript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_123', quantity: 1 }],
+  allowed_payment_method_types: ['sunbit', 'credit', 'debit'],
+  return_url: 'https://example.com/success'
+});
+```
+
+客户在结账时在Sunbit模式中完成简短的融资申请；一旦批准，支付确认并正常收到资金。
+
+ <Tip>
+始终包含 `credit` 和 `debit` 作为备用。不符合Sunbit融资条件的客户以及不在$60.00–$19,999.00范围内的交易将不会显示选项。
+</Tip>
+
+了解更多：[BNPL支付方式](/features/payment-methods/bnpl)
+
+## 改进
+
+### 4. **结账支付页面大幅改进**
+
+结账的支付页面从头到尾进行了大幅重做——布局更紧凑，加载速度更快，验证状态更清晰，卡片输入用户体验得到了精细化。在全球流量中，这些变化共同提升了**结账成功率约2-3%**。
+
+<div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+    <Frame caption="Before">
+      <img src="/images/changelog/v1.99.0/checkout-payment-before.png" alt="之前的结账支付页面" />
+    </Frame>
+  </div>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+    <Frame caption="After">
+      <img src="/images/changelog/v1.99.0/checkout-payment-after.png" alt="重新设计的结账支付页面" />
+    </Frame>
+  </div>
+</div>
+
+变化：
+
+- **更流畅的字段交互**——自动聚焦，更智能的制表顺序和改进的卡片表单键盘导航
+- **更干净的错误和加载状态**——内联验证准确显示客户需要操作的位置，替换以前的全表单错误横幅模式
+- **更快的渲染**——骨架和渐进式水合消除了在慢速网络上短暂的空白状态闪烁
+- **移动端优化**——点击目标、滚动行为和键盘处理专为移动结账而调优，目前大部分流量已经偏向移动端
+
+ <Tip>
+不需要进行集成更改。现有的结账会话会自动应用新的支付页面。
+</Tip>
+
+### 5. **产品表单重做**
+
+产品的**创建**、**编辑**和**复制**流程围绕一个单一、一致的表单体验从头开始重建。
+
+ <Frame>
+<img src="/images/changelog/v1.99.0/product-form.png" alt="统一的产品表单，包括基本细节、媒体和描述、定价，以及一个并排的实时结账预览" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+亮点：
+
+- **实时预览**——在您编辑时查看产品在结账和客户门户中的显示情况，与表单并排显示
+- **自动保存**——草稿会自动保存，因此如果离开页面或丢失选项卡不会丢失您的工作
+- **Markdown编辑器**——产品描述现在支持完整的Markdown编辑器，具有实时渲染、链接预览和内联格式控制
+- **复制流程一致性**——复制产品打开相同的预填充表单，而不是简化对话框，因此可以在保存副本前调整每个字段
+
+ <Tip>
+使用**复制**功能无须重新输入描述、元数据或履行配置即可快速创建现有产品的区域或定价层级变体。
+</Tip>
+
+### 6. **业务设置页面重新设计**
+
+**设置 → 业务** 页面已重新设计，以便更容易扫描配置和更快更新。设置现在分为更清晰的部分，并通过解释性文字描述每个开关的影响。
+
+现有设置没有任何行为改变——仅布局、分组和周围解释得到了改善。
+
+ <Frame>
+<img src="/images/changelog/v1.99.0/business-settings.png" alt="重新设计的业务设置页面，带有业务信息、品牌、货币、安全和跟踪的分组部分" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+## 改进
+
+- **`credits_amount` 覆盖现在正确传递到GET结账会话和支付链接路线**——当一个结账会话或支付链接使用每次结账的 `credit_entitlements` 覆盖创建时，通过GET获取该会话或链接返回的是产品级默认 `credits_amount` 而不是被覆盖的值。现在已修复。
+- **完全退款的支付操作禁用退款动作**——一旦支付完全退款，支付页面上的退款按钮将被禁用，并带有工具提示解释原因。以前按钮是活动的，只在提交后返回错误。
+ - 整个平台的小错误修复和稳定性改进

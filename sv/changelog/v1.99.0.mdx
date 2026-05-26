@@ -1,0 +1,192 @@
+---
+title: v1.99.0 (25 maj 2026)
+description: Staplade rabattkoder (upp till 20 per checkout, betalning eller
+  prenumeration), sju nya kundmejl för återbetalningar och
+  prenumerationscykelhändelser, Sunbit BNPL för amerikanska kunder, omarbetning
+  av betalningssidan vid checkout med en ökning av framgångsrater på 2–3%,
+  omarbetat produktformulär med liveförhandsvisning och autospar, och omdesign
+  av företagets inställningar
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - ändringslogg
+  - versionsanteckningar
+  - produktuppdateringar
+  - v1.99.0 (25 maj 2026)
+---
+
+## Nya Funktioner
+
+### 1. **Staplade Rabattkoder**
+
+Köpsessioner, betalningar, prenumerationer och ändringar av planer accepterar nu **upp till 20 rabattkoder i en enda begäran** via `discount_codes` array. Koder appliceras **i array ordning** - den första berättigade koden reducerar baspriset, den andra reducerar det redan rabatterade priset, och så vidare - så du kan stapla kampanjer utan att skapa skräddarsydda kombinerade koder.
+
+<Frame>
+<img src="/images/changelog/v1.99.0/stacked-discounts.png" alt="Bekräfta planändringsdialog med flera staplade rabattkoder" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  discount_codes: ['WELCOME10', 'BLACKFRIDAY20'], // applied in this order
+  customer: { email: 'user@example.com' },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Var det gäller**
+
+| Yta | Fält | Max koder |
+|---------|-------|-----------|
+| Köpsessioner | `discount_codes` | 20 |
+| Betalningar | `discount_codes` | 20 |
+| Prenumerationer | `discount_codes` | 20 |
+| Planändringar | `discount_codes` | 20 |
+
+**Planändringsbeteende**
+
+| `discount_codes`-värde | Effekt |
+|------------------------|--------|
+| Ej angivet | Befintliga rabatter med `preserve_on_plan_change=true` behålls om giltiga för den nya produkten |
+| `[]` (tom array) | Alla befintliga rabatter tas bort från prenumerationen |
+| `['CODE_A', 'CODE_B', ...]` | Ersätter eventuella befintliga rabatter med denna staplade uppsättning, applicerad i array ordning |
+
+**Svarform**
+
+Den fulla uppsättningen av applicerade rabatter returneras under `discounts` array på betalningar och prenumerationer - varje post inkluderar `discount_id`, `position`, och `cycles_remaining` (för prenumerationer). Det äldre singulara `discount_id`-fältet är föråldrat men fortfarande närvarande för bakåtkompatibilitet.
+
+<Info>
+Det singulara `discount_code`-fältet är **föråldrat** men fortfarande fullt stöd - befintliga integrationer fortsätter att fungera utan ändringar. Det kan inte kombineras med `discount_codes` i samma begäran. Vi rekommenderar att migrera till `discount_codes` när det är bekvämt, även för enskilda koder, för att dra nytta av stapling och den rikare svarformen.
+</Info>
+
+Läs mer: [Rabattkoder](/features/discount-codes) | [Köpsession](/developer-resources/checkout-session) | [Planändringar](/developer-resources/subscription-upgrade-downgrade)
+
+### 2. **Sju Nya Kundnotifieringsmejl**
+
+Sju nya transaktionsmejl skickas nu automatiskt till dina kunder, täckande återbetalningsbekräftelser, prenumerationscykelns milstolpar och betalningsfel. Varje mejl är oberoende på- och avslagen från **Inställningar → Kommunikation** under **Kundmejl**-sektionen.
+
+<Frame>
+<img src="/images/changelog/v1.99.0/customer-notification-emails.png" alt="Kundmejl inställningspanel med växlar för varje notifieringsmejl" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+**Aktiverad (påslagen som standard)**
+
+| Mejl | När det skickas |
+|-------|--------------|
+| **Återbetalning Lyckades** | En återbetalning behandlas framgångsrikt och pengarna är på väg tillbaka till kunden |
+| **Prenumeration Provperiod Slut** | ~2 dagar innan en provperiod upphör och den första faktureringsavgiften inträffar |
+| **Prenumeration Avbruten Omedelbart** | En prenumeration avbryts med omedelbar effekt |
+| **Prenumeration Avbryt vid Nästa Faktureringsdatum** | En prenumeration är schemalagd att avslutas vid slutet av den nuvarande faktureringsperioden |
+
+**Avaktiverad (avslagen som standard)**
+
+| Mejl | När det skickas |
+|-------|--------------|
+| **Betalning Misslyckades** | Ett betalningsförsök misslyckas - aktivera om du vill att Dodo Payments ska informera kunden direkt istället för att hantera det i ditt eget system |
+| **Prenumerationsförnyelse Misslyckades** | Ett prenumerationsförnyelse-betalning misslyckas specifikt; triggad istället för (inte i tillägg till) den allmänna Betalning Misslyckades-mejlet för förnyelsebetalningar |
+| **Påminnelse om Kommande Förnyelse** | ~2 dagar innan en prenumeration förnyas |
+
+<Tip>
+Om du hanterar kundkommunikation själv via webhooks, låt de avaktiverade mejlen vara avslagna för att undvika att skicka kunder dubblettnotiser för samma händelse.
+</Tip>
+
+<Note>
+Kundmejl är separerade från de notifieringsmejl som skickas till ditt team. Avaktivering av ett kundmejl påverkar inte ditt teams notiser för samma händelse.
+</Note>
+
+Läs mer: [Kommunikationspreferenser](/features/communication-preferences)
+
+### 3. **Sunbit — Delbetalning för Amerikanska Kunder**
+
+**Sunbit** är nu tillgänglig som en Köpa Nu, Betala Senare betalningsmetod, vilket låter amerikanska kunder dela upp inköp i hanterbara månatliga delbetalningar vid checkout.
+
+| Funktion | Detaljer |
+|---------|---------|
+| **Tillgänglighet** | United States |
+| **Valuta** | USD |
+| **Minsta belopp** | $60.00 |
+| **Högsta belopp** | $19,999.00 |
+| **Prenumerationer** | Ej stöd (engångsbetalningar endast) |
+
+Passera `sunbit` i `allowed_payment_method_types` för att aktivera det vid en köpsession:
+
+```javascript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_123', quantity: 1 }],
+  allowed_payment_method_types: ['sunbit', 'credit', 'debit'],
+  return_url: 'https://example.com/success'
+});
+```
+
+Kunden slutför en kort finansieringsansökan i Sunbit-modal vid checkout; när den godkänns, bekräftas betalningen och du mottar medel som vanligt.
+
+<Tip>
+Inkludera alltid `credit` och `debit` som återfall. Inte alla kunder kommer att kvalificera sig för Sunbit-finansiering, och transaktioner utanför $60.00–$19,999.00-intervallet kommer inte att visa alternativet.
+</Tip>
+
+Läs mer: [BNPL Betalningsmetoder](/features/payment-methods/bnpl)
+
+## Förbättringar
+
+### 4. **Omarbetning av Betalningssidan vid Checkout**
+
+Betalningssidan vid checkout har omarbetats avsevärt från början till slut — stramare layout, snabbare upplevd lastning, tydligare valideringslägen och förbättrad UX för kortinmatning. Sammantaget har dessa ändringar lyft **observerade köpframgångsrater med ~2–3%** över global trafik.
+
+<div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+    <Frame caption="Before">
+      <img src="/images/changelog/v1.99.0/checkout-payment-before.png" alt="Tidigare betalningssida vid checkout" />
+    </Frame>
+  </div>
+  <div style={{ flex: '1 1 280px', minWidth: '260px' }}>
+    <Frame caption="After">
+      <img src="/images/changelog/v1.99.0/checkout-payment-after.png" alt="Omdesignad betalningssida vid checkout" />
+    </Frame>
+  </div>
+</div>
+
+Vad som ändrats:
+
+- **Smidigare fältinteraktioner** – autofokus, smartare tabbning och förbättrad tangentbordsnavigering på kortformuläret
+- **Renare fel- och laddningslägen** – inlinjevalidering visar exakt var kunden behöver agera, och ersätter det tidigare fullständiga felbannermönstret
+- **Snabbare återgivning** – skeletons och progressiv hydrering eliminerar den korta tomstatenskydden på långsamma nätverk
+- **Mobilpolering** – beröringsmål, rullningsbeteende och tangentbordshantering som är särskilt anpassade för mobilcheckout, där majoriteten av trafiken nu finns
+
+<Tip>
+Inga integrationsändringar krävs. Befintliga köpsessioner plockar automatiskt upp den nya betalningssidan.
+</Tip>
+
+### 5. **Omarbetning av Produktformulär**
+
+Produktens **skapa**, **redigera** och **duplicera** flöden har byggts om från grunden kring en enhetlig formulärupplevelse.
+
+<Frame>
+<img src="/images/changelog/v1.99.0/product-form.png" alt="Enhetligt produktformulär med Grundläggande Detaljer, Media & Beskrivning, Prissättning och en live checkout förhandsvisning sida vid sida" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Höjdpunkter:
+
+- **Live förhandsvisning** – se hur din produkt ser ut på checkouten och kundportalen medan du redigerar, sida vid sida med formuläret
+- **Autospar** – utkast sparas automatiskt, så att navigera bort eller förlora din flik inte längre betyder att du förlorar ditt arbete
+- **Markdown-redigerare** – produktbeskrivningar stöder nu en fullständig markdown-redigerare med liveåtergivning, länkförhandsvisningar och inbyggda formateringskontroller
+- **Duplicera flödesparitet** – att duplicera en produkt öppnar samma enhetliga formulär förifyllt, istället för en nedskalad dialog, så att du kan justera varje fält innan du sparar kopian
+
+<Tip>
+Använd **Duplicera** för att skapa regionala eller prismåltavlade varianter av en befintlig produkt utan att ange beskrivningar, metadata eller fullgörandeinställningar igen.
+</Tip>
+
+### 6. **Omarbetad Sida för Företagsinställningar**
+
+Sidan **Inställningar → Företag** har omdesignats för att göra konfigurationen enklare att skanna och snabbare att uppdatera. Inställningar är nu grupperade i tydligare sektioner med förklarande texter som beskriver effekten av varje växel innan du ändrar den.
+
+Det finns **inga beteendeförändringar** till befintliga inställningar — endast layout, gruppering och omgivande förklaringar har förbättrats.
+
+<Frame>
+<img src="/images/changelog/v1.99.0/business-settings.png" alt="Omdesignad sida för Företagsinställningar med grupperade sektioner för Företagsinfo, Varumärken, valuta, säkerhet och spårning" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+## Förbättringar
+
+- **`credits_amount` override nu korrekt propagaterad till GET checkout session och betalningslänkvägar** — när en köpsession eller betalningslänk skapades med en per-köp `credit_entitlements` override, returnerade hämtning av den sessionen eller länken via GET produktens standard `credits_amount` istället för det åsidosatta värdet. Detta är nu åtgärdat.
+- **Återbetalningsåtgärd inaktiverad för fullt återbetalda betalningar** — Återbetalningsknappen på en betalning är nu inaktiverad när en betalning är fullt återbetald, med en tooltip som förklarar varför. Tidigare förblev knappen aktiv och returnerade ett fel först efter inlämning.
+- Mindre bugfixar och stabilitetsförbättringar över hela plattformen

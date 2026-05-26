@@ -444,18 +444,102 @@ Solo reintente en problemas suaves/temporales (por ejemplo, `insufficient_funds`
 - Comunica proactivamente: envía correo electrónico/SMS al cliente para actualizar su método de pago antes del próximo intento programado.
 - Usa metadatos solo para observabilidad (por ejemplo, `retry_attempt`); nunca intentes "evadir" sistemas de fraude/riesgo rotando campos inconsecuentes.
 
-## Rastrear resultados con webhooks
+## Cancelación
 
-Implementa la gestión de webhooks para rastrear el recorrido del cliente. Consulta [Implementación de Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Las suscripciones a demanda siguen un flujo de cancelación diferente al de las suscripciones programadas porque no hay un ciclo de facturación fijo para determinar una fecha de finalización inmediata.
+
+### Comportamiento del portal del cliente
+
+Cuando un cliente cancela una suscripción a demanda desde el [Portal del Cliente](/features/customer-portal), la cancelación se **programa para la próxima fecha de facturación** por defecto. La opción **Cancelar ahora** no se muestra intencionadamente para suscripciones a demanda.
+
+La razón: las suscripciones a demanda no tienen fechas de renovación recurrentes predecibles; el tiempo del próximo cargo se determina completamente por los eventos de uso. Programar la cancelación en la próxima fecha de facturación mantiene el mandato activo hasta el límite del período, de modo que cualquier uso en curso aún puede ser cobrado, y luego la suscripción termina limpiamente.
+
+Después de que el cliente confirma la cancelación:
+- La suscripción permanece `active` y continúa siendo cobrada a través de `POST /subscriptions/{id}/charge` hasta la fecha de cancelación programada.
+- `cancel_at_next_billing_date` se establece en `true` en la suscripción.
+- Se emite un webhook `subscription.cancelled` cuando la cancelación entra en vigor.
+
+<Info>
+Si necesitas terminar la suscripción inmediatamente (por ejemplo, en respuesta a un reembolso o una solicitud de soporte), cancélala programáticamente a través de la API en lugar de depender del flujo del portal del cliente.
+</Info>
+
+### Cancelar programáticamente
+
+Puedes cancelar una suscripción a demanda a través de la API en cualquier momento. Tú controlas si la cancelación es inmediata o programada.
+
+Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
+
+<Tabs>
+<Tab title="Cancel immediately">
+
+Establece la suscripción `status` en `cancelled` para finalizarla de inmediato. El mandato es revocado y no se pueden crear más cargos.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  status: 'cancelled',
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "cancelled" }'
+```
+
+</Tab>
+<Tab title="Cancel at next billing date">
+
+Sigue el comportamiento del portal del cliente: mantén la suscripción activa hasta la fecha de cancelación programada y luego termínala.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  cancel_at_next_billing_date: true,
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "cancel_at_next_billing_date": true }'
+```
+
+</Tab>
+</Tabs>
+
+### Webhooks en la cancelación
+
+| Evento | Cuándo se dispara |
+|-------|---------------|
+| `subscription.cancelled` | La suscripción está completamente cancelada y ya no es cobrable |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` fue activado (cancelación programada establecida o deshecha) |
+
+<Tip>
+Para distinguir las cancelaciones a demanda de las cancelaciones de suscripciones programadas en tu manejador, verifica la marca `on_demand` de la suscripción al procesar el webhook.
+</Tip>
+
+## Seguimiento de resultados con webhooks
+
+Implementa el manejo de webhooks para seguir el recorrido del cliente. Consulta [Implementación de Webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
 - **subscription.active**: Mandato autorizado y suscripción activada
 - **subscription.failed**: Creación fallida (por ejemplo, fallo de mandato)
-- **subscription.on_hold**: Suscripción puesta en espera (por ejemplo, estado no pagado)
+- **subscription.on_hold**: Suscripción en espera (por ejemplo, estado impago)
+- **subscription.cancelled**: Suscripción completamente cancelada (ver [Cancelación](#cancellation))
 - **payment.succeeded**: Cobro exitoso
 - **payment.failed**: Cobro fallido
 
 <Tip>
-Para flujos bajo demanda, enfócate en `payment.succeeded` y `payment.failed` para conciliar cargos basados en uso. Cuando `payment.failed` es seguido por `subscription.on_hold`, consulta [Manejo de cargos fallidos](#handling-failed-charges) para recuperar la suscripción.
+Para flujos a demanda, concéntrate en `payment.succeeded` e `payment.failed` para conciliar los cargos basados en el uso. Cuando `payment.failed` es seguido por `subscription.on_hold`, consulta [Manejo de cobros fallidos](#handling-failed-charges) para recuperar la suscripción.
 </Tip>
 
 ## Pruebas y próximos pasos
@@ -465,7 +549,7 @@ Para flujos bajo demanda, enfócate en `payment.succeeded` y `payment.failed` pa
 Usa tu clave API de prueba para crear la suscripción con `payment_link: true`, luego abre el enlace y completa el mandato.
 </Step>
 <Step title="Trigger a charge">
-Llama al endpoint de carga con un pequeño `product_price` (por ejemplo, `100`) y verifica que recibes `payment.succeeded`.
+Llama al endpoint de cobro con un pequeño `product_price` (por ejemplo, `100`) y verifica que recibas `payment.succeeded`.
 </Step>
 <Step title="Go live">
 Cambia a tu clave API en vivo una vez que hayas validado eventos y actualizaciones de estado interno.
@@ -474,6 +558,6 @@ Cambia a tu clave API en vivo una vez que hayas validado eventos y actualizacion
 
 ## Solución de problemas
 
-- **422 Solicitud Inválida**: Asegúrate de que `on_demand.mandate_only` se proporciona al crear y `product_price` se proporciona para cargos.
+- **422 Solicitud inválida**: Asegúrate de que `on_demand.mandate_only` se proporcione al crear y `product_price` se proporcione para los cargos.
 - **Errores de moneda**: Si sobrescribes `product_currency`, confirma que está soportado para tu cuenta y cliente.
-- **No se recibieron webhooks**: Verifica la configuración de URL de webhook y el secreto de firma.
+- **No se reciben webhooks**: Verifica la configuración de tu URL de webhook y el secreto de la firma.
