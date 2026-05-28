@@ -149,6 +149,18 @@ const COMPONENT_NAMES =
 /** Lightweight MDX syntax validation (no dependencies). */
 function validateMdx(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
+
+  // Frontmatter sanity-check. A leading `---` must be matched by a closing
+  // `---` on its own line. The translator occasionally drops the closing
+  // delimiter when it interprets the YAML as prose, producing a file where
+  // the entire body is parsed as frontmatter and the page silently breaks.
+  if (content.startsWith('---')) {
+    const closingFrontmatter = content.indexOf('\n---', 3);
+    if (closingFrontmatter === -1) {
+      return 'Unclosed YAML frontmatter (missing closing `---`)';
+    }
+  }
+
   const stripped = content.replace(/^---[\s\S]*?---/, '');
 
   if (/LOCKED_PATTERN_[a-f0-9]+/.test(stripped)) {
@@ -636,6 +648,24 @@ const SELF_TEST_CASES = [
     'detect-doctype',
     '---\ntitle: x\n---\n\n<!DOCTYPE html>\nhello\n',
     /stray `<!`/,
+  ],
+  [
+    'detect-unclosed-frontmatter',
+    '---\ntitle: x\ndescription: missing closing delimiter\n\nbody text without the closing ---\n',
+    /Unclosed YAML frontmatter/,
+  ],
+  [
+    'valid-balanced-fences',
+    '---\ntitle: x\n---\n\n```typescript\nconst x = 1;\n```\n\n```python\ny = 2\n```\n',
+    null,
+  ],
+  [
+    'valid-unclosed-fence-prompt',
+    // Mintlify legitimately accepts files that end with an unclosed fence
+    // (used for long verbatim prompt blocks). Our validator must not flag
+    // these as broken, even though the ``` count is odd.
+    '---\ntitle: x\n---\n\n## Prompt\n\n```\nthis is a long prompt that runs to EOF without a closing fence.\n',
+    null,
   ],
 ];
 
