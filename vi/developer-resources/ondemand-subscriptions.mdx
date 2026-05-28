@@ -1,8 +1,15 @@
 ---
-title: "On-Demand Subscriptions"
-description: "Integrate on-demand subscriptions by authorizing mandates, creating variable charges, handling webhooks, and implementing safe retry policies."
-icon: "bolt"
-keywords: ["Dodo Payments", "developer guide", "on-demand billing", "variable charges", "mandate", "on-demand subscriptions"]
+title: On-Demand Subscriptions
+description: Integrate on-demand subscriptions by authorizing mandates, creating
+  variable charges, handling webhooks, and implementing safe retry policies.
+icon: bolt
+keywords:
+  - Dodo Payments
+  - developer guide
+  - on-demand billing
+  - variable charges
+  - mandate
+  - on-demand subscriptions
 ---
 
 ## Overview
@@ -318,7 +325,6 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 </Tab>
 </Tabs>
 
-
 ```json Success
 { "payment_id": "pay_abc123" }
 ```
@@ -347,7 +353,7 @@ For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscript
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-If retries keep failing because the payment method itself is broken (expired card, closed account, etc.), use [`POST /subscriptions/{id}/payment-method`](/api-reference/subscriptions/update-payment-method) to collect a new one from the customer. On success, the subscription returns to `active` and `payment.succeeded` followed by `subscription.active` webhooks are emitted.
+Nếu các lần thử lại không thành công vì phương thức thanh toán bị lỗi (thẻ hết hạn, tài khoản đóng, v.v.), sử dụng [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) để thu thập phương thức mới từ khách hàng. Khi thành công, đăng ký sẽ trở về `active` và `payment.succeeded` tiếp theo sẽ gửi các webhook `subscription.active`.
 </Step>
 </Steps>
 
@@ -471,3 +477,100 @@ Switch to your live API key once you have validated events and internal state up
 - **422 Invalid Request**: Ensure `on_demand.mandate_only` is provided on creation and `product_price` is provided for charges.
 - **Currency errors**: If you override `product_currency`, confirm it's supported for your account and customer.
 - **No webhooks received**: Verify your webhook URL and signature secret configuration.
+
+Bạn có thể hủy đăng ký theo yêu cầu qua API bất kỳ lúc nào. Bạn kiểm soát việc hủy bỏ ngay lập tức hay theo lịch.
+
+Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
+
+<Tabs>
+<Tab title="Cancel immediately">
+
+Đặt đăng ký `status` thành `cancelled` để kết thúc ngay lập tức. Ủy quyền bị thu hồi và không thể tạo thêm các khoản phí nào khác.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  status: 'cancelled',
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "cancelled" }'
+```
+
+</Tab>
+<Tab title="Cancel at next billing date">
+
+Giữ hành vi cổng khách hàng — duy trì đăng ký hoạt động cho đến ngày hủy theo lịch, rồi kết thúc.
+
+```javascript
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({ bearerToken: process.env.DODO_PAYMENTS_API_KEY });
+
+await client.subscriptions.update('sub_123', {
+  cancel_at_next_billing_date: true,
+});
+```
+
+```bash cURL
+curl -X PATCH "$DODO_API/subscriptions/sub_123" \
+  -H "Authorization: Bearer $DODO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "cancel_at_next_billing_date": true }'
+```
+
+</Tab>
+</Tabs>
+
+### Webhooks khi hủy bỏ
+
+| Sự kiện | Khi nó kích hoạt |
+|-------|---------------|
+| `subscription.cancelled` | Đăng ký bị hủy hoàn toàn và không còn có thể tính phí |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` đã được chuyển đổi (hủy theo lịch đã thiết lập hoặc hoàn tác) |
+
+<Tip>
+Để phân biệt giữa hủy bỏ theo yêu cầu và hủy đăng ký theo lịch trong bộ xử lý của bạn, hãy kiểm tra cờ `on_demand` của đăng ký khi xử lý webhook.
+</Tip>
+
+## Theo dõi kết quả với webhooks
+
+Thực hiện xử lý webhook để theo dõi hành trình khách hàng. Xem [Thực hiện Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+
+- **subscription.active**: Ủy quyền được xác nhận và đăng ký được kích hoạt
+- **subscription.failed**: Tạo không thành công (ví dụ, lỗi ủy quyền)
+- **subscription.on_hold**: Đăng ký bị tạm dừng (ví dụ, trạng thái chưa thanh toán)
+- **subscription.cancelled**: Đăng ký bị hủy hoàn toàn (xem [Hủy Bỏ](#cancellation))
+- **payment.succeeded**: Tính phí thành công
+- **payment.failed**: Tính phí không thành công
+
+<Tip>
+Đối với luồng theo yêu cầu, hãy tập trung vào `payment.succeeded` và `payment.failed` để đối chiếu các khoản phí dựa trên sử dụng. Khi `payment.failed` được theo sau bởi `subscription.on_hold`, hãy xem [Xử lý các khoản phí không thành công](#handling-failed-charges) để khôi phục đăng ký.
+</Tip>
+
+## Kiểm tra và bước tiếp theo
+
+<Steps>
+<Step title="Create in test mode">
+Sử dụng khóa API thử nghiệm của bạn để tạo đăng ký với `payment_link: true`, sau đó mở liên kết và hoàn thành yêu cầu.
+</Step>
+<Step title="Trigger a charge">
+Gọi endpoint tính phí với một `product_price` nhỏ (ví dụ, `100`) và xác nhận bạn nhận được `payment.succeeded`.
+</Step>
+<Step title="Go live">
+Chuyển sang khóa API trực tiếp của bạn một khi bạn đã xác thực các sự kiện và cập nhật trạng thái nội bộ.
+</Step>
+</Steps>
+
+## Khắc phục sự cố
+
+- **422 Yêu cầu Không hợp lệ**: Đảm bảo `on_demand.mandate_only` được cung cấp khi tạo và `product_price` được cung cấp cho các khoản phí.
+- **Lỗi tiền tệ**: Nếu bạn ghi đè `product_currency`, xác nhận nó được hỗ trợ cho tài khoản của bạn và khách hàng.
+- **Không nhận được webhook**: Xác minh URL webhook của bạn và cấu hình ký bí mật.
