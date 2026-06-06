@@ -34,15 +34,15 @@ A customer purchases a product carrying a License Key entitlement set to `manual
 </Step>
 
 <Step title="A pending grant is created">
-Dodo Payments creates the grant in `pending` status with **no license key attached**. No key row exists yet, so no key is emailed to the customer and no `license_key.created` event fires. A single [`entitlement_grant.created`](/developer-resources/webhooks/intents/entitlement-grant) webhook fires with `integration_type: "license_key"` and `status: "pending"`, telling you a key is awaiting fulfillment.
+Dodo Payments creates the grant in `pending` status with **no license key attached**. The customer is not yet sent a key. A single [`entitlement_grant.created`](/developer-resources/webhooks/intents/entitlement-grant) webhook fires with `integration_type: "license_key"` and `status: "pending"`, telling you a key is awaiting fulfillment.
 </Step>
 
 <Step title="You supply the key">
-Find the key value in your own system, then deliver it by calling [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key) (or from the dashboard). Dodo Payments stores the key with `source: manual`, links it to the grant, and flips the grant to `delivered`.
+Get the key value from your own system, then submit it by calling [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key) (or from the dashboard). The grant moves to `delivered`.
 </Step>
 
-<Step title="The customer is notified automatically">
-Inserting the key triggers the customer email and fires `license_key.created` (for the underlying key record) and `entitlement_grant.delivered` (for the grant). From here the key behaves like any auto-generated key.
+<Step title="The customer receives the key">
+The customer is sent the license key automatically, exactly as they would be under auto fulfillment, and `entitlement_grant.delivered` fires. From here the key behaves like any auto-generated key.
 </Step>
 </Steps>
 
@@ -56,8 +56,7 @@ sequenceDiagram
     D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
     M->>M: Obtain key from own system / vendor
     M->>D: POST /grants/{grant_id}/license-key { key }
-    D->>D: Insert key (source: manual), link to grant, set delivered
-    D->>C: Email license key (license_key.created)
+    D->>C: Deliver license key to customer
     D->>M: entitlement_grant.delivered
 ```
 
@@ -192,22 +191,21 @@ Per-key expiry timestamp (ISO 8601). Falls back to the entitlement config's dura
 
 ### What happens on success
 
-A successful call runs in a single transaction and:
+A successful call:
 
-1. Inserts the license key with `source: manual`, resolving the product, payment, and expiry from the grant (or the originating subscription's first payment).
-2. Links the key to the grant and sets the grant status to `delivered`.
-3. Sends the license key to the customer by email. **Delivery is driven by the customer's communication preference** — there is no flag to toggle; the same email the customer would have received under auto fulfillment is sent automatically.
-4. Fires `license_key.created` (key record) and `entitlement_grant.delivered` (grant).
+1. Records the key against the grant and moves the grant status to `delivered`. The key inherits the product, payment, and expiry from the grant; `activations_limit` and `expires_at` fall back to the entitlement config when you omit them.
+2. Delivers the key to the customer automatically — the same email they would receive under auto fulfillment, subject to the customer's communication preference. You do not pass a flag or send the email yourself.
+3. Fires `entitlement_grant.delivered`.
 
 The response is the updated grant (`EntitlementGrantResponse`) with the populated `license_key` object.
 
 <Check>
-Because the customer email is part of the same insert, you do not need to email the key yourself. This differs from [importing keys](/features/license-keys#import-existing-license-keys-via-api) via `POST /license_keys`, which intentionally does **not** notify the customer.
+You do not need to email the key yourself — delivery happens automatically when the grant is fulfilled. This differs from [importing keys](/features/license-keys#import-existing-license-keys-via-api) via `POST /license_keys`, which intentionally does **not** notify the customer.
 </Check>
 
 ## Error Handling and Retries
 
-The endpoint validates the grant before inserting anything. Handle these responses:
+The endpoint validates the grant before delivering anything. Handle these responses:
 
 | Status | Meaning | What to do |
 |---|---|---|
@@ -218,7 +216,7 @@ The endpoint validates the grant before inserting anything. Handle these respons
 | `422` | Request body failed validation (e.g. `activations_limit < 1`). | Correct the field and retry. |
 
 <Warning>
-Fulfillment is safe to retry on transient errors (timeouts, `5xx`). The grant is locked and guarded for the duration of the transaction, so a retry after a successful-but-unacknowledged call returns `409` ("Grant is not awaiting fulfillment") rather than issuing a second key or sending a duplicate email. Use the grant `id` as your idempotency key.
+Fulfillment is safe to retry on transient errors (timeouts, `5xx`). Each grant can be fulfilled only once, so a retry after a successful-but-unacknowledged call returns `409` ("Grant is not awaiting fulfillment") rather than issuing a second key or sending a duplicate email. Use the grant `id` as your idempotency key.
 </Warning>
 
 ## Auto vs. Manual at a Glance
