@@ -12,7 +12,7 @@ These events fire whenever a customer's entitlement grant changes state, for exa
 
 | Event | Description |
 |-------|-------------|
-| `entitlement_grant.created` | A new grant row was created. Status is `delivered` immediately for license keys, and `pending` for every other integration. |
+| `entitlement_grant.created` | A new grant row was created. Status is `delivered` immediately for auto-fulfilled license keys, and `pending` for manually-fulfilled license keys and every other integration. |
 | `entitlement_grant.delivered` | The grant transitions to delivered. The customer now has access to the entitled platform, file, or license key. |
 | `entitlement_grant.failed` | Delivery failed and is not being retried. Inspect `error_code` and `error_message`. |
 | `entitlement_grant.revoked` | Access was withdrawn. Inspect `revocation_reason` to understand why. |
@@ -27,7 +27,9 @@ All four events share the same `EntitlementGrantResponse` payload documented in 
 
 A grant row was just inserted. The grant always has a stable `id` from this point on, even if its status changes. Use this event to record that fulfillment is in progress.
 
-For **license keys** the row is inserted directly with `status: "delivered"` and `delivered_at` populated, so a single `created` event is followed by no further state changes unless the grant is later revoked.
+For **auto-fulfilled license keys** the row is inserted directly with `status: "delivered"` and `delivered_at` populated, so a single `created` event is followed by no further state changes unless the grant is later revoked.
+
+For **manually-fulfilled license keys** (entitlements with `fulfillment_mode: manual`) the row arrives with `status: "pending"` and no `license_key` object — there is no key yet. This event is your signal that a key is awaiting fulfillment; supply it via [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key), which then fires `entitlement_grant.delivered`. See [Self-Served License Keys](/features/self-served-license-keys).
 
 For **every other integration** the row arrives with `status: "pending"`. A `delivered` or `failed` event follows once delivery completes:
 
@@ -67,12 +69,12 @@ Access was withdrawn at the platform level: Discord role removed, GitHub collabo
 
 ## Payload Variants
 
-The `data` field is always an `EntitlementGrantResponse` object. Two integration types attach extra nested objects:
+The `data` field is always an `EntitlementGrantResponse` object. The payload carries an `integration_type` field (for example `license_key`, `digital_files`, `discord`) so you can recognize the grant type directly. Two integration types also attach extra nested objects:
 
-- **`license_key`** is included when the entitlement integration type is `license_key`. It contains the generated key, expiry, and activation usage.
-- **`digital_product_delivery`** is included when the integration type is `digital_files`. It contains presigned download URLs, the optional `instructions`, and the optional `external_url`.
+- **`license_key`** is included when `integration_type` is `license_key` **and a key has been issued**. It contains the generated key, expiry, and activation usage. For a manually-fulfilled grant still in `pending`, this object is `null` until you fulfill the grant.
+- **`digital_product_delivery`** is included when `integration_type` is `digital_files`. It contains presigned download URLs, the optional `instructions`, and the optional `external_url`.
 
-For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both fields are `null`; the relevant configuration is captured in the entitlement itself, not the grant.
+For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both nested fields are `null`; the relevant configuration is captured in the entitlement itself, not the grant.
 
 ---
 
@@ -94,6 +96,7 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "delivered",
+    "integration_type": "license_key",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
       "expires_at": "2027-05-01T00:00:00Z",
@@ -115,6 +118,41 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
 }
 ```
 
+### License key pending manual fulfillment (`entitlement_grant.created`)
+
+Fired when a customer buys a product whose License Key entitlement uses `fulfillment_mode: manual`. The grant is `pending` with no `license_key` object yet — the merchant must supply the key.
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:24:00.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": null,
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "pending",
+    "integration_type": "license_key",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:24:00Z",
+    "updated_at": "2026-05-01T10:24:00Z"
+  }
+}
+```
+
 ### Digital files delivered (`entitlement_grant.delivered`)
 
 ```json theme={null}
@@ -131,6 +169,7 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "delivered",
+    "integration_type": "digital_files",
     "license_key": null,
     "digital_product_delivery": {
       "files": [
@@ -176,6 +215,7 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
     "status": "pending",
+    "integration_type": "discord",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -208,6 +248,7 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
     "status": "revoked",
+    "integration_type": "license_key",
     "revocation_reason": "subscription_cancelled",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
@@ -245,6 +286,7 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "failed",
+    "integration_type": "github",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -268,5 +310,5 @@ For all other integration types (Discord, GitHub, Telegram, Framer, Notion) both
 - **Wait for `entitlement_grant.delivered` before unlocking dependent features.** A `payment.succeeded` event tells you the money cleared; it does not tell you the customer has the GitHub repo or the Discord role yet. The `delivered` event is the source of truth for fulfillment.
 - **Map `revocation_reason` to retention flows.** A `subscription_on_hold` revoke usually means the customer's card failed and the next renewal will re-grant access. A `manual` or `subscription_cancelled` revoke is intentional. Treat them differently in customer messaging.
 - **Use the grant `id` as your idempotency key.** A single grant emits at most one `created` event and at most one terminal event (`delivered` or `failed`), and at most one `revoked` event. Re-deliveries from the webhook system can repeat events; dedupe on the grant `id` plus `type`.
-- **Inspect `license_key` and `digital_product_delivery` to recognize the integration type.** The grant payload itself does not carry the integration type, but exactly one of these nested objects is populated for license-key and digital-files entitlements.
+- **Read `integration_type` to recognize the grant type.** The payload carries `integration_type` directly (for example `license_key`, `digital_files`, `discord`). The `license_key` and `digital_product_delivery` nested objects are populated once their respective grants are delivered; a manually-fulfilled license-key grant stays `pending` with `integration_type: "license_key"` and a `null` `license_key` until you fulfill it.
 - **For OAuth-based grants, surface `oauth_url` to the customer.** The `entitlement_grant.created` event for Discord, GitHub, or Notion subscriber flows includes an `oauth_url` and `oauth_expires_at`. Email it to the customer or display it in your app to unblock delivery.
