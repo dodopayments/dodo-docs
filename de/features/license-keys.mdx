@@ -54,7 +54,7 @@ Wählen Sie **License Key** als Integration. Konfigurieren Sie, wie sich jeder a
 - **Aktivierungsanweisungen**: Kundengerichtete Anweisungen, die mit dem Schlüssel per E-Mail gesendet werden. Beispiele: `Paste the key in Settings → License` oder `Run: mycli activate <key>`.
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="License Key-Berechtigungsformular mit Aktivierungslimit, Dauer und Anweisungen" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="Neues Lizenzschlüsselberechtigungsformular mit Name, Erfüllungsmodus, Lizenzlänge, Aktivierungslimit und Aktivierungsnachricht" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 
@@ -95,15 +95,116 @@ Die Schlüsselausgabe folgt dem Standard [Zuwendungslebenszyklus](/features/enti
 - **Einmalprodukte** geben einen Schlüssel pro Warenkorbposition aus (`product_cart.quantity`).
 - **Manuelle API-Zuwendungen** geben genau einen Schlüssel aus.
 
-## Aktivierung, Validierung, Deaktivierung
+### Erfüllungsmodus
 
-Die Aktivierungs-/Validierungs-/Deaktivierungs-API-Endpunkte sind **öffentlich** und erfordern keinen API-Schlüssel. Verwenden Sie sie direkt von Desktop-Software, CLIs oder browserbasierten Clients, um Schlüssel zur Laufzeit zu überprüfen.
+Jede Lizenzschlüsselberechtigung hat einen `fulfillment_mode`, der steuert, wer den Schlüssel bereitstellt:
+
+- **`auto`** (Standard): Dodo Payments generiert und sendet den Schlüssel automatisch per E-Mail bei Zahlung oder Abonnement. Dieses Verhalten wird oben beschrieben und gilt, wenn `fulfillment_mode` weggelassen wird.
+- **`manual`**: Der Kauf erstellt eine `pending`-Berechtigung ohne Schlüssel, und Sie liefern jeden Schlüsselwert selbst. Siehe [Manuelle Erfüllung](#manual-fulfillment) unten.
+
+---
+
+## Manuelle Erfüllung
+
+Standardmäßig generiert und sendet Dodo Payments einen Lizenzschlüssel per E-Mail, sobald ein Kunde zahlt. Bei der **manuellen Erfüllung** liefern Sie den Schlüssel selbst: Der Kauf erstellt eine `pending`-Berechtigung ohne Schlüssel, benachrichtigt Sie und wartet darauf, dass Sie den Schlüsselwert einreichen. Verwenden Sie es, wenn Schlüssel aus Ihrem eigenen System, einem Drittanbieter oder einem begrenzten Pool vorab gedruckter Codes stammen.
 
 <Info>
-**Öffentliche Endpunkte**: Die Aktivierungs-, Deaktivierungs- und Validierungslizenz-Endpunkte sind öffentlich und erfordern keinen API-Schlüssel. Rufen Sie sie direkt von Ihren Client-Anwendungen auf, ohne Ihre API-Anmeldeinformationen offenzulegen.
+Sie suchen nach einem Schritt-für-Schritt-Aufbau? Lesen Sie den [Manual License Key Fulfillment Integration Guide](/developer-resources/manual-license-key-fulfillment) für eine vollständige Anleitung von der Produkterstellung bis zur Lieferung des Schlüssels.
 </Info>
 
-### Aktivieren Sie eine Lizenz
+### Wann es zu verwenden ist
+
+Die automatische Erfüllung ist die richtige Standardeinstellung für die meisten Softwarelizenzen. Wählen Sie die manuelle Erfüllung, wenn Dodo Payments den Schlüssel nicht selbst erstellen kann:
+
+- **Bring-your-own-keys**: Der Schlüssel wird von Ihrer Anwendung, einem Desktop-Produkt oder Ihrem eigenen Lizenzserver generiert.
+- **Drittanbieter**: Sie verkaufen Schlüssel eines externen Anbieters weiter (ein Spielschlüssel, eine API-Zugangsdaten, eine Partnerplattform).
+- **Begrenzter Bestand**: Sie geben Codes aus einem vorab zugewiesenen Pool aus und möchten sie einzeln zuweisen.
+- **Manuelle Überprüfung**: Sie möchten einen Kauf überprüfen, bevor Sie Zugriff gewähren.
+
+### Manuelle Erfüllung aktivieren
+
+Setzen Sie `fulfillment_mode: "manual"` in der Integrationskonfiguration der Lizenzschlüsselberechtigung:
+
+<CodeGroup>
+
+```typescript Node.js theme={null}
+const entitlement = await client.entitlements.create({
+  name: 'Pro License (Manual)',
+  integration_type: 'license_key',
+  integration_config: {
+    fulfillment_mode: 'manual',
+    activations_limit: 5,
+    duration_count: 1,
+    duration_interval: 'Year',
+  },
+});
+```
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/entitlements \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pro License (Manual)",
+    "integration_type": "license_key",
+    "integration_config": {
+      "fulfillment_mode": "manual",
+      "activations_limit": 5,
+      "duration_count": 1,
+      "duration_interval": "Year"
+    }
+  }'
+```
+
+</CodeGroup>
+
+<Note>
+`fulfillment_mode` ist rückwärtskompatibel. Berechtigungen, die vor dieser Einstellung erstellt wurden, haben keinen `fulfillment_mode` und verhalten sich weiterhin als `auto`. Der Wechsel zu `manual` betrifft nur Berechtigungen, die **nach** der Änderung erstellt wurden; bereits gelieferte Schlüssel bleiben unberührt.
+</Note>
+
+### Berechtigungen finden, die auf Erfüllung warten
+
+Wenn ein Kunde ein Produkt im manuellen Modus kauft, wird die Berechtigung im `pending`-Status ohne Schlüssel erstellt und ein [`entitlement_grant.created`](/developer-resources/webhooks/intents/entitlement-grant) Webhook wird mit `integration_type: "license_key"` und `status: "pending"` ausgelöst. Sie können auf diesen Webhook reagieren oder den Endpunkt [List Grants](/api-reference/entitlements/list-grants) mit den Filtern `integration_type` und `status` abfragen:
+
+```typescript theme={null}
+const pending = await client.entitlements.grants.list('ent_license_key_id', {
+  integration_type: 'license_key',
+  status: 'pending',
+});
+```
+
+### Den Schlüssel liefern
+
+Reichen Sie den Schlüssel mit dem Endpunkt [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) ein. Die Berechtigung wechselt zu `delivered` und der Kunde erhält den Schlüssel automatisch — die gleiche E-Mail, die er auch bei automatischer Erfüllung erhalten würde.
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+    "activations_limit": 5,
+    "expires_at": "2027-05-01T00:00:00Z"
+  }'
+```
+
+`activations_limit` und `expires_at` sind optional und greifen auf die Berechtigungskonfiguration zurück, wenn sie weggelassen werden. Jede Berechtigung kann einmal erfüllt werden; das erneute Versuchen einer bereits erfüllten Berechtigung gibt `409` zurück, anstatt einen zweiten Schlüssel auszugeben.
+
+<Check>
+Sie müssen den Schlüssel nicht selbst per E-Mail versenden — die Lieferung erfolgt automatisch, wenn die Berechtigung erfüllt wird. Dies unterscheidet sich von [Schlüssel importieren](#import-existing-license-keys-via-api) über `POST /license_keys`, was bewusst **nicht** den Kunden benachrichtigt.
+</Check>
+
+---
+
+## Aktivierung, Validierung, Deaktivierung
+
+Die Aktivierungs-, Validierungs- und Deaktivierungs-API-Endpunkte sind **öffentlich** und erfordern keinen API-Schlüssel. Verwenden Sie sie direkt von Desktop-Software, CLIs oder browserbasierten Clients, um Schlüssel zur Laufzeit zu verifizieren.
+
+<Info>
+**Öffentliche Endpunkte**: Die Endpunkte zur Aktivierung, Deaktivierung und Validierung von Lizenzen sind öffentlich und erfordern keinen API-Schlüssel. Rufen Sie sie direkt von Ihren Client-Anwendungen auf, ohne Ihre API-Zugangsdaten offenzulegen.
+</Info>
+
+### Eine Lizenz aktivieren
 
 <CodeGroup>
 
@@ -139,7 +240,7 @@ curl -X POST https://test.dodopayments.com/licenses/activate \
 
 </CodeGroup>
 
-### Validieren Sie eine Lizenz
+### Eine Lizenz validieren
 
 <CodeGroup>
 
@@ -159,7 +260,7 @@ curl -X POST https://test.dodopayments.com/licenses/validate \
 
 </CodeGroup>
 
-### Deaktivieren Sie eine Aktivierungsinstanz
+### Eine Aktivierungsinstanz deaktivieren
 
 ```typescript theme={null}
 await client.licenses.deactivate({
@@ -172,9 +273,9 @@ await client.licenses.deactivate({
 
 ## Schlüssel verwalten
 
-Öffnen Sie die Lizenzschlüssel-Berechtigung in Ihrem Dashboard, um jede Zuwendung zu sehen (eine Zeile pro Kunden-Schlüssel) mit Lieferdatum, Aktivierungsanzahl und einer Widerrufsaktion. Jede Zuwendungsdetailanzeige zeigt den zugrunde liegenden Lizenzschlüssel, Ablauf, genutzte Aktivierungen und das Aktivierungslimit.
+Öffnen Sie die Lizenzschlüsselberechtigung in Ihrem Dashboard, um jede Berechtigung zu sehen (eine Zeile pro Kunden-Schlüssel) mit Lieferdatum, Aktivierungsanzahl und einer Rücknahmeaktion. Jedes Berechtigungsdetail zeigt den zugehörigen Lizenzschlüssel, das Ablaufdatum, die verwendeten Aktivierungen und das Aktivierungslimit an.
 
-Sie können Zuwendungen auch programmatisch auflisten:
+Sie können Berechtigungen auch programmatisch auflisten:
 
 ```typescript theme={null}
 const grants = await client.entitlements.grants.list('ent_license_key_id', {
@@ -186,12 +287,12 @@ for (const grant of grants.items) {
 }
 ```
 
-## Bestehende Lizenzschlüssel über API importieren
+## Bestehende Lizenzschlüssel über die API importieren
 
-Haben Sie bereits Lizenzschlüssel in einem anderen System? Verwenden Sie die [Create License Key](/api-reference/licenses/create-license-key) API, um sie in Dodo Payments zu importieren. Dies ermöglicht Ihnen die Migration bestehender Schlüssel, ohne Ihre Kunden zu stören — sie können weiterhin aktivieren, validieren und gegen dieselben Schlüsselstränge deaktivieren, ohne dass eine erneute Ausgabe erforderlich ist.
+Haben Sie bereits Lizenzschlüssel in einem anderen System? Verwenden Sie die [Create License Key](/api-reference/licenses/create-license-key) API, um sie in Dodo Payments zu importieren. So können Sie bestehende Schlüssel migrieren, ohne Ihre Kunden zu stören – sie können weiterhin gegen die gleichen Schlüsselstränge aktivieren, validieren und deaktivieren, ohne dass sie erneut ausgegeben werden.
 
 <Warning>
-Lizenzschlüssel, die über die API erstellt oder aktualisiert werden, lösen keine E-Mail-Benachrichtigungen an Kunden aus. Wenn Sie Kunden über einen importierten Schlüssel informieren müssen, handhaben Sie dies separat in Ihrer Anwendung.
+Lizenzschlüssel, die über die API erstellt oder aktualisiert werden, lösen keine E-Mail-Benachrichtigungen an Kunden aus. Wenn Sie Kunden über einen importierten Schlüssel informieren müssen, behandeln Sie dies separat in Ihrer Anwendung.
 </Warning>
 
 ```typescript theme={null}
@@ -204,32 +305,33 @@ const licenseKey = await client.licenseKeys.create({
 });
 ```
 
-### Wie importierte Schlüssel sich von automatisch generierten unterscheiden
+### Wie sich Schlüssel je nach Quelle unterscheiden
 
-| Feld | Automatisch generierter Schlüssel | Importierter Schlüssel |
-|-------|--------------------|--------------|
-| `source` | `"auto"` | `"import"` |
-| `payment_id` | Wird auf die ursprüngliche Zahlung gesetzt | `null` (keine Dodo Payments-Transaktion) |
-| `subscription_id` | Wird gesetzt, wenn der Schlüssel über ein Abonnement ausgegeben wurde | `null`, es sei denn, ausdrücklich verknüpft |
-| Kunden-E-Mail-Benachrichtigung | Wird bei Ausgabe gesendet | Nicht gesendet — separat handhaben |
+| Feld | Automatisch generierter Schlüssel | Manuell erfüllter Schlüssel | Importierter Schlüssel |
+|-------|-----------------|-------------------|---------------|
+| `source` | `"auto"` | `"manual"` | `"import"` |
+| Herkunft | Generiert von Dodo Payments bei Zahlung | [Von Ihnen bereitgestellt](#manual-fulfillment) gegen eine ausstehende Berechtigung | Erstellt/migriert über `POST /license_keys` |
+| `payment_id` | Auf die ursprüngliche Zahlung gesetzt | Von der Berechtigung oder ihrem Abonnement gelöst | `null` (keine Dodo Payments-Transaktion) |
+| `subscription_id` | Festgelegt, wenn über ein Abonnement ausgegeben | Festgelegt, wenn die Berechtigung aus einem Abonnement stammt | `null`, es sei denn, explizit verknüpft |
+| E-Mail-Benachrichtigung des Kunden | Bei Ausgabe gesendet | Bei Erfüllung gesendet | Nicht gesendet – separat behandeln |
 
-Verwenden Sie das `source` Feld auf `GET /license_keys` Antworten, um migrierten Bestand von organisch ausgegebenen Schlüsseln bei der Abstimmung oder Prüfung zu unterscheiden.
+Verwenden Sie das Feld `source` in `GET /license_keys`-Antworten, um migrierten Bestand und manuell erfüllte Schlüssel von organisch ausgegebenen Schlüsseln zu unterscheiden, wenn Sie eine Abstimmung oder Prüfung durchführen.
 
 <Tip>
-Migrieren Sie von **Polar.sh** oder **Lemon Squeezy**? Die [`dodo-migrate` CLI](/migrate-to-dodo) automatisiert Massenimporte von Produkten, Kunden, Rabatten und Lizenzschlüsseln in einem einzigen Befehl und ordnet externe IDs automatisch Dodo-IDs zu.
+Migration von **Polar.sh** oder **Lemon Squeezy**? Die [`dodo-migrate` CLI](/migrate-to-dodo) automatisiert den Massenimport von Produkten, Kunden, Rabatten und Lizenzschlüsseln in einem einzigen Befehl und ordnet externe IDs automatisch Dodo-IDs zu.
 </Tip>
 
 ---
 
-## Lizenzschlüssel in Rückgabe-URL
+## Lizenzschlüssel in der Rückgabe-URL
 
-Wenn ein Kunde einen Kauf für ein Produkt mit einer Lizenzschlüsselberechtigung abschließt, wird der generierte Schlüssel automatisch als Abfrageparameter an Ihr `return_url` hinzugefügt. Dies ermöglicht Ihnen, den Schlüssel sofort auf Ihrer Erfolgsseite anzuzeigen, ohne einen zusätzlichen API-Aufruf zu tätigen.
+Wenn ein Kunde einen Kauf für ein Produkt mit einer Lizenzschlüsselberechtigung abschließt, wird der generierte Schlüssel automatisch als Abfrageparameter an Ihre `return_url` angehängt. Auf diese Weise können Sie den Schlüssel sofort auf Ihrer Erfolgseite anzeigen, ohne einen zusätzlichen API-Aufruf machen zu müssen.
 
 ```text theme={null}
 https://yoursite.com/return?payment_id=pay_xxx&status=succeeded&license_key=LK-001&email=customer%40example.com
 ```
 
-Wenn der Kauf mehrere Schlüssel generiert (Menge > 1), werden sie durch Kommas getrennt:
+Wenn der Kauf mehrere Schlüssel generiert (Menge > 1), werden diese durch Kommas getrennt:
 
 ```text theme={null}
 https://yoursite.com/return?payment_id=pay_xxx&status=succeeded&license_key=LK-001,LK-002&email=customer%40example.com
@@ -242,7 +344,7 @@ https://yoursite.com/return?subscription_id=sub_xxx&status=active&license_key=LK
 ```
 
 <Tip>
-Parsen Sie den `license_key` Parameter auf Ihrer Rückgabeseite, um den Schlüssel sofort anzuzeigen und die Kauferfahrung nach dem Kauf zu verbessern.
+Analysieren Sie den `license_key`-Parameter auf Ihrer Rückgabeseite, um den Schlüssel sofort anzuzeigen und die Erfahrung nach dem Kauf zu verbessern.
 </Tip>
 
 ---
@@ -255,11 +357,11 @@ Aktivierung, Deaktivierung und Validierung sind öffentlich; kein API-Schlüssel
 
 <CardGroup cols={3}>
 <Card title="Activate License" icon="code" href="/api-reference/licenses/activate-license">
-Erstellen oder protokollieren Sie eine Aktivierungsinstanz für einen Lizenzschlüssel.
+Erstellen oder aufzeichnen einer Aktivierungsinstanz für einen Lizenzschlüssel.
 </Card>
 
 <Card title="Deactivate License" icon="code" href="/api-reference/licenses/deactivate-license">
-Widerrufen Sie eine vorherige Aktivierung, um Kapazität freizugeben.
+Eine vorherige Aktivierung widerrufen, um Kapazität freizugeben.
 </Card>
 
 <Card title="Validate License" icon="code" href="/api-reference/licenses/validate-license">
@@ -269,42 +371,42 @@ Widerrufen Sie eine vorherige Aktivierung, um Kapazität freizugeben.
 </Accordion>
 
 <Accordion title="License Key Management">
-Erstellen, auflisten, abrufen und aktualisieren Sie einzelne Lizenzschlüsseleinträge. Verwenden Sie diese, um vorhandene Schlüssel zu importieren oder Nutzungsdetails abzurufen.
+Erstellen, auflisten, abrufen und aktualisieren von einzelnen Lizenzschlüssel-Datensätzen. Verwenden Sie diese, um vorhandene Schlüssel zu importieren oder Nutzungsdetails abzurufen.
 
 <CardGroup cols={2}>
 <Card title="Create License Key" icon="code" href="/api-reference/licenses/create-license-key">
-Erstellen Sie einen neuen Lizenzschlüssel oder importieren Sie einen vorhandenen.
+Einen neuen Lizenzschlüssel erstellen oder einen bestehenden importieren.
 </Card>
 
 <Card title="List License Keys" icon="code" href="/api-reference/licenses/list-license-keys">
-Durchsuchen Sie alle Schlüssel mit Status- und Nutzungsdetails.
+Alle Schlüssel mit Status und Nutzungsdetails durchsuchen.
 </Card>
 
 <Card title="Get License Key" icon="code" href="/api-reference/licenses/get-license-key">
-Rufen Sie einen bestimmten Schlüssel und dessen Metadaten ab.
+Einen spezifischen Schlüssel und seine Metadaten abrufen.
 </Card>
 
 <Card title="Update License Key" icon="code" href="/api-reference/licenses/update-license-key">
-Ändern Sie Ablauf, Aktivierungslimits oder aktivieren/deaktivieren Sie einen Schlüssel.
+Ablauf, Aktivierungslimits oder Aktivierung/Deaktivierung eines Schlüssels ändern.
 </Card>
 </CardGroup>
 </Accordion>
 
 <Accordion title="Entitlement Management">
-Verwalten Sie die Lizenzschlüsselberechtigung selbst: deren Aktivierungslimit, Dauer und Anweisungen.
+Verwalten der Lizenzschlüsselberechtigung selbst: ihr Aktivierungslimit, ihre Dauer und ihre Anweisungen.
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Erstellen Sie eine Lizenzschlüsselberechtigung.
+Eine Lizenzschlüsselberechtigung erstellen.
 </Card>
 <Card title="Update Entitlement" icon="pen" href="/api-reference/entitlements/update-entitlement">
-Aktualisieren Sie die Konfiguration der Berechtigung.
+Die Konfiguration der Berechtigung aktualisieren.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Listen Sie die für eine Berechtigung ausgegebenen Schlüssel auf.
+Die für eine Berechtigung ausgestellten Schlüssel auflisten.
 </Card>
 <Card title="Revoke Grant" icon="ban" href="/api-reference/entitlements/revoke-grant">
-Widerrufen Sie manuell den Schlüssel eines Kunden.
+Einen Kundenschlüssel manuell widerrufen.
 </Card>
 </CardGroup>
 </Accordion>
@@ -314,12 +416,12 @@ Widerrufen Sie manuell den Schlüssel eines Kunden.
 
 ## Webhooks
 
-Lizenzschlüssel-Lieferungen und -Widerrufe lösen die vier [`entitlement_grant.*` Webhook-Ereignisse](/developer-resources/webhooks/intents/entitlement-grant) aus. Die Zuwendungsladung enthält ein ausgefülltes `license_key`-Objekt mit dem Schlüssel, Ablauf, genutzten Aktivierungen und Limit.
+Die Übergabe und der Widerruf von Lizenzschlüsseln lösen die vier [`entitlement_grant.*` Webhook-Ereignisse](/developer-resources/webhooks/intents/entitlement-grant) aus. Die Berechtigungspayload enthält ein ausgefülltes `license_key`-Objekt mit dem Schlüssel, dem Ablaufdatum, den verwendeten Aktivierungen und dem Limit.
 
-Die Legacy `license_key.*` Ereignisse (`license_key.created`) werden weiterhin für den zugrunde liegenden Lizenzschlüssel-Datensatz-Lebenszyklus ausgelöst; siehe die [Lizenzschlüssel-Webhook-Ladungsseite](/developer-resources/webhooks/intents/license-key).
+Die Legacy `license_key.*`-Ereignisse (`license_key.created`) werden weiterhin für den Lebenszyklus des zugrunde liegenden Lizenzschlüssel-Datensatzes ausgelöst; siehe die [License Key webhook payload page](/developer-resources/webhooks/intents/license-key).
 
 <Tip>
-Für neue Integrationen hören Sie auf `entitlement_grant.delivered` anstatt `license_key.created`. Das Berechtigungsereignis informiert Sie, dass die Lieferung über alle Integrationen des Produkts hinweg abgeschlossen ist, nicht nur der Lizenzschlüssel.
+Für neue Integrationen hören Sie auf `entitlement_grant.delivered` anstelle von `license_key.created`. Das Berechtigungsereignis zeigt an, dass die Lieferung für alle Integration auf dem Produkt abgeschlossen ist, nicht nur für den Lizenzschlüssel.
 </Tip>
 
 ---
@@ -327,17 +429,17 @@ Für neue Integrationen hören Sie auf `entitlement_grant.delivered` anstatt `li
 ## Legacy-Lizenzschlüssel
 
 <Note>
-Produkte, die mit dem älteren `license_key_enabled`-Flag erstellt wurden, wurden **automatisch migriert** in eine Lizenzschlüsselberechtigung. Die Migration ist transparent: Die Schlüssel bestehender Kunden funktionieren weiterhin unverändert, die öffentlichen `/licenses/activate`, `/licenses/validate`, `/licenses/deactivate` Endpunkte funktionieren weiterhin und die `/license_keys/*` API-Endpunkte lesen und schreiben weiterhin in denselben Schlüsselspeicher.
+Produkte, die mit dem älteren `license_key_enabled`-Flag erstellt wurden, wurden **automatisch migriert** zu einer Lizenzschlüsselberechtigung. Die Migration ist transparent: Die Schlüssel bestehender Kunden funktionieren weiterhin unverändert, die öffentlichen `/licenses/activate`, `/licenses/validate`, `/licenses/deactivate`-Endpunkte funktionieren weiterhin, und die `/license_keys/*`-API-Endpunkte lesen und schreiben weiterhin in den gleichen Schlüsselspeicher.
 
-Der eigenständige **Lizenzschlüssel**-Dashboardbereich bleibt als flache Liste aller ausgegebenen Schlüssel verfügbar und ist nützlich für Prüfung und Suche. Neue Konfigurationen (Änderung von Aktivierungslimits, Dauer oder Anweisungen) sollten durch Bearbeiten der migrierten Lizenzschlüsselberechtigung unter **Berechtigungen** vorgenommen werden.
+Der eigenständige **Lizenzschlüssel**-Dashboard-Abschnitt bleibt als flache Liste aller ausgegebenen Schlüssel verfügbar, nützlich für Audits und Suchvorgänge. Neue Konfigurationen (Änderung von Aktivierungslimits, -dauern oder -anweisungen) sollten durch Bearbeiten der migrierten Lizenzschlüsselberechtigung unter **Berechtigungen** vorgenommen werden.
 </Note>
 
 ---
 
 ## Best Practices
 
-- **Halten Sie die Aktivierungslimits klar**: Wählen Sie sinnvolle Standardwerte (1 für Einzelbenutzer-Apps, 3–5 für Teamlizenzen) und dokumentieren Sie diese.
-- **Bereitstellen Sie genaue Aktivierungsanweisungen**: Kunden kopieren diese aus ihrer E-Mail, daher sparen genaue Pfade und Befehle Support-Tickets.
-- **Validieren Sie Schlüssel serverseitig**: Für netzwerkverbundene Produkte validieren Sie über `/licenses/validate` anstatt lokal zwischengespeicherte Aktivierungen.
-- **Verwenden Sie Webhooks für Widerrufe**: Hören Sie auf `entitlement_grant.revoked`, um In-App-Funktionen sofort zu deaktivieren, wenn ein Kunde kündigt oder eine Rückerstattung erhält.
-- **Testen Sie mit Abonnements und Einmaligen**: Das Verhalten von Lizenzschlüsseln unterscheidet sich subtil zwischen beiden, daher testen Sie beide, bevor Sie live gehen.
+- **Halten Sie die Aktivierungslimits klar**: Wählen Sie sinnvolle Standardeinstellungen (1 für Einzelbenutzeranwendungen, 3–5 für Teamlizenzen) und dokumentieren Sie diese.
+- **Bieten Sie präzise Aktivierungsanweisungen**: Kunden kopieren diese aus ihrer E-Mail, so dass genaue Pfade und Befehle Support-Tickets einsparen.
+- **Validieren Sie Schlüssel serverseitig**: Für netzwerkverbundene Produkte validieren Sie über `/licenses/validate` anstelle von lokalem Caching der Aktivierung.
+- **Verwenden Sie Webhooks für den Widerruf**: Hören Sie auf `entitlement_grant.revoked`, um In-App-Funktionen sofort zu deaktivieren, wenn ein Kunde kündigt oder erstattet.
+- **Testen Sie mit Abonnements und Einmalzahlungen**: Das Verhalten von Lizenzschlüsseln unterscheidet sich subtil zwischen den beiden, testen Sie daher beide, bevor Sie live gehen.

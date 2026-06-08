@@ -1,0 +1,180 @@
+---
+title: v1.101.0 (2 juni 2026)
+description: Automatiska försök för prenumerationsbetalningar för att återhämta
+  misslyckade förnyelseintäkter, standardinställningar för proration på
+  affärsnivå med anpassningar per produktkategori, och insamling av företagsnamn
+  för B2B-fakturor — plus buggfixar och förbättringar.
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - ändringslogg
+  - utgivningsanteckningar
+  - produktuppdateringar
+  - v1.101.0 (juni 2, 2026)
+  - proratering
+  - betalningsförsök
+  - b2b-fakturor
+  - prenumerationsåterhämtning
+---
+
+## Nya Funktioner
+
+### 1. **Försök för prenumerationsbetalningar**
+
+Misslyckade prenumerations**förnyelse**betalningar kan nu automatiskt försökas på nytt för att återhämta intäkter, utan behov av integration. Aktivera det från **Inställningar → Återhämtning**, sätt ett återhämtningsfönster, och Dodo Payments försöker om förnyelsen enligt ett smart schema tills det lyckas eller fönstret stängs.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/payment-retries.png" alt="Återhämtningsinställningar sida med aktiveringsknappen för betalningsförsök påslagen och ett återhämtningsfönster (dagar) fält" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| Inställning | Beskrivning | Standard |
+|---------|-------------|---------|
+| **Aktivera betalningsförsök** | Försök automatiskt om misslyckade prenumerationsförnyelsebetalningar för att återhämta intäkter. | Av (opt-in) |
+| **Återhämtningsfönster (dagar)** | Hur länge man ska fortsätta försöka en misslyckad betalning innan man ger upp (1–30). | 13 |
+
+**Så fungerar det**
+
+1. En prenumerationsförnyelsebetalning misslyckas och prenumerationen flyttas till `on_hold`.
+2. Om avslaget kan försöka om (ett mjukt avslag som otillräckliga medel eller ett tillfälligt nätverksfel), schemaläggs nästa försök automatiskt.
+3. Försök sker utanför sessionen enligt ett avlastningsschema, begränsat av ditt återhämtningsfönster.
+4. Vid första framgångsrika försök återgår prenumerationen till `active` och nästa faktureringsdatum flyttas fram som vanligt.
+
+**Försöksschema**
+
+Försök avlastas successivt, förankrade till tidpunkten då den misslyckade fakturan skapades. Upp till **8 försök** görs, så länge de ryms inom ditt återhämtningsfönster:
+
+| Försök | Fördröjning efter föregående |
+|---------|----------------------|
+| 1 | 12 timmar |
+| 2 | 24 timmar |
+| 3 | 48 timmar |
+| 4 | 72 timmar |
+| 5 | 96 timmar |
+| 6 | 120 timmar |
+| 7 | 7 dagar |
+| 8 | 7 dagar |
+
+<Info>
+Endast **mjuka avslag** försöks om (t.ex. otillräckliga medel, generiskt avslag, bearbetnings- eller nätverksfel). **Hårda avslag** avslutar omförsökskedjan omedelbart, eftersom omförsök inte kommer att ändra resultatet.
+</Info>
+
+Detta kompletterar de befintliga återhämtningsverktygen — **prenumerationsdunning** mejlar kunden för att uppdatera sin betalningsmetod, medan betalningsförsök tyst försöker om den befintliga. De fungerar väl tillsammans.
+
+Läs mer: [Försök för prenumerationsbetalningar](/features/recovery/payment-retries) | [Prenumerationsdunning](/features/recovery/subscription-dunning)
+
+### 2. **Affärsprorateringsinställningar**
+
+Du kan nu ställa in **standardbeteende för uppgradering och nedgradering** på affärsnivå istället för att ange pro-rata-parametrar vid varje planändring. Dessa standardinställningar gäller när en kund ändrar sin plan från kundportalen, och du kan **ändra dem per produktkategori**.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/plan-change-settings.png" alt="Standardinställningar för uppgradering och nedgradering på instrumentpanelen med separata kontroller för uppgraderingar, nedgraderingar och betalningsfel" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Varje riktning (uppgradering och nedgradering) har två oberoende kontroller, plus en gemensam betalningsfelpolicy:
+
+| Inställning | Fält | Standard (uppgradering) | Standard (nedgradering) |
+|---------|-------|-------------------|---------------------|
+| **När den nya planen startar** | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| **Hur kunden debiteras** | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| **Om kundens betalning misslyckas** | `on_payment_failure` | `apply_change` | `apply_change` |
+
+**När den nya planen startar** (`effective_at`)
+
+| Värde | Beteende |
+|-------|----------|
+| `immediately` | Kunden övergår till den nya planen omedelbart. |
+| `next_billing_date` | Kunden förblir på sin nuvarande plan tills nästa faktureringsdatum, då byter de till den nya. |
+
+**Hur kunden debiteras** (`proration_billing_mode`)
+
+| Värde | Beteende |
+|-------|----------|
+| `prorated_immediately` | Debitera ett proraterat belopp nu, baserat på tiden som är kvar i den nuvarande faktureringscykeln. |
+| `full_immediately` | Debitera hela priset för den nya planen nu. |
+| `difference_immediately` | Debitera endast prisskillnaden mellan den nya planen och den nuvarande. |
+| `do_not_bill` | Debitera inget nu. Justeringar tillämpas på nästa faktura. |
+
+**Om kundens betalning misslyckas** (`on_payment_failure`)
+
+| Värde | Beteende |
+|-------|----------|
+| `prevent_change` | Håll kunden kvar på sin nuvarande plan om betalningen inte går igenom. |
+| `apply_change` | Flytta kunden till den nya planen även om betalningen inte går igenom. Du kan driva in beloppet senare. |
+
+**Ändringar per samling**
+
+Varje produktkategori kan åsidosätta några av dessa standardvärden. Varje fält är oberoende — låt det vara på **Ärv från företag** för att följa företagets standard, eller ställ in ett uttryckligt värde för att åsidosätta det för just den samlingen.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/product-collection-plan-change.png" alt="Uppgraderings- och nedgraderingsåterställningssektion på en produktkategori, där varje fält standardmässigt är inställt på 'Ärv från företag'" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Varje inställning löses i den här ordningen:
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+Ett värde som ställs in per förfrågan till [Ändra Plan API](/api-reference/subscriptions/change-plan) (`proration_billing_mode`, `effective_at`, `on_payment_failure`) har alltid företräde framför både samlings- och företagsstandarder. De nya inställningarna ändrar bara vad som händer när inget uttryckligt värde anges — vilket är fallet för alla kundportal-ändringar av planer.
+</Info>
+
+Lär dig mer: [Uppgradering och nedgradering av prenumeration](/developer-resources/subscription-upgrade-downgrade) | [Produktkategorier](/features/product-collections)
+
+### 3. **Samla in företagsnamn för B2B-fakturor**
+
+B2B-kunder kan nu få sitt **juridiska företagsnamn** angivet på fakturan istället för köparens personliga namn. När ett giltigt skatte-ID lämnas vid kassan kan du också samla in den associerade `customer_business_name` så att fakturan återspeglar den inköpsenhet som köper.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/business-name-b2b.png" alt="Kassasida med 'Köper som ett företag'-knappen aktiverad, visar företagsnamn och skatte-ID-nummer fält" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+När kunden väljer **Köper som ett företag** vid kassan, uppmanas de att ange både ett **Företagsnamn** och ett **Skatte-ID-nummer**.
+
+Företagsnamnet visas på fakturan endast när **alla tre** villkor är uppfyllda:
+
+1. Transaktionen är B2B (`b2b = true`)
+2. Ett `tax_id` är närvarande
+3. Ett icke-tomt `customer_business_name` har tillhandahållits
+
+Annars används kundens personliga namn.
+
+**Samla in det vid kassan**
+
+Sätt `customer_business_name` direkt, och/eller aktivera `allow_customer_editing_business_name` för att låta kunden ange eller redigera det på kassasidan tillsammans med sitt skatte-ID:
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  customer: { email: 'buyer@acme.com' },
+  tax_id: 'GB123456789',
+  customer_business_name: 'Acme Corp Ltd',
+  feature_flags: {
+    allow_tax_id: true,
+    allow_customer_editing_business_name: true // let the customer enter/edit it
+  },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Var det gäller**
+
+| Yta | Fält | Noteringar |
+|---------|-------|-------|
+| Kassasessioner | `customer_business_name`, `feature_flags.allow_customer_editing_business_name` | Max 250 tecken; flaggan är standard till `false` |
+| Betalningar | `customer_business_name` | Max 250 tecken |
+| Prenumerationer | `customer_business_name` | Sätta eller ta bort via `PATCH /subscriptions/{id}` |
+
+<Warning>
+`customer_business_name` kan inte sättas utan ett `tax_id`. Att skicka ett företagsnamn utan ett skatte-ID avvisas. Att rensa `tax_id` rensar också företagsnamnet, eftersom de två är kopplade på fakturan.
+</Warning>
+
+<Note>
+Omgivande blanksteg trimmas, och värden som bara innehåller blanksteg behandlas som en explicit rensning — så lagrad data matchar alltid det som visas på fakturan.
+</Note>
+
+Lär dig mer: [B2B-betalningar](/features/b2b-payments) | [Fakturahantering](/features/invoice-generation) | [Kassasession](/developer-resources/checkout-session)
+
+## Buggfixar & Förbättringar
+
+- Små buggfixar och stabilitetsförbättringar över hela plattformen.

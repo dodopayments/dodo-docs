@@ -1,0 +1,378 @@
+---
+title: Guida all'integrazione per il rilascio manuale della chiave di licenza
+sidebarTitle: Rilascio manuale della chiave di licenza
+description: "Crea un sistema end-to-end che vende un prodotto e ti consente di
+  fornire chiavi di licenza su richiesta: crea il prodotto e il diritto, rileva
+  le assegnazioni in sospeso e consegna la chiave al cliente."
+icon: key
+keywords:
+  - Dodo Payments
+  - guida per sviluppatori
+  - chiavi di licenza
+  - rilascio manuale
+  - diritti
+---
+
+Questa guida spiega come costruire un sistema di **rilascio manuale della chiave di licenza** dall'inizio alla fine. Invece che Dodo Payments generi automaticamente una chiave al pagamento, ogni acquisto crea un grant `pending` e attende che *tu* fornisca il valore della chiave dal tuo sistema, un fornitore terzo o da un pool finito di codici.
+
+Alla fine avrai:
+
+- Un prodotto con un diritto alla chiave di licenza impostato per `manual`.
+- Un listener webhook che rileva quando un cliente sta aspettando una chiave.
+- Una chiamata di esecuzione che consegna la chiave e notifica automaticamente il cliente.
+
+<CardGroup cols={2}>
+<Card title="License Keys overview" icon="key" href="/features/license-keys">
+Il ciclo di vita completo della chiave di licenza e l'impostazione `fulfillment_mode`.
+</Card>
+<Card title="Fulfill License Key Grant API" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+Riferimento API per l'endpoint che chiami per consegnare una chiave.
+</Card>
+</CardGroup>
+
+## Come funziona
+
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant D as Dodo Payments
+    participant M as Your Backend
+    C->>D: Purchase (manual-mode License Key product)
+    D->>D: Create grant (status: pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
+    M->>M: Obtain key from own system / vendor
+    M->>D: POST /grants/{grant_id}/license-key { key }
+    D->>C: Deliver license key to customer
+    D->>M: entitlement_grant.delivered
+```
+
+Il rilascio manuale cambia solo il passaggio di **emissione**. Attivazione, validazione, disattivazione, scadenza e revoca funzionano esattamente come una chiave generata automaticamente una volta consegnata.
+
+## Prerequisiti
+
+Per seguire questa guida avrai bisogno di:
+
+- Un account commerciante di Dodo Payments.
+- La tua chiave API (`DODO_PAYMENTS_API_KEY`) e la chiave segreta del webhook dal pannello di controllo. Vedi la [guida alla generazione della chiave API](/api-reference/introduction#api-key-generation).
+- Un endpoint backend che possa ricevere webhooks.
+
+<Info>
+Usa `https://test.dodopayments.com` e credenziali in modalità test durante la costruzione. Passa a `https://live.dodopayments.com` e chiavi live quando vai in produzione.
+</Info>
+
+## Passo 1 — Crea un Diritto alla Chiave di Licenza in Modalità Manuale
+
+Un **diritto** è una definizione riutilizzabile di ciò che consegni. Crea un diritto alla chiave di licenza e imposta il suo `fulfillment_mode` su `manual`.
+
+<Tabs>
+<Tab title="Dashboard">
+<Steps>
+<Step title="Open Entitlements">
+Vai a **Diritti** nel tuo pannello di controllo e clicca su **+** per creare un nuovo diritto.
+</Step>
+<Step title="Choose License Key">
+Seleziona **Chiave di Licenza** come integrazione e assegnale un **Nome**. Il formulario espone questi campi:
+
+- **Modalità di Rilascio** — `Automatic` di default. Questa è l'impostazione che abilita il rilascio manuale; la cambi nel passo successivo.
+- **Durata della Licenza** — quanto tempo rimane valida ciascuna chiave emessa o **Nessuna scadenza**.
+- **Limite di Attivazioni** — attivazioni massime per chiave o **Illimitato**.
+- **Messaggio di Attivazione** — messaggio opzionale rivolto al cliente mostrato quando attivano la chiave.
+
+<Frame>
+<img src="/images/entitlements/license-keys/create.png" alt="Nuovo modulo di diritto alla chiave di licenza con nome, modalità di rilascio, durata della licenza, limite di attivazioni e messaggio di attivazione" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+<Step title="Set Fulfillment Mode to Manual">
+Apri il menu a discesa **Modalità di Rilascio** e cambialo da **Automatico** a **Manuale**. Questa è l'impostazione che guida tutta questa guida — senza di essa, le chiavi vengono generate e inviate tramite email automaticamente e non viene creato alcun grant in sospeso. Con **Manuale** selezionato, ogni acquisto crea un grant `pending` da soddisfare. Clicca su **Crea Diritto** per salvare.
+</Step>
+</Steps>
+</Tab>
+
+<Tab title="API">
+Crea il diritto con `integration_config.fulfillment_mode` impostato su `manual`.
+<CodeGroup>
+
+```typescript Node.js theme={null}
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'test_mode', // defaults to 'live_mode'
+});
+
+const entitlement = await client.entitlements.create({
+  name: 'Pro License (Manual)',
+  integration_type: 'license_key',
+  integration_config: {
+    fulfillment_mode: 'manual',
+    activations_limit: 5,
+    duration_count: 1,
+    duration_interval: 'Year',
+  },
+});
+
+console.log(entitlement.id); // ent_...
+```
+
+```python Python theme={null}
+import os
+from dodopayments import DodoPayments
+
+client = DodoPayments(
+    bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+    environment="test_mode",  # defaults to "live_mode"
+)
+
+entitlement = client.entitlements.create(
+    name="Pro License (Manual)",
+    integration_type="license_key",
+    integration_config={
+        "fulfillment_mode": "manual",
+        "activations_limit": 5,
+        "duration_count": 1,
+        "duration_interval": "Year",
+    },
+)
+
+print(entitlement.id)
+```
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/entitlements \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pro License (Manual)",
+    "integration_type": "license_key",
+    "integration_config": {
+      "fulfillment_mode": "manual",
+      "activations_limit": 5,
+      "duration_count": 1,
+      "duration_interval": "Year"
+    }
+  }'
+```
+
+</CodeGroup>
+</Tab>
+</Tabs>
+
+<Note>
+`fulfillment_mode` predefinito su `auto`. Omesso, o lasciando un diritto esistente invariato, mantiene il comportamento automatico. Solo i diritti esplicitamente impostati su `manual` creano grant in sospeso.
+</Note>
+
+## Passo 2 — Collega il Diritto a un Prodotto
+
+Apri il prodotto che vuoi vendere, espandi **Impostazioni Avanzate → Diritti e Crediti**, e seleziona il **diritto alla Chiave di Licenza che hai impostato su Manuale** nel Passo 1. Un singolo prodotto può consegnare questa chiave di licenza insieme ad altri diritti nello stesso acquisto.
+
+<Frame caption="Selecting the License Key entitlement in the product entitlements panel.">
+<img src="/images/entitlements/attach-to-product.png" alt="Pannello dei diritti del prodotto con Chiave di Licenza selezionata" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Note>
+La modalità di rilascio è una proprietà del **diritto**, non del prodotto. Poiché l'hai impostato su **Manuale** nel Passo 1, ogni prodotto a cui è collegato questo diritto crea grant di chiavi di licenza `pending` all'acquisto — non c'è nulla di extra da configurare qui.
+</Note>
+
+<Tip>
+Se non hai ancora un prodotto, creane uno prima (una tantum o abbonamento). Vedi la [Guida all'Integrazione dei Pagamenti Una Tantum](/developer-resources/integration-guide) per vendere il prodotto al checkout.
+</Tip>
+
+## Passo 3 — Rileva Grants in Sospeso
+
+Quando un cliente acquista il prodotto, Dodo Payments crea un grant in stato `pending` con **nessuna chiave allegata** e attiva un webhook `entitlement_grant.created`. Questo è il tuo segnale che un cliente è in attesa di una chiave.
+
+### Ascolta il webhook
+
+Configura un endpoint webhook (Sviluppatore → Webhooks nel pannello di controllo) e agisci sui grants di chiavi di licenza in attesa. L'implementazione segue la specifica [Standard Webhooks](https://standardwebhooks.com/).
+
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
+
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
+
+Il payload del grant trasporta `integration_type: "license_key"`, così puoi riconoscere un grant di chiavi di licenza senza una ricerca aggiuntiva. Consulta il riferimento al webhook di [Entitlement Grant](/developer-resources/webhooks/intents/entitlement-grant) per il payload completo.
+
+### O consulta l'API List Grants
+
+Se preferisci non fare affidamento sui webhooks, elenca i grants per il diritto e filtra per `integration_type` e `status`:
+
+<CodeGroup>
+
+```typescript Node.js theme={null}
+const pending = await client.entitlements.grants.list('ent_license_key_id', {
+  integration_type: 'license_key',
+  status: 'pending',
+});
+
+for (const grant of pending.items) {
+  console.log(`Grant ${grant.id} for customer ${grant.customer_id} needs a key`);
+}
+```
+
+```bash cURL theme={null}
+curl -G https://test.dodopayments.com/entitlements/ent_license_key_id/grants \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  --data-urlencode "integration_type=license_key" \
+  --data-urlencode "status=pending"
+```
+
+</CodeGroup>
+
+## Passo 4 — Consegna la Chiave
+
+Ottieni il valore della chiave dal tuo sistema, quindi invialo all'endpoint [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Questo richiede la tua chiave API segreta (permesso Editor); non è uno degli endpoint di licenza pubblici.
+
+<CodeGroup>
+
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
+
+  return res.json(); // updated grant, now status: "delivered"
+}
+```
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+    "activations_limit": 5,
+    "expires_at": "2027-05-01T00:00:00Z"
+  }'
+```
+
+</CodeGroup>
+
+### Campi della richiesta
+
+<ParamField body="key" type="string" required>
+La stringa della chiave di licenza da consegnare al cliente. Gli spazi bianchi vengono rimossi; un valore vuoto o composto solo da spazi bianchi viene rifiutato.
+</ParamField>
+
+<ParamField body="activations_limit" type="integer">
+Limite di attivazione per chiave. Torna alla configurazione del diritto quando è omesso.
+</ParamField>
+
+<ParamField body="expires_at" type="string">
+Scadenza per chiave (ISO 8601). Torna alla durata della configurazione del diritto quando è omesso. Per grants emessi da abbonamenti, la validità rimane legata all'abbonamento indipendentemente.
+</ParamField>
+
+Al successo, il grant passa a `delivered`, il cliente riceve automaticamente la chiave (la stessa email che riceverebbero sotto rilascio automatico), e viene attivato `entitlement_grant.delivered`.
+
+Il cliente riceve un'email con la chiave di licenza, il prodotto, il limite di attivazione, la scadenza e le tue istruzioni per l'attivazione:
+
+<Frame caption="The license key email the customer receives once you fulfill the grant.">
+<img src="/images/entitlements/license-keys/customer-email.png" alt="Email del cliente con chiave di licenza che mostra la chiave, il prodotto, il limite di attivazione, la scadenza e le istruzioni per l'attivazione" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+<Check>
+Non è necessario inviare l'email della chiave da solo — la consegna avviene automaticamente quando il grant è soddisfatto.
+</Check>
+
+## Passo 5 — Gestisci Errori e Retry
+
+L'endpoint valida il grant prima di consegnare qualsiasi cosa. Gestisci queste risposte:
+
+| Stato | Significato | Cosa fare |
+|---|---|---|
+| `200` | Chiave consegnata, grant ora `delivered`. | Fatto. |
+| `400` | Non è un grant di chiavi di licenza, o la chiave è vuota/bin bianca. | Correggi la richiesta; non riprovare così com'è. |
+| `404` | Nessun grant con quell'ID per la tua azienda. | Verifica `grant_id`. |
+| `409` | Grant non in attesa di rilascio (già consegnato o ha già una chiave), **o** il valore della chiave esiste già. | Se già consegnato, trattalo come successo. Se chiave duplicata, fornisci una chiave diversa. |
+| `422` | Il corpo della richiesta ha fallito la validazione (e.g. `activations_limit < 1`). | Correggi il campo e riprova. |
+
+<Warning>
+Il rilascio è sicuro da riprovare su errori transitori (timeout, `5xx`). Ogni grant può essere soddisfatto solo una volta, quindi un retry dopo una chiamata di successo ma non riconosciuta restituisce `409` piuttosto che emettere una seconda chiave o inviare un'email duplicata. Usa il grant `id` come chiave di idempotenza.
+</Warning>
+
+## Verifica il Flusso
+
+1. Acquista il prodotto in modalità test (vedi le [guide al checkout](/developer-resources/integration-guide)).
+2. Conferma che il tuo webhook ha ricevuto `entitlement_grant.created` con `status: "pending"` e `integration_type: "license_key"`, o che il grant appare nella risposta di List Grants con quei filtri.
+3. Chiama l'endpoint fulfill con una chiave di test.
+4. Conferma che la risposta mostri `status: "delivered"` con un `license_key` popolato, il cliente riceva l'email della chiave e venga attivato `entitlement_grant.delivered`.
+
+<Check>
+Una volta consegnato, il cliente può [attivare e convalidare](/features/license-keys#activation-validation-deactivation) la chiave contro gli endpoint di licenza pubblici esattamente come una chiave generata automaticamente.
+</Check>
+
+## Riferimento API correlato
+
+<CardGroup cols={2}>
+<Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
+Crea il diritto alla chiave di licenza con `fulfillment_mode: manual`.
+</Card>
+<Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
+Filtra per `integration_type` e `status` per trovare grants in sospeso.
+</Card>
+<Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+Consegna il valore della chiave e passa il grant a consegnato.
+</Card>
+<Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
+Gli eventi `entitlement_grant.*` che segnalano grants in sospeso e consegnati.
+</Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+<Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
+Create the License Key entitlement with `fulfillment_mode: manual`.
+</Card>
+<Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
+Filter by `integration_type` and `status` to find pending grants.
+</Card>
+<Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+Deliver the key value and transition the grant to delivered.
+</Card>
+<Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
+The `entitlement_grant.*` events that signal pending and delivered grants.
+</Card>
+</CardGroup>

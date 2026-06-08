@@ -1,0 +1,180 @@
+---
+title: v1.101.0 (2 giugno 2026)
+description: Tentativi automatici di pagamento degli abbonamenti per recuperare
+  i ricavi da rinnovi falliti, prorationi di livello aziendale con
+  sovrascritture per collezione di prodotti e raccolta di nomi aziendali per
+  fatture B2B — oltre a correzioni di bug e miglioramenti.
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - changelog
+  - note di rilascio
+  - aggiornamenti del prodotto
+  - v1.101.0 (2 giugno 2026)
+  - proration
+  - tentativi di pagamento
+  - fatture b2b
+  - recupero abbonamento
+---
+
+## Nuove Funzionalità
+
+### 1. **Tentativi di Pagamento per Abbonamenti**
+
+I pagamenti di **rinnovo** dell'abbonamento non riusciti possono ora essere ritentati automaticamente per recuperare i ricavi, senza richiedere lavoro di integrazione. Abilitalo tramite **Impostazioni → Recupero**, imposta una finestra di recupero, e Dodo Payments ritenta il rinnovo secondo un programma intelligente fino a quando non ha successo o la finestra si chiude.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/payment-retries.png" alt="Pagina delle Impostazioni di Recupero con l'interruttore Abilita Tentativi di Pagamento attivo e un campo Finestra di Recupero (giorni)" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| Impostazione | Descrizione | Predefinito |
+|---------|-------------|---------|
+| **Abilita Tentativi di Pagamento** | Ritentare automaticamente i pagamenti di rinnovo dell'abbonamento falliti per recuperare i ricavi. | Disattivato (opt-in) |
+| **Finestra di recupero (giorni)** | Quanto tempo continuare a riprovare un pagamento fallito prima di rinunciare (1–30). | 13 |
+
+**Come funziona**
+
+1. Un pagamento di rinnovo dell'abbonamento fallisce e l'abbonamento passa a `on_hold`.
+2. Se il rifiuto è ritentabile (un rifiuto temporaneo come fondi insufficienti o un errore di rete temporaneo), il tentativo successivo è programmato automaticamente.
+3. I tentativi vengono eseguiti off-session secondo un programma di back-off, limitato dalla tua finestra di recupero.
+4. Al primo tentativo di successo, l'abbonamento ritorna a `active` e la data di fatturazione successiva è avanzata come normale.
+
+**Programma di tentativi**
+
+I tentativi si arretrano progressivamente, ancorati al momento in cui è stata creata la fattura fallita. Vengono effettuati fino a **8 tentativi**, purché rientrino nella tua finestra di recupero:
+
+| Tentativo | Ritardo dopo il precedente |
+|---------|----------------------|
+| 1 | 12 ore |
+| 2 | 24 ore |
+| 3 | 48 ore |
+| 4 | 72 ore |
+| 5 | 96 ore |
+| 6 | 120 ore |
+| 7 | 7 giorni |
+| 8 | 7 giorni |
+
+<Info>
+Solo i **rifiuti temporanei** vengono ritentati (ad esempio, fondi insufficienti, rifiuto generico, errori di elaborazione o di rete). I **rifiuti permanenti** terminano immediatamente la catena di tentativi, poiché riprovare non cambierebbe l'esito.
+</Info>
+
+Questo completa gli strumenti di recupero esistenti — le email di **Recupero Abbonamenti** chiedono al cliente di aggiornare il metodo di pagamento, mentre i Tentativi di Pagamento riprovano silenziosamente quello esistente. Lavorano bene insieme.
+
+Scopri di più: [Tentativi di Pagamento per Abbonamenti](/features/recovery/payment-retries) | [Recupero Abbonamenti](/features/recovery/subscription-dunning)
+
+### 2. **Impostazioni di Prorazione Aziendali**
+
+Ora puoi impostare un **comportamento di aggiornamento e downgrade predefinito** a livello aziendale invece di passare parametri di prorazione su ogni modifica del piano. Questi predefiniti si applicano ogni volta che un cliente modifica il proprio piano dal portale clienti, e puoi **sovrascriverli per collezione di prodotti**.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/plan-change-settings.png" alt="Impostazioni di comportamento predefinito per aggiornamenti e downgrade nella dashboard con controlli separati per aggiornamenti, downgrade e fallimento del pagamento" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Ogni direzione (aggiornamento e downgrade) ha due controlli indipendenti, oltre a una politica condivisa per i fallimenti di pagamento:
+
+| Impostazione | Campo | Predefinito (aggiornamento) | Predefinito (downgrade) |
+|---------|-------|-------------------|---------------------|
+| **Quando inizia il nuovo piano** | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| **Come viene addebitato il cliente** | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| **Se il pagamento del cliente fallisce** | `on_payment_failure` | `apply_change` | `apply_change` |
+
+**Quando inizia il nuovo piano** (`effective_at`)
+
+| Valore | Comportamento |
+|-------|----------|
+| `immediately` | Il cliente passa immediatamente al nuovo piano. |
+| `next_billing_date` | Il cliente rimane sul piano attuale fino alla prossima data di fatturazione, dopodiché passa al nuovo. |
+
+**Come viene addebitato il cliente** (`proration_billing_mode`)
+
+| Valore | Comportamento |
+|-------|----------|
+| `prorated_immediately` | Addebita un importo proporzionato ora, in base al tempo rimanente nel ciclo di fatturazione attuale. |
+| `full_immediately` | Addebita il prezzo pieno del nuovo piano adesso. |
+| `difference_immediately` | Addebita solo la differenza di prezzo tra il nuovo piano e quello attuale. |
+| `do_not_bill` | Non addebitare nulla adesso. Qualsiasi aggiustamento viene applicato alla prossima fattura. |
+
+**Se il pagamento del cliente fallisce** (`on_payment_failure`)
+
+| Valore | Comportamento |
+|-------|----------|
+| `prevent_change` | Mantieni il cliente sul piano attuale se il pagamento non va a buon fine. |
+| `apply_change` | Passa il cliente al nuovo piano anche se il pagamento non va a buon fine. Puoi riscuotere l'importo successivamente. |
+
+**Sovrascritture per collezione**
+
+Ogni collezione di prodotti può sovrascrivere uno di questi valori predefiniti. Ogni campo è indipendente — lascialo su **Eredita dall'azienda** per seguire il predefinito aziendale, oppure imposta un valore esplicito per sovrascriverlo solo per quella collezione.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/product-collection-plan-change.png" alt="Sezione di sovrascrittura comportamento aggiornamento e downgrade su una collezione di prodotti, con ogni campo che predefinito su 'Eredita dall'azienda'" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Ogni impostazione viene risolta in questo ordine:
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+Un valore per richiesta passato all'[API di Cambio Piano](/api-reference/subscriptions/change-plan) (`proration_billing_mode`, `effective_at`, `on_payment_failure`) ha sempre la precedenza sui predefiniti di collezione e aziendali. Le nuove impostazioni cambiano solo ciò che accade quando non viene fornito un valore esplicito — che è il caso di tutte le modifiche dei piani del portale clienti.
+</Info>
+
+Scopri di più: [Aggiornamento e Downgrade Abbonamento](/developer-resources/subscription-upgrade-downgrade) | [Collezioni di Prodotti](/features/product-collections)
+
+### 3. **Raccogli Nome Aziendale per Fatture B2B**
+
+I clienti B2B possono ora avere il loro **nome legale aziendale** visualizzato sulla fattura invece del nome personale dell'acquirente. Quando viene fornito un Codice Fiscale valido al momento del pagamento, è possibile raccogliere anche il `customer_business_name` associato affinché la fattura rifletta l'entità acquistrice.
+
+<Frame>
+<img src="/images/changelog/v1.101.0/business-name-b2b.png" alt="Pagina di checkout con l'interruttore 'Acquisto come azienda' abilitato, mostrando i campi Nome Aziendale e Numero di Codice Fiscale" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Quando il cliente seleziona **Acquisto come azienda** al momento del pagamento, viene richiesto sia un **Nome Aziendale** che un **Numero di Codice Fiscale**.
+
+Il nome aziendale appare sulla fattura solo quando tutte e tre le condizioni sono soddisfatte:
+
+1. La transazione è B2B (`b2b = true`)
+2. È presente un `tax_id`
+3. Viene fornito un `customer_business_name` non vuoto
+
+Altrimenti viene utilizzato il nome personale del cliente.
+
+**Raccolta al momento del checkout**
+
+Imposta `customer_business_name` direttamente, e/o abilita `allow_customer_editing_business_name` per lasciare che il cliente lo inserisca o lo modifichi sulla pagina di checkout insieme al suo Codice Fiscale:
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  customer: { email: 'buyer@acme.com' },
+  tax_id: 'GB123456789',
+  customer_business_name: 'Acme Corp Ltd',
+  feature_flags: {
+    allow_tax_id: true,
+    allow_customer_editing_business_name: true // let the customer enter/edit it
+  },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**Dove si applica**
+
+| Superficie | Campo | Note |
+|---------|-------|-------|
+| Sessioni di Checkout | `customer_business_name`, `feature_flags.allow_customer_editing_business_name` | Max 250 caratteri; flag predefinito su `false` |
+| Pagamenti | `customer_business_name` | Max 250 caratteri |
+| Abbonamenti | `customer_business_name` | Imposta o cancella tramite `PATCH /subscriptions/{id}` |
+
+<Warning>
+`customer_business_name` non può essere impostato senza un `tax_id`. Inviare un nome aziendale senza Codice Fiscale viene rifiutato. La cancellazione del `tax_id` cancella anche il nome aziendale, poiché i due sono collegati sulla fattura.
+</Warning>
+
+<Note>
+Gli spazi circostanti vengono eliminati e i valori solo-spazio bianco vengono trattati come una cancellazione esplicita — così i dati memorizzati corrispondono sempre a quelli visualizzati sulla fattura.
+</Note>
+
+Scopri di più: [Pagamenti B2B](/features/b2b-payments) | [Gestione Fatture](/features/invoice-generation) | [Sessioni di Checkout](/developer-resources/checkout-session)
+
+## Correzioni di Bug e Miglioramenti
+
+- Minime correzioni di bug e miglioramenti di stabilità in tutta la piattaforma.

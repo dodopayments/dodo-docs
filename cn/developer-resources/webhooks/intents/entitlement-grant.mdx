@@ -16,12 +16,12 @@ keywords:
 
 每当客户的权限授予状态发生变化时，这些事件将触发，例如生成许可证密钥、分配 Discord 角色、提供下载链接或撤销访问。订阅这些事件以保持您的应用程序与每个客户的可访问性同步。
 
-| Event | Description |
+| 事件 | 描述 |
 |-------|-------------|
-| `entitlement_grant.created` | 新的授予行已创建。对于许可证密钥，状态立即为 `delivered`，对于每个其他集成则为 `pending`。|
-| `entitlement_grant.delivered` | 授予已过渡到交付状态。客户现在可以访问被授予的平台、文件或许可证密钥。|
-| `entitlement_grant.failed` | 交付失败且未重试。检查 `error_code` 和 `error_message`。|
-| `entitlement_grant.revoked` | 访问权限已被撤销。检查 `revocation_reason` 以了解原因。|
+| `entitlement_grant.created` | 创建了新的授权行。对于自动获取的许可证密钥，状态立即为 `delivered`，手动获取许可证密钥及其他集成则为 `pending`。|
+| `entitlement_grant.delivered` | 授权状态转为已交付。客户现在可以访问授权的平台、文件或许可证密钥。|
+| `entitlement_grant.failed` | 交付失败且不再重试。检查 `error_code` 和 `error_message`。|
+| `entitlement_grant.revoked` | 访问被撤销。检查 `revocation_reason` 了解原因。|
 
 所有四个事件共享相同的 `EntitlementGrantResponse` 负载，如下模式所述。
 
@@ -33,58 +33,60 @@ keywords:
 
 授予行刚刚插入。从此时起，即使状态发生变化，授予始终具有稳定的 `id`。使用此事件记录履行正在进行中。
 
-对于 **许可证密钥**，行直接插入，并填充 `status: "delivered"` 和 `delivered_at`，因此单个 `created` 事件后没有进一步的状态更改，除非以后撤销授予。
+对于**自动获取的许可证密钥**，授权行直接插入，填充了 `status: "delivered"` 和 `delivered_at`，因此只能由一个 `created` 事件跟随，除非授权后来被撤销，否则不会有进一步的状态变化。
 
-对于 **每个其他集成**，行到达时为 `status: "pending"`。一旦交付完成，`delivered` 或 `failed` 事件随之而来：
+对于**手动获取的许可证密钥**（使用 `fulfillment_mode: manual` 的授权），授权行到达时有 `status: "pending"` 但没有 `license_key` 对象 — 还没有密钥。此事件表示有一个密钥等待获取；通过[`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key)提供它，随后触发 `entitlement_grant.delivered`。查看[手动获取](/features/license-keys#manual-fulfillment)。
 
-- **基于 OAuth 的集成**（Discord、GitHub、Notion）包括客户必须访问以完成同意的 `oauth_url`。在客户授权之前，授予保持为 `pending`。
-- **平台直接集成**（Telegram、Framer、数字文件）在平台调用运行时仅短暂保持在 `pending`，然后移动到 `delivered`。
+对于**其他集成**，授权行到达带有 `status: "pending"`。完成交付后，紧跟着发生 `delivered` 或 `failed` 事件：
+
+- **基于 OAuth 的集成**（Discord、GitHub、Notion）包括一个顾客必须访问的 `oauth_url` 来完成许可。授权保持为 `pending`，直到顾客授权。
+- **平台直接集成**（Telegram、Framer、数字文件）仅在平台调用运行时短暂保持 `pending`，然后转为 `delivered`。
 
 ### entitlement_grant.delivered
 
-授予从 `pending` 过渡到 `delivered`。客户现在拥有权限所描述的访问权限。使用此事件在您自己的系统中解锁相关功能，例如准备工作空间、发送定制欢迎电子邮件或标记为“已履行”的标志。
+授权由 `pending` 转为 `delivered`。客户现在拥有所描述的授权访问。使用此事件解锁你自己的系统中的依赖功能，例如配置工作区、发送自定义欢迎邮件或标记为 "已完成"。
 
-负载的 `delivered_at` 字段捕获交付完成时间。对于在创建时已达到 `delivered` 的授予，您将接收 `created` 和 `delivered` 事件。
+负载的 `delivered_at` 字段记录了交付完成的时间。对于已在创建时到达 `delivered` 的授权，你将连续收到 `created` 和 `delivered` 事件。
 
 ### entitlement_grant.failed
 
-尝试交付但由于不可重试的错误而失败。`error_code` 和 `error_message` 字段解释了失败原因。常见原因包括撤销的 OAuth 令牌、被拒绝的平台权限或缺失的目标（例如，已删除的 Discord 公会）。
+交付尝试失败且出现不可重试的错误。`error_code` 和 `error_message` 字段解释了失败原因。常见原因包括撤销 OAuth 令牌、被拒绝的平台权限或缺少的目标（例如，已删除的 Discord 公会）。
 
 <Tip>
-将 `entitlement_grant.failed` 视为可操作项。客户付款但未获得访问权限。向您的支持团队呈现失败原因或在解决基础问题后触发重新授权。
+将 `entitlement_grant.failed` 视为可操作的。顾客付款但未获得访问。向支持团队报告失败或在解决根本问题后触发重授权。
 </Tip>
 
 ### entitlement_grant.revoked
 
-访问在平台级别被撤销：Discord 角色移除、GitHub 合作者移除、许可证密钥禁用、不再发放文件下载 URL。`revocation_reason` 字段记录了触发器。
+访问在平台层面被撤销：Discord 角色被移除，GitHub 协作者被移除，许可证密钥被禁用，不再提供文件下载网址。 `revocation_reason` 字段记录触发。
 
 | `revocation_reason` | 触发器 |
 |---|---|
-| `subscription_cancelled` | 客户的订阅被取消（`subscription.cancelled` 事件）。|
-| `subscription_on_hold` | 由于续订失败，订阅处于暂停状态（`subscription.on_hold`）。可恢复：成功重试将重新授予。
-| `subscription_expired` | 订阅到达其期限的结尾（`subscription.expired`）。|
-| `plan_changed` | 计划更改；旧的授予在发布新的授予之前被撤销（`subscription.plan_changed`）。|
-| `refund` | 原始一次性付款处理了退款（`refund.succeeded`）。|
-| `manual` | 商家通过 API 或仪表板撤销了授予。手动撤销不会在订阅续期时自动重新授予。|
-| `license_key_disabled` | 许可证密钥授予背后的许可证密钥被禁用。如果密钥重新启用，授予将自动重新激活。|
-| `platform_external` | 集成的平台方面不同步（例如，Discord 角色被手动移除，GitHub 应用程序失去储存库访问权限，或对账过程检测到了丢失的目标）。在底层平台问题解决之前，授予不会在订阅续期时自动重新授予。|
+| `subscription_cancelled` | 客户的订阅被取消 (`subscription.cancelled` 事件)。|
+| `subscription_on_hold` | 由于续订失败，订阅被暂挂 (`subscription.on_hold`)。可恢复：成功重试可产生重授权。|
+| `subscription_expired` | 订阅已到期 (`subscription.expired`)。|
+| `plan_changed` | 计划更改；旧的授权在发行新的授权前被撤销 (`subscription.plan_changed`)。|
+| `refund` | 为原始一次性付款处理了退款 (`refund.succeeded`)。|
+| `manual` | 商户通过 API 或控制面板撤销了授权。手动撤销不会在订阅续订时自动重新授权。|
+| `license_key_disabled` | 许可证密钥授权背后的许可证密钥被禁用。如果密钥被重新启用，授权会自动重新激活。|
+| `platform_external` | 集成平台的某一面漂移失调（例如，Discord 角色被手动删除，GitHub 应用失去仓库访问，或和解过程中检测到缺少的目标）。授权在订阅续订时不会自动重新授权，直到底层平台问题得到解决。|
 
 ---
 
 ## 负载变体
 
-`data` 字段始终是 `EntitlementGrantResponse` 对象。两种集成类型附加额外的嵌套对象：
+`data` 字段始终是一个 `EntitlementGrantResponse` 对象。负载带有 `integration_type` 字段（例如 `license_key`, `digital_files`, `discord`），以便你可以直接识别授权类型。两种集成类型还附加了额外的嵌套对象：
 
-- 如果权限集成类型为 `license_key`，则会包含 **`license_key`**。它包含生成的密钥、到期时间和激活使用情况。
-- 如果集成类型为 `digital_files`，则会包含 **`digital_product_delivery`**。它包含预签名下载 URL，选择性的 `instructions` 和选择性的 `external_url`。
+- 当 `integration_type` 是 `license_key` **且已发布密钥**时，包括 **`license_key`**。它包含生成的密钥、过期时间和激活使用情况。对于仍在 `pending` 的手动获取的授权，此对象为 `null`，直到你完成授权。
+- 当 `integration_type` 是 `digital_files` 时，包括 **`digital_product_delivery`**。它包含预签名的下载网址、可选的 `instructions` 和可选的 `external_url`。
 
-对于所有其他集成类型（Discord、GitHub、Telegram、Framer、Notion），这两个字段均为 `null`；相关配置捕获在权限本身中，而不是授权中。
+对于所有其他集成类型（Discord、GitHub、Telegram、Framer、Notion），两个嵌套字段均为 `null`；相关的配置记录在授权本身中，而不是在授权行中。
 
 ---
 
 ## 示例负载
 
-### 许可证密钥交付 (`entitlement_grant.delivered`)
+### 许可证密钥已交付 (`entitlement_grant.delivered`)
 
 ```json theme={null}
 {
@@ -100,6 +102,7 @@ keywords:
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "delivered",
+    "integration_type": "license_key",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
       "expires_at": "2027-05-01T00:00:00Z",
@@ -121,7 +124,42 @@ keywords:
 }
 ```
 
-### 数字文件交付 (`entitlement_grant.delivered`)
+### 许可证密钥等待手动获取 (`entitlement_grant.created`)
+
+当顾客购买了一个使用 `fulfillment_mode: manual` 的许可证密钥授权的产品时触发。授权行 `pending` 尚无 `license_key` 对象 — 商家必须提供密钥。
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:24:00.000000Z",
+  "data": {
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "external_id": null,
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "pending",
+    "integration_type": "license_key",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:24:00Z",
+    "updated_at": "2026-05-01T10:24:00Z"
+  }
+}
+```
+
+### 数字文件已交付 (`entitlement_grant.delivered`)
 
 ```json theme={null}
 {
@@ -137,6 +175,7 @@ keywords:
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "delivered",
+    "integration_type": "digital_files",
     "license_key": null,
     "digital_product_delivery": {
       "files": [
@@ -166,7 +205,7 @@ keywords:
 }
 ```
 
-### Discord 角色创建并待定 (`entitlement_grant.created`)
+### Discord 角色已创建并挂起 (`entitlement_grant.created`)
 
 ```json theme={null}
 {
@@ -182,6 +221,7 @@ keywords:
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
     "status": "pending",
+    "integration_type": "discord",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -198,7 +238,7 @@ keywords:
 }
 ```
 
-### 订阅取消上的授予撤销 (`entitlement_grant.revoked`)
+### 订阅取消时撤销授权 (`entitlement_grant.revoked`)
 
 ```json theme={null}
 {
@@ -214,6 +254,7 @@ keywords:
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
     "status": "revoked",
+    "integration_type": "license_key",
     "revocation_reason": "subscription_cancelled",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
@@ -251,6 +292,7 @@ keywords:
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
     "status": "failed",
+    "integration_type": "github",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -271,8 +313,8 @@ keywords:
 
 ## 集成提示
 
-- **在解锁相关功能前等待 `entitlement_grant.delivered`。** `payment.succeeded` 事件告诉您款项已结算；这并不意味着客户已经拥有 GitHub 库或 Discord 角色。`delivered` 事件是履行的实情来源。
-- **将 `revocation_reason` 映射到保留流程。** `subscription_on_hold` 撤销通常意味着客户的卡片失败，下次续约将重新授予访问权限。`manual` 或 `subscription_cancelled` 撤销是有意的。在客户消息中区别对待。
-- **使用授予 `id` 作为您的幂等键。** 单个授予最多发出一个 `created` 事件和最多一个终端事件（`delivered` 或 `failed`），以及最多一个 `revoked` 事件。Webhook 系统的重新交付可以重复事件；在授予 `id` 加上 `type` 上消除重复。
-- **检查 `license_key` 和 `digital_product_delivery` 以识别集成类型。** 授予负载本身不携带集成类型，但这两个嵌套对象中的一个正好会为许可证密钥和数字文件权限提供内容。
-- **对于基于 OAuth 的授予，向客户展示 `oauth_url`。** Discord、GitHub 或 Notion 订阅者流的 `entitlement_grant.created` 事件包括一个 `oauth_url` 和 `oauth_expires_at`。通过电子邮件发送给客户或在您的应用中展示，以解除交付阻碍。
+- **在解锁依赖功能之前等待 `entitlement_grant.delivered`。** 一个 `payment.succeeded` 事件告诉你资金已到位；但并不表示客户已经拥有 GitHub 仓库或 Discord 角色。`delivered` 事件是获取的可信来源。
+- **将 `revocation_reason` 映射到保留流程。** `subscription_on_hold` 撤销通常意味着客户的信用卡失败，下一次续订将重新授予访问权限。`manual` 或 `subscription_cancelled` 撤销是有意的。在客户消息中区别对待。
+- **使用授权 `id` 作为幂等性密钥。** 单个授权最多发出一个 `created` 事件和最多一个终端事件（`delivered` 或 `failed`），最多发出一个 `revoked` 事件。来自 webhook 系统的重新交付可以重复事件；去重使用授权 `id` 加上 `type`。
+- **读取 `integration_type` 以识别授权类型。** 负载直接携带 `integration_type`（例如 `license_key`, `digital_files`, `discord`）。`license_key` 和 `digital_product_delivery` 嵌套对象在相应的授权完成后填充；手动获取的许可证密钥授权在你完成前保持 `pending` 带有 `integration_type: "license_key"` 和 `null` `license_key`。
+- **对于基于 OAuth 的授权，将 `oauth_url` 显示给客户。** Discord、GitHub 或 Notion 订阅流的 `entitlement_grant.created` 事件包括 `oauth_url` 和 `oauth_expires_at`。将其通过电子邮件发送给客户或在你的应用中显示以解除交付阻塞。
