@@ -490,12 +490,12 @@ Kredit yang dibuat oleh penurunan versi menggunakan <code>difference_immediately
 
 | Fitur | `prorated_immediately` | `difference_immediately` | `full_immediately` | `do_not_bill` |
 |---------|----------------------|------------------------|-------------------|--------------|
-| **Biaya Peningkatan** | Perbedaan yang sesuai untuk hari yang tersisa | Harga penuh beda antara paket | Harga penuh paket baru | Tidak ada biaya |
-| **Kredit Penurunan versi** | Kredit prorated untuk hari yang tersisa | Perbedaan harga penuh sebagai kredit | Tidak ada kredit | Tidak ada kredit |
-| **Siklus Penagihan** | Tidak berubah | Tidak berubah | Diatur ulang ke hari ini | Tidak berubah |
-| **Perilaku Percobaan** | Mengakhiri percobaan, menagih segera | Mengakhiri percobaan, menagih segera | Mengakhiri percobaan, menagih jumlah penuh | Mengakhiri percobaan, tidak ada biaya |
-| **Terbaik untuk** | Penagihan berbasis waktu yang adil | Matematika peningkatan/penurunan versi sederhana | Mengatur ulang siklus penagihan | Migrasi gratis atau perubahan sopan santun |
-| **Kompleksitas** | Sedang (perhitungan hari) | Rendah (pengurangan sederhana) | Rendah (biaya penuh) | Tidak ada |
+| **Biaya upgrade** | Perbedaan sesuai prorated untuk sisa hari | Perbedaan harga penuh antara paket | Harga penuh paket baru | Tidak ada biaya |
+| **Kredit downgrade** | Kredit prorated untuk sisa hari | Perbedaan harga penuh sebagai kredit | Tidak ada kredit | Tidak ada kredit |
+| **Siklus penagihan** | Direset menjadi hari ini | Direset menjadi hari ini | Direset menjadi hari ini | Tidak berubah |
+| **Perilaku percobaan** | Akhiri percobaan, kenakan biaya segera | Akhiri percobaan, kenakan biaya segera | Akhiri percobaan, kenakan biaya penuh | Akhiri percobaan, tidak ada biaya |
+| **Terbaik untuk** | Penagihan berbasis waktu adil | Matematika upgrade/downgrade sederhana | Mereset siklus penagihan | Migrasi gratis atau peralihan bersahabat |
+| **Kompleksitas** | Sedang (penghitungan hari) | Rendah (pengurangan sederhana) | Rendah (biaya penuh) | Tidak ada |
 
 ```mermaid
 flowchart TD
@@ -533,7 +533,8 @@ Gunakan angka kanonik ini secara konsisten:
       Charge = $40.00 − $15.00 = $25.00
 
     → Customer pays $25.00 now
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -561,9 +562,10 @@ Gunakan angka kanonik ini secara konsisten:
       Credit = $40.00 − $10.00 = $30.00
 
     → No charge — $30.00 credit added to subscription
+    → Billing cycle resets to today (January 16)
     → Credit auto-applies to future renewals
-    → Next renewal (Feb 1): $20.00 − $30.00 credit = $0.00
-    → Following renewal (Mar 1): $20.00 − $10.00 remaining credit = $10.00
+    → Next renewal (Feb 15): $20.00 − $20.00 (from credit) = $0.00 ($10.00 credit remaining)
+    → Following renewal (Mar 15): $20.00 − $10.00 remaining credit = $10.00
     ```
 
     ```javascript
@@ -584,7 +586,8 @@ Gunakan angka kanonik ini secara konsisten:
                      = $50.00
 
     → Customer pays $50.00 now (regardless of cycle position)
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -685,14 +688,16 @@ flowchart LR
     A[Plan Change] --> B{Proration Mode}
     B -->|prorated| C[Calculate remaining days]
     C --> D[Charge prorated diff]
-    D --> E[Keep billing date]
+    D --> E[Reset billing date]
     B -->|difference| F[Price difference]
     F -->|Upgrade| G[Charge diff]
     F -->|Downgrade| H[Add credit]
     G --> E
     H --> E
     B -->|full| I[Charge full price]
-    I --> J[Reset billing date]
+    I --> E
+    B -->|do_not_bill| J[No charge / no credit]
+    J --> K[Keep billing date]
 ```
 
 <Tip>
@@ -759,23 +764,53 @@ Jika tidak ditentukan, parameter `on_payment_failure` menggunakan pengaturan def
 | Pelanggan perusahaan terpercaya | `apply_change` | Risiko lebih rendah dari ketidakpembayaran |
 | Konversi percobaan ke berbayar | `prevent_change` | Momen pembayaran kritis |
 
-## Penanganan webhooks
+## Default Bisnis & Koleksi
 
-Melacak status langganan melalui webhook untuk mengonfirmasi perubahan paket dan pembayaran.
+Daripada memasukkan parameter prorated pada setiap perubahan paket, Anda dapat menetapkan **perilaku default untuk upgrade & downgrade** sekali di tingkat bisnis. Default ini berlaku untuk semua perubahan paket portal pelanggan, dan dapat **ditimpa sesuai koleksi produk**.
 
-### Jenis acara yang ditangani
+Ada default terpisah untuk upgrade dan downgrade:
+
+| Pengaturan | Bidang (upgrade / downgrade) | Default (upgrade) | Default (downgrade) |
+|---------|-----------------------------|-------------------|---------------------|
+| Kapan paket baru dimulai | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| Bagaimana cara pelanggan dikenakan biaya | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| Jika pembayaran pelanggan gagal | `on_payment_failure` | `apply_change` | `apply_change` |
+
+Konfigurasi default bisnis di bawah **Pengaturan → Langganan**, dan mengesampingkan koleksi pada setiap koleksi produk. Setiap bidang koleksi bersifat independen — biarkan tidak diatur untuk **mewarisi dari default bisnis**, atau tetapkan nilai untuk menimpanya hanya untuk koleksi tersebut.
+
+### Urutan Resolusi
+
+Untuk setiap perubahan paket, setiap pengaturan diselesaikan dalam urutan ini:
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+Nilai yang diteruskan secara eksplisit ke [API Perubahan Paket](/api-reference/subscriptions/change-plan) selalu menang. Default bisnis dan koleksi hanya berlaku ketika tidak ada nilai eksplisit yang disediakan — yang merupakan kasus untuk semua perubahan paket yang dimulai dari portal pelanggan.
+</Info>
+
+<Tip>
+Pengaturan umum: biarkan upgrade `immediately` + `difference_immediately` sehingga pelanggan membayar perbedaannya dan mendapatkan akses segera, dan biarkan downgrade pada `next_billing_date` sehingga pelanggan mempertahankan paket mereka saat ini hingga siklus berakhir.
+</Tip>
+
+## Menangani Webhooks
+
+Lacak status langganan melalui webhooks untuk mengonfirmasi perubahan paket dan pembayaran.
+
+### Jenis Peristiwa untuk Ditangani
 - `subscription.active`: langganan diaktifkan
-- `subscription.plan_changed`: paket langganan berubah (peningkatan/penurunan versi/perubahan addon)
-- `subscription.on_hold`: biaya gagal, langganan dijeda
-- `subscription.renewed`: pembaruan berhasil
-- `payment.succeeded`: pembayaran untuk perubahan paket atau pembaruan berhasil
+- `subscription.plan_changed`: paket langganan berubah (perubahan upgrade/downgrade/addon)
+- `subscription.on_hold`: pembayaran gagal, langganan dihentikan
+- `subscription.renewed`: perpanjangan berhasil
+- `payment.succeeded`: pembayaran untuk perubahan paket atau perpanjangan berhasil
 - `payment.failed`: pembayaran gagal
 
 <Info>
-Kami merekomendasikan menggerakkan logika bisnis dari acara langganan dan menggunakan acara pembayaran untuk konfirmasi dan rekonsiliasi.
+Kami merekomendasikan untuk mendorong logika bisnis dari peristiwa langganan dan menggunakan peristiwa pembayaran untuk konfirmasi dan rekonsiliasi.
 </Info>
 
-### Memverifikasi tanda tangan dan menangani niat
+### Verifikasi Tanda Tangan dan Tangani Intent
 
 <Tabs>
   <Tab title="Next.js Route Handler">
@@ -858,7 +893,7 @@ Kami merekomendasikan menggerakkan logika bisnis dari acara langganan dan menggu
 </Tabs>
 
 <Note>
-Untuk skema payload rinci, lihat <a href="/developer-resources/webhooks/intents/subscription">Payload webhook langganan</a> dan <a href="/developer-resources/webhooks/intents/payment">Payload webhook pembayaran</a>.
+Untuk skema payload terperinci, lihat <a href="/developer-resources/webhooks/intents/subscription">Payload webhook Langganan</a> dan <a href="/developer-resources/webhooks/intents/payment">Payload webhook Pembayaran</a>.
 </Note>
 
 ## Praktik Terbaik
@@ -866,26 +901,26 @@ Untuk skema payload rinci, lihat <a href="/developer-resources/webhooks/intents/
 Ikuti rekomendasi ini untuk perubahan paket langganan yang andal:
 
 ### Strategi Perubahan Paket
-- **Uji secara menyeluruh**: Selalu uji perubahan paket dalam modus percobaan sebelum produksi
-- **Pilih proratasi dengan hati-hati**: Pilih mode proratasi yang sesuai dengan model bisnis Anda
-- **Tangani kegagalan dengan anggun**: Terapkan penanganan kesalahan yang tepat dan logika pengulangan
-- **Monitor tingkat keberhasilan**: Lacak tingkat keberhasilan/kegagalan perubahan paket dan teliti masalah
+- **Uji secara menyeluruh**: Selalu uji perubahan paket dalam mode uji sebelum produksi
+- **Pilih proration dengan hati-hati**: Pilih mode proration yang paling sesuai dengan model bisnis Anda
+- **Tangani kegagalan dengan baik**: Terapkan penanganan kesalahan dan logika coba ulang yang tepat
+- **Pantau tingkat keberhasilan**: Lacak tingkat keberhasilan/kegagalan perubahan paket dan selidiki masalah
 
 ### Implementasi Webhook
 - **Verifikasi tanda tangan**: Selalu validasi tanda tangan webhook untuk memastikan keaslian
-- **Terapkan idempoten**: Tangani acara webhook duplikat dengan anggun
-- **Proses secara asynchronous**: Jangan memblokir tanggapan webhook dengan operasi berat
-- **Catat semuanya**: Pertahankan catatan rinci untuk debugging dan tujuan audit
+- **Terapkan idempotensi**: Tangani duplikasi peristiwa webhook dengan baik
+- **Proses secara asinkron**: Jangan memblokir respon webhook dengan operasi berat
+- **Catat semuanya**: Pertahankan catatan rinci untuk debugging dan audit
 
 ### Pengalaman Pengguna
-- **Komunikasikan dengan jelas**: Informasikan pelanggan tentang perubahan penagihan dan waktu
-- **Berikan konfirmasi**: Kirim email konfirmasi untuk perubahan paket yang berhasil
-- **Tangani kasus tepi**: Pertimbangkan periode percobaan, prorasi, dan pembayaran yang gagal
-- **Perbarui antarmuka pengguna segera**: Cerminkan perubahan paket dalam antarmuka aplikasi Anda
+- **Komunikasikan dengan jelas**: Informasikan kepada pelanggan tentang perubahan dan waktu penagihan
+- **Berikan konfirmasi**: Kirim konfirmasi email untuk perubahan paket yang berhasil
+- **Tangani kasus tepi**: Pertimbangkan periode percobaan, perhitungan prorated, dan pembayaran yang gagal
+- **Perbarui UI segera**: Refleksikan perubahan paket di antarmuka aplikasi Anda
 
 ## Masalah Umum dan Solusi
 
-Selesaikan masalah umum yang ditemui selama perubahan paket langganan:
+Selesaikan masalah-masalah umum yang dihadapi selama perubahan paket langganan:
 
 <AccordionGroup>
 <Accordion title="Charge created but subscription not updated">
@@ -893,91 +928,91 @@ Selesaikan masalah umum yang ditemui selama perubahan paket langganan:
 
 **Penyebab umum**:
 - Pemrosesan webhook gagal atau tertunda
-- Status aplikasi tidak diperbarui setelah menerima webhook
+- Status aplikasi tidak diperbarui setelah menerima webhooks
 - Masalah transaksi database selama pembaruan status
 
 **Solusi**:
-- Terapkan penanganan webhook yang kuat dengan logika pengulangan
+- Terapkan penanganan webhook yang andal dengan logika coba ulang
 - Gunakan operasi idempoten untuk pembaruan status
-- Tambahkan pemantauan untuk mendeteksi dan memberi peringatan tentang acara webhook yang terlewat
-- Verifikasi endpoint webhook dapat diakses dan merespons dengan benar
+- Tambahkan pemantauan untuk mendeteksi dan memberi tahu jika ada peristiwa webhook yang terlewatkan
+- Verifikasi endpoint webhook dapat diakses dan merespon dengan benar
 </Accordion>
 
 <Accordion title="Credits not applied after downgrade">
-**Gejala**: Pelanggan menurunkan versi tetapi tidak melihat saldo kredit
+**Gejala**: Pelanggan melakukan downgrade tetapi tidak melihat saldo kredit
 
 **Penyebab umum**:
-- Ekspektasi mode proratasi: penurunan kredit harga penuh paket dengan `difference_immediately`, sementara `prorated_immediately` menciptakan kredit prorated berdasarkan waktu yang tersisa dalam siklus
-- Kredit bersifat spesifik untuk langganan dan tidak berlaku untuk langganan lain
+- Ekspektasi mode proration: Downgrade memberi kredit perbedaan harga paket penuh dengan `difference_immediately`, sedangkan `prorated_immediately` membuat kredit prorated berdasarkan sisa waktu dalam siklus
+- Kredit bersifat spesifik untuk langganan dan tidak berpindah antar langganan
 - Saldo kredit tidak terlihat di dasbor pelanggan
 
 **Solusi**:
-- Gunakan `difference_immediately` untuk penurunan jika Anda menginginkan kredit otomatis
-- Jelaskan kepada pelanggan bahwa kredit berlaku untuk pembaruan masa depan dari langganan yang sama
-- Terapkan portal pelanggan untuk menampilkan saldo kredit
+- Gunakan `difference_immediately` untuk downgrade jika Anda menginginkan kredit otomatis
+- Jelaskan kepada pelanggan bahwa kredit berlaku untuk perpanjangan langganan yang sama di masa depan
+- Terapkan portal pelanggan untuk menunjukkan saldo kredit
 - Periksa pratinjau faktur berikutnya untuk melihat kredit yang diterapkan
 </Accordion>
 
 <Accordion title="Webhook signature verification fails">
-**Gejala**: Acara webhook ditolak karena tanda tangan tidak sah
+**Gejala**: Peristiwa webhook ditolak karena tanda tangan tidak valid
 
 **Penyebab umum**:
-- Kunci rahasia webhook yang salah
-- Tubuh permintaan mentah dimodifikasi sebelum verifikasi tanda tangan
-- Algoritma verifikasi tanda tangan yang salah
+- Kunci rahasia webhook salah
+- Badan permintaan mentah diubah sebelum verifikasi tanda tangan
+- Algoritma verifikasi tanda tangan salah
 
 **Solusi**:
-- Verifikasi bahwa Anda menggunakan `DODO_WEBHOOK_SECRET` yang benar dari dasbor
-- Baca tubuh permintaan mentah sebelum middleware parsing JSON
+- Verifikasi Anda menggunakan `DODO_WEBHOOK_SECRET` yang benar dari dasbor
+- Baca badan permintaan mentah sebelum middleware parsing JSON
 - Gunakan perpustakaan verifikasi webhook standar untuk platform Anda
 - Uji verifikasi tanda tangan webhook di lingkungan pengembangan
 </Accordion>
 
 <Accordion title="Plan change fails with 422 error">
-**Gejala**: API mengembalikan kesalahan 422 Unprocessable Entity
+**Gejala**: API mengembalikan kesalahan 422 Entitas Tidak Dapat Diproses
 
 **Penyebab umum**:
-- ID langganan tidak valid atau ID produk
-- Langganan tidak dalam status aktif
-- Parameter yang dibutuhkan hilang
+- ID langganan atau produk tidak valid
+- Langganan tidak dalam keadaan aktif
+- Parameter yang diperlukan hilang
 - Produk tidak tersedia untuk perubahan paket
 
 **Solusi**:
-- Verifikasi bahwa langganan ada dan aktif
+- Verifikasi langganan ada dan aktif
 - Periksa ID produk valid dan tersedia
-- Pastikan semua parameter yang dibutuhkan diberikan
+- Pastikan semua parameter yang diperlukan disediakan
 - Tinjau dokumentasi API untuk persyaratan parameter
 </Accordion>
 
 <Accordion title="Immediate charge fails during plan change">
-**Gejala**: Perubahan paket dimulai tetapi biaya langsung gagal
+**Gejala**: Perubahan paket dimulai tetapi biaya segera gagal
 
 **Penyebab umum**:
 - Dana tidak mencukupi pada metode pembayaran pelanggan
-- Metode pembayaran kadaluarsa atau tidak valid
+- Metode pembayaran kadaluwarsa atau tidak valid
 - Bank menolak transaksi
 - Deteksi penipuan memblokir biaya
 
 **Solusi**:
 - Tangani acara webhook `payment.failed` dengan tepat
-- Notifikasi pelanggan untuk memperbarui metode pembayaran
-- Terapkan logika pengulangan untuk kegagalan sementara
-- Pertimbangkan untuk mengizinkan perubahan paket dengan biaya langsung yang gagal
+- Beritahu pelanggan untuk memperbarui metode pembayaran
+- Terapkan logika coba ulang untuk kegagalan sementara
+- Pertimbangkan mengizinkan perubahan paket dengan biaya langsung yang gagal
 </Accordion>
 
 <Accordion title="Subscription on hold after plan change">
-**Gejala**: Biaya perubahan paket gagal dan langganan berpindah ke status `on_hold`
+**Gejala**: Biaya perubahan paket gagal dan langganan pindah ke status `on_hold`
 
 **Apa yang terjadi**:
-Ketika biaya perubahan paket gagal, langganan secara otomatis ditempatkan dalam status `on_hold`. Langganan tidak akan diperpanjang secara otomatis hingga metode pembayaran diperbarui.
+Ketika biaya perubahan paket gagal, langganan secara otomatis ditempatkan di status `on_hold`. Langganan tidak akan diperpanjang secara otomatis hingga metode pembayaran diperbarui.
 
 **Solusi**: Perbarui metode pembayaran untuk mengaktifkan kembali langganan
 
 Untuk mengaktifkan kembali langganan dari status `on_hold` setelah perubahan paket gagal:
 
-1. **Perbarui metode pembayaran** menggunakan Update Payment Method API
-2. **Pembuatan biaya otomatis**: API secara otomatis membuat biaya untuk jumlah yang belum dibayar
-3. **Pembuatan faktur**: Faktur dibuat untuk biaya
+1. **Perbarui metode pembayaran** menggunakan API Perbarui Metode Pembayaran
+2. **Pembuatan biaya otomatis**: API secara otomatis membuat biaya untuk sisa tagihan
+3. **Pembuatan faktur**: Faktur dihasilkan untuk biaya tersebut
 4. **Pemrosesan pembayaran**: Pembayaran diproses menggunakan metode pembayaran baru
 5. **Reaktivasi**: Setelah pembayaran berhasil, langganan diaktifkan kembali ke status `active`
 
@@ -1053,15 +1088,15 @@ def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
 </CodeGroup>
 
 **Acara webhook untuk dipantau**:
-- `subscription.on_hold`: Langganan di tempat tahan (diterima ketika biaya perubahan paket gagal)
-- `payment.succeeded`: Pembayaran untuk jumlah yang tertunda berhasil (setelah memperbarui metode pembayaran)
+- `subscription.on_hold`: Langganan ditangguhkan (diterima saat biaya perubahan paket gagal)
+- `payment.succeeded`: Pembayaran untuk sisa tagihan berhasil (setelah memperbarui metode pembayaran)
 - `subscription.active`: Langganan diaktifkan kembali setelah pembayaran berhasil
 
 **Praktik terbaik**:
-- Notifikasi pelanggan segera ketika biaya perubahan paket gagal
+- Beritahu pelanggan segera ketika biaya perubahan paket gagal
 - Berikan instruksi yang jelas tentang cara memperbarui metode pembayaran mereka
 - Pantau acara webhook untuk melacak status reaktivasi
-- Pertimbangkan untuk menerapkan logika pengulangan otomatis untuk kegagalan pembayaran sementara
+- Pertimbangkan mengimplementasikan logika coba ulang otomatis untuk kegagalan pembayaran sementara
 
 <Card title="Update Payment Method API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
 Lihat dokumentasi API lengkap untuk memperbarui metode pembayaran dan mengaktifkan kembali langganan.
@@ -1077,35 +1112,35 @@ Ikuti langkah-langkah ini untuk menguji implementasi perubahan paket langganan A
 <Step title="Set up test environment">
 - Gunakan kunci API uji dan produk uji
 - Buat langganan uji dengan berbagai jenis paket
-- Konfigurasi endpoint webhook uji
+- Konfigurasikan endpoint webhook uji
 - Siapkan pemantauan dan pencatatan
 </Step>
 
 <Step title="Test different proration modes">
 - Uji `prorated_immediately` dengan berbagai posisi siklus penagihan
-- Uji `difference_immediately` untuk peningkatan dan penurunan versi
-- Uji `full_immediately` untuk mengatur ulang siklus penagihan
-- Uji `do_not_bill` untuk perubahan paket tanpa biaya/kredit
+- Uji `difference_immediately` untuk upgrade dan downgrade
+- Uji `full_immediately` untuk mereset siklus penagihan
+- Uji `do_not_bill` untuk peralihan paket tanpa biaya/kredit
 - Verifikasi perhitungan kredit benar
 </Step>
 
 <Step title="Test webhook handling">
-- Verifikasi semua acara webhook yang relevan diterima
+- Verifikasi semua peristiwa webhook terkait diterima
 - Uji verifikasi tanda tangan webhook
-- Tangani acara webhook duplikat dengan anggun
+- Tangani duplikasi peristiwa webhook dengan baik
 - Uji skenario kegagalan pemrosesan webhook
 </Step>
 
 <Step title="Test error scenarios">
-- Uji dengan ID langganan yang tidak valid
-- Uji dengan metode pembayaran yang kedaluwarsa
-- Uji kegagalan jaringan dan waktu tunggu
+- Uji dengan ID langganan tidak valid
+- Uji dengan metode pembayaran kadaluarsa
+- Uji kegagalan jaringan dan waktu habis
 - Uji dengan dana tidak mencukupi
 </Step>
 
 <Step title="Monitor in production">
 - Siapkan peringatan untuk perubahan paket yang gagal
-- Monitor waktu pemrosesan webhook
+- Pantau waktu pemrosesan webhook
 - Lacak tingkat keberhasilan perubahan paket
 - Tinjau tiket dukungan pelanggan untuk masalah perubahan paket
 </Step>
@@ -1123,11 +1158,11 @@ Permintaan perubahan paket diproses dengan sukses. Langganan sedang diperbarui d
 </Accordion>
 
 <Accordion title="400 Bad Request">
-Parameter permintaan tidak valid. Periksa apakah semua bidang yang dibutuhkan disediakan dan diformat dengan benar.
+Parameter permintaan tidak valid. Periksa bahwa semua bidang yang diperlukan disediakan dan diformat dengan benar.
 </Accordion>
 
 <Accordion title="401 Unauthorized">
-API key tidak valid atau hilang. Verifikasi bahwa `DODO_PAYMENTS_API_KEY` Anda benar dan memiliki izin yang tepat.
+Kunci API tidak valid atau hilang. Verifikasi `DODO_PAYMENTS_API_KEY` Anda benar dan memiliki izin yang benar.
 </Accordion>
 
 <Accordion title="404 Not Found">
@@ -1135,15 +1170,15 @@ ID langganan tidak ditemukan atau tidak milik akun Anda.
 </Accordion>
 
 <Accordion title="422 Unprocessable Entity">
-Langganan tidak dapat diubah (misalnya, sudah dibatalkan, produk tidak tersedia, dll.).
+Langganan tidak dapat diubah (misal, sudah dibatalkan, produk tidak tersedia, dll.).
 </Accordion>
 
 <Accordion title="500 Internal Server Error">
-Kesalahan server terjadi. Coba kembali permintaan setelah penundaan singkat.
+Terjadi kesalahan server. Coba kembali permintaan setelah jeda singkat.
 </Accordion>
 </AccordionGroup>
 
-### Format Tanggapan Kesalahan
+### Format Respons Kesalahan
 
 ```json
 {
@@ -1157,9 +1192,9 @@ Kesalahan server terjadi. Coba kembali permintaan setelah penundaan singkat.
 }
 ```
 
-## Langkah selanjutnya
+## Langkah berikutnya
 
 - Tinjau <a href="/api-reference/subscriptions/change-plan">API Perubahan Paket</a>
-- Jelajahi <a href="/features/credit-based-billing">Penagihan Berbasis Kredit</a>
+- Eksplorasi <a href="/features/credit-based-billing">Penagihan Berbasis Kredit</a>
 - Terapkan peringatan untuk `subscription.on_hold`
-- Lihat panduan kami <a href="/developer-resources/webhooks">Panduan Integrasi Webhook</a>
+- Lihat <a href="/developer-resources/webhooks">Panduan Integrasi Webhook kami</a>

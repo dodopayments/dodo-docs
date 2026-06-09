@@ -1,0 +1,150 @@
+---
+sidebarTitle: Prenumerationsbetalningsförsök
+title: Prenumerationsbetalningsförsök
+description: Försök automatiskt om misslyckade betalningar för
+  prenumerationsförnyelse på ett smart schema för att återvinna intäkter utan
+  integrationsarbete.
+icon: arrow-rotate-right
+keywords:
+  - Dodo Payments
+  - betalningsförsök
+  - prenumerationsåtervinning
+  - misslyckad förnyelse
+  - dunning
+  - smarta försök
+  - intäktsåtervinning
+  - prenumeration i vänteläge
+  - förnyelseförsök
+  - automatiskt försök
+---
+
+<Info>
+Förnyelsebetalningsförsök gör automatiskt ett nytt försök med misslyckade prenumerationsbetalningar enligt ett progressivt schema. När ett försök lyckas, återaktiveras prenumerationen automatiskt — ingen kundåtgärd eller integrationsarbete krävs.
+</Info>
+
+## Vad är betalningsförsök?
+
+När en betalning för prenumerationsförnyelse misslyckas, placeras prenumerationen **i vänteläge**. Med betalningsförsök aktiverat, debiterar Dodo Payments automatiskt kundens befintliga betalningsmetod enligt ett smart schema tills betalningen lyckas eller återvinningsfönstret stänger.
+
+Detta återvinner intäkter förlorade på tillfälliga misslyckanden — utgångna kortreservationer, otillräckliga medel som fylls på, tillfälliga nätverksfel — utan att mejla kunden eller be dem att uppdatera något.
+
+<Note>
+Betalningsförsök gäller endast för prenumerationsförnyelser. Första betalningar (mandatinställning), engångsbetalningar, planändringsavgifter och avgifter på begäran återförsöks inte av denna funktion.
+</Note>
+
+## Hur betalningsförsök fungerar
+
+<Steps>
+<Step title="Renewal fails">
+En förnyelsebetalning misslyckas och prenumerationen flyttas till tillståndet `on_hold`.
+</Step>
+
+<Step title="Retryability check">
+Felns felkod kontrolleras. **Mjuka avslag** (otillräckliga medel, generiskt avslag, bearbetnings- eller nätverksfel, etc.) kan återförsökas. **Hårda avslag** avslutar omedelbart återförsökskedjan, eftersom att försöka om inte kommer att ändra resultatet.
+</Step>
+
+<Step title="Scheduled retry">
+Om avslaget kan återförsökas och återvinningsfönstret tillåter det schemaläggs nästa försök. Återförsöken sker utanför sessionen mot kundens befintliga betalningsmetod enligt ett progressivt schema.
+</Step>
+
+<Step title="Recovery">
+Vid första framgångsrika försöket återgår prenumerationen till `active` och nästa faktureringsdatum flyttas fram som vanligt. Om fönstret stängs innan något försök lyckas, slutar försök och prenumerationen förblir i vänteläge.
+</Step>
+</Steps>
+
+## Konfigurera betalningsförsök
+
+Aktivera och konfigurera betalningsförsök från **Inställningar → Återvinning** i din kontrollpanel.
+
+<Frame caption="Payment Retries settings under Settings → Recovery">
+<img src="/images/recovery/payment-retries-settings.png" alt="Återställningsinställningar med aktiveringsväxeln för betalningsförsök på och ett fält för återvinningsfönster (dagar) inställt på 13" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| Inställning | Beskrivning | Standard |
+|---------|-------------|---------|
+| **Aktivera betalningsförsök** | Försök automatiskt om misslyckade prenumerationsförnyelsebetalningar för att återvinna intäkter. | Av (opt-in) |
+| **Återvinningsfönster (dagar)** | Hur länge man ska fortsätta försöka med en misslyckad betalning innan man ger upp. Måste vara mellan **1 och 30**. | 13 |
+
+**Återvinningsfönstret** är förankrat till tiden då den misslyckade förnyelsefakturan skapades. Försök schemaläggs endast medan den kumulativa försening fortfarande passar inom fönstret.
+
+## Återförsöksschema
+
+Försök backar av progressivt. Upp till **8 försök** görs, så länge varje passar inom ditt återvinningsfönster:
+
+| Försök | Fördröjning efter föregående försök | Ungefärlig tid sedan misslyckande |
+|---------|------------------------------|----------------------------|
+| 1 | 12 timmar | 12 timmar |
+| 2 | 24 timmar | 36 timmar |
+| 3 | 48 timmar | ~3.5 dagar |
+| 4 | 72 timmar | ~6.5 dagar |
+| 5 | 96 timmar | ~10.5 dagar |
+| 6 | 120 timmar | ~15.5 dagar |
+| 7 | 7 dagar | ~22.5 dagar |
+| 8 | 7 dagar | ~29.5 dagar |
+
+<Tip>
+Ett återvinningsfönster på **13 dagar** (standard) täcker försök 1 till 5 (försök 5 sker ~10.5 dagar efter misslyckandet). Öka fönstret mot 30-dagars maxgränsen om du vill att senare, mer utspridda försök (6 till 8) ska köras.
+</Tip>
+
+## Prenumerationsstatusövergångar
+
+| Händelse | Prenumerationsstatus |
+|-------|---------------------|
+| Förnyelsebetalning misslyckas | `active` → `on_hold` |
+| Återförsöksförsök misslyckas | förblir `on_hold` (nästa försök schemaläggs om fönstret tillåter) |
+| Återförsöksförsök lyckas | `on_hold` → `active`, nästa faktureringsdatum flyttas fram |
+| Återvinningsfönster uttömt | förblir `on_hold` |
+
+Dessa övergångar avger de vanliga prenumerationswebhook-händelserna, så att du kan driva berättigandelogik från dem utan särskild hantering av återförsök:
+
+| Händelse | Avfyras när |
+|-------|-----------|
+| `subscription.on_hold` | En förnyelse misslyckas och prenumerationen placeras i vänteläge |
+| `subscription.active` | Ett återförsök lyckas och prenumerationen återaktiveras |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Se de fullständiga webhook-payload-schemana för prenumerationslivscykelhändelser.
+</Card>
+
+## Försökbara vs. icke-försökbara misslyckanden
+
+| Feltyp | Exempel | Försöks? |
+|--------------|----------|----------|
+| **Mjukt avslag** | Otillräckliga medel, generiskt avslag, kortbegränsning överskred, bearbetningsfel, nätverksfel/tidsgräns, försök igen senare | Ja |
+| **Hårt avslag** | Stulen/förlorad kort, ogiltigt kort, inte-hedera, stängt konto, och andra terminala avslag | Nej — kedjan avslutas omedelbart |
+
+ <Info>
+Att försöka om ett hårt avslag kommer inte att ändra resultatet, så återförsökskedjan avslutas så snart ett hårt avslag observeras. Par redovisningsförsök med [Dunning av prenumerationer](/features/recovery/subscription-dunning) för att be kunden uppdatera sin betalningsmetod i dessa fall.
+</Info>
+
+## Betalningsförsök vs. Dunning
+
+Betalningsförsök och [Dunning av prenumerationer](/features/recovery/subscription-dunning) är komplementära återvinningverktyg:
+
+| | Betalningsförsök | Dunning av prenumerationer |
+|--|-----------------|----------------------|
+| **Mekanism** | Självmant debiterar den befintliga betalningsmetoden | Mejlar kunden för att uppdatera sin betalningsmetod |
+| **Kundåtgärd** | Ingen krävs | Kunden uppdaterar betalningsmetod i portalen |
+| **Bäst för** | Tillfälliga/mjuka avslag som löser sig själva | Utgångna eller ogiltiga kort som behöver ersättas |
+
+Att aktivera båda ger dig den bredaste återhämtningstäckningen: automatiska återförsök fångar övergående fel, medan dunning återbringar kunder vars betalningsmetod verkligen behöver uppdateras.
+
+## Relaterat
+
+ <CardGroup cols={2}>
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+E-postsekvenser som uppmanar kunder att uppdatera sin betalningsmetod.
+</Card>
+
+ <Card title="Abandoned Cart Recovery" icon="cart-shopping" href="/features/recovery/abandoned-cart-recovery">
+Återvinn ofullständiga eller misslyckade engångsbetalningar med riktade e-postmeddelanden.
+</Card>
+
+ <Card title="Subscriptions" icon="repeat" href="/features/subscription">
+Förstå de prenumerationsstatusar som är involverade i återvinningsflöden.
+</Card>
+
+ <Card title="Subscription Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Reagera på `subscription.on_hold` och `subscription.active` händelser.
+</Card>
+</CardGroup>

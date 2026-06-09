@@ -1,0 +1,175 @@
+---
+title: Anleitung zur manuellen Integration von Lizenzschlüsselbereitstellungen
+sidebarTitle: Manuelle Lizenzschlüsselbereitstellung
+description: "Erstellen Sie ein umfassendes System, das ein Produkt verkauft und
+  es Ihnen ermöglicht, Ihre eigenen Lizenzschlüssel bei Bedarf bereitzustellen:
+  Erstellen Sie das Produkt und die Berechtigung, erkennen Sie ausstehende
+  Zuweisungen und liefern Sie den Schlüssel an den Kunden."
+icon: key
+keywords:
+  - Dodo Payments
+  - Entwicklerhandbuch
+  - Lizenzschlüssel
+  - manuelle Erfüllung
+  - Berechtigungen
+---
+
+Dieses Handbuch führt durch den Aufbau eines Systems zur **manuellen Bereitstellung von Lizenzschlüsseln** von Anfang bis Ende. Anstatt dass Dodo Payments automatisch einen Schlüssel bei der Zahlung generiert, erstellt jeder Kauf eine `pending` Zuweisung und wartet darauf, dass *Sie* den Schlüsselwert aus Ihrem eigenen System, einem Drittanbieter oder einem begrenzten Codepool bereitstellen.
+
+Am Ende werden Sie haben:
+
+- Ein Produkt mit einer Lizenzschlüssel-Berechtigung, die auf `manual` Erfüllung eingestellt ist.
+- Einen Webhook-Listener, der erkennt, wenn ein Kunde auf einen Schlüssel wartet.
+- Einen Erfüllungsaufruf, der den Schlüssel liefert und den Kunden automatisch benachrichtigt.
+
+Die vollständige Lebenszyklusverwaltung von Lizenzschlüsseln und die `fulfillment_mode` Einstellung.
+
+Ein API-Referenz für den Endpunkt, den Sie aufrufen, um einen Schlüssel zu liefern.
+
+## So funktioniert es
+
+Manuelle Erfüllung ändert nur den **Ausgabe**schritt. Aktivierung, Validierung, Deaktivierung, Ablauf und Widerruf verhalten sich genau wie ein automatisch generierter Schlüssel, sobald er geliefert wird.
+
+## Voraussetzungen
+
+Um diesem Leitfaden zu folgen, benötigen Sie:
+
+- Ein Dodo Payments Händlerkonto.
+- Ihren API-Schlüssel (`DODO_PAYMENTS_API_KEY`) und den Webhook-Geheimschlüssel aus dem Dashboard. Siehe den [Leitfaden zur API-Schlüsselerstellung](/api-reference/introduction#api-key-generation).
+- Einen Backend-Endpunkt, der Webhooks empfangen kann.
+
+Verwenden Sie `https://test.dodopayments.com` und Anmeldedaten im Testmodus beim Aufbau. Wechseln Sie zu `https://live.dodopayments.com` und Live-Schlüsseln, wenn Sie in die Produktion gehen.
+
+## Schritt 1 — Erstellen Sie eine Lizenzschlüssel-Berechtigung im manuellen Modus
+
+Eine **Berechtigung** ist eine wiederverwendbare Definition dessen, was Sie liefern. Erstellen Sie eine Lizenzschlüssel-Berechtigung und stellen Sie deren `fulfillment_mode` auf `manual` ein.
+
+Gehen Sie zu **Berechtigungen** in Ihrem Dashboard und klicken Sie auf **+**, um eine neue Berechtigung zu erstellen.
+
+- **Erfüllungsmodus** — Standardmäßig `Automatic`. Dies ist die Einstellung, die die manuelle Erfüllung ermöglicht; Sie ändern sie im nächsten Schritt.
+- **Lizenzdauer** — wie lange jeder ausgegebene Schlüssel gültig bleibt, oder **Kein Ablauf**.
+- **Aktivierungslimit** — maximale Aktivierungen pro Schlüssel oder **Unbegrenzt**.
+- **Aktivierungsnachricht** — optionale, kundenorientierte Nachricht, die angezeigt wird, wenn sie den Schlüssel aktivieren.
+
+Öffnen Sie das **Erfüllungsmodus**-Dropdown und ändern Sie es von **Automatisch** zu **Manuell**. Dies ist die Einstellung, die diesen gesamten Leitfaden ermöglicht — ohne sie werden Schlüssel automatisch generiert und per E-Mail versendet, und es wird keine ausstehende Zuweisung erstellt. Mit der Auswahl von **Manuell** erstellt jeder Kauf eine `pending` Zuweisung, die Sie erfüllen können. Klicken Sie auf **Berechtigung erstellen**, um zu speichern.
+
+Erstellen Sie die Berechtigung mit `integration_config.fulfillment_mode` eingestellt auf `manual`.
+
+
+
+
+
+
+
+
+
+
+
+`fulfillment_mode` ist standardmäßig `auto`. Wenn es weggelassen wird oder unverändert bleibt, bleibt das automatische Verhalten bestehen. Nur Berechtigungen, die explizit auf `manual` eingestellt sind, erstellen ausstehende Zuweisungen.
+
+## Schritt 2 — Die Berechtigung an ein Produkt anhängen
+
+Öffnen Sie das Produkt, das Sie verkaufen möchten, erweitern Sie **Erweiterte Einstellungen → Berechtigungen & Credits** und wählen Sie die **Lizenzschlüssel-Berechtigung, die Sie in Schritt 1 auf Manuell gesetzt haben**. Ein einzelnes Produkt kann diesen Lizenzschlüssel zusammen mit anderen Berechtigungen beim selben Kauf liefern.
+
+Erfüllungsmodus ist eine Eigenschaft der **Berechtigung**, nicht des Produkts. Da Sie es in Schritt 1 auf **Manuell** gesetzt haben, erstellt jedes Produkt, dem diese Berechtigung zugewiesen ist, bei Kauf `pending` Lizenzschlüssel-Zuweisungen — hier gibt es nichts extra zu konfigurieren.
+
+Wenn Sie noch kein Produkt haben, erstellen Sie zuerst eines (einmalig oder im Abonnement). Siehe den [Leitfaden zur einmaligen Zahlungseinbindung](/developer-resources/integration-guide) für den Verkauf des Produkts über den Checkout.
+
+## Schritt 3 — Ausstehende Zuweisungen erkennen
+
+Wenn ein Kunde das Produkt kauft, erstellt Dodo Payments eine Zuweisung im `pending` Status **ohne angehängten Schlüssel** und löst einen `entitlement_grant.created` Webhook aus. Dies ist Ihr Signal, dass ein Kunde auf einen Schlüssel wartet.
+
+### Auf den Webhook hören
+
+Richten Sie einen Webhook-Endpunkt ein (Entwickler → Webhooks im Dashboard) und reagieren Sie auf ausstehende Lizenzschlüssel-Zuweisungen. Die Implementierung folgt der [Standard-Webhooks](https://standardwebhooks.com/) Spezifikation.
+
+Die Zuweisungsdaten tragen `integration_type: "license_key"`, sodass Sie eine Lizenzschlüssel-Zuweisung ohne zusätzliche Abfrage erkennen können. Siehe die [Berechtigungs-Zuweisungs-Webhook-Referenz](/developer-resources/webhooks/intents/entitlement-grant) für die vollständige Nutzladung.
+
+### Oder die Listen-Zuweisungen-API abfragen
+
+Wenn Sie nicht auf Webhooks angewiesen sein möchten, listen Sie Zuweisungen für die Berechtigung auf und filtern Sie nach `integration_type` und `status`:
+
+
+
+
+
+## Schritt 4 — Den Schlüssel liefern
+
+Erhalten Sie den Schlüsselwert aus Ihrem eigenen System und übermitteln Sie ihn über den [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) Endpunkt. Dies erfordert Ihren geheimen API-Schlüssel (Editor-Berechtigung); es ist **nicht** einer der öffentlichen Lizenzendpunkte.
+
+
+
+
+
+### Anforderungsfelder
+
+Die Lizenzschlüsselzeichenfolge, die dem Kunden geliefert werden soll. Leerzeichen werden entfernt; ein leerer oder nur Leerzeichen enthaltender Wert wird abgelehnt.
+
+Per-Schlüssel-Aktivierungslimit. Fällt auf die Berechtigungskonfiguration zurück, wenn nicht angegeben.
+
+Per-Schlüssel-Ablaufdatum (ISO 8601). Fällt auf die Dauer der Berechtigungskonfiguration zurück, wenn nicht angegeben. Für Abonnements ausgegebene Zuweisungen bleibt die Gültigkeit trotzdem an das Abonnement gebunden.
+
+Bei Erfolg wechselt die Zuweisung zu `delivered`, der Kunde erhält den Schlüssel automatisch (die gleiche E-Mail, die er bei automatischer Erfüllung erhalten würde), und `entitlement_grant.delivered` wird ausgelöst.
+
+Der Kunde erhält eine E-Mail mit dem Lizenzschlüssel, dem Produkt, dem Aktivierungslimit, dem Ablaufdatum und Ihren Aktivierungsanweisungen:
+
+Sie müssen den Schlüssel nicht selbst per E-Mail senden — die Lieferung erfolgt automatisch, wenn die Zuweisung erfüllt wird.
+
+## Schritt 5 — Fehler und Wiederholungen behandeln
+
+Der Endpunkt überprüft die Zuweisung, bevor er etwas liefert. Behandeln Sie diese Antworten:
+
+| Status | Bedeutung | Was zu tun ist |
+|---|---|---|
+| `200` | Schlüssel geliefert, Zuweisung ist jetzt `delivered`. | Erledigt. |
+| `400` | Keine Lizenzschlüssel-Zuweisung oder der Schlüssel ist leer/enthält nur Leerzeichen. | Korrigieren Sie die Anfrage; nicht so erneut versuchen. |
+| `404` | Keine Zuweisung mit dieser ID für Ihr Unternehmen. | Überprüfen Sie den `grant_id`. |
+| `409` | Zuweisung wartet nicht auf Erfüllung (bereits geliefert oder hat bereits einen Schlüssel), **oder** der Schlüsselwert existiert bereits. | Wenn bereits geliefert, als Erfolg betrachten. Bei doppeltem Schlüssel, anderen Schlüssel bereitstellen. |
+| `422` | Anforderungsinhalt fehlerhaft validiert (z.B. `activations_limit < 1`). | Feld korrigieren und erneut versuchen. |
+
+Die Erfüllung ist sicher bei vorübergehenden Fehlern (Timeouts, `5xx`) wiederholbar. Jede Zuweisung kann nur einmal erfüllt werden, daher gibt eine Wiederholung nach einem erfolgreich, aber nicht bestätigten Aufruf `409` zurück, anstatt einen zweiten Schlüssel auszustellen oder eine doppelte E-Mail zu senden. Verwenden Sie die Zuweisung `id` als Ihre Idempotenzschlüssel.
+
+## Überprüfen Sie den Ablauf
+
+1. Kaufen Sie das Produkt im Testmodus (siehe die [Checkout-Anleitungen](/developer-resources/integration-guide)).
+2. Bestätigen Sie, dass Ihr Webhook `entitlement_grant.created` mit `status: "pending"` und `integration_type: "license_key"` erhalten hat, oder dass die Zuweisung in der Listen-Zuweisungen-Antwort mit diesen Filtern erscheint.
+3. Rufen Sie den Erfüllungsendpunkt mit einem Testschlüssel auf.
+4. Bestätigen Sie, dass die Antwort `status: "delivered"` mit einem ausgefüllten `license_key` zeigt, der Kunde erhält die Schlüssel-E-Mail, und `entitlement_grant.delivered` wird ausgelöst.
+
+Sobald geliefert, kann der Kunde den Schlüssel [aktivieren und validieren](/features/license-keys#activation-validation-deactivation) und gegen die öffentlichen Lizenzendpunkte genauso wie einen automatisch generierten Schlüssel.
+
+## Verwandte API-Referenz
+
+Erstellen Sie die Lizenzschlüssel-Berechtigung mit `fulfillment_mode: manual`.
+
+Filtern Sie nach `integration_type` und `status`, um ausstehende Zuweisungen zu finden.
+
+Liefern Sie den Schlüsselwert und wechseln Sie die Zuweisung zu geliefert.
+
+Die `entitlement_grant.*` Ereignisse, die auf ausstehende und gelieferte Zuweisungen hinweisen.
+
+1. Buy the product in test mode (see the [checkout guides](/developer-resources/integration-guide)).
+2. Confirm your webhook received `entitlement_grant.created` with `status: "pending"` and `integration_type: "license_key"`, or that the grant appears in the List Grants response with those filters.
+3. Call the fulfill endpoint with a test key.
+4. Confirm the response shows `status: "delivered"` with a populated `license_key`, the customer receives the key email, and `entitlement_grant.delivered` fires.
+
+<Check>
+Once delivered, the customer can [activate and validate](/features/license-keys#activation-validation-deactivation) the key against the public license endpoints exactly like an auto-generated key.
+</Check>
+
+## Related API Reference
+
+<CardGroup cols={2}>
+<Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
+Create the License Key entitlement with `fulfillment_mode: manual`.
+</Card>
+<Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
+Filter by `integration_type` and `status` to find pending grants.
+</Card>
+<Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+Deliver the key value and transition the grant to delivered.
+</Card>
+<Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
+The `entitlement_grant.*` events that signal pending and delivered grants.
+</Card>
+</CardGroup>

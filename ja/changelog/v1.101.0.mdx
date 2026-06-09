@@ -1,0 +1,178 @@
+---
+title: v1.101.0 (2026年6月2日)
+description: 失敗した更新収益を回復するための自動サブスクリプション支払い再試行、製品コレクションごとの上書きが可能なビジネスレベルの比例配分デフォルト、B2B請求書のためのビジネス名収集
+  — バグ修正と改善を含む。
+icon: arrows-turn-right
+keywords:
+  - Dodo Payments
+  - changelog
+  - release notes
+  - product updates
+  - v1.101.0 (2026年6月2日)
+  - proration
+  - payment retries
+  - b2b invoices
+  - subscription recovery
+---
+
+## 新機能
+
+### 1. **サブスクリプション支払い再試行**
+
+失敗したサブスクリプション**更新**支払いは、収益を回復するために自動的に再試行できるようになりました。統合作業は不要です。**設定→回復**から有効にし、回復ウィンドウを設定すると、Dodo Paymentsは賢いスケジュールで更新を再試行し、成功するかウィンドウが閉じるまで行います。
+
+<Frame>
+<img src="/images/changelog/v1.101.0/payment-retries.png" alt="支払い再試行のトグルオンと回復ウィンドウ（日数）フィールドを備えた回復設定ページ" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| 設定 | 説明 | デフォルト |
+|---------|-------------|---------|
+| **支払い再試行の有効化** | 収益を回復するために失敗したサブスクリプション更新支払いを自動的に再試行します。 | オフ（オプトイン） |
+| **回復ウィンドウ（日数）** | 失敗した支払いを再試行し続ける期間（1～30日）。 | 13 |
+
+**動作の仕組み**
+
+1. サブスクリプション更新支払いが失敗し、サブスクリプションが `on_hold` に移動します。
+2. 拒否が再試行可能（不足資金や一時的なネットワークエラーなどのソフト拒否）の場合、次の試行が自動的にスケジュールされます。
+3. 再試行はオフセッションでバックオフスケジュールで実行され、回復ウィンドウで制限されます。
+4. 最初の成功した再試行で、サブスクリプションは `active` に戻り、次の請求日が通常通り進行します。
+
+**再試行スケジュール**
+
+再試行は徐々にバックオフし、失敗した請求書が作成された時間に固定されます。**8回の試行**が行われ、回復ウィンドウ内に収まる限り続きます：
+
+| 試行回数 | 前回からの遅延 |
+|---------|----------------------|
+| 1 | 12時間 |
+| 2 | 24時間 |
+| 3 | 48時間 |
+| 4 | 72時間 |
+| 5 | 96時間 |
+| 6 | 120時間 |
+| 7 | 7日 |
+| 8 | 7日 |
+
+<Info>
+**ソフト拒否**のみが再試行されます（例：不足資金、一般的な拒否、処理エラーまたはネットワークエラー）。**ハード拒否**は再試行チェーンをすぐに終了します。再試行しても結果は変わりません。
+</Info>
+
+これは既存の回復ツールを補完するものです — **サブスクリプション管理**は顧客に支払い方法の更新を促すメールを送り、支払い再試行は既存の方法を静かに再試行します。これらは良く組み合わさっています。
+
+詳細はこちら：[サブスクリプション支払い再試行](/features/recovery/payment-retries) | [サブスクリプション管理](/features/recovery/subscription-dunning)
+
+### 2. **ビジネス比例配分設定**
+
+プラン変更時に毎回事前に比例配分パラメーターを渡す代わりに、**ビジネスレベルで一括してデフォルトのアップグレードとダウングレードの動作**を設定できるようになりました。これらのデフォルトは顧客がカスタマーポータルからプランを変更する際に適用され、**製品コレクションごとに上書き**可能です。
+
+<Frame>
+<img src="/images/changelog/v1.101.0/plan-change-settings.png" alt="ダッシュボードでアップグレード、ダウングレード、支払い失敗用に個別のコントロールを持つデフォルトのアップグレードとダウングレードの動作設定" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+各方向（アップグレードとダウングレード）は2つの独立したコントロールと共有の支払い失敗ポリシーを持っています：
+
+| 設定 | フィールド | デフォルト（アップグレード） | デフォルト（ダウングレード） |
+|---------|-------|-------------------|---------------------|
+| **新プランの開始時期** | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| **顧客の課金方法** | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| **顧客の支払いが失敗した場合** | `on_payment_failure` | `apply_change` | `apply_change` |
+
+**新プランの開始時期** (`effective_at`)
+
+| 値 | 挙動 |
+|-------|----------|
+| `immediately` | 顧客はすぐに新プランに移ります。 |
+| `next_billing_date` | 顧客は次の請求日まで現在のプランに留まり、その後新プランに切り替わります。 |
+
+**顧客の課金方法** (`proration_billing_mode`)
+
+| 値 | 挙動 |
+|-------|----------|
+| `prorated_immediately` | 現在の請求サイクルに残っている時間に基づいて、今すぐ比例配分価格を課金します。 |
+| `full_immediately` | 新プランの全額を今すぐ課金します。 |
+| `difference_immediately` | 新プランと現在のプランの価格差のみを課金します。 |
+| `do_not_bill` | 今は何も課金しません。次の請求書で調整が適用されます。 |
+
+**顧客の支払いが失敗した場合** (`on_payment_failure`)
+
+| 値 | 挙動 |
+|-------|----------|
+| `prevent_change` | 支払いが通らなかった場合、顧客を現在のプランに留まらせます。 |
+| `apply_change` | 支払いが通らなかった場合でも、新しいプランに顧客を移動します。その額を後で回収できます。 |
+
+**コレクションごとの上書き**
+
+各製品コレクションはこれらのデフォルトを上書きできます。各フィールドは独立しており、**ビジネスから継承**を設定することでビジネスデフォルトに従ったり、そのコレクション専用に明示的な値を設定できます。
+
+<Frame>
+<img src="/images/changelog/v1.101.0/product-collection-plan-change.png" alt="製品コレクション上のアップグレードとダウングレードの動作を上書きするセクション、各フィールドは 'ビジネスから継承' をデフォルトにしている" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+各設定はこの順序で解決されます：
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+[プラン変更API](/api-reference/subscriptions/change-plan) に渡される各要求値 (`proration_billing_mode`, `effective_at`, `on_payment_failure`) は、常にコレクションおよびビジネスデフォルトより優先されます。新しい設定は、明示的な値が提供されていない場合にのみ適用されます — これはすべてのカスタマーポータルプラン変更に該当します。
+</Info>
+
+詳細はこちら：[サブスクリプションアップグレードとダウングレード](/developer-resources/subscription-upgrade-downgrade) | [製品コレクション](/features/product-collections)
+
+### 3. **B2B請求書のためのビジネス名収集**
+
+B2B顧客は、購入者の個人名の代わりに**法的なビジネス名**を請求書に表示できるようになりました。チェックアウト時に有効な税IDが提供される場合は、関連する `customer_business_name` を収集し、請求書に購入団体を反映させることもできます。
+
+<Frame>
+<img src="/images/changelog/v1.101.0/business-name-b2b.png" alt="'ビジネスとして購入' タグルが有効なチェックアウトページ、ビジネス名と税ID番号フィールドが表示される" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+顧客がチェックアウトで**ビジネスとして購入**を選択すると、**ビジネス名**と**税ID番号**の入力を促されます。
+
+ビジネス名が請求書に表示されるのは、**3つの条件**がすべて満たされた場合のみです：
+
+1. トランザクションがB2Bであること (`b2b = true`)
+2. `tax_id` が存在すること
+3. 非空の `customer_business_name` が提供されること
+
+その他の場合は、顧客の個人名が使用されます。
+
+**チェックアウトでの収集**
+
+`customer_business_name` を直接設定、または税IDと共に顧客がチェックアウトページで入力または編集できるよう、`allow_customer_editing_business_name` を有効にします：
+
+```typescript
+const session = await client.checkoutSessions.create({
+  product_cart: [{ product_id: 'prod_abc', quantity: 1 }],
+  customer: { email: 'buyer@acme.com' },
+  tax_id: 'GB123456789',
+  customer_business_name: 'Acme Corp Ltd',
+  feature_flags: {
+    allow_tax_id: true,
+    allow_customer_editing_business_name: true // let the customer enter/edit it
+  },
+  return_url: 'https://yoursite.com/return'
+});
+```
+
+**適用場所**
+
+| 表面 | フィールド | ノート |
+|---------|-------|-------|
+| チェックアウトセッション | `customer_business_name`, `feature_flags.allow_customer_editing_business_name` | 最大250文字、フラグはデフォルトで `false` |
+| 支払い | `customer_business_name` | 最大250文字 |
+| サブスクリプション | `customer_business_name` | `PATCH /subscriptions/{id}` 経由で設定またはクリア |
+
+<Warning>
+`customer_business_name` は、`tax_id` なしでは設定できません。税IDなしでビジネス名を送信することは拒否されます。`tax_id` をクリアするとビジネス名もクリアされます。両者は請求書上で結合されているためです。
+</Warning>
+
+<Note>
+周囲の空白はトリムされ、空白のみの値は明示的なクリアと扱われます。保存されたデータは常に請求書に表示されるものと一致します。
+</Note>
+
+詳細はこちら：[B2Bペイメント](/features/b2b-payments) | [請求書管理](/features/invoice-generation) | [チェックアウトセッション](/developer-resources/checkout-session)
+
+## バグ修正と改善
+
+- プラットフォーム全体でのマイナーなバグ修正と安定性の向上。

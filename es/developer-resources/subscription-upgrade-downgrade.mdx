@@ -488,14 +488,14 @@ Los créditos creados por degradaciones usando <code>difference_immediately</cod
 - El ciclo de facturación permanece sin cambios
 - Ideal para migraciones de cortesía, cambios de plan gratuitos o absorción de diferencias de costo
 
-| Característica | `prorated_immediately` | `difference_immediately` | `full_immediately` | `do_not_bill` |
+| Feature | `prorated_immediately` | `difference_immediately` | `full_immediately` | `do_not_bill` |
 |---------|----------------------|------------------------|-------------------|--------------|
-| **Cargo por mejora** | Diferencia prorrateada por días restantes | Diferencia de precio completa entre planes | Precio completo del nuevo plan | Sin cargo |
-| **Crédito por degradación** | Crédito prorrateado por días restantes | Diferencia de precio completa como crédito | Sin crédito | Sin crédito |
-| **Ciclo de facturación** | Sin cambios | Sin cambios | Se reinicia hoy | Sin cambios |
-| **Comportamiento de prueba** | Termina la prueba, cobra inmediatamente | Termina la prueba, cobra inmediatamente | Termina la prueba, cobra el monto completo | Termina la prueba, sin cargo |
-| **El mejor para** | Facturación justa basada en el tiempo | Matemáticas simples de mejora/degradación | Reiniciar ciclos de facturación | Migraciones gratuitas o cambios de cortesía |
-| **Complejidad** | Media (cálculo de días) | Baja (resta simple) | Baja (cargo completo) | Ninguna |
+| **Upgrade charge** | Diferencia prorrateada por los días restantes | Diferencia del precio completo entre planes | Precio completo del nuevo plan | Sin cargo |
+| **Downgrade credit** | Crédito prorrateado por los días restantes | Diferencia de precio completo como crédito | Sin crédito | Sin crédito |
+| **Billing cycle** | Se restablece a hoy | Se restablece a hoy | Se restablece a hoy | Sin cambios |
+| **Trial behavior** | Termina el periodo de prueba, se cobra inmediatamente | Termina el periodo de prueba, se cobra inmediatamente | Termina el periodo de prueba, se cobra el monto completo | Termina el periodo de prueba, sin cargo |
+| **Best for** | Facturación justa basada en el tiempo | Matemáticas simples de actualización/degradación | Restablecer ciclos de facturación | Migraciones gratuitas o cambios de cortesía |
+| **Complexity** | Media (cálculo de días) | Baja (resta simple) | Baja (cobro completo) | Ninguna |
 
 ```mermaid
 flowchart TD
@@ -533,7 +533,8 @@ Usa estos números canónicos de manera consistente:
       Charge = $40.00 − $15.00 = $25.00
 
     → Customer pays $25.00 now
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -561,9 +562,10 @@ Usa estos números canónicos de manera consistente:
       Credit = $40.00 − $10.00 = $30.00
 
     → No charge — $30.00 credit added to subscription
+    → Billing cycle resets to today (January 16)
     → Credit auto-applies to future renewals
-    → Next renewal (Feb 1): $20.00 − $30.00 credit = $0.00
-    → Following renewal (Mar 1): $20.00 − $10.00 remaining credit = $10.00
+    → Next renewal (Feb 15): $20.00 − $20.00 (from credit) = $0.00 ($10.00 credit remaining)
+    → Following renewal (Mar 15): $20.00 − $10.00 remaining credit = $10.00
     ```
 
     ```javascript
@@ -584,7 +586,8 @@ Usa estos números canónicos de manera consistente:
                      = $50.00
 
     → Customer pays $50.00 now (regardless of cycle position)
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -685,14 +688,16 @@ flowchart LR
     A[Plan Change] --> B{Proration Mode}
     B -->|prorated| C[Calculate remaining days]
     C --> D[Charge prorated diff]
-    D --> E[Keep billing date]
+    D --> E[Reset billing date]
     B -->|difference| F[Price difference]
     F -->|Upgrade| G[Charge diff]
     F -->|Downgrade| H[Add credit]
     G --> E
     H --> E
     B -->|full| I[Charge full price]
-    I --> J[Reset billing date]
+    I --> E
+    B -->|do_not_bill| J[No charge / no credit]
+    J --> K[Keep billing date]
 ```
 
 <Tip>
@@ -759,20 +764,50 @@ Si no se especifica, el parámetro `on_payment_failure` utiliza la configuració
 | Clientes empresariales de confianza | `apply_change` | Menor riesgo de incumplimiento de pago |
 | Conversión de prueba a pago | `prevent_change` | Momento crítico de pago |
 
+## Valores predeterminados de Negocio y Colección
+
+En lugar de pasar parámetros de prorrateo en cada cambio de plan, puedes configurar el **comportamiento de actualización y degradación predeterminado** una vez a nivel de negocio. Estos valores predeterminados se aplican a todos los cambios de plan en el portal del cliente y se pueden **sobrescribir por colección de productos**.
+
+Existen valores predeterminados separados para actualizaciones y degradaciones:
+
+| Configuración | Campo (actualización / degradación) | Predeterminado (actualización) | Predeterminado (degradación) |
+|---------|-----------------------------|-------------------|---------------------|
+| Cuándo comienza el nuevo plan | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| Cómo se cobra al cliente | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| Si el pago del cliente falla | `on_payment_failure` | `apply_change` | `apply_change` |
+
+Configura los predeterminados de negocio en **Ajustes → Suscripciones** y los reemplazos de colección en cada colección de productos. Cada campo de colección es independiente: déjalo sin configurar para **heredar del valor predeterminado del negocio**, o establece un valor para sobrescribirlo solo para esa colección.
+
+### Orden de resolución
+
+Para cualquier cambio de plan, cada configuración se resuelve en este orden:
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+Un valor pasado explícitamente a la [API de Cambio de Plan](/api-reference/subscriptions/change-plan) siempre prevalecerá. Los valores predeterminados de negocio y colección solo entran en efecto cuando no se proporciona un valor explícito, lo cual ocurre en todos los cambios de plan iniciados desde el portal del cliente.
+</Info>
+
+<Tip>
+Una configuración común: mantén las actualizaciones `immediately` + `difference_immediately` para que los clientes paguen la diferencia y obtengan acceso de inmediato, y mantén las degradaciones en `next_billing_date` para que los clientes conserven su plan actual hasta que termine el ciclo.
+</Tip>
+
 ## Manejo de webhooks
 
 Rastrea el estado de la suscripción a través de webhooks para confirmar cambios de plan y pagos.
 
 ### Tipos de eventos a manejar
 - `subscription.active`: suscripción activada
-- `subscription.plan_changed`: plan de suscripción cambiado (mejora/degradación/cambios de complemento)
+- `subscription.plan_changed`: plan de suscripción cambiado (cambios de actualización/degradación/addon)
 - `subscription.on_hold`: cargo fallido, suscripción pausada
 - `subscription.renewed`: renovación exitosa
 - `payment.succeeded`: pago por cambio de plan o renovación exitoso
 - `payment.failed`: pago fallido
 
 <Info>
-Recomendamos dirigir la lógica empresarial desde eventos de suscripción y usar eventos de pago para confirmación y conciliación.
+Recomendamos dirigir la lógica empresarial a partir de eventos de suscripción y usar eventos de pago para confirmación y conciliación.
 </Info>
 
 ### Verificar firmas y manejar intenciones
@@ -858,30 +893,30 @@ Recomendamos dirigir la lógica empresarial desde eventos de suscripción y usar
 </Tabs>
 
 <Note>
-Para esquemas de payload detallados, consulta los <a href="/developer-resources/webhooks/intents/subscription">Payloads de webhooks de suscripción</a> y los <a href="/developer-resources/webhooks/intents/payment">Payloads de webhooks de pago</a>.
+Para esquemas de carga útil detallados, consulta <a href="/developer-resources/webhooks/intents/subscription">Cargas útiles de webhook de suscripción</a> y <a href="/developer-resources/webhooks/intents/payment">Cargas útiles de webhook de pago</a>.
 </Note>
 
 ## Mejores Prácticas
 
-Sigue estas recomendaciones para cambios de plan de suscripción confiables:
+Sigue estas recomendaciones para cambios confiables en los planes de suscripción:
 
-### Estrategia para Cambios de Plan
+### Estrategia de Cambio de Plan
 - **Prueba a fondo**: Siempre prueba los cambios de plan en modo de prueba antes de producción
-- **Elige el prorrateo cuidadosamente**: Selecciona el modo de prorrateo que se alinee con tu modelo de negocio
-- **Maneja fallos de manera elegante**: Implementa un manejo de errores y lógica de reintento adecuados
-- **Monitorea las tasas de éxito**: Rastrea las tasas de éxito/fallo de cambios de plan e investiga los problemas
+- **Elige el prorrateo con cuidado**: Selecciona el modo de prorrateo que se alinea con tu modelo de negocio
+- **Maneja fallas con gracia**: Implementa un manejo adecuado de errores y lógica de reintento
+- **Monitorea tasas de éxito**: Rastrea las tasas de éxito/falla de cambios de plan e investiga problemas
 
-### Implementación de Webhooks
-- **Verifica firmas**: Siempre valida las firmas de los webhooks para asegurar la autenticidad
-- **Implementa idempotencia**: Maneja eventos de webhooks duplicados de manera elegante
-- **Procesa de manera asíncrona**: No bloquees las respuestas de webhooks con operaciones pesadas
-- **Registra todo**: Mantén registros detallados para depuración y fines de auditoría
+### Implementación de Webhook
+- **Verifica firmas**: Valida siempre las firmas de los webhooks para asegurar su autenticidad
+- **Implementa idempotencia**: Lidia con los eventos de webhook duplicados con gracia
+- **Procesa asincrónicamente**: No bloquees las respuestas de webhook con operaciones pesadas
+- **Registra todo**: Mantén registros detallados para depuración y auditoría
 
 ### Experiencia del Usuario
-- **Comunica claramente**: Informa a los clientes sobre cambios de facturación y tiempos
-- **Proporciona confirmaciones**: Envía correos electrónicos de confirmación para cambios de plan exitosos
-- **Maneja casos especiales**: Considera períodos de prueba, prorrateos y pagos fallidos
-- **Actualiza la interfaz de usuario de inmediato**: Refleja los cambios de plan en la interfaz de tu aplicación
+- **Comunica claramente**: Informa a los clientes sobre los cambios de facturación y el tiempo
+- **Proporciona confirmaciones**: Envía confirmaciones por correo electrónico para cambios de plan exitosos
+- **Maneja casos extremos**: Considera períodos de prueba, prorrateos y pagos fallidos
+- **Actualiza la interfaz de usuario inmediatamente**: Refleja los cambios de plan en la interfaz de tu aplicación
 
 ## Problemas Comunes y Soluciones
 
@@ -889,68 +924,68 @@ Resuelve problemas típicos encontrados durante los cambios de plan de suscripci
 
 <AccordionGroup>
 <Accordion title="Charge created but subscription not updated">
-**Síntomas**: La llamada a la API tiene éxito, pero la suscripción sigue en el plan anterior
+**Síntomas**: La llamada a la API tiene éxito, pero la suscripción permanece en el plan antiguo
 
 **Causas comunes**:
-- El procesamiento de webhooks falló o se retrasó
+- El procesamiento del webhook falló o se retrasó
 - El estado de la aplicación no se actualizó después de recibir webhooks
-- Problemas de transacción de base de datos durante la actualización del estado
+- Problemas de transacciones en la base de datos durante la actualización del estado
 
 **Soluciones**:
-- Implementa manejo de webhooks robusto con lógica de reintento
+- Implementa un manejo robusto de webhooks con lógica de reintento
 - Usa operaciones idempotentes para actualizaciones de estado
-- Añade monitoreo para detectar y alertar sobre eventos de webhooks perdidos
-- Verifica que el endpoint de webhook sea accesible y responda correctamente
+- Agrega monitoreo para detectar y alertar sobre eventos de webhook perdidos
+- Verifica que la URL del webhook sea accesible y responda correctamente
 </Accordion>
 
 <Accordion title="Credits not applied after downgrade">
 **Síntomas**: El cliente se degrada pero no ve saldo de crédito
 
 **Causas comunes**:
-- Expectativas de modo de prorrateo: las degradaciones acreditan la diferencia de precio completa del plan con `difference_immediately`, mientras que `prorated_immediately` crea un crédito prorrateado basado en el tiempo restante en el ciclo
-- Los créditos son específicos de la suscripción y no se transfieren entre suscripciones
+- Expectativas del modo de prorrateo: las degradaciones acreditan la diferencia de precio completo del plan con `difference_immediately`, mientras que `prorated_immediately` crea un crédito prorrateado basado en el tiempo restante en el ciclo
+- Los créditos son específicos de suscripción y no se transfieren entre suscripciones
 - Saldo de crédito no visible en el panel del cliente
 
 **Soluciones**:
 - Usa `difference_immediately` para degradaciones cuando quieras créditos automáticos
 - Explica a los clientes que los créditos se aplican a futuras renovaciones de la misma suscripción
-- Implementa un portal de clientes para mostrar saldos de crédito
+- Implementa un portal del cliente para mostrar saldos de crédito
 - Verifica la vista previa de la próxima factura para ver los créditos aplicados
 </Accordion>
 
 <Accordion title="Webhook signature verification fails">
-**Síntomas**: Eventos de webhooks rechazados debido a una firma inválida
+**Síntomas**: Eventos de webhook rechazados debido a una firma inválida
 
 **Causas comunes**:
-- Clave secreta de webhook incorrecta
-- Cuerpo de la solicitud sin procesar modificado antes de la verificación de la firma
+- Clave secreta del webhook incorrecta
+- Cuerpo de la solicitud cruda modificado antes de la verificación de la firma
 - Algoritmo de verificación de firma incorrecto
 
 **Soluciones**:
-- Verifica que estás usando el `DODO_WEBHOOK_SECRET` correcto desde el panel de control
-- Lee el cuerpo de la solicitud sin procesar antes de cualquier middleware de análisis JSON
+- Verifica que estás usando el correcto `DODO_WEBHOOK_SECRET` desde el panel
+- Lee el cuerpo de la solicitud cruda antes de cualquier middleware de análisis JSON
 - Usa la biblioteca estándar de verificación de webhooks para tu plataforma
 - Prueba la verificación de firmas de webhooks en el entorno de desarrollo
 </Accordion>
 
 <Accordion title="Plan change fails with 422 error">
-**Síntomas**: La API devuelve el error 422 Unprocessable Entity
+**Síntomas**: La API devuelve un error 422 Unprocessable Entity
 
 **Causas comunes**:
-- ID de suscripción o ID de producto inválido
-- Suscripción no en estado activo
-- Parámetros requeridos faltantes
+- ID de suscripción o producto inválido
+- Suscripción no está en estado activo
+- Faltan parámetros requeridos
 - Producto no disponible para cambios de plan
 
 **Soluciones**:
-- Verifica que la suscripción exista y esté activa
-- Verifica que el ID del producto sea válido y esté disponible
-- Asegúrate de que se proporcionen todos los parámetros requeridos
-- Revisa la documentación de la API para ver los requisitos de los parámetros
+- Verifica que la suscripción existe y está activa
+- Comprueba que el ID del producto sea válido y esté disponible
+- Asegúrate de que todos los parámetros requeridos están proporcionados
+- Revisa la documentación de la API para los requisitos de los parámetros
 </Accordion>
 
 <Accordion title="Immediate charge fails during plan change">
-**Síntomas**: Se inicia el cambio de plan, pero falla el cargo inmediato
+**Síntomas**: El cambio de plan se inicia pero el cobro inmediato falla
 
 **Causas comunes**:
 - Fondos insuficientes en el método de pago del cliente
@@ -959,27 +994,27 @@ Resuelve problemas típicos encontrados durante los cambios de plan de suscripci
 - La detección de fraude bloqueó el cargo
 
 **Soluciones**:
-- Maneja los eventos de webhooks `payment.failed` adecuadamente
+- Maneja eventos de webhook `payment.failed` apropiadamente
 - Notifica al cliente para actualizar el método de pago
-- Implementa lógica de reintento para fallos temporales
+- Implementa lógica de reintento para fallas temporales
 - Considera permitir cambios de plan con cargos inmediatos fallidos
 </Accordion>
 
 <Accordion title="Subscription on hold after plan change">
-**Síntomas**: Falla el cargo del cambio de plan y la suscripción se mueve al estado `on_hold`
+**Síntomas**: Falla el cobro del cambio de plan y la suscripción se mueve a estado `on_hold`
 
 **Qué sucede**:
-Cuando falla el cargo por un cambio de plan, la suscripción se coloca automáticamente en el estado `on_hold`. La suscripción no se renovará automáticamente hasta que se actualice el método de pago.
+Cuando falla un cobro de cambio de plan, la suscripción se coloca automáticamente en estado `on_hold`. La suscripción no se renovará automáticamente hasta que se actualice el método de pago.
 
 **Solución**: Actualiza el método de pago para reactivar la suscripción
 
 Para reactivar una suscripción desde el estado `on_hold` después de un fallo en el cambio de plan:
 
 1. **Actualiza el método de pago** usando la API de Actualización de Método de Pago
-2. **Creación automática de cargos**: La API crea automáticamente un cargo por los importes pendientes
-3. **Generación de factura**: Se genera una factura para el cargo
-4. **Procesamiento del pago**: El pago se procesa usando el nuevo método de pago
-5. **Reactivación**: Al pago exitoso, la suscripción se reactiva al estado `active`
+2. **Creación automática de cargos**: La API crea automáticamente un cargo por los adeudos pendientes
+3. **Generación de factura**: Se genera una factura por el cargo
+4. **Procesamiento de pagos**: El pago se procesa usando el nuevo método de pago
+5. **Reactivación**: Una vez realizado el pago con éxito, la suscripción se reactiva al estado `active`
 
 <CodeGroup>
 
@@ -1053,73 +1088,72 @@ def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
 </CodeGroup>
 
 **Eventos de webhook a monitorear**:
-- `subscription.on_hold`: Suscripción en espera (recibido cuando falla el cargo del cambio de plan)
-- `payment.succeeded`: Pago por importes pendientes exitoso (después de actualizar el método de pago)
-- `subscription.active`: Suscripción reactivada después de pago exitoso
+- `subscription.on_hold`: Suscripción en espera (recibido cuando falla el cobro del cambio de plan)
+- `payment.succeeded`: Pago exitoso de adeudos pendientes (después de actualizar el método de pago)
+- `subscription.active`: Suscripción reactivada tras pago exitoso
 
 **Mejores prácticas**:
-- Notifica a los clientes inmediatamente cuando falla un cargo de cambio de plan
+- Notifica a los clientes inmediatamente cuando falla un cobro de cambio de plan
 - Proporciona instrucciones claras sobre cómo actualizar su método de pago
-- Monitorea eventos de webhooks para seguir el estado de reactivación
-- Considera implementar lógica de reintento automática para fallos de pago temporales
-
+- Monitorea eventos de webhook para rastrear el estado de reactivación
+- Considera implementar lógica de reintento automático para fallos temporales de pago
 <Card title="Update Payment Method API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Consulta la documentación completa de la API para actualizar métodos de pago y reactivar suscripciones.
+Consulta la documentación completa de la API para actualización de métodos de pago y reactivación de suscripciones.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Prueba de tu Implementación
+## Probando Tu Implementación
 
-Sigue estos pasos para probar a fondo tu implementación de cambio de plan de suscripción:
+Sigue estos pasos para probar exhaustivamente la implementación del cambio de plan de suscripción:
 
 <Steps>
 <Step title="Set up test environment">
 - Usa claves de API de prueba y productos de prueba
-- Crea suscripciones de prueba con diferentes tipos de planes
-- Configura un endpoint de webhook de prueba
+- Crea suscripciones de prueba con diferentes tipos de plan
+- Configura el endpoint de webhook de prueba
 - Configura monitoreo y registros
 </Step>
 
 <Step title="Test different proration modes">
-- Prueba `prorated_immediately` con varias posiciones de ciclo de facturación
-- Prueba `difference_immediately` para mejoras y degradaciones
-- Prueba `full_immediately` para restablecer los ciclos de facturación
+- Prueba `prorated_immediately` con varias posiciones del ciclo de facturación
+- Prueba `difference_immediately` para actualizaciones y degradaciones
+- Prueba `full_immediately` para restablecer ciclos de facturación
 - Prueba `do_not_bill` para cambios de plan sin cargo/sin crédito
 - Verifica que los cálculos de crédito sean correctos
 </Step>
 
 <Step title="Test webhook handling">
-- Verifica que se reciban todos los eventos de webhooks relevantes
-- Prueba la verificación de firmas de webhooks
-- Maneja eventos de webhooks duplicados con elegancia
+- Verifica que se reciban todos los eventos de webhook relevantes
+- Prueba la verificación de firmas de los webhooks
+- Maneja eventos de webhook duplicados con gracia
 - Prueba escenarios de fallos en el procesamiento de webhooks
 </Step>
 
 <Step title="Test error scenarios">
 - Prueba con IDs de suscripción inválidos
 - Prueba con métodos de pago vencidos
-- Prueba fallos de red y demoras
+- Prueba fallos de red y tiempos de espera
 - Prueba con fondos insuficientes
 </Step>
 
 <Step title="Monitor in production">
 - Configura alertas para cambios de plan fallidos
 - Monitorea los tiempos de procesamiento de webhooks
-- Rastrea las tasas de éxito de cambios de plan
-- Revisa los tickets de soporte al cliente por problemas de cambios de plan
+- Rastrea las tasas de éxito de los cambios de plan
+- Revisa los tickets de soporte al cliente por problemas de cambio de plan
 </Step>
 </Steps>
 
 ## Manejo de Errores
 
-Maneja los errores comunes de API con elegancia en tu implementación:
+Maneja con gracia los errores comunes de la API en tu implementación:
 
 ### Códigos de Estado HTTP
 
 <AccordionGroup>
 <Accordion title="200 OK">
-Solicitud de cambio de plan procesada exitosamente. La suscripción se está actualizando y el procesamiento de pago ha comenzado.
+Solicitud de cambio de plan procesada exitosamente. La suscripción está siendo actualizada y el procesamiento de pagos ha comenzado.
 </Accordion>
 
 <Accordion title="400 Bad Request">
@@ -1127,7 +1161,7 @@ Parámetros de solicitud inválidos. Verifica que todos los campos requeridos es
 </Accordion>
 
 <Accordion title="401 Unauthorized">
-Clave de API inválida o faltante. Verifica que tu `DODO_PAYMENTS_API_KEY` sea correcto y tenga los permisos adecuados.
+Clave de API inválida o faltante. Verifica que tu `DODO_PAYMENTS_API_KEY` sea correcta y tenga los permisos adecuados.
 </Accordion>
 
 <Accordion title="404 Not Found">
@@ -1135,11 +1169,11 @@ ID de suscripción no encontrada o no pertenece a tu cuenta.
 </Accordion>
 
 <Accordion title="422 Unprocessable Entity">
-La suscripción no se puede cambiar (por ejemplo, ya cancelada, producto no disponible, etc.).
+La suscripción no puede ser cambiada (por ejemplo, ya cancelada, producto no disponible, etc.).
 </Accordion>
 
 <Accordion title="500 Internal Server Error">
-Se produjo un error del servidor. Reintentar la solicitud después de un breve retraso.
+Ocurrió un error en el servidor. Reintenta la solicitud después de un breve retraso.
 </Accordion>
 </AccordionGroup>
 
@@ -1163,3 +1197,8 @@ Se produjo un error del servidor. Reintentar la solicitud después de un breve r
 - Explora <a href="/features/credit-based-billing">Facturación Basada en Créditos</a>
 - Implementa alertas para `subscription.on_hold`
 - Consulta nuestra <a href="/developer-resources/webhooks">Guía de Integración de Webhooks</a>
+
+- Review the <a href="/api-reference/subscriptions/change-plan">Change Plan API</a>
+- Explore <a href="/features/credit-based-billing">Credit-Based Billing</a>
+- Implement alerts for `subscription.on_hold`
+- Check out our <a href="/developer-resources/webhooks">Webhook Integration Guide</a>

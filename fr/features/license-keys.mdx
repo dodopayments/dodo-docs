@@ -53,7 +53,7 @@ Select **License Key** as the integration. Configure how each issued key behaves
 - **Activation Instructions**: Customer-facing instructions emailed with the key. Examples: `Paste the key in Settings → License` or `Run: mycli activate <key>`.
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="License Key entitlement form with activation limit, duration, and instructions" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="Nouveau formulaire d'agrément de clé de licence avec nom, mode de réalisation, durée de la licence, limite d'activations et message d'activation" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 
@@ -94,15 +94,116 @@ Key issuance follows the standard [grant lifecycle](/features/entitlements/intro
 - **One-time products** issue one key per cart line item (`product_cart.quantity`).
 - **Manual API grants** issue exactly one key.
 
-## Activation, Validation, Deactivation
+### Mode de réalisation
 
-The activation/validation/deactivation API endpoints are **public** and require no API key. Use them directly from desktop software, CLIs, or browser-based clients to verify keys at runtime.
+Chaque agrément de clé de licence a un `fulfillment_mode` qui contrôle qui fournit la clé :
+
+- **`auto`** (par défaut) : Dodo Payments génère et envoie automatiquement la clé par e-mail lors du paiement ou de l'abonnement. C'est le comportement décrit ci-dessus et s'applique lorsque `fulfillment_mode` est omis.
+- **`manual`** : L'achat crée une subvention `pending` sans clé, et vous fournissez vous-même chaque valeur de clé. Voir [Réalisation manuelle](#manual-fulfillment) ci-dessous.
+
+---
+
+## Réalisation manuelle
+
+Par défaut, Dodo Payments génère et envoie par e-mail une clé de licence dès qu'un client paie. Avec la **réalisation manuelle**, vous fournissez vous-même la clé : l'achat crée une subvention `pending` sans clé, vous en informe et attend que vous soumettiez la valeur de la clé. Utilisez-le lorsque les clés proviennent de votre propre système, d'un fournisseur tiers ou d'un pool fini de codes pré-imprimés.
 
 <Info>
-**Public Endpoints**: The activate, deactivate, and validate license endpoints are public and do not require an API key. Call them directly from your client applications without exposing your API credentials.
+Vous recherchez une construction étape par étape ? Consultez le [Guide d'intégration de la réalisation manuelle des clés de licence](/developer-resources/manual-license-key-fulfillment) pour une présentation complète depuis la création du produit jusqu'à la livraison de la clé.
 </Info>
 
-### Activate a license
+### Quand l'utiliser
+
+La réalisation automatique est le bon choix par défaut pour la plupart des licences logicielles. Choisissez la réalisation manuelle lorsque Dodo Payments ne peut pas générer la clé elle-même :
+
+- **Utilisation de vos propres clés** : La clé est générée par votre application, un produit de bureau ou votre propre serveur de licences.
+- **Fournisseurs tiers** : Vous revendez des clés émises par un fournisseur en amont (une clé de jeu, une crédentielle API, une plateforme partenaire).
+- **Inventaire fini** : Vous distribuez des codes à partir d'un pool pré-allocé et souhaitez les attribuer un par un.
+- **Examen humain** : Vous souhaitez vérifier un achat avant de libérer l'accès.
+
+### Activer la réalisation manuelle
+
+Définissez `fulfillment_mode: "manual"` dans la configuration d'intégration de l'agrément de clé de licence :
+
+<CodeGroup>
+
+```typescript Node.js theme={null}
+const entitlement = await client.entitlements.create({
+  name: 'Pro License (Manual)',
+  integration_type: 'license_key',
+  integration_config: {
+    fulfillment_mode: 'manual',
+    activations_limit: 5,
+    duration_count: 1,
+    duration_interval: 'Year',
+  },
+});
+```
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/entitlements \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pro License (Manual)",
+    "integration_type": "license_key",
+    "integration_config": {
+      "fulfillment_mode": "manual",
+      "activations_limit": 5,
+      "duration_count": 1,
+      "duration_interval": "Year"
+    }
+  }'
+```
+
+</CodeGroup>
+
+<Note>
+`fulfillment_mode` est rétrocompatible. Les agréments créés avant que ce paramètre n'existe n'ont pas `fulfillment_mode` et continuent de se comporter comme `auto`. Passer à `manual` n'affecte que les subventions créées **après** le changement ; les clés déjà livrées restent inchangées.
+</Note>
+
+### Trouver les subventions en attente de réalisation
+
+Lorsqu'un client achète un produit en mode manuel, la subvention est créée avec le statut `pending` sans clé et un webhook [`entitlement_grant.created`](/developer-resources/webhooks/intents/entitlement-grant) s'exécute avec `integration_type: "license_key"` et `status: "pending"`. Vous pouvez réagir à ce webhook ou interroger le point de terminaison [List Grants](/api-reference/entitlements/list-grants) avec les filtres `integration_type` et `status` :
+
+```typescript theme={null}
+const pending = await client.entitlements.grants.list('ent_license_key_id', {
+  integration_type: 'license_key',
+  status: 'pending',
+});
+```
+
+### Livrer la clé
+
+Soumettez la clé avec le point de terminaison [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). La subvention passe à `delivered` et le client reçoit la clé automatiquement - le même e-mail qu’il recevrait sous réalisation automatique.
+
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+    "activations_limit": 5,
+    "expires_at": "2027-05-01T00:00:00Z"
+  }'
+```
+
+`activations_limit` et `expires_at` sont facultatifs et se réfèrent à la configuration de l'agrément lorsqu'ils sont omis. Chaque subvention peut être réalisée une fois ; réessayer une subvention déjà réalisée retourne `409` au lieu d'émettre une seconde clé.
+
+<Check>
+Il n'est pas nécessaire d'envoyer la clé par e-mail vous-même - la livraison se fait automatiquement lorsque la subvention est réalisée. Cela diffère de [l'importation de clés](#import-existing-license-keys-via-api) via `POST /license_keys`, qui n’informe intentionnellement pas le client.
+</Check>
+
+---
+
+## Activation, Validation, Désactivation
+
+Les points de terminaison d'activation/validation/désactivation API sont **publics** et ne nécessitent pas de clé API. Utilisez-les directement depuis les logiciels de bureau, les CLI ou les clients basés sur le navigateur pour vérifier les clés à l'exécution.
+
+<Info>
+**Points de terminaison publics** : Les points de terminaison pour activer, désactiver et valider les licences sont publics et ne nécessitent pas de clé API. Appelez-les directement depuis vos applications clientes sans exposer vos identifiants API.
+</Info>
+
+### Activer une licence
 
 <CodeGroup>
 
@@ -138,7 +239,7 @@ curl -X POST https://test.dodopayments.com/licenses/activate \
 
 </CodeGroup>
 
-### Validate a license
+### Valider une licence
 
 <CodeGroup>
 
@@ -158,7 +259,7 @@ curl -X POST https://test.dodopayments.com/licenses/validate \
 
 </CodeGroup>
 
-### Deactivate an activation instance
+### Désactiver une instance d'activation
 
 ```typescript theme={null}
 await client.licenses.deactivate({
@@ -169,11 +270,11 @@ await client.licenses.deactivate({
 
 ---
 
-## Manage Keys
+## Gérer les clés
 
-Open the License Key entitlement from your dashboard to see every grant (one row per customer key) with delivery date, activation count, and a revoke action. Each grant detail surfaces the underlying license key, expiry, activations used, and the activations limit.
+Ouvrez l'agrément de clé de licence depuis votre tableau de bord pour voir chaque subvention (une ligne par clé client) avec la date de livraison, le nombre d'activations et une action de révocation. Chaque détail de subvention affiche la clé de licence sous-jacente, l'expiration, les activations utilisées et la limite d'activations.
 
-You can also list grants programmatically:
+Vous pouvez également lister les subventions de manière programmatique :
 
 ```typescript theme={null}
 const grants = await client.entitlements.grants.list('ent_license_key_id', {
@@ -185,12 +286,12 @@ for (const grant of grants.items) {
 }
 ```
 
-## Import Existing License Keys via API
+## Importer des clés de licence existantes via l'API
 
-Already have license keys in another system? Use the [Create License Key](/api-reference/licenses/create-license-key) API to import them into Dodo Payments. This lets you migrate existing keys without disrupting your customers — they continue to activate, validate, and deactivate against the same key strings without re-issuance.
+Avez-vous déjà des clés de licence dans un autre système ? Utilisez l'API [Create License Key](/api-reference/licenses/create-license-key) pour les importer dans Dodo Payments. Cela vous permet de migrer les clés existantes sans perturber vos clients - ils continuent d'activer, de valider et de désactiver avec les mêmes chaînes de clés sans réémission.
 
 <Warning>
-License keys created or updated through the API do not trigger email notifications to customers. If you need to notify customers about an imported key, handle that separately in your application.
+Les clés de licence créées ou mises à jour via l'API ne déclenchent pas de notifications par e-mail aux clients. Si vous devez informer les clients d'une clé importée, gérez cela séparément dans votre application.
 </Warning>
 
 ```typescript theme={null}
@@ -203,107 +304,108 @@ const licenseKey = await client.licenseKeys.create({
 });
 ```
 
-### How imported keys differ from auto-generated keys
+### Comment les clés diffèrent selon la source
 
-| Field | Auto-generated key | Imported key |
-|-------|--------------------|--------------|
-| `source` | `"auto"` | `"import"` |
-| `payment_id` | Set to the originating payment | `null` (no Dodo Payments transaction) |
-| `subscription_id` | Set if the key was issued via a subscription | `null` unless explicitly linked |
-| Customer email notification | Sent on issuance | Not sent — handle separately |
+| Champ | Clé auto-générée | Clé réalisée manuellement | Clé importée |
+|-------|------------------|--------------------------|--------------|
+| `source` | `"auto"` | `"manual"` | `"import"` |
+| Origine | Générée par Dodo Payments lors du paiement | [Fournie par vos soins](#manual-fulfillment) pour une subvention en attente | Créée/migrée via `POST /license_keys` |
+| `payment_id` | Défini sur le paiement d'origine | Résolu depuis la subvention ou son abonnement | `null` (aucune transaction Dodo Payments) |
+| `subscription_id` | Défini si émise via un abonnement | Défini si la subvention provient d'un abonnement | `null` sauf lien explicité |
+| Notification par e-mail au client | Envoyée lors de l'émission | Envoyée lors de la réalisation | Non envoyée - gérée séparément |
 
-Use the `source` field on `GET /license_keys` responses to distinguish migrated inventory from organically issued keys when reconciling or auditing.
+Utilisez le champ `source` sur les réponses `GET /license_keys` pour distinguer l'inventaire migré et les clés réalisées manuellement des clés émises de manière organique lors de la réconciliation ou de l'audit.
 
 <Tip>
-Migrating from **Polar.sh** or **Lemon Squeezy**? The [`dodo-migrate` CLI](/migrate-to-dodo) automates bulk imports of products, customers, discounts, and license keys in a single command and maps external IDs to Dodo IDs automatically.
+Vous migrez depuis **Polar.sh** ou **Lemon Squeezy** ? Le [CLI `dodo-migrate`](/migrate-to-dodo) automatise les importations en masse de produits, clients, réductions, et clés de licence en une seule commande et associe automatiquement les IDs externes aux IDs Dodo.
 </Tip>
 
 ---
 
-## License Keys in Return URL
+## Clés de licence dans l'URL de retour
 
-When a customer completes a purchase for a product with a License Key entitlement, the generated key is automatically appended to your `return_url` as a query parameter. This lets you display the key immediately on your success page without making an extra API call.
+Lorsqu'un client finalise un achat pour un produit avec un agrément de clé de licence, la clé générée est automatiquement ajoutée à votre `return_url` en tant que paramètre de requête. Cela vous permet d'afficher la clé immédiatement sur votre page de réussite sans effectuer un appel d'API supplémentaire.
 
 ```text theme={null}
 https://yoursite.com/return?payment_id=pay_xxx&status=succeeded&license_key=LK-001&email=customer%40example.com
 ```
 
-If the purchase generates multiple keys (quantity > 1), they are comma-separated:
+Si l'achat génère plusieurs clés (quantité > 1), elles sont séparées par des virgules :
 
 ```text theme={null}
 https://yoursite.com/return?payment_id=pay_xxx&status=succeeded&license_key=LK-001,LK-002&email=customer%40example.com
 ```
 
-For subscriptions, `subscription_id` is used instead of `payment_id`:
+Pour les abonnements, `subscription_id` est utilisé au lieu de `payment_id` :
 
 ```text theme={null}
 https://yoursite.com/return?subscription_id=sub_xxx&status=active&license_key=LK-001&email=customer%40example.com
 ```
 
 <Tip>
-Parse the `license_key` parameter on your return page to show the key immediately, improving the post-purchase experience.
+Analysez le paramètre `license_key` sur votre page de retour pour afficher immédiatement la clé, améliorant ainsi l'expérience post-achat.
 </Tip>
 
 ---
 
-## API Management
+## Gestion API
 
 <AccordionGroup>
 <Accordion title="Lifecycle Operations (Public Endpoints)">
-Activation, deactivation, and validation are public; no API key required.
+Activation, désactivation et validation sont publiques ; aucune clé API requise.
 
 <CardGroup cols={3}>
 <Card title="Activate License" icon="code" href="/api-reference/licenses/activate-license">
-Create or record an activation instance for a license key.
+Créez ou enregistrez une instance d'activation pour une clé de licence.
 </Card>
 
 <Card title="Deactivate License" icon="code" href="/api-reference/licenses/deactivate-license">
-Revoke a prior activation to free up capacity.
+Révoquez une activation précédente pour libérer de la capacité.
 </Card>
 
 <Card title="Validate License" icon="code" href="/api-reference/licenses/validate-license">
-Check authenticity, status, and constraints before granting access.
+Vérifiez l'authenticité, le statut et les contraintes avant d'accorder l'accès.
 </Card>
 </CardGroup>
 </Accordion>
 
 <Accordion title="License Key Management">
-Create, list, retrieve, and update individual license key records. Use these to import existing keys or fetch usage details.
+Créez, listez, récupérez et mettez à jour les enregistrements individuels de clés de licence. Utilisez-les pour importer des clés existantes ou récupérer des détails d'utilisation.
 
 <CardGroup cols={2}>
 <Card title="Create License Key" icon="code" href="/api-reference/licenses/create-license-key">
-Create a new license key or import an existing one.
+Créez une nouvelle clé de licence ou importez-en une existante.
 </Card>
 
 <Card title="List License Keys" icon="code" href="/api-reference/licenses/list-license-keys">
-Browse all keys with status and usage details.
+Parcourez toutes les clés avec leur statut et les détails d'utilisation.
 </Card>
 
 <Card title="Get License Key" icon="code" href="/api-reference/licenses/get-license-key">
-Retrieve a specific key and its metadata.
+Récupérez une clé spécifique et ses métadonnées.
 </Card>
 
 <Card title="Update License Key" icon="code" href="/api-reference/licenses/update-license-key">
-Modify expiry, activation limits, or enable/disable a key.
+Modifiez l'expiration, les limites d'activation ou activez/désactivez une clé.
 </Card>
 </CardGroup>
 </Accordion>
 
 <Accordion title="Entitlement Management">
-Manage the License Key entitlement itself: its activation limit, duration, and instructions.
+Gérez l'agrément de clé de licence lui-même : sa limite d'activation, sa durée et ses instructions.
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Create a License Key entitlement.
+Créez un agrément de clé de licence.
 </Card>
 <Card title="Update Entitlement" icon="pen" href="/api-reference/entitlements/update-entitlement">
-Update the entitlement's configuration.
+Mettez à jour la configuration de l'agrément.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-List the keys issued for an entitlement.
+Listez les clés émises pour un agrément.
 </Card>
 <Card title="Revoke Grant" icon="ban" href="/api-reference/entitlements/revoke-grant">
-Manually revoke a customer's key.
+Révoquez manuellement la clé d'un client.
 </Card>
 </CardGroup>
 </Accordion>
@@ -313,30 +415,30 @@ Manually revoke a customer's key.
 
 ## Webhooks
 
-License-key delivery and revocation fire the four [`entitlement_grant.*` webhook events](/developer-resources/webhooks/intents/entitlement-grant). The grant payload includes a populated `license_key` object with the key, expiry, activations used, and limit.
+La livraison et la révocation des clés de licence déclenchent les quatre [événements webhook `entitlement_grant.*`](/developer-resources/webhooks/intents/entitlement-grant). La charge utile de la subvention inclut un objet `license_key` peuplé avec la clé, l'expiration, les activations utilisées et la limite.
 
-The legacy `license_key.*` events (`license_key.created`) continue to fire for the underlying license-key record lifecycle; see the [License Key webhook payload page](/developer-resources/webhooks/intents/license-key).
+Les événements hérités `license_key.*` (`license_key.created`) continuent de s'exécuter pour le cycle de vie de l'enregistrement de la clé de licence sous-jacent ; consultez la [page de charges utiles du webhook de clé de licence](/developer-resources/webhooks/intents/license-key).
 
 <Tip>
-For new integrations, listen to `entitlement_grant.delivered` rather than `license_key.created`. The entitlement event tells you delivery is complete across all integrations on the product, not just the license key.
+Pour les nouvelles intégrations, écoutez `entitlement_grant.delivered` plutôt que `license_key.created`. L'événement d'agrément vous indique que la livraison est complète sur toutes les intégrations du produit, pas seulement la clé de licence.
 </Tip>
 
 ---
 
-## Legacy License Keys
+## Clés de Licence Héritées
 
 <Note>
-Products created with the older `license_key_enabled` flag have been **automatically migrated** to a License Key entitlement. The migration is transparent: existing customers' keys continue to work unchanged, the public `/licenses/activate`, `/licenses/validate`, `/licenses/deactivate` endpoints continue to function, and the `/license_keys/*` API endpoints continue to read and write to the same key store.
+Les produits créés avec l'ancien drapeau `license_key_enabled` ont été **automatiquement migrés** vers un agrément de clé de licence. La migration est transparente : les clés des clients existants continuent de fonctionner sans changement, les points de terminaison publics `/licenses/activate`, `/licenses/validate`, `/licenses/deactivate` continuent de fonctionner, et les points de terminaison API `/license_keys/*` continuent de lire et d'écrire dans le même magasin de clés.
 
-The standalone **License Keys** dashboard section remains available as a flat list of every key issued, useful for audit and search. New configuration (changing activation limits, durations, or instructions) should be done by editing the migrated License Key entitlement under **Entitlements**.
+La section de tableau de bord **Clés de Licence** autonome reste disponible en tant que liste à plat de chaque clé émise, utile pour l'audit et la recherche. La nouvelle configuration (changement des limites d'activation, des durées, ou des instructions) doit être effectuée en modifiant l'agrément de clé de licence migré sous **Entitlements**.
 </Note>
 
 ---
 
-## Best Practices
+## Meilleures Pratiques
 
-- **Keep activation limits clear**: Choose sensible defaults (1 for single-user apps, 3–5 for team licenses) and document them.
-- **Provide precise activation instructions**: Customers paste these from their email, so exact paths and commands save support tickets.
-- **Validate keys server-side**: For network-connected products, validate via `/licenses/validate` rather than caching activation locally.
-- **Use webhooks for revocation**: Listen to `entitlement_grant.revoked` to disable in-app features immediately when a customer cancels or refunds.
-- **Test with subscriptions and one-times**: License key behavior differs subtly between the two, so test both before going live.
+- **Gardez les limites d'activation claires** : Choisissez des valeurs par défaut sensées (1 pour les applications à utilisateur unique, 3-5 pour les licences d'équipe) et documentez-les.
+- **Fournissez des instructions d'activation précises** : Les clients copient ces informations depuis leur e-mail, donc des chemins et des commandes exacts réduisent les demandes d'assistance.
+- **Validez les clés côté serveur** : Pour les produits connectés au réseau, validez via `/licenses/validate` plutôt qu'en mettant en cache l'activation localement.
+- **Utilisez les webhooks pour la révocation** : Écoutez `entitlement_grant.revoked` pour désactiver les fonctionnalités de l'application immédiatement lorsqu'un client annule ou demande un remboursement.
+- **Testez avec des abonnements et des achats uniques** : Le comportement des clés de licence diffère subtilement entre les deux, alors testez les deux avant de lancer.

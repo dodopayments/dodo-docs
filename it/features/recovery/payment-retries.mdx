@@ -1,0 +1,150 @@
+---
+sidebarTitle: Ritenti Pagamento Abbonamento
+title: Ritenti Pagamento Abbonamento
+description: Ritenta automaticamente i pagamenti di rinnovo abbonamento falliti
+  secondo un programma di back-off intelligente per recuperare i ricavi senza
+  lavoro di integrazione.
+icon: arrow-rotate-right
+keywords:
+  - Dodo Payments
+  - payment retries
+  - recupero abbonamenti
+  - rinnovo fallito
+  - recupero crediti
+  - ritenti intelligenti
+  - recupero dei ricavi
+  - abbonamento sospeso
+  - ritento rinnovo
+  - ritento automatico
+---
+
+<Info>
+I Ritenti Pagamento ritentano automaticamente i pagamenti di rinnovo dell'abbonamento **falliti** secondo un programma di back-off progressivo. Quando un ritento riesce, l'abbonamento viene riattivato automaticamente — nessuna azione del cliente o lavoro di integrazione richiesto.
+</Info>
+
+## Cosa Sono i Ritenti Pagamento?
+
+Quando un pagamento di rinnovo dell'abbonamento fallisce, l'abbonamento viene messo **in sospeso**. Con i Ritenti Pagamento abilitati, Dodo Payments addebita automaticamente il metodo di pagamento esistente del cliente secondo un programma intelligente fino a quando il pagamento riesce o la finestra di recupero si chiude.
+
+Questo recupera i ricavi persi a causa di fallimenti temporanei — carte scadute, fondi insufficienti che vengono ricaricati, errori di rete transitori — senza inviare email al cliente o chiedergli di aggiornare qualcosa.
+
+<Note>
+I Ritenti Pagamento si applicano solo ai pagamenti di **rinnovo** dell'abbonamento. I primi pagamenti (configurazione del mandato), i pagamenti una tantum, i costi di cambio piano e i costi su richiesta non vengono ritentati da questa funzionalità.
+</Note>
+
+## Come Funzionano i Ritenti Pagamento
+
+<Steps>
+<Step title="Renewal fails">
+Un pagamento di rinnovo dell'abbonamento fallisce e l'abbonamento passa allo stato `on_hold`.
+</Step>
+
+<Step title="Retryability check">
+Il codice di errore del fallimento viene controllato. I **soft decline** (fondi insufficienti, rifiuto generico, errori di elaborazione o di rete, ecc.) sono ritentabili. I **hard decline** terminano immediatamente la catena di ritenti, poiché ritentare non cambierà il risultato.
+</Step>
+
+<Step title="Scheduled retry">
+Se il rifiuto è ritentabile e la finestra di recupero lo consente, il tentativo successivo viene programmato. I ritenti vengono effettuati off-session sul metodo di pagamento esistente del cliente seguendo un programma di back-off progressivo.
+</Step>
+
+<Step title="Recovery">
+Al primo ritento riuscito, l'abbonamento ritorna a `active` e la data di fatturazione successiva viene avanzata come di consueto. Se la finestra si chiude prima che un ritento riesca, i ritenti si fermano e l'abbonamento rimane in sospeso.
+</Step>
+</Steps>
+
+## Configurazione dei Ritenti Pagamento
+
+Abilita e configura i Ritenti Pagamento da **Impostazioni → Recupero** nel tuo dashboard.
+
+<Frame caption="Payment Retries settings under Settings → Recovery">
+<img src="/images/recovery/payment-retries-settings.png" alt="Pagina Impostazioni di Recupero con l'interruttore Abilita Ritenti Pagamento attivo e un campo Finestra di recupero (giorni) impostato a 13" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+| Impostazione | Descrizione | Predefinito |
+|--------------|-------------|-------------|
+| **Abilita Ritenti Pagamento** | Ritenta automaticamente i pagamenti di rinnovo abbonamento falliti per recuperare i ricavi. | Disattivato (opt-in) |
+| **Finestra di recupero (giorni)** | Quanto tempo continuare a ritentare un pagamento fallito prima di rinunciare. Deve essere compreso tra **1 e 30**. | 13 |
+
+La **finestra di recupero** è ancorata al momento in cui è stata creata la fattura di rinnovo fallita. I ritenti sono programmati solo mentre il ritardo cumulativo del back-off rientra ancora nella finestra.
+
+## Programma di Ritenti
+
+I ritenti si stabilizzano progressivamente. Vengono effettuati fino a **8 tentativi**, finché ciascuno rientra nella finestra di recupero:
+
+| Tentativo | Ritardo dopo il tentativo precedente | Tempo approssimativo dal fallimento |
+|-----------|-------------------------------------|-----------------------------------|
+| 1 | 12 ore | 12 ore |
+| 2 | 24 ore | 36 ore |
+| 3 | 48 ore | ~3,5 giorni |
+| 4 | 72 ore | ~6,5 giorni |
+| 5 | 96 ore | ~10,5 giorni |
+| 6 | 120 ore | ~15,5 giorni |
+| 7 | 7 giorni | ~22,5 giorni |
+| 8 | 7 giorni | ~29,5 giorni |
+
+<Tip>
+Una finestra di recupero di **13 giorni** (il predefinito) copre i tentativi da 1 a 5 (il tentativo 5 si attiva ~10,5 giorni dopo il fallimento). Aumenta la finestra verso il massimo di 30 giorni se desideri che si eseguano i tentativi successivi, più ampiamente distanziati (da 6 a 8).
+</Tip>
+
+## Transizioni di Stato dell'Abbonamento
+
+| Evento | Stato dell'abbonamento |
+|--------|-------------------------|
+| Fallimento pagamento rinnovo | `active` → `on_hold` |
+| Fallimento tentativo di ritento | rimane `on_hold` (prossimo ritento programmato se la finestra lo consente) |
+| Successo tentativo di ritento | `on_hold` → `active`, data di fatturazione successiva avanzata |
+| Finestra di recupero esaurita | rimane `on_hold` |
+
+Queste transizioni emettono i consueti eventi webhook dell'abbonamento, così puoi gestire la logica delle autorizzazioni da esse senza gestire specificamente i ritenti:
+
+| Evento | Attivato quando |
+|--------|----------------|
+| `subscription.on_hold` | Un rinnovo fallisce e l'abbonamento è messo in sospeso |
+| `subscription.active` | Un ritento ha successo e l'abbonamento viene riattivato |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Visualizza gli schemi completi dei payload webhook per gli eventi del ciclo di vita dell'abbonamento.
+</Card>
+
+## Fallimenti Ritentabili vs. Non Ritentabili
+
+| Tipo di fallimento | Esempi | Ritentato? |
+|--------------------|--------|------------|
+| **Soft decline** | Fondi insufficienti, rifiuto generico, eccedenza velocità carta, errore di elaborazione, errore di rete/timeout, riprovare più tardi | Sì |
+| **Hard decline** | Carta rubata/persa, carta non valida, non onorare, account chiuso e altri rifiuti terminali | No — la catena termina immediatamente |
+
+<Info>
+Ritentare un hard decline non cambierà il risultato, quindi la catena dei ritenti termina non appena un hard decline viene osservato. Associa i Ritenti Pagamento con [Recupero Abbonamenti](/features/recovery/subscription-dunning) per invitare il cliente ad aggiornare il loro metodo di pagamento in quei casi.
+</Info>
+
+## Ritenti Pagamento vs. Recupero Abbonamenti
+
+I Ritenti Pagamento e [Recupero Abbonamenti](/features/recovery/subscription-dunning) sono strumenti di recupero complementari:
+
+| | Ritenti Pagamento | Recupero Abbonamenti |
+|--|------------------|----------------------|
+| **Meccanismo** | Riaddebita silenziosamente il metodo di pagamento esistente | Invia email al cliente per aggiornare il suo metodo di pagamento |
+| **Azione del cliente** | Nessuna richiesta | Il cliente aggiorna il metodo di pagamento nel portale |
+| **Migliore per** | Declini temporanei/soft che si risolvono da soli | Carte scadute o non valide che devono essere sostituite |
+
+Abilitare entrambi offre la copertura di recupero più ampia: i ritenti automatici intercettano i fallimenti transitori, mentre il recupero riporta i clienti il cui metodo di pagamento deve effettivamente essere aggiornato.
+
+## Correlati
+
+<CardGroup cols={2}>
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Sequenze email che invitano i clienti ad aggiornare il loro metodo di pagamento.
+</Card>
+
+<Card title="Abandoned Cart Recovery" icon="cart-shopping" href="/features/recovery/abandoned-cart-recovery">
+Recupera checkout una tantum incompleti o falliti con email mirate.
+</Card>
+
+<Card title="Subscriptions" icon="repeat" href="/features/subscription">
+Comprendere gli stati dell'abbonamento coinvolti nei flussi di recupero.
+</Card>
+
+<Card title="Subscription Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Reagisci agli eventi `subscription.on_hold` e `subscription.active`.
+</Card>
+</CardGroup>
