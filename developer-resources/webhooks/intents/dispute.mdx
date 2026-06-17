@@ -1,7 +1,92 @@
 ---
 openapi-schema: DisputeResponse
 title: Dispute
-description: The payload sent to your webhook endpoint when a dispute is created or updated.
+description: The payload sent to your webhook endpoint when a dispute is created or updated, and how to handle each dispute lifecycle event.
 icon: "circle-exclamation"
-keywords: ["Dodo Payments", "dispute webhook", "chargeback events", "webhook integration", "dispute"]
+keywords: ["Dodo Payments", "dispute webhook", "chargeback events", "webhook integration", "dispute", "dispute.opened", "RDR"]
 ---
+
+<Info>
+As your [Merchant of Record](/features/mor-introduction), Dodo Payments manages the dispute and chargeback process with the card networks on your behalf. These webhooks keep your systems in sync as a dispute moves through its lifecycle so you can revoke access, gather evidence, and reconcile your records.
+</Info>
+
+## Dispute Webhook Events
+
+A dispute emits an event at each stage of its lifecycle:
+
+| Event | Fires when | What it usually means |
+|-------|-----------|-----------------------|
+| `dispute.opened` | A cardholder opens a dispute on a payment | Funds are held; prepare to respond |
+| `dispute.challenged` | Evidence has been submitted to contest the dispute | The dispute is being reviewed by the network |
+| `dispute.accepted` | The dispute was accepted (not contested) | The funds are returned to the cardholder |
+| `dispute.cancelled` | The dispute was withdrawn or cancelled | No further action needed |
+| `dispute.expired` | The response window passed without resolution | Typically resolves against you |
+| `dispute.won` | The dispute was resolved in your favor | Funds are retained |
+| `dispute.lost` | The dispute was resolved in the cardholder's favor | Funds are returned to the cardholder |
+
+<Note>
+Disputes auto-resolved through [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) appear as `dispute.lost` with `is_resolved_by_rdr: true`. This is expected — the refund was issued automatically to prevent a formal chargeback.
+</Note>
+
+## Handling Dispute Events
+
+When `dispute.opened` fires, the disputed amount is held immediately. Use the event to update your records and, if you intend to contest it, gather evidence in the dashboard.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Always verify the webhook signature before processing — see the [Webhooks guide](/developer-resources/webhooks) for setup. The handler above omits verification for brevity.
+</Tip>
+
+<Warning>
+You have **4 days** to respond to a dispute after it is created. See [Dispute Response Best Practices](/features/transactions/disputes#dispute-response-best-practices) for the evidence to gather and how to format it.
+</Warning>
+
+## Dispute Status and Stage
+
+The dispute object reports its progress through two fields:
+
+| Field | Values |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Related
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+How to respond to disputes, submit evidence, and how RDR protects your dispute rate.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Detect and recover failed payments before they become disputes.
+</Card>
+</CardGroup>
+
+## Webhook Payload Schema
