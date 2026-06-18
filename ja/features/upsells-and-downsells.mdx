@@ -362,39 +362,43 @@ func createOneClickUpsell(
     customerID string,
     paymentMethodID string,
     upsellProductID string,
-) (*dodopayments.CheckoutSession, error) {
+) (*dodopayments.CheckoutSessionResponse, error) {
     client := dodopayments.NewClient(
         option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
     )
     
     // Create checkout session with saved payment method
     // Confirm: true processes the payment immediately
-    session, err := client.CheckoutSessions.Create(context.TODO(), dodopayments.CheckoutSessionCreateParams{
-        ProductCart: dodopayments.F([]dodopayments.CheckoutSessionCreateParamsProductCart{
-            {
-                ProductID: dodopayments.F(upsellProductID),
-                Quantity:  dodopayments.F(int64(1)),
-            },
-        }),
-        Customer: dodopayments.F(dodopayments.CheckoutSessionCreateParamsCustomer{
-            CustomerID: dodopayments.F(customerID),
-        }),
-        PaymentMethodID: dodopayments.F(paymentMethodID),
-        Confirm:         dodopayments.F(true), // Required when using payment_method_id
-        ReturnURL:       dodopayments.F("https://yourapp.com/upsell-success"),
-        FeatureFlags: dodopayments.F(dodopayments.CheckoutSessionCreateParamsFeatureFlags{
-            RedirectImmediately: dodopayments.F(true), // Skip success page
-        }),
-        Metadata: dodopayments.F(map[string]string{
-            "upsell_source":     "post_purchase",
-            "original_order_id": "order_123",
-        }),
+    session, err := client.CheckoutSessions.New(context.TODO(), dodopayments.CheckoutSessionNewParams{
+        CheckoutSessionRequest: dodopayments.CheckoutSessionRequestParam{
+            ProductCart: dodopayments.F([]dodopayments.ProductItemReqParam{
+                {
+                    ProductID: dodopayments.F(upsellProductID),
+                    Quantity:  dodopayments.F(int64(1)),
+                },
+            }),
+            Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+                dodopayments.AttachExistingCustomerParam{
+                    CustomerID: dodopayments.F(customerID),
+                },
+            ),
+            PaymentMethodID: dodopayments.F(paymentMethodID),
+            Confirm:         dodopayments.F(true), // Required when using payment_method_id
+            ReturnURL:       dodopayments.F("https://yourapp.com/upsell-success"),
+            FeatureFlags: dodopayments.F(dodopayments.CheckoutSessionFlagsParam{
+                RedirectImmediately: dodopayments.F(true), // Skip success page
+            }),
+            Metadata: dodopayments.F(map[string]string{
+                "upsell_source":     "post_purchase",
+                "original_order_id": "order_123",
+            }),
+        },
     })
     
     return session, err
 }
 
-func handlePostPurchaseUpsell(customerID string) (*dodopayments.CheckoutSession, error) {
+func handlePostPurchaseUpsell(customerID string) (*dodopayments.CheckoutSessionResponse, error) {
     client := dodopayments.NewClient(
         option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
     )
@@ -519,9 +523,11 @@ func previewUpgrade(subscriptionID string, newProductID string) (map[string]inte
         context.TODO(),
         subscriptionID,
         dodopayments.SubscriptionPreviewChangePlanParams{
-            ProductID:             dodopayments.F(newProductID),
-            Quantity:              dodopayments.F(int64(1)),
-            ProrationBillingMode:  dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+            UpdateSubscriptionPlanReq: dodopayments.UpdateSubscriptionPlanReqParam{
+                ProductID:            dodopayments.F(newProductID),
+                Quantity:             dodopayments.F(int64(1)),
+                ProrationBillingMode: dodopayments.F(dodopayments.UpdateSubscriptionPlanReqProrationBillingModeDifferenceImmediately),
+            },
         },
     )
     if err != nil {
@@ -531,7 +537,7 @@ func previewUpgrade(subscriptionID string, newProductID string) (map[string]inte
     return map[string]interface{}{
         "immediate_charge": preview.ImmediateCharge.Summary,
         "new_plan":         preview.NewPlan,
-        "effective_date":   preview.EffectiveDate,
+        "effective_at":     preview.ImmediateCharge.EffectiveAt,
     }, nil
 }
 ```
@@ -608,36 +614,39 @@ print(f"Upgrade status: {upgrade['status']}")
 func upgradeSubscription(
     subscriptionID string,
     newProductID string,
-    prorationMode dodopayments.ProrationBillingMode,
-) (*dodopayments.SubscriptionChangePlanResponse, error) {
+    prorationMode dodopayments.UpdateSubscriptionPlanReqProrationBillingMode,
+) error {
     client := dodopayments.NewClient(
         option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
     )
     
-    result, err := client.Subscriptions.ChangePlan(
+    // ChangePlan returns no response body; a nil error means the change succeeded.
+    err := client.Subscriptions.ChangePlan(
         context.TODO(),
         subscriptionID,
         dodopayments.SubscriptionChangePlanParams{
-            ProductID:            dodopayments.F(newProductID),
-            Quantity:             dodopayments.F(int64(1)),
-            ProrationBillingMode: dodopayments.F(prorationMode),
+            UpdateSubscriptionPlanReq: dodopayments.UpdateSubscriptionPlanReqParam{
+                ProductID:            dodopayments.F(newProductID),
+                Quantity:             dodopayments.F(int64(1)),
+                ProrationBillingMode: dodopayments.F(prorationMode),
+            },
         },
     )
     
-    return result, err
+    return err
 }
 
 // Upgrade from Basic ($30) to Pro ($80)
 // With DifferenceImmediately: charges $50 instantly
-upgrade, err := upgradeSubscription(
+err := upgradeSubscription(
     "sub_123",
     "prod_pro_plan",
-    dodopayments.ProrationBillingModeDifferenceImmediately,
+    dodopayments.UpdateSubscriptionPlanReqProrationBillingModeDifferenceImmediately,
 )
 if err != nil {
     panic(err)
 }
-fmt.Printf("Upgrade status: %s\n", upgrade.Status)
+fmt.Println("Upgrade succeeded")
 ```
 
 </Tab>
@@ -776,19 +785,28 @@ func createCrossSell(
     paymentMethodID string,
     productID string,
     quantity int64,
-) (*dodopayments.Payment, error) {
+) (*dodopayments.PaymentNewResponse, error) {
     client := dodopayments.NewClient(
         option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
     )
     
-    payment, err := client.Payments.Create(context.TODO(), dodopayments.PaymentCreateParams{
-        ProductCart: dodopayments.F([]dodopayments.PaymentCreateParamsProductCart{
+    payment, err := client.Payments.New(context.TODO(), dodopayments.PaymentNewParams{
+        ProductCart: dodopayments.F([]dodopayments.OneTimeProductCartItemParam{
             {
                 ProductID: dodopayments.F(productID),
                 Quantity:  dodopayments.F(quantity),
             },
         }),
-        CustomerID:      dodopayments.F(customerID),
+        Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+            dodopayments.AttachExistingCustomerParam{CustomerID: dodopayments.F(customerID)},
+        ),
+        Billing: dodopayments.F(dodopayments.BillingAddressParam{
+            Country: dodopayments.F(dodopayments.CountryCodeUs),
+            City:    dodopayments.F("San Francisco"),
+            State:   dodopayments.F("CA"),
+            Street:  dodopayments.F("1 Market St"),
+            Zipcode: dodopayments.F("94105"),
+        }),
         PaymentMethodID: dodopayments.F(paymentMethodID),
         ReturnURL:       dodopayments.F("https://yourapp.com/purchase-complete"),
         Metadata: dodopayments.F(map[string]string{
@@ -812,12 +830,16 @@ func offerRelatedProduct(customerID string, relatedProductID string) (interface{
     
     if len(resp.Items) == 0 {
         // Fall back to standard checkout
-        return client.CheckoutSessions.Create(context.TODO(), dodopayments.CheckoutSessionCreateParams{
-            ProductCart: dodopayments.F([]dodopayments.CheckoutSessionCreateParamsProductCart{
-                {ProductID: dodopayments.F(relatedProductID), Quantity: dodopayments.F(int64(1))},
-            }),
-            Customer:  dodopayments.F(dodopayments.CheckoutSessionCreateParamsCustomer{CustomerID: dodopayments.F(customerID)}),
-            ReturnURL: dodopayments.F("https://yourapp.com/purchase-complete"),
+        return client.CheckoutSessions.New(context.TODO(), dodopayments.CheckoutSessionNewParams{
+            CheckoutSessionRequest: dodopayments.CheckoutSessionRequestParam{
+                ProductCart: dodopayments.F([]dodopayments.ProductItemReqParam{
+                    {ProductID: dodopayments.F(relatedProductID), Quantity: dodopayments.F(int64(1))},
+                }),
+                Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+                    dodopayments.AttachExistingCustomerParam{CustomerID: dodopayments.F(customerID)},
+                ),
+                ReturnURL: dodopayments.F("https://yourapp.com/purchase-complete"),
+            },
         })
     }
     
@@ -910,7 +932,7 @@ downgrade = downgrade_subscription("sub_123", "prod_basic_plan")
 <Tab title="Go">
 
 ```go
-func downgradeSubscription(subscriptionID string, newProductID string) (*dodopayments.SubscriptionChangePlanResponse, error) {
+func downgradeSubscription(subscriptionID string, newProductID string) error {
     client := dodopayments.NewClient(
         option.WithBearerToken(os.Getenv("DODO_PAYMENTS_API_KEY")),
     )
@@ -920,29 +942,31 @@ func downgradeSubscription(subscriptionID string, newProductID string) (*dodopay
         context.TODO(),
         subscriptionID,
         dodopayments.SubscriptionPreviewChangePlanParams{
-            ProductID:            dodopayments.F(newProductID),
-            Quantity:             dodopayments.F(int64(1)),
-            ProrationBillingMode: dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+            UpdateSubscriptionPlanReq: dodopayments.UpdateSubscriptionPlanReqParam{
+                ProductID:            dodopayments.F(newProductID),
+                Quantity:             dodopayments.F(int64(1)),
+                ProrationBillingMode: dodopayments.F(dodopayments.UpdateSubscriptionPlanReqProrationBillingModeDifferenceImmediately),
+            },
         },
     )
     if err != nil {
-        return nil, err
+        return err
     }
     
-    fmt.Printf("Credit to be applied: %v\n", preview.CreditAmount)
+    fmt.Printf("Customer credits to be applied: %v\n", preview.ImmediateCharge.Summary.CustomerCredits)
     
-    // Execute the downgrade
-    result, err := client.Subscriptions.ChangePlan(
+    // Execute the downgrade (returns no response body; nil error means success)
+    return client.Subscriptions.ChangePlan(
         context.TODO(),
         subscriptionID,
         dodopayments.SubscriptionChangePlanParams{
-            ProductID:            dodopayments.F(newProductID),
-            Quantity:             dodopayments.F(int64(1)),
-            ProrationBillingMode: dodopayments.F(dodopayments.ProrationBillingModeDifferenceImmediately),
+            UpdateSubscriptionPlanReq: dodopayments.UpdateSubscriptionPlanReqParam{
+                ProductID:            dodopayments.F(newProductID),
+                Quantity:             dodopayments.F(int64(1)),
+                ProrationBillingMode: dodopayments.F(dodopayments.UpdateSubscriptionPlanReqProrationBillingModeDifferenceImmediately),
+            },
         },
     )
-    
-    return result, err
 }
 ```
 

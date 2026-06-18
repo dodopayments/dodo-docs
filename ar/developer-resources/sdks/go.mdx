@@ -109,10 +109,23 @@ import (
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
-payment, err := client.Payments.Create(ctx, dodopayments.PaymentCreateParams{
-	Amount:     5000,
-	Currency:   "USD",
-	CustomerID: "cus_123",
+payment, err := client.Payments.New(ctx, dodopayments.PaymentNewParams{
+	Billing: dodopayments.F(dodopayments.BillingAddressParam{
+		Country: dodopayments.F(dodopayments.CountryCodeUs),
+		City:    dodopayments.F("San Francisco"),
+		State:   dodopayments.F("CA"),
+		Street:  dodopayments.F("1 Market St"),
+		Zipcode: dodopayments.F("94105"),
+	}),
+	Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+		dodopayments.AttachExistingCustomerParam{
+			CustomerID: dodopayments.F("cus_123"),
+		},
+	),
+	ProductCart: dodopayments.F([]dodopayments.OneTimeProductCartItemParam{{
+		ProductID: dodopayments.F("pdt_456"),
+		Quantity:  dodopayments.F(int64(1)),
+	}}),
 })
 if err != nil {
 	if ctx.Err() == context.DeadlineExceeded {
@@ -253,7 +266,21 @@ if err != nil {
 }
 ```
 
-### قائمة أحداث الاستخدام
+```go
+import "github.com/dodopayments/dodopayments-go"
+
+response, err := client.UsageEvents.Ingest(ctx, dodopayments.UsageEventIngestParams{
+	Events: dodopayments.F([]dodopayments.EventInputParam{{
+		EventID:    dodopayments.F("api_call_12345"),
+		CustomerID: dodopayments.F("cus_abc123"),
+		EventName:  dodopayments.F("api_request"),
+		Timestamp:  dodopayments.F(time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)),
+	}}),
+})
+if err != nil {
+	log.Fatal(err)
+}
+```
 
 ```go
 // List events with filters
@@ -272,39 +299,68 @@ for _, event := range events.Data {
 }
 ```
 
-## معالجة الأخطاء
+```go
+// List events with filters
+params := dodopayments.UsageEventListParams{
+	CustomerID: dodopayments.F("cus_abc123"),
+	EventName:  dodopayments.F("api_request"),
+}
+
+events, err := client.UsageEvents.List(ctx, params)
+if err != nil {
+	log.Fatal(err)
+}
+
+for _, event := range events.Items {
+	fmt.Printf("Event %s: %s at %s\n", event.EventID, event.EventName, event.Timestamp)
+}
+```
 
 تعامل مع أنواع الأخطاء المحددة:
 
+عندما تقوم API بإرجاع رمز حالة غير ناجح، يعيد SDK خطأ من النوع
+`*dodopayments.Error`. يوفر `StatusCode`، وال`*http.Request` الأساسية و
+`*http.Response`، وJSON لجسم الخطأ. استخدم نمط `errors.As` لتفحصه، وتفرع على `StatusCode` للتعامل مع الحالات المحددة:
+
 ```go
-payment, err := client.Payments.Create(ctx, dodopayments.PaymentCreateParams{
-	Amount:   5000,
-	Currency: "USD",
+payment, err := client.Payments.New(ctx, dodopayments.PaymentNewParams{
+	Billing: dodopayments.F(dodopayments.BillingAddressParam{
+		Country: dodopayments.F(dodopayments.CountryCodeUs),
+		City:    dodopayments.F("San Francisco"),
+		State:   dodopayments.F("CA"),
+		Street:  dodopayments.F("1 Market St"),
+		Zipcode: dodopayments.F("94105"),
+	}),
+	Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+		dodopayments.AttachExistingCustomerParam{CustomerID: dodopayments.F("cus_123")},
+	),
+	ProductCart: dodopayments.F([]dodopayments.OneTimeProductCartItemParam{{
+		ProductID: dodopayments.F("pdt_456"),
+		Quantity:  dodopayments.F(int64(1)),
+	}}),
 })
 if err != nil {
-	if apiErr, ok := err.(*dodopayments.APIError); ok {
-		fmt.Printf("API Error: %s\n", apiErr.Message)
+	var apiErr *dodopayments.Error
+	if errors.As(err, &apiErr) {
 		fmt.Printf("Status Code: %d\n", apiErr.StatusCode)
-		fmt.Printf("Request ID: %s\n", apiErr.RequestID)
-		
-		// Handle specific error types
-		switch apiErr.Type {
-		case dodopayments.ErrorTypeAuthentication:
+		fmt.Println(string(apiErr.DumpResponse(true))) // Serialized HTTP response
+
+		// Handle specific status codes
+		switch apiErr.StatusCode {
+		case 401:
 			log.Println("Authentication failed")
-		case dodopayments.ErrorTypeInvalidRequest:
+		case 422:
 			log.Println("Invalid request parameters")
-		case dodopayments.ErrorTypeRateLimit:
+		case 429:
 			log.Println("Rate limit exceeded")
 		default:
-			log.Printf("API error: %s\n", apiErr.Message)
+			log.Printf("API error: %s", apiErr.Error())
 		}
 	} else {
 		log.Fatal(err)
 	}
 }
 ```
-
-## البرمجيات الوسيطة
 
 أضف برمجيات وسيطة مخصصة للتسجيل أو القياسات:
 
@@ -371,7 +427,54 @@ func main() {
 }
 ```
 
-## الموارد
+```go
+package main
+
+import (
+	"context"
+	"sync"
+	"log"
+
+	"github.com/dodopayments/dodopayments-go"
+)
+
+func main() {
+	client := dodopayments.NewClient()
+	
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			
+			payment, err := client.Payments.New(context.Background(), dodopayments.PaymentNewParams{
+				Billing: dodopayments.F(dodopayments.BillingAddressParam{
+					Country: dodopayments.F(dodopayments.CountryCodeUs),
+					City:    dodopayments.F("San Francisco"),
+					State:   dodopayments.F("CA"),
+					Street:  dodopayments.F("1 Market St"),
+					Zipcode: dodopayments.F("94105"),
+				}),
+				Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+					dodopayments.AttachExistingCustomerParam{CustomerID: dodopayments.F("cus_123")},
+				),
+				ProductCart: dodopayments.F([]dodopayments.OneTimeProductCartItemParam{{
+					ProductID: dodopayments.F("pdt_456"),
+					Quantity:  dodopayments.F(int64(1)),
+				}}),
+			})
+			if err != nil {
+				log.Printf("Failed to create payment %d: %v", idx, err)
+				return
+			}
+			
+			log.Printf("Created payment %d: %s", idx, payment.PaymentID)
+		}(i)
+	}
+	
+	wg.Wait()
+}
+```
 
 <CardGroup cols={2}>
 <Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-go">

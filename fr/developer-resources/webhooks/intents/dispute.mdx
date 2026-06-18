@@ -1,8 +1,9 @@
 ---
 openapi-schema: DisputeResponse
 title: Litige
-description: La charge utile envoyée à votre point de terminaison webhook
-  lorsqu'un litige est créé ou mis à jour.
+description: La charge utile envoyée à votre point de terminaison de webhook
+  lorsqu'un litige est créé ou mis à jour, et comment gérer chaque événement du
+  cycle de vie du litige.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -10,4 +11,91 @@ keywords:
   - événements de rétrofacturation
   - intégration webhook
   - litige
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+En tant que [Commerçant d'Enregistrement](/features/mor-introduction), Dodo Payments gère le processus de litige et de rétrofacturation avec les réseaux de cartes en votre nom. Ces webhooks gardent vos systèmes synchronisés à mesure qu'un litige progresse dans son cycle de vie afin que vous puissiez révoquer l'accès, rassembler des preuves et concilier vos enregistrements.
+</Info>
+
+## Événements Webhook de Litige
+
+Un litige émet un événement à chaque étape de son cycle de vie :
+
+| Événement | Déclenchement | Signification habituelle |
+|-------|-----------|-----------------------|
+| `dispute.opened` | Un titulaire de carte ouvre un litige sur un paiement | Les fonds sont retenus ; préparez-vous à répondre |
+| `dispute.challenged` | Des preuves ont été soumises pour contester le litige | Le litige est examiné par le réseau |
+| `dispute.accepted` | Le litige a été accepté (pas contesté) | Les fonds sont retournés au titulaire de la carte |
+| `dispute.cancelled` | Le litige a été retiré ou annulé | Aucune action supplémentaire requise |
+| `dispute.expired` | La fenêtre de réponse est passée sans résolution | Généralement résolu contre vous |
+| `dispute.won` | Le litige a été résolu en votre faveur | Les fonds sont conservés |
+| `dispute.lost` | Le litige a été résolu en faveur du titulaire de la carte | Les fonds sont retournés au titulaire de la carte |
+
+<Note>
+Les litiges résolus automatiquement via [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) apparaissent comme `dispute.lost` avec `is_resolved_by_rdr: true`. C'est prévu — le remboursement a été émis automatiquement pour éviter une rétrofacturation formelle.
+</Note>
+
+## Gestion des Événements de Litige
+
+Lorsque `dispute.opened` se déclenche, le montant contesté est retenu immédiatement. Utilisez l'événement pour mettre à jour vos enregistrements et, si vous avez l'intention de le contester, rassembler des preuves dans le tableau de bord.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Vérifiez toujours la signature du webhook avant de traiter — voir le [guide des webhooks](/developer-resources/webhooks) pour la configuration. Le gestionnaire ci-dessus omet la vérification pour des raisons de concision.
+</Tip>
+
+<Warning>
+Vous avez **4 jours** pour répondre à un litige après sa création. Voir [Meilleures Pratiques de Réponse aux Litiges](/features/transactions/disputes#dispute-response-best-practices) pour les preuves à rassembler et comment les formater.
+</Warning>
+
+## Statut et Étape du Litige
+
+L'objet de litige rend compte de ses progrès à travers deux champs :
+
+| Champ | Valeurs |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Connexe
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+Comment répondre aux litiges, soumettre des preuves, et comment RDR protège votre taux de litige.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Détectez et récupérez les paiements échoués avant qu'ils ne deviennent des litiges.
+</Card>
+</CardGroup>
+
+## Schéma de Charge Utile du Webhook

@@ -2,7 +2,8 @@
 openapi-schema: DisputeResponse
 title: Streitfall
 description: Die Nutzlast, die an Ihren Webhook-Endpunkt gesendet wird, wenn ein
-  Streitfall erstellt oder aktualisiert wird.
+  Streitfall erstellt oder aktualisiert wird und wie man mit jedem Ereignis im
+  Lebenszyklus eines Streitfalls umgeht.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -10,4 +11,91 @@ keywords:
   - Chargeback-Ereignisse
   - Webhook-Integration
   - Streitfall
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+Als Ihr [Merchant of Record](/features/mor-introduction) verwaltet Dodo Payments den Streit- und Rückbuchungsprozess mit den Kartennetzwerken in Ihrem Namen. Diese Webhooks halten Ihre Systeme synchron, während ein Streitfall seinen Lebenszyklus durchläuft, sodass Sie den Zugriff widerrufen, Beweise sammeln und Ihre Unterlagen abgleichen können.
+</Info>
+
+## Streitfall-Webhook-Ereignisse
+
+Ein Streitfall löst in jeder Phase seines Lebenszyklus ein Ereignis aus:
+
+| Ereignis | Wird ausgelöst, wenn | Was es normalerweise bedeutet |
+|-------|-----------|-----------------------|
+| `dispute.opened` | Ein Karteninhaber eröffnet einen Streitfall über eine Zahlung | Gelder werden zurückgehalten; Vorbereitung zur Antwort |
+| `dispute.challenged` | Beweise wurden eingereicht, um den Streitfall anzufechten | Der Streitfall wird vom Netzwerk überprüft |
+| `dispute.accepted` | Der Streitfall wurde akzeptiert (nicht angefochten) | Die Gelder werden dem Karteninhaber zurückgegeben |
+| `dispute.cancelled` | Der Streitfall wurde zurückgezogen oder storniert | Keine weiteren Maßnahmen erforderlich |
+| `dispute.expired` | Die Antwortfrist verstrich ohne Lösung | Typischerweise gegen Sie entschieden |
+| `dispute.won` | Der Streitfall wurde zu Ihren Gunsten gelöst | Gelder werden einbehalten |
+| `dispute.lost` | Der Streitfall wurde zugunsten des Karteninhabers gelöst | Gelder werden dem Karteninhaber zurückgegeben |
+
+<Note>
+Streitfälle, die automatisch über [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) gelöst werden, erscheinen als `dispute.lost` mit `is_resolved_by_rdr: true`. Dies ist zu erwarten — die Rückerstattung wurde automatisch ausgestellt, um eine formelle Rückbuchung zu vermeiden.
+</Note>
+
+## Umgang mit Streitfallereignissen
+
+Wenn `dispute.opened` ausgelöst wird, wird der umstrittene Betrag sofort gehalten. Verwenden Sie das Ereignis, um Ihre Aufzeichnungen zu aktualisieren, und wenn Sie es anfechten möchten, sammeln Sie Beweise im Dashboard.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Verifizieren Sie immer die Webhook-Signatur, bevor Sie fortfahren — siehe den [Webhooks-Leitfaden](/developer-resources/webhooks) für die Einrichtung. Der obige Handler lässt die Verifizierung der Kürze halber weg.
+</Tip>
+
+<Warning>
+Sie haben **4 Tage** Zeit, um auf einen Streitfall zu reagieren, nachdem er erstellt wurde. Siehe [Best Practices für die Streitfallantwort](/features/transactions/disputes#dispute-response-best-practices) für die zu sammelnden Beweise und deren Formatierung.
+</Warning>
+
+## Streitfallstatus und -phase
+
+Das Streitfallobjekt meldet seinen Fortschritt über zwei Felder:
+
+| Feld | Werte |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Verwandte Themen
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+Wie man auf Streitfälle reagiert, Beweise einreicht und wie RDR Ihre Streitfallrate schützt.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Erkennen und Wiederherstellen fehlgeschlagener Zahlungen, bevor sie zu Streitfällen werden.
+</Card>
+</CardGroup>
+
+## Webhook-Nutzlastschema

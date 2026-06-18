@@ -350,34 +350,58 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ## Subscription States
 
-Subscriptions can be in different states throughout their lifecycle:
+Un abonnement passe par un ensemble défini de statuts au cours de son cycle de vie. Ce tableau est la référence pour chaque statut, ce qui le cause et comment (ou si) vous pouvez le récupérer.
 
-- **`active`**: Subscription is active and will renew automatically
-- **`on_hold`**: Subscription is paused due to failed payment. Payment method update required to reactivate
-- **`cancelled`**: Subscription is cancelled and will not renew
-- **`expired`**: Subscription has reached its end date
-- **`pending`**: Subscription is being created or processed
-
-### On Hold State
-
-A subscription enters `on_hold` state when:
-
-- A renewal payment fails (insufficient funds, expired card, etc.)
-- A plan change charge fails
-- Payment method authorization fails
+| Statut | Ce que cela signifie | Récupérable ? | Chemin de récupération / prochaine étape |
+|--------|----------------------|---------------|---------------------------|
+| `pending` | L'abonnement est en cours de création ou de traitement | — | Attendre `subscription.active` (ou `subscription.failed`) |
+| `active` | L'abonnement est actif et se renouvellera automatiquement | — | Aucune action nécessaire |
+| `on_hold` | Un paiement de renouvellement (ou un changement de plan) a échoué ; l'abonnement est en pause | **Oui** | Mettre à jour la méthode de paiement pour réactiver — automatiquement via [Relances de paiement](/features/recovery/payment-retries) et [Recouvrement](/features/recovery/subscription-dunning), ou manuellement via l'[API de mise à jour de la méthode de paiement](/api-reference/subscriptions/update-payment-method) |
+| `cancelled` | L'abonnement a été annulé et ne se renouvellera pas | Réachat uniquement | Le client doit commencer un nouvel abonnement ; [Recouvrement](/features/recovery/subscription-dunning) peut inciter à un réachat |
+| `failed` | L'**initialisation** de l'abonnement a échoué (le mandat initial ou le paiement n'a pas réussi) | **Non — terminal** | Le client doit créer un nouvel abonnement avec une méthode de paiement fonctionnelle |
+| `expired` | L'abonnement a atteint la fin de son terme | — | Le client doit commencer un nouvel abonnement si désiré |
 
 <Warning>
-When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
+`on_hold` et `failed` sont souvent confondus. `on_hold` est un état **récupérable** pour un abonnement déjà actif dont le renouvellement a échoué. `failed` est un état **terminal** qui ne se produit que lorsque la **création initiale** de l'abonnement échoue — il ne peut pas être réactivé.
 </Warning>
 
-### Reactivating from On Hold
+### Machine à états
 
-To reactivate a subscription from `on_hold` state, update the payment method. This automatically:
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> active: Creation succeeds
+    pending --> failed: Mandate creation fails
+    active --> on_hold: Renewal or plan-change charge fails
+    on_hold --> active: Payment method updated / retry succeeds
+    active --> cancelled: Cancelled
+    on_hold --> cancelled: Cancelled
+    active --> expired: Term ends
+    failed --> [*]
+    cancelled --> [*]
+    expired --> [*]
+```
 
-1. Creates a charge for remaining dues
-2. Generates an invoice
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+### État de mise en pause
+
+Un abonnement entre dans l'état `on_hold` quand :
+
+- Un paiement de renouvellement échoue (fonds insuffisants, carte expirée, etc.)
+- Un changement de plan échoue
+- L'autorisation de la méthode de paiement échoue
+
+<Warning>
+Lorsqu'un abonnement est en état `on_hold`, il ne se renouvellera pas automatiquement. Vous devez mettre à jour la méthode de paiement pour réactiver l'abonnement.
+</Warning>
+
+### Réactivation depuis l'état de pause
+
+Pour réactiver un abonnement depuis l'état `on_hold`, mettez à jour la méthode de paiement. Cela permet automatiquement de :
+
+1. Créer une charge pour les montants dus
+2. Générer une facture
+3. Traiter le paiement avec la nouvelle méthode de paiement
+4. Réactiver l'abonnement à l'état `active` après paiement réussi
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -395,80 +419,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
+Après avoir mis à jour avec succès la méthode de paiement pour un abonnement `on_hold`, vous recevrez `payment.succeeded` suivi par les événements webhook `subscription.active`.
 </Info>
 
-## API Management
+### Événements Webhook par transition
+
+Chaque transition émet un webhook afin que vous puissiez gérer la logique d'autorisation sans sondage :
+
+| Transition | Événement |
+|------------|----------|
+| Abonnement activé | `subscription.active` |
+| Renouvellement réussi | `subscription.renewed` |
+| Renouvellement échoue → en pause | `subscription.on_hold` |
+| Échec de la création | `subscription.failed` |
+| Plan amélioré/dégradé | `subscription.plan_changed` |
+| Annulé | `subscription.cancelled` |
+| Fin du terme | `subscription.expired` |
+| Changement de n'importe quel champ | `subscription.updated` |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Consultez le schéma de charge utile complet pour les événements du cycle de vie de l'abonnement.
+</Card>
+
+## Gestion de l'API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Use `POST /subscriptions` to create subscriptions programmatically from products, with optional trials and add‑ons.
+Utilisez `POST /subscriptions` pour créer des abonnements programmatiquement à partir de produits, avec des essais et add-ons optionnels.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-View the create subscription API.
+Voir l'API de création d'abonnement.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Use `PATCH /subscriptions/{id}` to update quantities, cancel at next billing date, or modify metadata.
+Utilisez `PATCH /subscriptions/{id}` pour mettre à jour les quantités, annuler à la prochaine date de facturation ou modifier les métadonnées.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Learn how to update subscription details.
+Apprenez à mettre à jour les détails de l'abonnement.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Change the active product and quantities with proration controls.
+Changez le produit actif et les quantités avec des contrôles de proration.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Review plan change options.
+Examinez les options de changement de plan.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-For on‑demand subscriptions, charge specific amounts on demand.
+Pour les abonnements à la demande, facturez des montants spécifiques à la demande.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Charge an on‑demand subscription.
+Facturez un abonnement à la demande.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Use `GET /subscriptions` to list all subscriptions and `GET /subscriptions/{id}` to retrieve one.
+Utilisez `GET /subscriptions` pour lister tous les abonnements et `GET /subscriptions/{id}` pour récupérer un seul.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Browse listing and retrieval APIs.
+Parcourez les API de listing et de récupération.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Fetch recorded usage for metered or hybrid pricing models.
+Récupérez l'utilisation enregistrée pour les modèles de tarification au compteur ou hybrides.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-See usage history API.
+Consultez l'API d'historique d'utilisation.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Update the payment method for a subscription. For active subscriptions, this updates the payment method for future renewals. For subscriptions in `on_hold` state, this reactivates the subscription by creating a charge for remaining dues.
+Mettez à jour la méthode de paiement pour un abonnement. Pour les abonnements actifs, cela met à jour la méthode de paiement pour les renouvellements futurs. Pour les abonnements en état `on_hold`, cela réactive l'abonnement en créant une charge pour les montants restants.
+
+Lors de la génération d'un nouveau lien de méthode de paiement (le type de requête `New`), vous pouvez passer `allowed_payment_method_types` pour restreindre les méthodes de paiement que le client voit sur cette page. Les clients ne verront jamais une méthode qui n'est pas dans la liste, bien que l'inclusion d'une méthode ne garantisse pas qu'elle apparaisse (la disponibilité dépend encore de facteurs tels que le lieu du client et vos paramètres commerciaux).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Learn how to update payment methods and reactivate subscriptions.
+Apprenez à mettre à jour les méthodes de paiement et à réactiver les abonnements.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## Cas d'utilisation courants
 
-- **SaaS and APIs**: Tiered access with add‑ons for seats or usage
-- **Content and media**: Monthly access with introductory trials
-- **B2B support plans**: Annual contracts with premium support add‑ons
-- **Tools and plugins**: License keys and versioned releases
+- **SaaS et API** : Accès par niveaux avec add-ons pour des sièges ou l'utilisation
+- **Contenu et médias** : Accès mensuel avec essais introductifs
+- **Plans de support B2B** : Contrats annuels avec add-ons de support premium
+- **Outils et plugins** : Clés de licence et versions légalisées
 
-## Integration Examples
+## Exemples d'intégration
 
-### Checkout Sessions (subscriptions)
-When creating checkout sessions, include your subscription product and optional add‑ons:
+### Sessions de paiement (abonnements)
+Lors de la création de sessions de paiement, incluez votre produit d'abonnement et des add-ons optionnels :
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -481,8 +526,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-Upgrade or downgrade a subscription and control proration behavior:
+### Modifications de plan avec proration
+Améliorez ou dégradez un abonnement et contrôlez le comportement de la proration :
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -492,8 +537,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-Schedule a cancellation that takes effect at the end of the current billing period:
+### Annulation à la prochaine date de facturation
+Planifiez une annulation qui prend effet à la fin de la période de facturation actuelle :
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -501,8 +546,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### On‑demand subscriptions
-Create an on‑demand subscription and charge later as needed:
+### Abonnements à la demande
+Créez un abonnement à la demande et facturez plus tard si nécessaire :
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -518,8 +563,8 @@ await client.subscriptions.charge(onDemand.id, {
 });
 ```
 
-### Update payment method for active subscription
-Update the payment method for an active subscription:
+### Mise à jour de la méthode de paiement pour un abonnement actif
+Mettez à jour la méthode de paiement pour un abonnement actif :
 
 ```typescript
 // Update with new payment method
@@ -535,8 +580,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-Reactivate a subscription that went on hold due to failed payment:
+### Réactivation de l'abonnement en pause
+Réactivez un abonnement mis en pause en raison d'un paiement échoué :
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -552,70 +597,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## Abonnements avec Mandats conformes à la RBI
 
-  UPI and Indian card subscriptions operate under RBI (Reserve Bank of India) regulations with specific mandate requirements:
+  Les abonnements UPI et par carte indienne fonctionnent selon les règlements RBI (Reserve Bank of India) avec des exigences de mandat spécifiques :
 
-  ### Mandate Limits
+  ### Limites de Mandat
 
-  The mandate type and amount depend on your subscription's recurring charge:
+  Le type et le montant du mandat dépendent de la charge récurrente de votre abonnement :
 
-  - **Frais en dessous du seuil du mandat (par défaut ₹15,000) :** Nous créons un mandat à la demande pour le montant minimum. Le montant de l'abonnement est prélevé périodiquement selon votre fréquence d'abonnement, jusqu'à la limite du mandat.
-  - **Frais au niveau ou au-dessus du seuil du mandat :** Nous créons un mandat d'abonnement (ou un mandat à la demande) pour le montant exact de l'abonnement.
+  - **Frais en dessous du seuil de mandat (par défaut ₹15 000) :** Nous créons un mandat à la demande pour le montant seuil. Le montant de l'abonnement est facturé périodiquement selon la fréquence de votre abonnement, jusqu'à la limite de mandat.
+  - **Frais égaux ou supérieurs au seuil de mandat :** Nous créons un mandat d'abonnement (ou un mandat à la demande) pour le montant exact de l'abonnement.
 
-  Le seuil du mandat est configurable par marchand ou par demande via `mandate_min_amount_inr_paise` (INR paise). Le montant enregistré auprès de la banque est `max(mandate_floor, billing_amount)` — ainsi, le seuil devient effectivement le plafond d'autorisation côté client lorsque la facturation est inférieure.
+  Le seuil de mandat est configurable par commerçant ou par demande via `mandate_min_amount_inr_paise` (INR paise). Le montant enregistré auprès de la banque est `max(mandate_floor, billing_amount)` — donc le seuil devient effectivement le plafond d'autorisation côté client lorsque la facturation est inférieure.
 
 Pour des informations détaillées sur les mandats conformes à la RBI et le seuil de mandat configurable pour les méthodes de paiement indiennes, consultez la page <a href="/features/payment-methods/india#configurable-mandate-floor">Méthodes de paiement en Inde</a>.
 
-  ### Considérations sur la mise à niveau et la rétrogradation
+  ### Considérations d'Amélioration et de Déclassement
 
-  **Important :** Lorsque vous mettez à niveau ou rétrogradez les abonnements, considérez attentivement les limites de mandat :
+  **Important :** Lors d'une amélioration ou d'un déclassement d'abonnement, réfléchissez attentivement aux limites de mandat :
 
-  - Si une mise à niveau/rétrogradation entraîne un montant de frais supérieur à 15 000 Rs et dépasse la limite de paiement à la demande existante, la charge de transaction peut échouer.
-  - Dans de tels cas, le client peut devoir mettre à jour sa méthode de paiement ou modifier à nouveau l'abonnement pour établir un nouveau mandat avec la bonne limite.
+  - Si une amélioration ou un déclassement entraîne un montant de facturation qui dépasse Rs 15 000 et dépasse la limite de paiement actuelle à la demande, le débit peut échouer.
+  - Dans de tels cas, le client peut avoir besoin de mettre à jour sa méthode de paiement ou de modifier à nouveau l'abonnement pour établir un nouveau mandat avec la limite correcte.
 
-  ### Autorisation pour les frais de grande valeur
+  ### Autorisation pour Frais de Haute Valeur
 
-  Pour les frais d'abonnement de 15 000 Rs ou plus :
+  Pour les frais d'abonnement de Rs 15 000 ou plus :
 
   - Le client sera invité par sa banque à autoriser la transaction.
-  - Si le client n'autorise pas la transaction, celle-ci échouera et l'abonnement sera suspendu.
+  - Si le client ne réussit pas à autoriser la transaction, celle-ci échouera et l'abonnement sera mis en pause.
 
-  ### Délai de traitement de 48 heures
+  ### Délai de Traitement de 48 Heures
 
-  **Chronologie du traitement :** Les frais récurrents sur les cartes indiennes et les abonnements UPI suivent un schéma de traitement unique :
+  **Calendrier de Traitement :** Les frais récurrents sur les cartes indiennes et les abonnements UPI suivent un modèle de traitement unique :
 
-  - Les frais sont **initiés** à la date prévue selon votre fréquence d'abonnement.
-  - La **déduction** réelle du compte du client a lieu seulement après **48 heures** depuis l'initiation du paiement.
-  - Cette fenêtre de 48 heures peut être prolongée de **2-3 heures supplémentaires** selon les réponses des API bancaires.
+  - Les frais sont **initiés** à la date prévue selon la fréquence de votre abonnement.
+  - La **déduction** réelle du compte du client a lieu seulement après **48 heures** à partir de l'initiation du paiement.
+  - Cette fenêtre de 48 heures peut s'étendre jusqu'à **2-3 heures** supplémentaires selon les réponses de l'API bancaire.
 
-  ### Fenêtre d'annulation du mandat
+  ### Fenêtre d'Annulation de Mandat
 
   Pendant la fenêtre de traitement de 48 heures :
 
   - Les clients peuvent annuler le mandat via leurs applications bancaires.
-  - Si un client annule le mandat pendant cette période, l'abonnement restera **actif** (c'est un cas particulier spécifique aux abonnements AutoPay par carte indienne et UPI).
-  - Cependant, la déduction réelle peut échouer, et dans ce cas, nous mettrons l'abonnement **en attente**.
+  - Si un client annule le mandat pendant cette période, l'abonnement restera **actif** (c'est un cas particulier propre aux abonnements par carte indienne et UPI AutoPay).
+  - Cependant, la déduction réelle peut échouer, et dans ce cas, nous mettrons l'abonnement **en pause**.
 
-  **Gestion des cas particuliers :** Si vous fournissez des avantages, crédits ou utilisation d'abonnement aux clients immédiatement après l'initiation des frais, vous devez gérer cette fenêtre de 48 heures de manière appropriée dans votre application. Considérez :
+  **Gestion des Cas Particuliers :** Si vous offrez des avantages, crédits ou utilisations d'abonnement aux clients immédiatement après l'initiation du débit, vous devez gérer cette fenêtre de 48 heures correctement dans votre application. Pensez à :
 
   - Retarder l'activation des avantages jusqu'à la confirmation du paiement
   - Mettre en œuvre des périodes de grâce ou un accès temporaire
-  - Surveiller le statut de l'abonnement pour les annulations de mandat
-  - Gérer les états de suspension de l'abonnement dans votre logique d'application
+  - Surveiller l'état de l'abonnement pour les annulations de mandat
+  - Gérer les états de mise en pause dans votre logique d'application
 
   <Tip>
-  Surveillez les webhooks d'abonnement pour suivre les changements de statut de paiement et gérer les cas particuliers où les mandats sont annulés pendant la fenêtre de 48 heures.
+  Surveillez les webhooks d'abonnement pour suivre les changements d'état de paiement et gérer les cas particuliers où les mandats sont annulés pendant la fenêtre de 48 heures.
   </Tip>
 
 ## Meilleures Pratiques
 
-- **Commencez par des niveaux clairs :** 2–3 plans avec des différences évidentes
-- **Communiquez le tarif :** Montrez les totaux, la proratisation et le prochain renouvellement
-- **Utilisez les essais judicieusement :** Convertissez avec l'intégration, pas seulement le temps
-- **Exploitez les compléments :** Gardez les plans de base simples et proposez des extras
-- **Testez les changements :** Validez les changements de plan et la proratisation en mode test
+- **Commencez avec des niveaux clairs** : 2 à 3 plans avec des différences évidentes
+- **Communiquez les prix** : Montrez les totaux, la proration et le prochain renouvellement
+- **Utilisez judicieusement les essais** : Convertissez avec l'intégration, pas seulement le temps
+- **Exploitez les add‑ons** : Gardez les plans de base simples et vendez des extras
+- **Testez les changements** : Validez les changements de plan et la proration en mode test
 
 <Info>
-Les abonnements sont une base flexible pour les revenus récurrents. Commencez simple, testez soigneusement et itérez en fonction des métriques d'adoption, de rétention et d'expansion.
+Les abonnements sont une base flexible pour des revenus récurrents. Commencez simplement, testez soigneusement et itérez en fonction des métriques d'adoption, de résiliation et d'expansion.
 </Info>

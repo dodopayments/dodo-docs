@@ -1,7 +1,8 @@
 ---
 openapi-schema: DisputeResponse
 title: النزاع
-description: الحمولة المرسلة إلى نقطة نهاية الويب الخاصة بك عند إنشاء نزاع أو تحديثه.
+description: الحمولة المرسلة إلى نقطة نهاية webhook الخاصة بك عند إنشاء نزاع أو
+  تحديثه، وكيفية التعامل مع كل حدث في دورة حياة النزاع.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -9,4 +10,87 @@ keywords:
   - أحداث استرداد المبالغ
   - تكامل webhook
   - نزاع
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+باعتبارك [تاجر السجل](/features/mor-introduction)، تدير ددو بايمنتس عملية النزاع واسترداد المبالغ المدفوعة مع شبكات البطاقات نيابة عنك. تحافظ هذه الويب هوك على مزامنة أنظمتك أثناء انتقال النزاع من خلال دورة حياته حتى تتمكن من إلغاء الوصول وجمع الأدلة وتسوية سجلاتك.
+</Info>
+
+## أحداث webhook للنزاع
+
+يبعث النزاع حدثًا في كل مرحلة من مراحل دورة حياته:
+
+| الحدث | يُشتعل عندما | ما يعنيه عادةً |
+|-------|-----------|-----------------------|
+| `dispute.opened` | يفتح حامل البطاقة نزاعًا على دفع | يتم حجز الأموال؛ التحضير للرد |
+| `dispute.challenged` | تم تقديم الأدلة للطعن في النزاع | يتم مراجعة النزاع من قبل الشبكة |
+| `dispute.accepted` | تم قبول النزاع (غير معترض) | يتم إرجاع الأموال إلى حامل البطاقة |
+| `dispute.cancelled` | تم سحب النزاع أو إلغاؤه | لا حاجة لاتخاذ إجراء إضافي |
+| `dispute.expired` | انتهت نافذة الرد دون حل | عادة ما يُحل ضدك |
+| `dispute.won` | تم حل النزاع لصالحك | يتم الاحتفاظ بالأموال |
+| `dispute.lost` | تم حل النزاع لصالح حامل البطاقة | يتم إرجاع الأموال إلى حامل البطاقة |
+
+ <Note> النزاعات التي تم حلها تلقائياً من خلال [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) تظهر كـ `dispute.lost` مع `is_resolved_by_rdr: true`. هذا متوقع — تم إصدار الاسترداد تلقائيًا لمنع استرداد رسمي.
+</Note>
+
+## التعامل مع أحداث النزاع
+
+عندما يُشتعل `dispute.opened`، يتم حجز المبلغ المتنازع عليه فورًا. استخدم الحدث لتحديث سجلاتك، وإذا كنت تعتزم الطعن، اجمع الأدلة في لوحة التحكم.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+ <Tip> تحقق دائمًا من توقيع الويب هوك قبل المعالجة — انظر [دليل الويب هوك](/developer-resources/webhooks) للإعداد. تم حذف التحقق في المعالج أعلاه للاختصار.
+</Tip>
+
+ <Warning> لديك **4 أيام** للرد على النزاع بعد إنشائه. انظر [أفضل ممارسات الرد على النزاع](/features/transactions/disputes#dispute-response-best-practices) للحصول على الأدلة التي يجب جمعها وكيفية تنسيقها.
+</Warning>
+
+## حالة النزاع والمرحلة
+
+تقرير كائن النزاع تقدمه من خلال حقلين:
+
+| حقل | قيم |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## ذو صلة
+
+ <CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes"> كيفية الرد على النزاعات وتقديم الأدلة وكيفية حماية RDR لنسب النزاع الخاصة بك.
+</Card>
+
+ <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+اكتشاف واسترداد المدفوعات الفاشلة قبل أن تصبح نزاعات.
+</Card>
+</CardGroup>
+
+## مخطط حمولة الويب هوك

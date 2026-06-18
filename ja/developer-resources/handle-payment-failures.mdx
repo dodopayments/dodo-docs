@@ -1,0 +1,243 @@
+---
+sidebarTitle: 支払い失敗の処理
+title: 支払い失敗の処理
+description: WebhooksとAPIから検出する支払い失敗、失敗理由を読み取り、安全に顧客に表示し、再試行するか新しい支払い方法を集めるべきかを決定します。
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - 支払い失敗の処理
+  - payment.failed
+  - 拒否コード
+  - error_code
+  - 支払いを再試行する
+  - 失敗した支払いのWebhook
+  - ソフト拒否
+  - ハード拒否
+---
+
+<Info>
+支払いが失敗したとき、Dodo Paymentsは標準化された`error_code`と人間が読める`error_message`によって**理由**を通知します。このガイドでは、これらのフィールドを読み取る方法、再試行する価値があるかどうかを判断し、顧客に機密情報を露出せずに支払いを回収する方法を示します。
+</Info>
+
+## Dodo Paymentsが報告する障害の方法
+
+一度限りのチェックアウトかサブスクリプションの更新かに関わらず、すべての失敗した支払いには、支払いオブジェクトに同じ失敗フィールドが含まれています。
+
+| フィールド | 型 | 説明 |
+|-------|------|-------------|
+| `status` | string | 失敗した支払いの`failed`。他の非成功状態には`cancelled`、`requires_customer_action`、`requires_payment_method`が含まれます。 |
+| `error_code` | string \| null | 標準化された失敗の理由、例えば`INSUFFICIENT_FUNDS`や`PROCESSING_ERROR`。完全なリストは[取引失敗](/api-reference/transaction-failures)リファレンスを参照してください。 |
+| `error_message` | string \| null | 失敗の人間が読める説明。 |
+| `retry_attempt` | integer | 元の請求に対する`0`。`1`以上はスケジュールされたサブスクリプション更新の再試行を識別します。 |
+
+<Note>
+`error_code`と`error_message`は支払いが実際に失敗するまで`null`です。最初に`status`を常に確認し、次にエラーフィールドを読み取ります。
+</Note>
+
+## `payment.failed` Webhook
+
+失敗を検出する最も信頼できる方法は`payment.failed` webhookです。このイベントは`data`にフル支払いオブジェクトをラップします。
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+ミニマルハンドラーは`error_code`を読み取り、それにルートします。
+
+<CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+</CodeGroup>
+
+<Tip>
+処理前にWebhookの署名を必ず検証してください。完全な設定には署名の検証と冪等性が含まれていますので、[Webhookガイド](/developer-resources/webhooks)を参照してください。
+</Tip>
+
+## 再試行するかどうかの決定：ソフト拒否とハード拒否
+
+`error_code`は、同じ支払い方法を再試行する価値があるかどうかを教えてくれます。
+
+| 拒否タイプ | 意味 | すべきこと |
+|--------------|---------------|------------|
+| **ソフト拒否** | 一時的または修正可能（例えば`INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 顧客が入力を修正した後、遅延後に再試行すると成功する可能性があります。 |
+| **ハード拒否** | 終局的（例えば`STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | 同じカードを再試行しないでください。顧客に別の支払い方法を尋ねてください。 |
+
+[取引失敗](/api-reference/transaction-failures)リファレンスには、すべての`error_code`の拒否タイプと推奨操作が記載されています。
+
+## チェックアウトでの失敗と更新時の失敗の処理
+
+回収方法は、顧客がその場にいるかどうかによって異なります。
+
+<Tabs>
+<Tab title="At checkout (customer present)">
+顧客が積極的にチェックアウトしています。明確なメッセージを表示し、すぐに再試行するか、別のカードを使用してもらいます。
+
+- `requires_payment_method` — 顧客が支払い方法を提供しなかった：カードの詳細を入力しなかったか、プロンプトが表示されたか、何の行動も取らなかった。これは通常、チェックアウト**ドロップオフ**であり、拒否ではありません — 顧客を再びエンゲージして支払いを完了させます（[放棄されたカートの回収](/features/recovery/abandoned-cart-recovery)を参照してください）。
+- `requires_customer_action` — 追加の認証（例えば3DS）が必要です。顧客にそれを完了させます。[3D Secureの処理](/features/payment-methods/cards#3d-secure-authentication)を参照してください。
+</Tab>
+
+<Tab title="On subscription renewal (customer not present)">
+顧客がその場にいないため、リアルタイムでプロンプトを表示できません。更新が失敗した場合、サブスクリプションは`on_hold`に移り、`subscription.on_hold`が発生します。
+
+- **ソフト拒否**は、[サブスクリプション支払い再試行](/features/recovery/payment-retries)によって自動的に再試行されます。
+- **ハード拒否**（および再試行が尽きた場合）は、顧客に支払い方法を更新するようメールで通知する[サブスクリプション追徴](/features/recovery/subscription-dunning)で回収するのが最適です。
+
+[サブスクリプション統合ガイド](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)で、保留から再活性化までの完全な流れを参照してください。
+</Tab>
+</Tabs>
+
+## 失敗した支払いの再試行
+
+- **サブスクリプション:** [サブスクリプション支払い再試行](/features/recovery/payment-retries)を有効にし、統合作業なしでソフト拒否を回収します。また、顧客が[支払い方法更新API](/api-reference/subscriptions/update-payment-method)を通じて支払い方法を更新し、未払い金額を請求することで回収をトリガーすることもできます。
+- **一度限りの支払い:** チェックアウトを再送信するか`payment_link`を実行し、顧客が別の方法で再試行できるようにします。一度限りの支払いに自動再試行はありません。
+
+<Warning>
+同じカードへのハード拒否を再試行しないでください。カードネットワークは繰り返される拒否を乱用として旗を立てる可能性があり、承認率に悪影響を与える可能性があります。
+</Warning>
+
+## 顧客へのエラーを安全に表示する
+
+顧客にフレンドリーなメッセージを表示し、決して生の`error_code`を表示しないでください。
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+<Warning>
+**`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`の実際の理由を決して明らかにしないでください。** これらを表面化すると、不正なアクターへの警告となります。ジェネリックな拒否メッセージを表示し、特定の`error_code`は内部のみにログしてください。
+</Warning>
+
+## 関連情報
+
+<CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+すべての拒否コード、そのタイプ、および推奨アクション。
+</Card>
+
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+カードの拒否でないAPIおよびビジネスロジックエラー。
+</Card>
+
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+サブスクリプション更新でのソフト拒否の自動回復。
+</Card>
+
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+ハード拒否を回収するメールシーケンス。
+</Card>
+
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+支払いイベントのフルペイロードスキーマ。
+</Card>
+
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+拒否と更新失敗をシミュレートするテストカード。
+</Card>
+</CardGroup>

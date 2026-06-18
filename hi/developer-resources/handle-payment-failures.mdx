@@ -1,0 +1,245 @@
+---
+sidebarTitle: भुगतान विफलताओं को संभालें
+title: भुगतान विफलताओं को संभालें
+description: Webhook और API से विफल भुगतानों का पता लगाएं, विफलता का कारण पढ़ें,
+  इसे सुरक्षित रूप से ग्राहकों तक पहुंचाएं, और पुनः प्रयास करने या नए भुगतान
+  विधि एकत्र करने का निर्णय लें।
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - भुगतान विफलताओं को संभालें
+  - payment.failed
+  - decline codes
+  - error_code
+  - retry payments
+  - failed payment webhook
+  - soft decline
+  - hard decline
+---
+
+<Info>
+जब कोई भुगतान विफल होता है, तो Dodo Payments आपको एक मानकीकृत `error_code` और एक मानव-पठनीय `error_message` के माध्यम से **क्यों** बताता है। यह गाइड दिखाता है कि उन फ़ील्ड्स को कैसे पढ़ें, यह निर्णय लें कि पुनः प्रयास सार्थक है या नहीं, और ग्राहकों को संवेदनशील जानकारी उजागर किए बिना भुगतान कैसे प्राप्त करें।
+</Info>
+
+## Dodo Payments विफलता की रिपोर्ट कैसे करता है
+
+हर विफल भुगतान — चाहे एक बार का चेकआउट हो या सदस्यता नवीकरण — भुगतान ऑब्जेक्ट पर समान विफलता फ़ील्ड्स ले जाता है:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | विफल भुगतान के लिए `failed`। अन्य गैर-सफल राज्यों में शामिल हैं `cancelled`, `requires_customer_action`, और `requires_payment_method`। |
+| `error_code` | string \| null | मानकीकृत विफलता का कारण, उदाहरण के लिए `INSUFFICIENT_FUNDS` या `PROCESSING_ERROR`। पूरी सूची के लिए [Transaction Failures](/api-reference/transaction-failures) संदर्भ देखें। |
+| `error_message` | string \| null | विफलता का मानव-पठनीय स्पष्टीकरण। |
+| `retry_attempt` | integer | मूल शुल्क के लिए `0`। `1` या उससे अधिक निर्धारित सदस्यता नवीकरण पुनः प्रयास को पहचानता है। |
+
+<Note>
+`error_code` और `error_message` `null` हैं जब तक कि वास्तव में कोई भुगतान विफल नहीं होता है। हमेशा पहले `status` की जाँच करें, फिर त्रुटि फ़ील्ड पढ़ें।
+</Note>
+
+## `payment.failed` वेबहूक
+
+एक विफलता का पता लगाने का सबसे विश्वसनीय तरीका है `payment.failed` वेबहूक। ईवेंट पूरे भुगतान ऑब्जेक्ट को `data` में लपेटता है:
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+एक न्यूनतम हैंडलर `error_code` पढ़ता है और उस पर मार्ग बनाता है:
+
+<CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+</CodeGroup>
+
+<Tip>
+प्रोसेसिंग से पहले हमेशा वेबहूक हस्ताक्षर को सत्यापित करें। हस्ताक्षर सत्यापन और उदमित सुरक्षा सहित पूरे सेटअप के लिए [Webhooks गाइड](/developer-resources/webhooks) देखें।
+</Tip>
+
+## यह तय करें कि पुनः प्रयास करें: नरम बनाम कठोर अस्वीकृति
+
+`error_code` आपको बताता है कि क्या उसी भुगतान विधि को पुनः प्रयास करना सार्थक है।
+
+| Decline type | इसका मतलब क्या है | क्या करें |
+|--------------|---------------|------------|
+| **Soft decline** | अस्थायी या सुधार योग्य (उदाहरण के लिए `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`)। | फिर से प्रयास करना — एक देरी के बाद, या जब ग्राहक उनकी इनपुट को ठीक करता है — सफल हो सकता है। |
+| **Hard decline** | अंतिम (उदाहरण के लिए `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`)। | उसी कार्ड को पुनः प्रयास **न करें**। ग्राहक से एक अलग भुगतान विधि मांगें। |
+
+[Transaction Failures](/api-reference/transaction-failures) संदर्भ प्रत्येक `error_code` के लिए अस्वीकृति प्रकार और अनुशंसित कार्रवाई को सूचीबद्ध करता है।
+
+## चेकआउट पर बनाम नवीकरण पर विफलताओं को संभालना
+
+आपकी वसूली इस पर निर्भर करती है कि क्या ग्राहक उपस्थित है।
+
+<Tabs>
+<Tab title="At checkout (customer present)">
+ग्राहक सक्रिय रूप से चेकआउट कर रहा है। एक स्पष्ट संदेश पेश करें और उन्हें तुरंत पुनः प्रयास करने दें या एक अन्य कार्ड का उपयोग करें।
+
+- `requires_payment_method` — ग्राहक ने कभी भुगतान विधि प्रदान नहीं की: उन्होंने कार्ड विवरण नहीं दर्ज किए, या एक के लिए कहा गया था और कोई कार्रवाई नहीं की। यह आमतौर पर एक चेकआउट **ड्रॉप-ऑफ** है, अस्वीकृति नहीं — भुगतान पूर्ण करने के लिए ग्राहक को फिर से संलग्न करें (देखें [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — अतिरिक्त प्रमाणीकरण (जैसे 3DS) की आवश्यकता है; ग्राहक को इसे पूरा करने दें। देखें [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication).
+</Tab>
+
+<Tab title="On subscription renewal (customer not present)">
+ग्राहक उपस्थित नहीं है, इसलिए आप उन्हें वास्तविक समय में संकेत नहीं दे सकते। जब नवीकरण विफल होता है, तो सदस्यता `on_hold` की ओर बढ़ जाती है और `subscription.on_hold` फायर करता है।
+
+- **Soft declines** को [Subscription Payment Retries](/features/recovery/payment-retries) द्वारा स्वचालित रूप से पुनः प्रयास किया जाता है।
+- **Hard declines** (और समाप्त प्रयास) को [Subscription Dunning](/features/recovery/subscription-dunning) के साथ सबसे अच्छे ढंग से पुनर्प्राप्त किया जाता है, जो ग्राहकों को उनकी भुगतान विधि को अपडेट करने के लिए ईमेल करता है।
+
+पूरा धारण → पुनर्सक्रियण प्रवाह के लिए [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) देखें।
+</Tab>
+</Tabs>
+
+## एक विफल भुगतान को पुनः प्रयास करना
+
+- **Subscriptions:** [Subscription Payment Retries](/features/recovery/payment-retries) को सक्षम करें ताकि बिना किसी एकीकरण कार्य के नरम अस्वीकृतियों को पुनः प्राप्त किया जा सके। आप ग्राहक के माध्यम से उनकी भुगतान विधि को अपडेट कराकर पुनर्प्राप्ति को ट्रिगर कर सकते हैं [Update Payment Method API](/api-reference/subscriptions/update-payment-method), जो किसी भी बकाया राशि को चार्ज करता है।
+- **One-time payments:** चेकआउट या `payment_link` को पुनः भेजें ताकि ग्राहक किसी भिन्न विधि से पुनः प्रयास कर सकें। वन टाइम भुगतान के लिए कोई स्वचालित पुन: प्रयास नहीं है।
+
+<Warning>
+कठोर अस्वीकृतियों को उसी कार्ड के खिलाफ पुन: प्रयास न करें। कार्ड नेटवर्क बार-बार अस्वीकारों को दुरुपयोग के रूप में चिह्नित कर सकते हैं, जिससे आपकी अधिकृति दर को नुकसान होता है।
+</Warning>
+
+## त्रुटियों को ग्राहकों तक सुरक्षित रूप से पहुँचाएं
+
+ग्राहकों को एक मित्रवत संदेश दिखाएं — कभी भी कच्चा `error_code` नहीं।
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+<Warning>
+`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, या `FRAUDULENT` के वास्तविक कारण को **कभी नहीं उजागर करें**। इनको उजागर करने से एक धोखेबाज अभिनेता को जानकारी मिल सकती है। एक सामान्य अस्वीकृति संदेश दिखाएं और केवल विशेष `error_code` को आंतरिक रूप से लॉग करें।
+</Warning>
+
+## संबंधित
+
+<CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+प्रत्येक अस्वीकृति कोड, उसका प्रकार, और अनुशंसित क्रिया।
+</Card>
+
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+ऐपीआई और व्यापार-तर्क त्रुटियाँ जो कार्ड अस्वीकृति नहीं हैं।
+</Card>
+
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+सदस्यता नवीकरण पर नरम अस्वीकृतियों की स्वचालित वसूली।
+</Card>
+
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+ईमेल अनुक्रम जो कठोर अस्वीकृतियों को पुनः प्राप्त करते हैं।
+</Card>
+
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+भुगतान ईवेंट्स के लिए पूरा पेलोड स्कीमा।
+</Card>
+
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+ऐसे परीक्षण कार्ड्स जो अस्वीकृतियों और नवीकरण विफलताओं का अनुकरण करते हैं।
+</Card>
+</CardGroup>

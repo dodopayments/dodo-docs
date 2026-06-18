@@ -2,7 +2,8 @@
 openapi-schema: DisputeResponse
 title: Sengketa
 description: Payload yang dikirim ke endpoint webhook Anda ketika sengketa
-  dibuat atau diperbarui.
+  dibuat atau diperbarui, dan cara menangani setiap peristiwa siklus hidup
+  sengketa.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -10,4 +11,91 @@ keywords:
   - peristiwa chargeback
   - integrasi webhook
   - sengketa
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+Sebagai [Merchant of Record](/features/mor-introduction), Dodo Payments mengelola proses sengketa dan chargeback dengan jaringan kartu atas nama Anda. Webhook ini menjaga sistem Anda tetap sinkron ketika sengketa bergerak melalui siklus hidupnya sehingga Anda dapat mencabut akses, mengumpulkan bukti, dan merekonsiliasi catatan Anda.
+</Info>
+
+## Peristiwa Webhook Sengketa
+
+Sebuah sengketa memancarkan peristiwa di setiap tahap siklus hidupnya:
+
+| Peristiwa | Berlangsung ketika | Apa artinya biasanya |
+|-------|-----------|-----------------------|
+| `dispute.opened` | Pemegang kartu membuka sengketa pada pembayaran | Dana ditahan; bersiap untuk merespon |
+| `dispute.challenged` | Bukti telah diajukan untuk menentang sengketa | Sengketa sedang ditinjau oleh jaringan |
+| `dispute.accepted` | Sengketa diterima (tidak ditentang) | Dana dikembalikan kepada pemegang kartu |
+| `dispute.cancelled` | Sengketa ditarik atau dibatalkan | Tidak ada tindakan lebih lanjut yang diperlukan |
+| `dispute.expired` | Jangka waktu respons habis tanpa resolusi | Biasanya diselesaikan melawan Anda |
+| `dispute.won` | Sengketa diselesaikan untuk kepentingan Anda | Dana dipertahankan |
+| `dispute.lost` | Sengketa diselesaikan untuk kepentingan pemegang kartu | Dana dikembalikan kepada pemegang kartu |
+
+<Note>
+Sengketa yang diselesaikan otomatis melalui [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) muncul sebagai `dispute.lost` dengan `is_resolved_by_rdr: true`. Hal ini diharapkan — pengembalian dana dikeluarkan secara otomatis untuk mencegah chargeback formal.
+</Note>
+
+## Menangani Peristiwa Sengketa
+
+Ketika `dispute.opened` terjadi, jumlah yang disengketakan ditahan segera. Gunakan peristiwa untuk memperbarui catatan Anda dan, jika Anda berniat menentangnya, kumpulkan bukti di dasbor.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Selalu verifikasi tanda tangan webhook sebelum memproses — lihat panduan [Webhooks](/developer-resources/webhooks) untuk pengaturan. Penangan di atas menghilangkan verifikasi untuk singkatnya.
+</Tip>
+
+<Warning>
+Anda memiliki **4 hari** untuk merespon sengketa setelah dibuat. Lihat [Praktik Terbaik Respons Sengketa](/features/transactions/disputes#dispute-response-best-practices) untuk bukti yang harus dikumpulkan dan cara memformatnya.
+</Warning>
+
+## Status dan Tahapan Sengketa
+
+Objek sengketa melaporkan kemajuannya melalui dua bidang:
+
+| Bidang | Nilai |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Terkait
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+Cara merespon sengketa, menyerahkan bukti, dan bagaimana RDR melindungi tingkat sengketa Anda.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Deteksi dan pulihkan pembayaran yang gagal sebelum menjadi sengketa.
+</Card>
+</CardGroup>
+
+## Skema Payload Webhook

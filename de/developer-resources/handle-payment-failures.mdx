@@ -1,0 +1,246 @@
+---
+sidebarTitle: Zahlungsausfälle handhaben
+title: Zahlungsausfälle handhaben
+description: Erkennen Sie fehlgeschlagene Zahlungen über Webhooks und die API,
+  lesen Sie den Grund des Fehlers, geben Sie diesen sicher an Kunden weiter und
+  entscheiden Sie, wann ein neuer Zahlungsversuch oder eine neue Zahlungsmethode
+  erforderlich ist.
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - Zahlungsausfälle handhaben
+  - payment.failed
+  - Ablehnungscodes
+  - error_code
+  - Zahlungsversuche wiederholen
+  - fehlgeschlagener Zahlungswebhook
+  - weiche Ablehnung
+  - harte Ablehnung
+---
+
+<Info>
+Wenn eine Zahlung fehlschlägt, teilt Ihnen Dodo Payments **warum** mit durch einen standardisierten `error_code` und eine lesbare `error_message`. Dieser Leitfaden zeigt, wie diese Felder gelesen werden, entschieden wird, ob ein neuer Versuch sinnvoll ist, und wie die Zahlung wiederhergestellt wird, ohne sensible Informationen an Kunden weiterzugeben.
+</Info>
+
+## Wie Dodo Payments einen Ausfall meldet
+
+Jede fehlgeschlagene Zahlung – sei es ein einmaliger Kauf oder eine Abonnementverlängerung – enthält dieselben Fehlerfelder im Zahlungsobjekt:
+
+| Feld | Typ | Beschreibung |
+|-------|------|-------------|
+| `status` | string | `failed` für eine fehlgeschlagene Zahlung. Andere Nicht-Erfolgszustände umfassen `cancelled`, `requires_customer_action` und `requires_payment_method`. |
+| `error_code` | string \| null | Der standardisierte Grund des Fehlers, zum Beispiel `INSUFFICIENT_FUNDS` oder `PROCESSING_ERROR`. Siehe die [Transaction Failures](/api-reference/transaction-failures) Referenz für die vollständige Liste. |
+| `error_message` | string \| null | Eine lesbare Erklärung des Fehlers. |
+| `retry_attempt` | integer | `0` für die ursprüngliche Belastung. `1` oder höher identifiziert einen geplanten Abonnementverlängerungsversuch. |
+
+ <Note>
+`error_code` und `error_message` sind `null`, bis eine Zahlung tatsächlich fehlschlägt. Überprüfen Sie zuerst `status`, und dann lesen Sie die Fehlerfelder.
+</Note>
+
+## Der `payment.failed` Webhook
+
+Der zuverlässigste Weg, einen Fehler zu erkennen, ist der `payment.failed` Webhook. Das Ereignis umfasst das gesamte Zahlungsobjekt in `data`:
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+Ein minimaler Handler liest `error_code` und leitet darauf weiter:
+
+ <CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+ </CodeGroup>
+
+ <Tip>
+Verifizieren Sie immer die Webhook-Signatur, bevor Sie fortfahren. Siehe den [Webhooks-Leitfaden](/developer-resources/webhooks) für die vollständige Einrichtung, einschließlich Signaturprüfung und Idempotenz.
+</Tip>
+
+## Entscheiden, ob ein neuer Versuch unternommen werden soll: Weiche vs. harte Ablehnungen
+
+Der `error_code` sagt Ihnen, ob ein neuer Versuch mit derselben Zahlungsmethode sinnvoll ist.
+
+| Ablehnungstyp | Was es bedeutet | Was zu tun ist |
+|---------------|---------------|------------|
+| **Weiche Ablehnung** | Vorübergehend oder korrigierbar (zum Beispiel `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Wiederholen – nach einer Verzögerung oder sobald der Kunde seine Eingabe korrigiert – kann erfolgreich sein. |
+| **Harte Ablehnung** | Endgültig (zum Beispiel `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Wiederholen Sie **nicht** dieselbe Karte. Bitten Sie den Kunden um eine andere Zahlungsmethode. |
+
+Die [Transaction Failures](/api-reference/transaction-failures) Referenz listet den Ablehnungstyp und die empfohlene Maßnahme für jeden `error_code` auf.
+
+## Umgang mit Ausfällen beim Checkout vs. bei der Verlängerung
+
+Wie Sie sich erholen, hängt davon ab, ob der Kunde anwesend ist.
+
+ <Tabs>
+<Tab title="At checkout (customer present)">
+Der Kunde ist aktiv beim Checkout. Zeigen Sie eine klare Nachricht an und lassen Sie ihn sofort erneut versuchen oder eine andere Karte verwenden.
+
+- `requires_payment_method` — der Kunde hat keine Zahlungsmethode angegeben: Er hat keine Kartendetails eingegeben oder wurde aufgefordert, eine anzugeben, und hat keine Aktion unternommen. Dies ist normalerweise ein Checkout-**Abbruch**, keine Ablehnung — holen Sie den Kunden zurück, um die Zahlung abzuschließen (siehe [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — zusätzliche Authentifizierung (z. B. 3DS) ist erforderlich; lassen Sie den Kunden diese abschließen. Siehe [3D Secure Handling](/features/payment-methods/cards#3d-secure-authentication).
+</Tab>
+
+ <Tab title="On subscription renewal (customer not present)">
+Der Kunde ist nicht anwesend, daher können Sie ihn nicht in Echtzeit auffordern. Wenn eine Verlängerung fehlschlägt, wechselt das Abonnement zu `on_hold` und `subscription.on_hold` wird ausgelöst.
+
+- **Weiche Ablehnungen** werden automatisch erneut versucht von [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Harte Ablehnungen** (und erschöpfte Versuche) werden am besten mit [Subscription Dunning](/features/recovery/subscription-dunning) wiederhergestellt, das dem Kunden eine E-Mail zur Aktualisierung seiner Zahlungsmethode sendet.
+
+Siehe den [Abonnement-Integrationsleitfaden](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) für den vollständigen on-hold → Reaktivierung Ablauf.
+</Tab>
+</Tabs>
+
+## Erneuerung einer fehlgeschlagenen Zahlung
+
+- **Abonnements:** Aktivieren Sie [Subscription Payment Retries](/features/recovery/payment-retries), um weiche Ablehnungen ohne Integrationsarbeit wiederherzustellen. Sie können die Wiederherstellung auch auslösen, indem der Kunde seine Zahlungsmethode über die [Update Payment Method API](/api-reference/subscriptions/update-payment-method) aktualisiert, die alle ausstehenden Gebühren belastet.
+- **Einmalige Zahlungen:** Senden Sie den Checkout oder `payment_link` erneut, damit der Kunde es erneut mit einer anderen Methode versuchen kann. Es gibt keinen automatischen Wiederholungsversuch für einmalige Zahlungen.
+
+ <Warning>
+Versuchen Sie nicht, harte Ablehnungen gegen dieselbe Karte zu wiederholen. Kartennetzwerke können wiederholte Ablehnungen als missbräuchlich kennzeichnen, was Ihre Autorisierungsrate beeinträchtigt.
+</Warning>
+
+## Fehler sicher an Kunden übermitteln
+
+Zeigen Sie Kunden eine freundliche Nachricht an — niemals den rohen `error_code`.
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+ <Warning>
+**Offenbaren Sie niemals den echten Grund für `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, oder `FRAUDULENT`.** Die Anzeige dieser Gründe kann einen Betrüger warnen. Zeigen Sie eine allgemeine Ablehnungsnachricht an und speichern Sie nur den spezifischen `error_code` intern.
+</Warning>
+
+## Verwandt
+
+ <CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+Jeder Ablehnungs-Code, sein Typ und die empfohlene Aktion.
+</Card>
+
+ <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+API- und Geschäftslogikfehler, die keine Kartenablehnungen sind.
+</Card>
+
+ <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Automatische Wiederherstellung von weichen Ablehnungen bei Abonnementverlängerungen.
+</Card>
+
+ <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+E-Mail-Sequenzen, die harte Ablehnungen wiederherstellen.
+</Card>
+
+ <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+Vollständiges Payload-Schema für Zahlungsereignisse.
+</Card>
+
+ <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+Testkarten, die Ablehnungen und Verlängerungsausfälle simulieren.
+</Card>
+</CardGroup>

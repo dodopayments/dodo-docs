@@ -1,7 +1,7 @@
 ---
 openapi-schema: DisputeResponse
 title: 분쟁
-description: 분쟁이 생성되거나 업데이트될 때 웹후크 엔드포인트로 전송되는 페이로드입니다.
+description: 분쟁이 생성되거나 업데이트될 때 웹훅 엔드포인트에 전송되는 페이로드와 각 분쟁 라이프사이클 이벤트를 처리하는 방법입니다.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -9,4 +9,91 @@ keywords:
   - 차지백 이벤트
   - 웹훅 통합
   - 분쟁
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+[Merchant of Record](/features/mor-introduction)로서 Dodo Payments는 카드 네트워크와의 분쟁 및 차지백 프로세스를 대신 관리합니다. 이러한 웹훅은 분쟁이 라이프사이클을 통해 진행되는 동안 시스템을 동기화하여 액세스를 철회하고 증거를 수집하며 기록을 조정할 수 있도록 합니다.
+</Info>
+
+## 분쟁 웹훅 이벤트
+
+분쟁은 라이프사이클의 각 단계에서 이벤트를 발생시킵니다:
+
+| Event | Fires when | What it usually means |
+|-------|-----------|-----------------------|
+| `dispute.opened` | 카드 소지자가 결제에 대해 분쟁을 제기할 때 | 자금이 보류됨; 응답 준비 |
+| `dispute.challenged` | 분쟁을 다투기 위해 증거가 제출된 경우 | 분쟁이 네트워크에서 검토 중임 |
+| `dispute.accepted` | 분쟁이 수락됨 (다투지 않음) | 자금이 카드 소지자에게 반환됨 |
+| `dispute.cancelled` | 분쟁이 철회되거나 취소됨 | 추가 조치 필요 없음 |
+| `dispute.expired` | 응답 창이 해결되지 않고 만료됨 | 일반적으로 귀하에게 불리하게 해결됨 |
+| `dispute.won` | 분쟁이 귀하에게 유리하게 해결됨 | 자금이 보유됨 |
+| `dispute.lost` | 분쟁이 카드 소지자에게 유리하게 해결됨 | 자금이 카드 소지자에게 반환됨 |
+
+<Note>
+[Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr)를 통해 자동 해결된 분쟁은 `dispute.lost`와 `is_resolved_by_rdr: true`로 나타납니다. 이는 기대된 결과입니다 — 환불이 공식 차지백을 방지하기 위해 자동으로 발행되었습니다.
+</Note>
+
+## 분쟁 이벤트 처리
+
+`dispute.opened`가 발생하면 분쟁된 금액이 즉시 보류됩니다. 이벤트를 사용하여 기록을 업데이트하고, 다투고자 한다면 대시보드에서 증거를 수집하십시오.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+처리하기 전에 항상 웹훅 서명을 확인하십시오 — 설정에 대해서는 [웹훅 안내서](/developer-resources/webhooks)를 참조하십시오. 위 핸들러는 간결성을 위해 확인을 생략합니다.
+</Tip>
+
+<Warning>
+분쟁이 생성된 후 **4일** 이내에 응답해야 합니다. [분쟁 대응 모범 사례](/features/transactions/disputes#dispute-response-best-practices)에서 증거를 수집하고 형식화하는 방법을 자세히 알아보십시오.
+</Warning>
+
+## 분쟁 상태 및 단계
+
+분쟁 객체는 두 가지 필드를 통해 진행 상황을 보고합니다:
+
+| Field | Values |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## 관련 항목
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+분쟁에 응답하고, 증거를 제출하며, RDR이 분쟁율을 어떻게 보호하는지에 대한 내용입니다.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+실패한 결제를 감지하고 복구하여 분쟁으로 발전하기 전에 해결하십시오.
+</Card>
+</CardGroup>
+
+## 웹훅 페이로드 스키마
