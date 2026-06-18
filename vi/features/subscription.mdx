@@ -350,34 +350,58 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ## Subscription States
 
-Subscriptions can be in different states throughout their lifecycle:
+Một đăng ký sẽ trải qua một tập hợp trạng thái xác định trong suốt vòng đời của nó. Bảng này là tài liệu tham khảo cho mọi trạng thái, nguyên nhân xảy ra và cách (hoặc nếu có thể) bạn có thể khôi phục nó.
 
-- **`active`**: Subscription is active and will renew automatically
-- **`on_hold`**: Subscription is paused due to failed payment. Payment method update required to reactivate
-- **`cancelled`**: Subscription is cancelled and will not renew
-- **`expired`**: Subscription has reached its end date
-- **`pending`**: Subscription is being created or processed
-
-### On Hold State
-
-A subscription enters `on_hold` state when:
-
-- A renewal payment fails (insufficient funds, expired card, etc.)
-- A plan change charge fails
-- Payment method authorization fails
+| Trạng thái | Ý nghĩa | Có thể khôi phục? | Đường dẫn khôi phục / bước tiếp theo |
+|--------|---------------|--------------|---------------------------|
+| `pending` | Đăng ký đang được tạo hoặc xử lý | — | Chờ `subscription.active` (hoặc `subscription.failed`) |
+| `active` | Đăng ký đang hoạt động và sẽ tự động gia hạn | — | Không cần hành động nào |
+| `on_hold` | Thanh toán gia hạn (hoặc phí thay đổi gói) đã thất bại; đăng ký bị tạm dừng | **Có** | Cập nhật phương thức thanh toán để kích hoạt lại — tự động qua [Thử Lại Thanh Toán](/features/recovery/payment-retries) và [Dunning](/features/recovery/subscription-dunning), hoặc thủ công qua [API Cập nhật Phương thức Thanh toán](/api-reference/subscriptions/update-payment-method) |
+| `cancelled` | Đăng ký đã bị hủy và sẽ không được gia hạn | Chỉ có thể mua lại | Khách hàng phải bắt đầu đăng ký mới; [Dunning](/features/recovery/subscription-dunning) có thể nhắc nhở mua lại |
+| `failed` | Tạo **đăng ký** không thành công (ủy nhiệm ban đầu hoặc thanh toán không thành công) | **Không — cuối cùng** | Khách hàng phải tạo đăng ký mới với phương thức thanh toán hoạt động |
+| `expired` | Đăng ký đã hết hạn | — | Khách hàng phải bắt đầu đăng ký mới nếu muốn |
 
 <Warning>
-When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
+`on_hold` và `failed` thường bị nhầm lẫn. `on_hold` là trạng thái **có thể khôi phục** cho một đăng ký đã hoạt động nhưng gia hạn thất bại. `failed` là trạng thái **cuối cùng** chỉ xảy ra khi tạo **đăng ký ban đầu** thất bại — không thể kích hoạt lại.
 </Warning>
 
-### Reactivating from On Hold
+### Máy Trạng Thái
 
-To reactivate a subscription from `on_hold` state, update the payment method. This automatically:
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> active: Creation succeeds
+    pending --> failed: Mandate creation fails
+    active --> on_hold: Renewal or plan-change charge fails
+    on_hold --> active: Payment method updated / retry succeeds
+    active --> cancelled: Cancelled
+    on_hold --> cancelled: Cancelled
+    active --> expired: Term ends
+    failed --> [*]
+    cancelled --> [*]
+    expired --> [*]
+```
 
-1. Creates a charge for remaining dues
-2. Generates an invoice
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+### Trạng Thái Tạm Dừng
+
+Một đăng ký sẽ vào trạng thái `on_hold` khi:
+
+- Thanh toán gia hạn thất bại (không đủ tiền, thẻ hết hạn, v.v.)
+- Phí thay đổi gói thất bại
+- Ủy quyền phương thức thanh toán thất bại
+
+<Warning>
+Khi một đăng ký ở trạng thái `on_hold`, nó sẽ không tự động gia hạn. Bạn phải cập nhật phương thức thanh toán để kích hoạt lại đăng ký.
+</Warning>
+
+### Kích Hoạt Lại từ Trạng Thái Tạm Dừng
+
+Để kích hoạt lại một đăng ký từ trạng thái `on_hold`, cập nhật phương thức thanh toán. Điều này tự động:
+
+1. Tạo một khoản phí cho các khoản nợ còn lại
+2. Tạo hóa đơn
+3. Xử lý thanh toán bằng phương thức thanh toán mới
+4. Kích hoạt lại đăng ký về trạng thái `active` khi thanh toán thành công
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -395,80 +419,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
+Sau khi cập nhật thành công phương thức thanh toán cho một đăng ký `on_hold`, bạn sẽ nhận được các sự kiện webhook `payment.succeeded` tiếp theo là `subscription.active`.
 </Info>
 
-## API Management
+### Sự Kiện Webhook theo Chuyển Đổi
+
+Mỗi chuyển đổi phát ra một webhook để bạn có thể thực hiện logic quyền mà không cần khảo sát liên tục:
+
+| Chuyển đổi | Sự kiện |
+|------------|-------|
+| Đăng ký được kích hoạt | `subscription.active` |
+| Gia hạn thành công | `subscription.renewed` |
+| Gia hạn thất bại → tạm dừng | `subscription.on_hold` |
+| Tạo thất bại | `subscription.failed` |
+| Nâng cấp/giảm cấp gói | `subscription.plan_changed` |
+| Bị hủy | `subscription.cancelled` |
+| Kết thúc thời hạn | `subscription.expired` |
+| Bất kỳ thay đổi trường nào | `subscription.updated` |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Xem toàn bộ lược đồ payload cho các sự kiện vòng đời đăng ký.
+</Card>
+
+## Quản Lý API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Use `POST /subscriptions` to create subscriptions programmatically from products, with optional trials and add‑ons.
+Sử dụng `POST /subscriptions` để tạo đăng ký theo cách lập trình từ các sản phẩm, với các giai đoạn thử nghiệm và bổ sung tùy chọn.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-View the create subscription API.
+Xem API tạo đăng ký.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Use `PATCH /subscriptions/{id}` to update quantities, cancel at next billing date, or modify metadata.
+Sử dụng `PATCH /subscriptions/{id}` để cập nhật số lượng, hủy vào ngày lập hóa đơn tiếp theo hoặc sửa đổi metadata.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Learn how to update subscription details.
+Tìm hiểu cách cập nhật chi tiết đăng ký.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Change the active product and quantities with proration controls.
+Thay đổi sản phẩm và số lượng đang hoạt động với kiểm soát tỷ lệ.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Review plan change options.
+Xem xét tùy chọn thay đổi kế hoạch.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-For on‑demand subscriptions, charge specific amounts on demand.
+Đối với đăng ký theo yêu cầu, tính phí các khoản cụ thể theo yêu cầu.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Charge an on‑demand subscription.
+Tính phí một đăng ký theo yêu cầu.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Use `GET /subscriptions` to list all subscriptions and `GET /subscriptions/{id}` to retrieve one.
+Sử dụng `GET /subscriptions` để liệt kê tất cả các đăng ký và `GET /subscriptions/{id}` để lấy thông tin một đăng ký.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Browse listing and retrieval APIs.
+Duyệt API danh sách và truy xuất.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Fetch recorded usage for metered or hybrid pricing models.
+Lấy lịch sử sử dụng đã ghi nhận cho các mô hình định giá đo lường hoặc hỗn hợp.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-See usage history API.
+Xem API lịch sử sử dụng.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Update the payment method for a subscription. For active subscriptions, this updates the payment method for future renewals. For subscriptions in `on_hold` state, this reactivates the subscription by creating a charge for remaining dues.
+Cập nhật phương thức thanh toán cho một đăng ký. Đối với các đăng ký đang hoạt động, điều này cập nhật phương thức thanh toán cho các lần gia hạn tiếp theo. Đối với các đăng ký trong trạng thái `on_hold`, điều này kích hoạt lại đăng ký bằng cách tạo một khoản phí cho các khoản nợ còn lại.
+
+Khi tạo một liên kết phương thức thanh toán mới (loại yêu cầu `New`), bạn có thể truyền `allowed_payment_method_types` để giới hạn các phương thức thanh toán mà khách hàng nhìn thấy trên trang đó. Khách hàng sẽ không bao giờ thấy một phương pháp không nằm trong danh sách, mặc dù bao gồm một phương pháp không đảm bảo nó xuất hiện (sự sẵn có vẫn phụ thuộc vào các yếu tố như vị trí của khách hàng và cài đặt doanh nghiệp của bạn).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Learn how to update payment methods and reactivate subscriptions.
+Tìm hiểu cách cập nhật phương thức thanh toán và kích hoạt lại đăng ký.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## Trường Hợp Sử Dụng Phổ Biến
 
-- **SaaS and APIs**: Tiered access with add‑ons for seats or usage
-- **Content and media**: Monthly access with introductory trials
-- **B2B support plans**: Annual contracts with premium support add‑ons
-- **Tools and plugins**: License keys and versioned releases
+- **SaaS và API**: Truy cập phân cấp với bổ sung cho chỗ ngồi hoặc sử dụng
+- **Nội dung và truyền thông**: Truy cập hàng tháng với các giai đoạn thử nghiệm giới thiệu
+- **Kế hoạch hỗ trợ B2B**: Hợp đồng hàng năm với bổ sung hỗ trợ cao cấp
+- **Công cụ và plugin**: Khóa giấy phép và phát hành theo phiên bản
 
-## Integration Examples
+## Ví Dụ Tích Hợp
 
-### Checkout Sessions (subscriptions)
-When creating checkout sessions, include your subscription product and optional add‑ons:
+### Phiên Thanh Toán (đăng ký)
+Khi tạo phiên thanh toán, bao gồm sản phẩm đăng ký và bổ sung tùy chọn của bạn:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -481,8 +526,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-Upgrade or downgrade a subscription and control proration behavior:
+### Thay đổi gói với tỷ lệ
+Nâng cấp hoặc giảm cấp một đăng ký và kiểm soát hành vi tỷ lệ:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -492,8 +537,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-Schedule a cancellation that takes effect at the end of the current billing period:
+### Hủy vào ngày lập hóa đơn tiếp theo
+Lên lịch hủy bỏ có hiệu lực vào cuối kỳ lập hóa đơn hiện tại:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -501,8 +546,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### On‑demand subscriptions
-Create an on‑demand subscription and charge later as needed:
+### Đăng ký theo Yêu Cầu
+Tạo một đăng ký theo yêu cầu và tính phí sau nếu cần:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -518,8 +563,8 @@ await client.subscriptions.charge(onDemand.id, {
 });
 ```
 
-### Update payment method for active subscription
-Update the payment method for an active subscription:
+### Cập nhật phương thức thanh toán cho đăng ký đang hoạt động
+Cập nhật phương thức thanh toán cho một đăng ký đang hoạt động:
 
 ```typescript
 // Update with new payment method
@@ -535,8 +580,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-Reactivate a subscription that went on hold due to failed payment:
+### Kích hoạt lại đăng ký từ on_hold
+Kích hoạt lại một đăng ký đã bị tạm dừng do thanh toán thất bại:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -552,72 +597,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## Đăng ký với Ủy Nhiệm Tuân Thủ RBI
 
-  UPI and Indian card subscriptions operate under RBI (Reserve Bank of India) regulations with specific mandate requirements:
+  Đăng ký UPI và thẻ Ấn Độ hoạt động theo quy định của RBI (Ngân hàng Dự trữ Ấn Độ) với yêu cầu ủy nhiệm cụ thể:
 
-  ### Mandate Limits
+  ### Giới Hạn Ủy Nhiệm
 
-  The mandate type and amount depend on your subscription's recurring charge:
+  Loại và số lượng ủy nhiệm phụ thuộc vào khoản phí định kỳ của đăng ký của bạn:
 
-  - **Charges below Rs 15,000:** We create an on-demand mandate for Rs 15,000 INR. The subscription amount is charged periodically according to your subscription frequency, up to the mandate limit.
-  - **Charges Rs 15,000 or above:** We create a subscription mandate (or on-demand mandate) for the exact subscription amount.
+  - **Phí dưới mức sàn ủy nhiệm (mặc định ₹15,000):** Chúng tôi tạo một ủy nhiệm theo yêu cầu cho số tiền sàn. Số tiền đăng ký được tính định kỳ theo tần suất đăng ký của bạn, lên đến giới hạn ủy nhiệm.
+  - **Phí tại hoặc trên mức sàn ủy nhiệm:** Chúng tôi tạo một ủy nhiệm đăng ký (hoặc ủy nhiệm theo yêu cầu) cho chính xác số tiền đăng ký.
 
-For detailed information about RBI-compliant mandates for Indian payment methods, see the <a href="/features/payment-methods/india">India Payment Methods</a> page.
+  Mức sàn ủy nhiệm có thể cấu hình cho mỗi thương nhân hoặc theo yêu cầu qua `mandate_min_amount_inr_paise` (INR paise). Số tiền đăng ký với ngân hàng là `max(mandate_floor, billing_amount)` — do đó, mức sàn thực tế sẽ trở thành giới hạn ủy quyền mà khách hàng thấy khi mô tả khi phí thấp hơn.
 
-  ### Upgrade and Downgrade Considerations
+Để biết thông tin chi tiết về các ủy nhiệm tuân thủ RBI và mức sàn ủy nhiệm có thể cấu hình cho các phương thức thanh toán tại Ấn Độ, xem trang <a href="/features/payment-methods/india#configurable-mandate-floor">Phương thức Thanh toán tại Ấn Độ</a>.
 
-  **Important:** When upgrading or downgrading subscriptions, carefully consider the mandate limits:
+  ### Lưu Ý về Nâng cấp và Giảm cấp
 
-  - If an upgrade/downgrade results in a charge amount that exceeds Rs 15,000 and goes beyond the existing on-demand payment limit, the transaction charge may fail.
-  - In such cases, the customer may need to update their payment method or change the subscription again to establish a new mandate with the correct limit.
+  **Quan trọng:** Khi nâng cấp hoặc giảm cấp đăng ký, cần cân nhắc kỹ về giới hạn ủy nhiệm:
 
-  ### Authorization for High-Value Charges
+  - Nếu nâng cấp/giảm cấp dẫn đến số tiền phí vượt quá Rs 15,000 và vượt qua giới hạn thanh toán theo yêu cầu hiện tại, phí giao dịch có thể thất bại.
+  - Trong những trường hợp như vậy, khách hàng có thể cần cập nhật phương thức thanh toán của họ hoặc thay đổi đăng ký một lần nữa để thiết lập một ủy nhiệm mới với giới hạn chính xác.
 
-  For subscription charges of Rs 15,000 or more:
+  ### Ủy quyền cho các khoản phí có giá trị cao
 
-  - The customer will be prompted by their bank to authorize the transaction.
-  - If the customer fails to authorize the transaction, the transaction will fail and the subscription will be put on hold.
+  Đối với các khoản phí đăng ký từ Rs 15,000 trở lên:
 
-  ### 48-Hour Processing Delay
+  - Khách hàng sẽ được ngân hàng yêu cầu để ủy quyền cho giao dịch.
+  - Nếu khách hàng không ủy quyền giao dịch, việc giao dịch sẽ thất bại và đăng ký sẽ bị tạm dừng.
 
-  **Processing Timeline:** Recurring charges on Indian cards and UPI subscriptions follow a unique processing pattern:
+  ### 48 Giờ Trì Hoãn Xử Lý
 
-  - Charges are **initiated** on the scheduled date according to your subscription frequency.
-  - The actual **deduction** from the customer's account occurs only after **48 hours** from payment initiation.
-  - This 48-hour window may extend up to **2-3 additional hours** depending on bank API responses.
+  **Thời gian Xử lý:** Các khoản phí định kỳ trên thẻ Ấn Độ và đăng ký UPI tuân theo một mô hình xử lý duy nhất:
 
-  ### Mandate Cancellation Window
+  - Các khoản phí được **khởi tạo** vào ngày đã lên lịch theo tần suất đăng ký của bạn.
+  - Thực tế **khấu trừ** từ tài khoản khách hàng chỉ diễn ra sau **48 giờ** từ khi khởi tạo thanh toán.
+  - Khoảng thời gian 48 giờ này có thể kéo dài thêm lên tới **2-3 giờ** tùy thuộc vào các phản hồi của API ngân hàng.
 
-  During the 48-hour processing window:
+  ### Cửa Sổ Hủy Ủy Nhiệm
 
-  - Customers can cancel the mandate via their banking apps.
-  - If a customer cancels the mandate during this period, the subscription will remain **active** (this is an edge case specific to Indian card and UPI AutoPay subscriptions).
-  - However, the actual deduction may fail, and in that case, we will put the subscription **on hold**.
+  Trong khoảng thời gian 48 giờ xử lý:
 
-  **Edge Case Handling:** If you provide benefits, credits, or subscription usage to customers immediately upon charge initiation, you need to handle this 48-hour window appropriately in your application. Consider:
+  - Khách hàng có thể hủy ủy nhiệm qua ứng dụng ngân hàng của họ.
+  - Nếu khách hàng hủy ủy nhiệm trong thời gian này, đăng ký sẽ vẫn **hoạt động** (đây là một trường hợp đặc biệt đối với đăng ký tự động UPI và thẻ Ấn Độ).
+  - Tuy nhiên, việc khấu trừ thực tế có thể thất bại, và trong trường hợp đó, chúng tôi sẽ đặt đăng ký **tạm dừng**.
 
-  - Delaying benefit activation until payment confirmation
-  - Implementing grace periods or temporary access
-  - Monitoring subscription status for mandate cancellations
-  - Handling subscription hold states in your application logic
+  **Xử lý Trường hợp Đặc biệt:** Nếu bạn cung cấp quyền lợi, tín dụng hoặc sử dụng đăng ký cho khách hàng ngay lập tức khi bắt đầu khoản phí, bạn cần xử lý khoảng thời gian 48 giờ này một cách thích hợp trong ứng dụng của mình. Xem xét:
+
+  - Trì hoãn kích hoạt quyền lợi cho đến khi xác nhận thanh toán
+  - Triển khai các giai đoạn ân hạn hoặc quyền truy cập tạm thời
+  - Giám sát trạng thái đăng ký để phát hiện hủy ủy nhiệm
+  - Xử lý trạng thái tạm dừng đăng ký trong logic ứng dụng của bạn
 
   <Tip>
-  Monitor subscription webhooks to track payment status changes and handle edge cases where mandates are cancelled during the 48-hour window.
+  Giám sát webhook đăng ký để theo dõi thay đổi trạng thái thanh toán và xử lý các trường hợp đặc biệt khi ủy nhiệm bị hủy trong khoảng thời gian 48 giờ.
   </Tip>
 
-## Best Practices
+## Thực Hành Tốt Nhất
 
-- **Start with clear tiers**: 2–3 plans with obvious differences
-- **Communicate pricing**: Show totals, proration, and next renewal
-- **Use trials thoughtfully**: Convert with onboarding, not just time
-- **Leverage add‑ons**: Keep base plans simple and upsell extras
-- **Test changes**: Validate plan changes and proration in test mode
-
-<Info>
-Subscriptions are a flexible foundation for recurring revenue. Start simple, test thoroughly, and iterate based on adoption, churn, and expansion metrics.
-</Info>
+- **Bắt đầu với các cấp rõ ràng**: 2–3 kế hoạch có sự khác biệt rõ ràng
+- **Truyền đạt giá cả**: Hiển thị tổng cộng, tỷ lệ, và lần gia hạn tiếp theo
+- **Sử dụng thử nghiệm một cách khôn ngoan**: Chuyển đổi với quá trình onboarding, không chỉ là thời gian
+- **Tận dụng bổ sung**: Giữ các kế hoạch cơ bản đơn giản và bán thêm những thứ phụ
+- **Thử nghiệm thay đổi**: Xác nhận các thay đổi kế hoạch và tỷ lệ trong chế độ thử nghiệm
 
 <Info>
-Các gói đăng ký là nền tảng linh hoạt cho doanh thu định kỳ. Bắt đầu đơn giản, kiểm tra kỹ lưỡng và chỉnh sửa dựa trên các chỉ số về mức độ chấp nhận, tỷ lệ rời bỏ và mở rộng.
+Đăng ký là một nền tảng linh hoạt cho doanh thu định kỳ. Bắt đầu đơn giản, kiểm tra kỹ lưỡng, và lặp lại dựa trên số liệu chấp nhận, rời bỏ và mở rộng.
 </Info>

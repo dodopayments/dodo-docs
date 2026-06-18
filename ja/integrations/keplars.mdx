@@ -1,0 +1,171 @@
+---
+title: Keplars
+description: Dodo Paymentsのイベントに基づいて、Keplarsからトランザクションメールを送信します。
+icon: envelope-circle-check
+keywords:
+  - Dodo Payments
+  - Keplars
+  - トランザクションメール
+  - メールAPI
+---
+
+## はじめに
+
+支払いとサブスクリプションイベントが発生した際に、プロフェッショナルトランザクションメールを自動的に送信します。支払い確認、サブスクリプション更新、失敗通知をKeplars経由で配信し、中間サーバーは不要です。Dodo PaymentsはJavaScript変換ハンドラーを使用してKeplars APIを直接呼び出します。
+
+この統合には認証のためにKeplars APIキーが必要です。Keplarsダッシュボードの **Settings → API Keys** で見つけ、**Domains** で送信者ドメインまたはアドレスを確認します。
+
+## はじめに
+
+Dodo Paymentsダッシュボードで、<b>Webhooks → + Add Endpoint</b> に進み、統合のドロップダウンを展開します。
+
+<b>Keplars</b> 統合カードを選択します。
+  <img src="/images/integrations/keplars/select.png" alt="Keplars統合カードを選択" style={{ maxHeight: '500px', width: 'auto' }} />
+
+Keplars APIキーを提供します。それはリクエストごとにベアラートークンとして送信されます。
+  <img src="/images/integrations/keplars/api-key.png" alt="KeplarsのAPI URL、APIキーを入力し、イベントを購読する" style={{ maxHeight: '500px', width: 'auto' }} />
+
+Keplars用にメールをフォーマットするために変換コードを編集します。プレースホルダーの送信者アドレスとテンプレートIDをあなた自身のものに置き換えます。
+
+サンプルペイロードでテストし、<b>Create</b> をクリックしてメール送信を有効にします。
+
+🎉 支払いイベントは今後自動的にKeplarsを介してトランザクションメールをトリガーします。
+
+## 変換コード例
+
+各ハンドラーは、`webhook.url` をKeplarsの高優先度送信エンドポイントに設定し、`webhook.payload` をKeplarsリクエストに書き換えます（APIキーは自動的にベアラートークンとして送信されます）。`payments@mail.yourdomain.com` をあなたの確認済み送信者に置き換え、`your-keplars-*-template-id` を実際のテンプレートIDに置き換えてください。
+
+`to` は**配列**でなければなりません。単一の受信者の場合も同様です。`template_id` を使用する場合、`subject` や `body` も送信しません。テンプレートがこれを提供します。
+
+### 支払い確認メール
+
+```javascript payment_succeeded.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "payment.succeeded") return webhook;
+
+  const data = webhook.payload.data || {};
+  const paymentDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-payment-success-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      amount: ((data.total_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      payment_id: data.payment_id,
+      payment_method: data.payment_method,
+      payment_date: paymentDate,
+    },
+  };
+  return webhook;
+}
+```
+
+### 支払い失敗通知
+
+```javascript payment_failed.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "payment.failed") return webhook;
+
+  const data = webhook.payload.data || {};
+  const paymentDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-payment-failed-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      amount: ((data.total_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      payment_id: data.payment_id,
+      error_message: data.error_message || "Your payment could not be processed.",
+      payment_date: paymentDate,
+    },
+  };
+  return webhook;
+}
+```
+
+### サブスクリプション歓迎メール
+
+```javascript subscription_active.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "subscription.active") return webhook;
+
+  const data = webhook.payload.data || {};
+  const nextBilling = data.next_billing_date
+    ? new Date(data.next_billing_date).toLocaleDateString("en-US", {
+        year: "numeric", month: "long", day: "numeric",
+      })
+    : "";
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-subscription-active-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      subscription_id: data.subscription_id,
+      product_id: data.product_id,
+      amount: ((data.recurring_pre_tax_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      billing_interval: data.payment_frequency_interval || "month",
+      next_billing_date: nextBilling,
+    },
+  };
+  return webhook;
+}
+```
+
+### サブスクリプションキャンセルメール
+
+```javascript subscription_cancelled.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "subscription.cancelled") return webhook;
+
+  const data = webhook.payload.data || {};
+  const cancellationDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-subscription-cancelled-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      subscription_id: data.subscription_id,
+      cancellation_date: cancellationDate,
+    },
+  };
+  return webhook;
+}
+```
+
+## ヒント
+
+- より良い配信を実現するため、確認済みの送信者ドメインまたはアドレスを使用してください。
+- イベントタイプごとに専用のKeplarsテンプレートを作成し、各メールがブランドとメッセージに沿ったものになります。
+- 顧客データ（名前、金額、支払いIDなど）を`params`経由で渡して、各メールをパーソナライズします。
+- まずサンドボックスモードでテストします。サンドボックス送信はKeplarsテストインボックスにキャプチャされ、配信されません。
+
+## トラブルシューティング
+
+- Keplarsの **Settings → API Keys** でAPIキーが正しくアクティブであることを確認してください。
+- 送信者ドメインまたはアドレスが確認済みであることを確認してください。
+- Dodo Paymentsはウェブフック配信ログでKeplarsのエラーレスポンスを表示します。詳細を確認してください。
+
+- ハンドラー内の `template_id` は、Keplarsアカウントのアクティブなテンプレートと一致する必要があります。ダッシュボードでID（およびそれがアクティブかどうか）を確認してください。
+
+- 各ハンドラーは、`webhook.eventType` をチェックし、一致しない場合は早期にリターンします。Dodo Paymentsのウェブフックエンドポイントで正しいイベントが購読されていることを確認してください。

@@ -350,34 +350,58 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ## Subscription States
 
-Subscriptions can be in different states throughout their lifecycle:
+Sebuah langganan bergerak melalui serangkaian status yang telah ditentukan selama masa hidupnya. Tabel ini adalah referensi untuk setiap status, penyebabnya, dan cara (atau apakah) Anda dapat memulihkannya.
 
-- **`active`**: Subscription is active and will renew automatically
-- **`on_hold`**: Subscription is paused due to failed payment. Payment method update required to reactivate
-- **`cancelled`**: Subscription is cancelled and will not renew
-- **`expired`**: Subscription has reached its end date
-- **`pending`**: Subscription is being created or processed
-
-### On Hold State
-
-A subscription enters `on_hold` state when:
-
-- A renewal payment fails (insufficient funds, expired card, etc.)
-- A plan change charge fails
-- Payment method authorization fails
+| Status | Artinya | Dapat Pulih? | Jalur Pemulihan / langkah selanjutnya |
+|--------|---------|--------------|------------------|
+| `pending` | Langganan sedang dibuat atau diproses | — | Tunggu `subscription.active` (atau `subscription.failed`) |
+| `active` | Langganan aktif dan akan diperbarui secara otomatis | — | Tidak ada tindakan yang diperlukan |
+| `on_hold` | Pembayaran pembaruan (atau biaya perubahan paket) gagal; langganan dijeda | **Ya** | Perbarui metode pembayaran untuk mengaktifkan kembali — secara otomatis melalui [Payment Retries](/features/recovery/payment-retries) dan [Dunning](/features/recovery/subscription-dunning), atau secara manual melalui [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `cancelled` | Langganan dibatalkan dan tidak akan diperbarui | Hanya pembelian ulang | Pelanggan harus memulai langganan baru; [Dunning](/features/recovery/subscription-dunning) dapat memantik pembelian ulang |
+| `failed` | Pembuatan **langganan** gagal (mandat awal atau pembayaran tidak berhasil) | **Tidak — terminal** | Pelanggan harus membuat langganan baru dengan metode pembayaran yang berfungsi |
+| `expired` | Langganan mencapai akhir masa berlakunya | — | Pelanggan harus memulai langganan baru jika diinginkan |
 
 <Warning>
-When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
+`on_hold` dan `failed` sering kali membingungkan. `on_hold` adalah keadaan **dapat dipulihkan** untuk langganan yang sudah aktif yang pembaruannya gagal. `failed` adalah keadaan **terminal** yang hanya terjadi ketika pembuatan langganan **awal** gagal — tidak dapat diaktifkan kembali.
 </Warning>
 
-### Reactivating from On Hold
+### Mesin Status
 
-To reactivate a subscription from `on_hold` state, update the payment method. This automatically:
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> active: Creation succeeds
+    pending --> failed: Mandate creation fails
+    active --> on_hold: Renewal or plan-change charge fails
+    on_hold --> active: Payment method updated / retry succeeds
+    active --> cancelled: Cancelled
+    on_hold --> cancelled: Cancelled
+    active --> expired: Term ends
+    failed --> [*]
+    cancelled --> [*]
+    expired --> [*]
+```
 
-1. Creates a charge for remaining dues
-2. Generates an invoice
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+### Status Ditahan
+
+Sebuah langganan masuk ke dalam status `on_hold` ketika:
+
+- Pembayaran pembaruan gagal (dana tidak mencukupi, kartu kedaluwarsa, dll.)
+- Biaya perubahan paket gagal
+- Otorisasi metode pembayaran gagal
+
+<Warning>
+Ketika langganan berada dalam status `on_hold`, itu tidak akan diperbarui secara otomatis. Anda harus memperbarui metode pembayaran untuk mengaktifkan kembali langganan.
+</Warning>
+
+### Mengaktifkan Kembali dari Ditahan
+
+Untuk mengaktifkan kembali langganan dari status `on_hold`, perbarui metode pembayaran. Ini secara otomatis:
+
+1. Membuat biaya untuk hutang yang tersisa
+2. Menghasilkan faktur
+3. Memproses pembayaran menggunakan metode pembayaran baru
+4. Mengaktifkan kembali langganan ke status `active` setelah pembayaran berhasil
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -395,80 +419,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
+Setelah berhasil memperbarui metode pembayaran untuk langganan `on_hold`, Anda akan menerima acara webhook `payment.succeeded` diikuti oleh `subscription.active`.
 </Info>
 
-## API Management
+### Acara Webhook oleh Transisi
+
+Setiap transisi memancarkan webhook sehingga Anda dapat menggerakkan logika hak tanpa pemindaian:
+
+| Transisi | Acara |
+|----------|-------|
+| Langganan diaktifkan | `subscription.active` |
+| Pembaruan berhasil | `subscription.renewed` |
+| Pembaruan gagal → jeda | `subscription.on_hold` |
+| Pembuatan gagal | `subscription.failed` |
+| Paket diperbarui/dikurangi | `subscription.plan_changed` |
+| Dibatalkan | `subscription.cancelled` |
+| Masa berakhir | `subscription.expired` |
+| Perubahan pada setiap bidang | `subscription.updated` |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Lihat skema payload lengkap untuk acara siklus hidup langganan.
+</Card>
+
+## Manajemen API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Use `POST /subscriptions` to create subscriptions programmatically from products, with optional trials and add‑ons.
+Gunakan `POST /subscriptions` untuk membuat langganan secara programatis dari produk, dengan uji coba dan add-on opsional.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-View the create subscription API.
+Lihat API pembuatan langganan.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Use `PATCH /subscriptions/{id}` to update quantities, cancel at next billing date, or modify metadata.
+Gunakan `PATCH /subscriptions/{id}` untuk memperbarui kuantitas, membatalkan pada tanggal penagihan berikutnya, atau memodifikasi metadata.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Learn how to update subscription details.
+Pelajari cara memperbarui detail langganan.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Change the active product and quantities with proration controls.
+Ubah produk aktif dan kuantitas dengan kontrol proration.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Review plan change options.
+Tinjau opsi perubahan paket.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-For on‑demand subscriptions, charge specific amounts on demand.
+Untuk langganan berdasarkan permintaan, kenakan jumlah tertentu sesuai permintaan.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Charge an on‑demand subscription.
+Tagih langganan sesuai permintaan.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Use `GET /subscriptions` to list all subscriptions and `GET /subscriptions/{id}` to retrieve one.
+Gunakan `GET /subscriptions` untuk menyusun daftar semua langganan dan `GET /subscriptions/{id}` untuk mendapatkan satu langganan.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Browse listing and retrieval APIs.
+Jelajahi API penyusunan daftar dan pengambilan.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Fetch recorded usage for metered or hybrid pricing models.
+Ambil penggunaan yang terukur untuk model harga metered atau hybrid.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-See usage history API.
+Lihat API riwayat penggunaan.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Update the payment method for a subscription. For active subscriptions, this updates the payment method for future renewals. For subscriptions in `on_hold` state, this reactivates the subscription by creating a charge for remaining dues.
+Perbarui metode pembayaran untuk langganan. Untuk langganan aktif, ini memperbarui metode pembayaran untuk pembaruan di masa depan. Untuk langganan dalam status `on_hold`, ini mengaktifkan kembali langganan dengan membuat biaya untuk hutang yang tersisa.
+
+Ketika menghasilkan tautan metode pembayaran baru (tipe permintaan `New`), Anda dapat memasukkan `allowed_payment_method_types` untuk membatasi metode pembayaran mana yang dilihat pelanggan di halaman itu. Pelanggan tidak akan pernah melihat metode yang tidak ada dalam daftar, meskipun memasukkan metode tidak menjamin metode itu muncul (ketersediaan masih bergantung pada faktor seperti lokasi pelanggan dan pengaturan bisnis Anda).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Learn how to update payment methods and reactivate subscriptions.
+Pelajari cara memperbarui metode pembayaran dan mengaktifkan kembali langganan.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## Kasus Penggunaan Umum
 
-- **SaaS and APIs**: Tiered access with add‑ons for seats or usage
-- **Content and media**: Monthly access with introductory trials
-- **B2B support plans**: Annual contracts with premium support add‑ons
-- **Tools and plugins**: License keys and versioned releases
+- **SaaS dan API**: Akses bertingkat dengan add-on untuk kursi atau penggunaan
+- **Konten dan media**: Akses bulanan dengan uji coba pengantar
+- **Paket dukungan B2B**: Kontrak tahunan dengan add-on dukungan premium
+- **Alat dan plugin**: Kunci lisensi dan rilis versi
 
-## Integration Examples
+## Contoh Integrasi
 
-### Checkout Sessions (subscriptions)
-When creating checkout sessions, include your subscription product and optional add‑ons:
+### Sesi Pembayaran (langganan)
+Saat membuat sesi pembayaran, sertakan produk langganan Anda dan add-on opsional:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -481,8 +526,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-Upgrade or downgrade a subscription and control proration behavior:
+### Perubahan paket dengan proration
+Upgrade atau downgrade langganan dan kontrol perilaku proration:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -492,8 +537,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-Schedule a cancellation that takes effect at the end of the current billing period:
+### Batalkan pada tanggal penagihan berikutnya
+Jadwal pembatalan yang berlaku pada akhir periode penagihan saat ini:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -501,8 +546,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### On‑demand subscriptions
-Create an on‑demand subscription and charge later as needed:
+### Langganan berdasarkan permintaan
+Buat langganan berdasarkan permintaan dan tagih nanti sesuai kebutuhan:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -518,8 +563,8 @@ await client.subscriptions.charge(onDemand.id, {
 });
 ```
 
-### Update payment method for active subscription
-Update the payment method for an active subscription:
+### Perbarui metode pembayaran untuk langganan aktif
+Perbarui metode pembayaran untuk langganan aktif:
 
 ```typescript
 // Update with new payment method
@@ -535,8 +580,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-Reactivate a subscription that went on hold due to failed payment:
+### Mengaktifkan kembali langganan dari on_hold
+Aktifkan kembali langganan yang dijeda karena pembayaran gagal:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -552,70 +597,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## Langganan dengan Mandat Sesuai RBI
 
-  UPI and Indian card subscriptions operate under RBI (Reserve Bank of India) regulations with specific mandate requirements:
+Langganan UPI dan kartu India beroperasi di bawah regulasi RBI (Bank Sentral India) dengan persyaratan mandat tertentu:
 
-  ### Mandate Limits
+### Batas Mandat
 
-  The mandate type and amount depend on your subscription's recurring charge:
+Jenis dan jumlah mandat bergantung pada biaya berulang langganan Anda:
 
-  - **Biaya di bawah batas mandat (default ₹15.000):** Kami membuat mandat on-demand untuk jumlah batas. Jumlah langganan dibebankan secara berkala sesuai dengan frekuensi langganan Anda, hingga batas mandat.
-  - **Biaya pada atau di atas batas mandat:** Kami membuat mandat langganan (atau mandat on-demand) untuk jumlah langganan yang tepat.
+- **Biaya di bawah batas bawah mandat (default ₹15,000):** Kami membuat mandat berdasarkan permintaan untuk jumlah batas bawah. Jumlah langganan dikenakan secara berkala sesuai dengan frekuensi langganan Anda, hingga batas mandat.
+- **Biaya di atau di atas batas bawah mandat:** Kami membuat mandat langganan (atau mandat berdasarkan permintaan) untuk jumlah langganan yang tepat.
 
-  Batas mandat dapat dikonfigurasi per pedagang atau per permintaan melalui `mandate_min_amount_inr_paise` (INR paise). Jumlah yang terdaftar dengan bank adalah `max(mandate_floor, billing_amount)` — sehingga batas tersebut secara efektif menjadi batas otorisasi yang terlihat oleh pelanggan kapan pun biaya lebih rendah.
+Batas bawah mandat dapat dikonfigurasi per pedagang atau per permintaan melalui `mandate_min_amount_inr_paise` (INR paise). Jumlah yang didaftarkan dengan bank adalah `max(mandate_floor, billing_amount)` — sehingga batas bawah secara efektif menjadi batas otorisasi yang terlihat oleh pelanggan setiap kali penagihan lebih rendah.
 
-Untuk informasi lebih lanjut tentang mandat yang sesuai dengan RBI dan batas mandat yang dapat dikonfigurasi untuk metode pembayaran India, lihat halaman <a href="/features/payment-methods/india#configurable-mandate-floor">Metode Pembayaran India</a>.
+Untuk informasi terperinci tentang mandat yang sesuai dengan RBI dan batas bawah mandat yang dapat dikonfigurasi untuk metode pembayaran India, lihat halaman <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
-  ### Pertimbangan Upgrade dan Downgrade
+### Pertimbangan Dalam Upgrade dan Downgrade
 
-  **Penting:** Saat melakukan upgrade atau downgrade langganan, pertimbangkan batas mandat dengan hati-hati:
+**Penting:** Saat melakukan upgrade atau downgrade langganan, pertimbangkan dengan cermat batas mandat:
 
-  - Jika upgrade/downgrade mengakibatkan jumlah biaya melebihi Rs 15.000 dan melampaui batas pembayaran on-demand yang ada, biaya transaksi mungkin gagal.
-  - Dalam kasus seperti itu, pelanggan mungkin perlu memperbarui metode pembayaran mereka atau mengubah langganan lagi untuk membuat mandat baru dengan batas yang benar.
+- Jika upgrade/downgrade menghasilkan jumlah biaya yang melebihi Rs 15,000 dan melampaui batas pembayaran berdasarkan permintaan yang ada, biaya transaksi mungkin gagal.
+- Dalam kasus seperti itu, pelanggan mungkin perlu memperbarui metode pembayaran mereka atau mengubah langganan lagi untuk membentuk mandat baru dengan batas yang benar.
 
-  ### Otorisasi untuk Biaya Bernilai Tinggi
+### Otorisasi untuk Biaya Bernilai Tinggi
 
-  Untuk biaya langganan sebesar Rs 15.000 atau lebih:
+Untuk biaya langganan sebesar Rs 15,000 atau lebih:
 
-  - Pelanggan akan diminta oleh bank mereka untuk mengotorisasi transaksi.
-  - Jika pelanggan gagal mengotorisasi transaksi, transaksi akan gagal dan langganan akan ditangguhkan.
+- Pelanggan akan diberitahukan oleh bank mereka untuk mengotorisasi transaksi.
+- Jika pelanggan gagal mengotorisasi transaksi, transaksi akan gagal dan langganan akan dijeda.
 
-  ### Keterlambatan Pemrosesan 48 Jam
+### Keterlambatan Proses 48 Jam
 
-  **Linimasa Pemrosesan:** Biaya berulang pada kartu India dan langganan UPI mengikuti pola pemrosesan unik:
+**Garis Waktu Pemrosesan:** Biaya berulang untuk langganan kartu India dan UPI mengikuti pola pemrosesan unik:
 
-  - Biaya **dimulai** pada tanggal yang dijadwalkan sesuai dengan frekuensi langganan Anda.
-  - **Pengurangan** aktual dari akun pelanggan terjadi hanya setelah **48 jam** dari inisiasi pembayaran.
-  - Jendela 48 jam ini mungkin diperpanjang hingga **2-3 jam tambahan** tergantung pada respons API bank.
+- Biaya **dimulai** pada tanggal yang dijadwalkan sesuai dengan frekuensi langganan Anda.
+- Pengurangan **sebenarnya** dari akun pelanggan terjadi hanya setelah **48 jam** dari inisiasi pembayaran.
+- Jendela 48 jam ini dapat diperpanjang hingga **2-3 jam tambahan** tergantung pada respons API bank.
 
-  ### Jendela Pembatalan Mandat
+### Jendela Pembatalan Mandat
 
-  Selama jendela pemrosesan 48 jam:
+Selama jendela pemrosesan 48 jam:
 
-  - Pelanggan dapat membatalkan mandat melalui aplikasi perbankan mereka.
-  - Jika pelanggan membatalkan mandat selama periode ini, langganan akan tetap **aktif** (ini adalah kasus khusus yang spesifik untuk kartu India dan langganan UPI AutoPay).
-  - Namun, pengurangan aktual mungkin gagal, dan dalam kasus itu, kami akan menempatkan langganan **ditangguhkan**.
+- Pelanggan dapat membatalkan mandat melalui aplikasi perbankan mereka.
+- Jika pelanggan membatalkan mandat selama periode ini, langganan akan tetap **aktif** (ini adalah kasus khusus untuk langganan kartu dan UPI AutoPay India).
+- Namun, pengurangan sebenarnya mungkin gagal, dan dalam hal itu, kami akan menempatkan langganan **dalam penangguhan**.
 
-  **Penanganan Kasus Khusus:** Jika Anda memberikan manfaat, kredit, atau penggunaan langganan kepada pelanggan segera setelah inisiasi biaya, Anda perlu menangani jendela 48 jam ini dengan tepat dalam aplikasi Anda. Pertimbangkan:
+**Penanganan Kasus Khusus:** Jika Anda memberikan manfaat, kredit, atau penggunaan langganan kepada pelanggan segera setelah inisiasi biaya, Anda perlu menangani jendela 48 jam ini dengan tepat dalam aplikasi Anda. Pertimbangkan:
 
-  - Menunda aktivasi manfaat hingga konfirmasi pembayaran
-  - Menerapkan periode tenggang atau akses sementara
-  - Memantau status langganan untuk pembatalan mandat
-  - Menangani status penangguhan langganan dalam logika aplikasi Anda
+- Menunda aktivasi manfaat hingga konfirmasi pembayaran
+- Menerapkan masa tenggang atau akses sementara
+- Memonitor status langganan untuk pembatalan mandat
+- Menangani status penangguhan langganan dalam logika aplikasi Anda
 
-  <Tip>
-  Pantau webhook langganan untuk melacak perubahan status pembayaran dan menangani kasus khusus di mana mandat dibatalkan selama jendela 48 jam.
-  </Tip>
+<Tip>
+Pantau webhook langganan untuk melacak perubahan status pembayaran dan menangani kasus khusus di mana mandat dibatalkan selama jendela 48 jam.
+</Tip>
 
 ## Praktik Terbaik
 
-- **Mulai dengan tingkatan yang jelas**: 2–3 rencana dengan perbedaan yang jelas
-- **Komunikasikan harga**: Tampilkan total, pro-rata, dan pembaruan berikutnya
-- **Gunakan percobaan dengan bijak**: Konversi dengan onboarding, bukan hanya waktu
-- **Manfaatkan tambahan**: Jaga rencana dasar tetap sederhana dan upsell ekstra
-- **Uji perubahan**: Validasi perubahan rencana dan pro-rata dalam mode pengujian
+- **Mulai dengan tingkatan yang jelas**: 2–3 paket dengan perbedaan yang jelas
+- **Komunikasikan harga**: Perlihatkan total, proration, dan pembaruan berikutnya
+- **Gunakan uji coba dengan bijak**: Konversi dengan onboarding, bukan hanya waktu
+- **Manfaatkan add-on**: Jaga agar paket dasar tetap sederhana dan tawarkan tambahan
+- **Uji perubahan**: Validasi perubahan paket dan proration dalam mode uji
 
 <Info>
-  Langganan adalah fondasi fleksibel untuk pendapatan berulang. Mulai simpel, uji secara menyeluruh, dan iterasi berdasarkan adopsi, churn, dan metrik ekspansi.
-  </Info>
+Langganan adalah fondasi fleksibel untuk pendapatan berulang. Mulailah dengan sederhana, uji secara menyeluruh, dan iterasi berdasarkan adopsi, churn, dan metrik ekspansi.
+</Info>

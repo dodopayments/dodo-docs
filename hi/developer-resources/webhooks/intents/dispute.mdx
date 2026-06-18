@@ -1,8 +1,8 @@
 ---
 openapi-schema: DisputeResponse
 title: विवाद
-description: जब एक विवाद बनाया या अपडेट किया जाता है, तो आपके वेबहुक एंडपॉइंट पर
-  भेजा गया पेलोड।
+description: जब कोई विवाद बनाया जाता है या अपडेट किया जाता है तो आपकी webhook
+  endpoint पर भेजे गए payload और प्रत्येक विवाद जीवनचक्र घटना को कैसे संभालें।
 icon: circle-exclamation
 keywords:
   - डोडो पेमेंट्स
@@ -10,4 +10,91 @@ keywords:
   - चार्जबैक ईवेंट्स
   - वेबहुक एकीकरण
   - विवाद
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+आपके [Merchant of Record](/features/mor-introduction) के रूप में, Dodo Payments आपके behalf पर कार्ड नेटवर्क के साथ विवाद और चार्जबैक प्रक्रिया को प्रबंधित करती है। ये webhooks आपके सिस्टम को विवद के जीवनचक्र के माध्यम से सुरक्षा में रखते हैं ताकि आप पहुंच वापस ले सकें, साक्ष्य इकट्ठा कर सकें, और अपने रिकॉर्ड को मेल कर सकें।
+</Info>
+
+## विवाद वेबहुक इवेंट्स
+
+एक विवाद अपने जीवनचक्र के प्रत्येक चरण में एक घटना उत्पन्न करता है:
+
+| घटना | कब होती है | इसका साधारणत: क्या अर्थ है |
+|-------|-----------|-----------------------|
+| `dispute.opened` | एक कार्डधारक भुगतान पर विवाद खोलता है | पैसे अवरुद्ध हैं; प्रतिक्रिया देने के लिए तैयार रहें |
+| `dispute.challenged` | विवाद का मुकाबला करने के लिए सबूत प्रस्तुत किए गए हैं | विवाद नेटवर्क द्वारा समीक्षा किया जा रहा है |
+| `dispute.accepted` | विवाद स्वीकार कर लिया गया था (प्रतिरोध नहीं किया गया) | पैसे कार्डधारक को लौटाए जाते हैं |
+| `dispute.cancelled` | विवाद वापस ले लिया गया या रद्द कर दिया गया | कोई और कार्रवाई की आवश्यकता नहीं है |
+| `dispute.expired` | प्रतिक्रिया विंडो बिना समाधान के बीत गई | आमतौर पर आपके खिलाफ समाधान होता है |
+| `dispute.won` | विवाद आपके पक्ष में हल हो गया | पैसे बनाए रखे जाते हैं |
+| `dispute.lost` | विवाद कार्डधारक के पक्ष में हल हो गया | पैसे कार्डधारक को लौटाए जाते हैं |
+
+<Note>
+[Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) के माध्यम से स्वचालित रूप से हल किए गए विवाद `dispute.lost` के रूप में प्रकट होते हैं `is_resolved_by_rdr: true` के साथ। यह अपेक्षित है — औपचारिक चार्जबैक को रोकने के लिए स्वचालित रूप से धनवापसी जारी की गई थी।
+</Note>
+
+## विवाद इवेंट्स को संभालना
+
+जब `dispute.opened` फायर होता है, तो विवादित राशि तुरंत रोक दी जाती है। अपने रिकॉर्ड को अपडेट करने के लिए घटना का उपयोग करें और, यदि आप इसे चुनौती देना चाहते हैं, तो डैशबोर्ड में साक्ष्य इकट्ठा करें।
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+प्रसंस्करण से पहले हमेशा webhook हस्ताक्षर की सत्यता सुनिश्चित करें — सेटअप के लिए [Webhooks गाइड](/developer-resources/webhooks) देखें। संक्षेप में, हैंडलर में सत्यापन शामिल नहीं है।
+</Tip>
+
+<Warning>
+एक विवाद के निर्मित होने के बाद आपके पास उत्तर देने के लिए **4 दिन** होते हैं। एकत्र करने के लिए साक्ष्य और इसे कैसे स्वरूपित करें के लिए [विवाद प्रतिक्रिया सर्वोत्तम प्रथाएं](/features/transactions/disputes#dispute-response-best-practices) देखें।
+</Warning>
+
+## विवाद स्थिति और चरण
+
+विवाद वस्तु अपनी प्रगति को दो फील्ड्स के माध्यम से रिपोर्ट करती है:
+
+| फ़ील्ड | मान |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## संबंधित
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+विवादों का उत्तर कैसे दिया जाए, साक्ष्य कैसे प्रस्तुत किया जाए, और कैसे RDR आपके विवाद दर की रक्षा करता है।
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+विवाद बनने से पहले विफल भुगतान का पता लगाएं और पुनर्प्राप्त करें।
+</Card>
+</CardGroup>
+
+## वेबहुक पेलोड स्कीमा

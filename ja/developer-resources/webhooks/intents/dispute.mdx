@@ -1,7 +1,7 @@
 ---
 openapi-schema: DisputeResponse
 title: 紛争
-description: 紛争が作成または更新されたときに、あなたのWebhookエンドポイントに送信されるペイロード。
+description: 紛争が作成または更新されたときにウェブフックエンドポイントに送信されるペイロードと、各紛争ライフサイクルイベントをどのように処理するか。
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -9,4 +9,91 @@ keywords:
   - チャージバック イベント
   - Webhook 統合
   - ディスプート
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+あなたの[Merchant of Record](/features/mor-introduction)として、Dodo Paymentsはカードネットワークとの紛争やチャージバックのプロセスを代行して管理します。これらのウェブフックは、紛争がライフサイクルを進むに連れてシステムを同期させ、アクセスを取り消し、証拠を集め、記録を調整できるようにします。
+</Info>
+
+## 紛争ウェブフックイベント
+
+紛争はそのライフサイクルの各段階でイベントを発行します：
+
+| Event | 発生するタイミング | 通常の意味 |
+|-------|-----------------|-----------------------|
+| `dispute.opened` | カード保有者が支払いに関する紛争を開いたとき | 資金が保持されるので、対処の準備をする |
+| `dispute.challenged` | 紛争に対抗するための証拠が提出されたとき | 紛争はネットワークによって審査中 |
+| `dispute.accepted` | 紛争が受け入れられた（対抗しない） | 資金がカード保有者に返還される |
+| `dispute.cancelled` | 紛争が取り下げられたまたはキャンセルされた | さらなる行動は不要 |
+| `dispute.expired` | 解決せずに応答期間が過ぎたとき | 通常、あなたに不利に解決される |
+| `dispute.won` | 紛争があなたに有利に解決されたとき | 資金が保持される |
+| `dispute.lost` | 紛争がカード保有者に有利に解決されたとき | 資金がカード保有者に返還される |
+
+<Note>
+[Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr)を通じて自動解決された紛争は、`dispute.lost`と`is_resolved_by_rdr: true`として表示されます。これは予測されたものであり、正式なチャージバックを防ぐために自動的に返金されました。
+</Note>
+
+## 紛争イベントの処理
+
+`dispute.opened`が発生すると、紛争に関する金額が即座に保持されます。このイベントを利用して記録を更新し、対抗するつもりであればダッシュボードで証拠を集めてください。
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+処理を開始する前に常にウェブフック署名を確認してください。設定については[ウェブフックガイド](/developer-resources/webhooks)を参照してください。上記のハンドラーは簡潔さのために検証を省略しています。
+</Tip>
+
+<Warning>
+紛争が作成されてから**4日以内**に応答する必要があります。収集すべき証拠やその形式については、[紛争応答のベストプラクティス](/features/transactions/disputes#dispute-response-best-practices)を参照してください。
+</Warning>
+
+## 紛争のステータスとステージ
+
+紛争オブジェクトは2つのフィールドを通じて進捗を報告します：
+
+| Field | Values |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## 関連情報
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+紛争への対応方法、証拠の提出方法、およびRDRが紛争率をどのように保護するか。
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+失敗した支払いが紛争になる前に検出して回収する。
+</Card>
+</CardGroup>
+
+## ウェブフックペイロードスキーマ

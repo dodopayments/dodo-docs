@@ -1,0 +1,201 @@
+---
+title: Keplars
+description: Skicka transaktionsmejl genom Keplars baserat på Dodo Payments-händelser.
+icon: envelope-circle-check
+keywords:
+  - Dodo Payments
+  - Keplars
+  - transaktionsmejl
+  - e-post API
+---
+
+## Introduktion
+
+Skicka professionella transaktionsmejl automatiskt när betalnings- och prenumerationshändelser inträffar. Leverera betalningsbekräftelser, uppdateringar om prenumerationer och felnotifieringar genom Keplars utan att någon mellanliggande server krävs. Dodo Payments anropar Keplars API direkt med hjälp av en JavaScript-transformationshanterare.
+
+<Info>
+Denna integration kräver din Keplars API-nyckel för autentisering. Hitta den i Keplars instrumentpanel under **Settings → API Keys**, och verifiera en avsändardomän eller adress under **Domains**.
+</Info>
+
+## Kom igång
+
+<Steps>
+<Step title="Open the Webhook Section">
+Navigera till <b>Webhooks → + Lägg till slutpunkt</b> i din Dodo Payments-instrumentpanel och expandera integrationsmenyn.
+</Step>
+
+<Step title="Select Keplars">
+Välj <b>Keplars</b>-integrationskortet.
+<Frame>
+<img src="/images/integrations/keplars/select.png" alt="Välj Keplars-integrationskortet" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+
+<Step title="Enter API Key">
+Ange din Keplars API-nyckel. Den skickas som en Bearer-token vid varje förfrågan.
+<Frame>
+<img src="/images/integrations/keplars/api-key.png" alt="Ange Keplars API-URL, API-nyckel och prenumerera på händelser" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+
+<Step title="Configure Transformation">
+Redigera transformationskoden för att formatera mejl för Keplars. Ersätt platshållaradressen och mall-ID med dina egna.
+</Step>
+
+<Step title="Test & Create">
+Testa med exempelbelastningar och klicka på <b>Skapa</b> för att aktivera e-postsändning.
+</Step>
+
+<Step title="Done!">
+🎉 Betalningshändelser utlöser nu automatiskt transaktionsmejl via Keplars.
+</Step>
+</Steps>
+
+## Exempel på transformationskod
+
+Varje hanterare ställer in `webhook.url` till Keplars högprioriterade sändslutpunkt och omskriver `webhook.payload` till en Keplars-förfrågan (API-nyckeln skickas automatiskt som en Bearer-token). Ersätt `payments@mail.yourdomain.com` med din verifierade avsändare och `your-keplars-*-template-id` med dina faktiska mall-ID.
+
+<Warning>
+`to` måste vara en **array**, även för en enskild mottagare. När du använder `template_id`, skicka **inte** också `subject` eller `body`. Mallen tillhandahåller dem.
+</Warning>
+
+### Betalningsbekräftelsemejl
+
+```javascript payment_succeeded.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "payment.succeeded") return webhook;
+
+  const data = webhook.payload.data || {};
+  const paymentDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-payment-success-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      amount: ((data.total_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      payment_id: data.payment_id,
+      payment_method: data.payment_method,
+      payment_date: paymentDate,
+    },
+  };
+  return webhook;
+}
+```
+
+### Notifiering om betalningsmisslyckande
+
+```javascript payment_failed.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "payment.failed") return webhook;
+
+  const data = webhook.payload.data || {};
+  const paymentDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-payment-failed-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      amount: ((data.total_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      payment_id: data.payment_id,
+      error_message: data.error_message || "Your payment could not be processed.",
+      payment_date: paymentDate,
+    },
+  };
+  return webhook;
+}
+```
+
+### Prenumerationsvälkomstmejl
+
+```javascript subscription_active.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "subscription.active") return webhook;
+
+  const data = webhook.payload.data || {};
+  const nextBilling = data.next_billing_date
+    ? new Date(data.next_billing_date).toLocaleDateString("en-US", {
+        year: "numeric", month: "long", day: "numeric",
+      })
+    : "";
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-subscription-active-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      subscription_id: data.subscription_id,
+      product_id: data.product_id,
+      amount: ((data.recurring_pre_tax_amount || 0) / 100).toFixed(2),
+      currency: data.currency || "USD",
+      billing_interval: data.payment_frequency_interval || "month",
+      next_billing_date: nextBilling,
+    },
+  };
+  return webhook;
+}
+```
+
+### Prenumerationsavslutsmejl
+
+```javascript subscription_cancelled.js icon="js" expandable
+function handler(webhook) {
+  if (webhook.eventType !== "subscription.cancelled") return webhook;
+
+  const data = webhook.payload.data || {};
+  const cancellationDate = new Date(webhook.payload.timestamp).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+
+  webhook.url = "https://api.keplars.com/api/v1/send-email/high";
+  webhook.payload = {
+    to: [data.customer?.email],
+    from: "payments@mail.yourdomain.com",
+    template_id: "your-keplars-subscription-cancelled-template-id",
+    params: {
+      customer_name: data.customer?.name,
+      subscription_id: data.subscription_id,
+      cancellation_date: cancellationDate,
+    },
+  };
+  return webhook;
+}
+```
+
+## Tips
+
+- Använd en verifierad avsändardomän eller adress för bättre leveranssäkerhet.
+- Skapa en dedikerad Keplars-mall per händelsetyp så varje mejl håller sig i enlighet med ditt varumärke och budskap.
+- Anpassa varje mejl genom att skicka kunddata som namn, belopp och betalnings-ID genom `params`.
+- Testa i sandlådeläge först. Sandlådssändningar fångas upp i Keplars testinkorg istället för att levereras.
+
+## Felsökning
+
+<AccordionGroup>
+<Accordion title="Emails not being sent">
+- Verifiera att din API-nyckel är korrekt och aktiv i Keplars under **Settings → API Keys**.
+- Verifiera att din avsändardomän eller adress är verifierad.
+- Dodo Payments visar det råa Keplars-felmeddelandet i webhook-leveransloggen. Kontrollera det för detaljer.
+</Accordion>
+
+<Accordion title="Template not found">
+- `template_id` i din hanterare måste matcha en aktiv mall i ditt Keplars-konto. Verifiera ID:t (och att det är aktivt) i instrumentpanelen.
+</Accordion>
+
+<Accordion title="Wrong event triggered">
+- Varje hanterare kontrollerar `webhook.eventType` och returnerar tidigt om det inte matchar. Se till att rätt händelser är prenumererade på Dodo Payments webhook-slutpunkten.
+</Accordion>
+</AccordionGroup>

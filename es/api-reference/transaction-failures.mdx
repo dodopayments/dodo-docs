@@ -1,88 +1,118 @@
 ---
 title: Fallos de Transacción
-description: Aprenda sobre las diferentes razones de fallos de transacción y
-  cómo manejarlas en la API de Dodo Payments.
+description: Comprenda cada código de falla de transacción de Dodo Payments, ya
+  sea un rechazo suave o firme, y la acción recomendada para recuperar el pago.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
   - Referencia de API
   - REST API
   - fallos de transacción
+  - códigos de rechazo
   - errores de pago
+  - rechazo suave
+  - rechazo firme
   - manejo de errores
 ---
 
 ## Resumen
 
-La API de Dodo Payments proporciona razones de fallo de transacción detalladas para ayudarle a entender por qué un intento de pago no fue exitoso. Estas razones de fallo están estandarizadas a través de diferentes métodos de pago y proveedores, lo que facilita la implementación de un manejo de errores consistente en su aplicación.
+Dodo Payments devuelve una razón detallada de falla siempre que un intento de pago no tiene éxito. Estas razones están estandarizadas entre métodos de pago y proveedores, por lo que puede implementar un manejo consistente en su aplicación.
 
-Cada respuesta de fallo de transacción incluye:
-- Un código de razón de fallo específico
-- Un mensaje de error legible por humanos
-- Contexto adicional sobre el fallo cuando está disponible
-- Si el error puede ser corregido por el usuario o requiere intervención del sistema
+Cuando un pago falla, el `payment.failed` webhook y el objeto de pago exponen:
 
-Entender estas razones de fallo es crucial para:
-- Proporcionar retroalimentación clara a sus clientes
-- Implementar una lógica de reintento apropiada
-- Manejar diferentes escenarios de fallo de manera elegante
-- Mantener un sistema de procesamiento de pagos confiable
+- `error_code` — una razón de falla estandarizada de la tabla a continuación.
+- `error_message` — una explicación en lenguaje natural.
+- `retry_attempt` — `0` para el cargo original, `1` o superior para cada reintento de renovación de suscripción programada.
 
-## Razones de Fallo de Transacción
+Comprender estas razones de falla le permite dar retroalimentación clara a los clientes, decidir si un reintento vale la pena y recuperar más ingresos.
 
-La siguiente tabla enumera todas las posibles razones de fallo de transacción, sus significados y si son errores corregibles por el usuario.
+A step-by-step developer guide for reading these codes from webhooks and the API, surfacing them to customers, and deciding when to retry.
 
-| Failure Code | User Error | Description |
-|----------------|------------|-------------|
-| `AUTHENTICATION_FAILURE` | Yes | The authentication process failed during the transaction |
-| `AUTHENTICATION_REQUIRED` | Yes | Additional authentication is needed to complete the transaction |
-| `AUTHENTICATION_TIMEOUT` | Yes | The authentication process timed out |
-| `CARD_DECLINED` | No | The card was declined by the issuing bank |
-| `CARD_NOT_ACTIVATED` | Yes | The card has not been activated by the cardholder |
-| `CARD_VELOCITY_EXCEEDED` | Yes | Too many transactions attempted in a short period |
-| `CUSTOMER_CANCELLED` | Yes | The customer cancelled the transaction |
-| `DO_NOT_HONOR` | No | The issuing bank declined the transaction |
-| `EXPIRED_CARD` | Yes | The card has expired |
-| `FRAUDULENT` | Yes | The transaction was flagged as potentially fraudulent |
-| `GENERIC_DECLINE` | No | The transaction was declined for an unspecified reason |
-| `INCORRECT_CVC` | Yes | The provided CVC code was incorrect |
-| `INCORRECT_NUMBER` | Yes | The card number was entered incorrectly |
-| `INSUFFICIENT_FUNDS` | Yes | The account has insufficient funds to complete the transaction |
-| `INVALID_ACCOUNT` | Yes | The account details provided are invalid |
-| `INVALID_AMOUNT` | Yes | The transaction amount is invalid |
-| `INVALID_CARD_NUMBER` | Yes | The card number format is invalid |
-| `INVALID_CARD_OWNER` | Yes | The card owner information is invalid |
-| `INVALID_CVC` | Yes | The CVC format is invalid |
-| `INVALID_EXPIRY_YEAR` | Yes | The card expiry year is invalid |
-| `INVALID_PIN` | Yes | The provided PIN is incorrect |
-| `INVALID_REQUEST` | Yes | The transaction request contains invalid data |
-| `INVALID_UPI_ID` | Yes | The UPI ID provided is invalid |
-| `LIMIT_EXCEEDED` | Yes | The transaction exceeds the card or account limit |
-| `LIVE_MODE_TEST_CARD` | Yes | A test card was used in live mode |
-| `LOST_CARD` | Yes | The card has been reported as lost |
-| `MANDATE_INVALID` | Yes | The payment mandate is invalid |
-| `MANDATE_REQUIRED` | Yes | A mandate is required for this transaction |
-| `MANDATE_REQUIRED_SYSTEM` | No | System requires a mandate for this transaction type |
-| `NETWORK_ERROR` | No | A network error occurred during the transaction |
-| `NETWORK_TIMEOUT` | No | The network request timed out |
-| `ORDER_CREATION_FAILED` | No | Failed to create the order for the transaction |
-| `PAYMENT_METHOD_PROVIDER_DECLINED` | Yes | The payment method provider declined the transaction |
-| `PAYMENT_METHOD_UNSUPPORTED` | Yes | The payment method is not supported for this transaction |
-| `PICKUP_CARD` | Yes | The card has been reported as stolen and should be picked up |
-| `PROCESSING_ERROR` | No | An error occurred while processing the transaction |
-| `PROVIDER_UNSUPPORTED` | No | The payment provider does not support this transaction type |
-| `REENTER_TRANSACTION` | Yes | The transaction needs to be re-entered |
-| `REVOCATION_OF_AUTHORIZATION` | Yes | The authorization for the transaction was revoked |
-| `STOLEN_CARD` | Yes | The card has been reported as stolen |
-| `TRANSACTION_NOT_ALLOWED` | Yes | The transaction is not allowed for this card or account |
-| `TRANSACTION_NOT_APPROVED` | Yes | The transaction was not approved |
-| `TRY_AGAIN_LATER` | No | The transaction should be retried later |
-| `UNKNOWN_ERROR` | No | An unknown error occurred |
+## Declines Suaves vs. Firmes
 
-<Note>
-  **User Error** indica si el rechazo del pago puede resolverse por el cliente. Cuando `true`, el cliente puede tomar medidas para solucionar el problema (por ejemplo, ingresar los datos de la tarjeta correctamente). Cuando `false`, el rechazo se debe a problemas a nivel de sistema o restricciones bancarias que no pueden ser resueltas por el cliente.
-</Note>
+Cada código de falla se clasifica en una de dos categorías. Esta distinción determina si debe reintentar el mismo método de pago o pedir al cliente un nuevo método.
+
+| Tipo de rechazo | Qué significa | Qué hacer | Ejemplos |
+|--------------|---------------|------------|----------|
+| **Rechazo suave** | Temporal o corregible: la misma tarjeta puede tener éxito en un intento posterior o una vez que el cliente corrija su entrada. | Seguro para reintentar (después de una demora, o una vez que el cliente corrija sus detalles). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
+| **Rechazo firme** | Terminal: reintentar con la misma tarjeta no cambiará el resultado. | No **reintentar** con la misma tarjeta. Pida al cliente que use otro método de pago o contacte a su banco. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
+
+Para renovaciones de suscripciones, Dodo Payments aplica esta distinción automáticamente: los rechazos suaves son reintentados por [Reintentos de pago de suscripción](/features/recovery/payment-retries), mientras que los rechazos firmes terminan la cadena de reintentos de inmediato y es mejor manejarlos con [Gestión de morosidad de suscripción](/features/recovery/subscription-dunning).
+
+**Nunca revele la razón real para `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, o `FRAUDULENT` al cliente.** Revelar estas razones puede alertar a un actor fraudulento. Siempre muestre al cliente un mensaje genérico de rechazo (por ejemplo, *"Su tarjeta fue rechazada. Por favor contacte con su banco o use otra tarjeta."*) y registre el código específico solo internamente.
+
+## Razones de Falla de Transacción
+
+La siguiente tabla lista cada código de falla, su tipo de rechazo, si el cliente puede resolverlo, una descripción y la acción recomendada.
+
+| Código de Falla | Tipo | Error del Usuario | Descripción | Acción Recomendada |
+|--------------|------|------------|-------------|--------------------|
+| `AUTHENTICATION_FAILURE` | Suave | Sí | Falló la autenticación durante la transacción | Pida al cliente que reintente y complete la autenticación 3DS, o use otra tarjeta |
+| `AUTHENTICATION_REQUIRED` | Suave | Sí | Se necesita autenticación adicional para completar la transacción | Solicite al cliente que complete la autenticación 3DS. Para renovaciones de suscripción, pida al cliente que regrese y autentique |
+| `AUTHENTICATION_TIMEOUT` | Suave | Sí | El proceso de autenticación agotó el tiempo | Pida al cliente que reintente y complete la autenticación rápidamente |
+| `CARD_DECLINED` | Suave | No | La tarjeta fue rechazada por el banco emisor sin una razón específica (rechazo genérico) | Pida al cliente que reintente, contacte a su banco, o use otra tarjeta |
+| `CARD_NOT_ACTIVATED` | Suave | Sí | La tarjeta no ha sido activada por el titular | Pida al cliente que active la tarjeta con su banco y luego reintente |
+| `CARD_VELOCITY_EXCEEDED` | Suave | Sí | Demasiadas transacciones intentadas en poco tiempo | Pida al cliente que espere y reintente más tarde, o que contacte a su banco sobre límites |
+| `CUSTOMER_CANCELLED` | Suave | Sí | El cliente canceló la transacción | Permita que el cliente reinicie el proceso de pago cuando esté listo |
+| `DO_NOT_HONOR` | Firme | No | El banco emisor se negó explícitamente a la transacción (código ISO 8583 05 — no honrar); las redes lo tratan como terminal | Pida al cliente que contacte a su banco; no reintente con la misma tarjeta |
+| `EXPIRED_CARD` | Firme | Sí | La tarjeta ha expirado | Pida al cliente que use una tarjeta con una fecha de vencimiento válida |
+| `FRAUDULENT` | Firme | Sí | La transacción fue marcada como posiblemente fraudulenta | Muestre al cliente un mensaje genérico de rechazo — no revele la razón. Pida que use otra tarjeta |
+| `GENERIC_DECLINE` | Suave | No | La transacción fue rechazada por una razón no especificada | Pida al cliente que contacte a su banco o pruebe con otra tarjeta |
+| `INCORRECT_CVC` | Suave | Sí | El código CVC proporcionado es incorrecto | Pida al cliente que vuelva a ingresar el CVC correcto |
+| `INCORRECT_NUMBER` | Suave | Sí | El número de tarjeta fue ingresado incorrectamente | Pida al cliente que vuelva a ingresar el número de tarjeta correcto |
+| `INSUFFICIENT_FUNDS` | Suave | Sí | La cuenta tiene fondos insuficientes para completar la transacción | Pida al cliente que use otro método de pago o reintente una vez que los fondos estén disponibles |
+| `INVALID_ACCOUNT` | Firme | Sí | Los datos de cuenta proporcionados son inválidos | Pida al cliente que contacte a su banco o use otra tarjeta |
+| `INVALID_AMOUNT` | Suave | Sí | El monto de la transacción es inválido | Verifique el monto y cualquier límite de compra con el cliente |
+| `INVALID_CARD_NUMBER` | Suave | Sí | El formato del número de tarjeta es inválido | Pida al cliente que vuelva a ingresar un número de tarjeta válido |
+| `INVALID_CARD_OWNER` | Suave | Sí | La información del dueño de la tarjeta es inválida | Pida al cliente que corrija el nombre del titular de la tarjeta |
+| `INVALID_CVC` | Suave | Sí | El formato del CVC es inválido | Pida al cliente que reingrese un CVC válido |
+| `INVALID_EXPIRY_YEAR` | Suave | Sí | El año de vencimiento de la tarjeta es inválido | Pida al cliente que ingrese una fecha de vencimiento válida |
+| `INVALID_PIN` | Suave | Sí | El PIN proporcionado es incorrecto | Pida al cliente que vuelva a ingresar el PIN correcto |
+| `INVALID_REQUEST` | Suave | Sí | La solicitud de transacción contiene datos inválidos | Verifique los campos de la solicitud de pago y vuelva a enviar con datos válidos |
+| `INVALID_UPI_ID` | Suave | Sí | El ID de UPI proporcionado es inválido | Pida al cliente que ingrese un ID de UPI válido |
+| `LIMIT_EXCEEDED` | Suave | Sí | La transacción excede el límite de la tarjeta o de la cuenta | Pida al cliente que contacte a su banco sobre límites, o use otro método |
+| `LIVE_MODE_TEST_CARD` | Firme | Sí | Se usó una tarjeta de prueba en modo en vivo | Use una tarjeta real — reintentar con la tarjeta de prueba siempre fallará en modo en vivo |
+| `LOST_CARD` | Firme | Sí | La tarjeta ha sido reportada como perdida | Muestre al cliente un mensaje genérico de rechazo — no revele la razón. Pida que use otra tarjeta |
+| `MANDATE_INVALID` | Suave | Sí | El mandato de pago es inválido | Pida al cliente que configure nuevamente el mandato de pago |
+| `MANDATE_REQUIRED` | Suave | Sí | Se requiere un mandato para esta transacción | Configure un mandato y pida al cliente que lo autorice antes de cobrar |
+| `MANDATE_REQUIRED_SYSTEM` | Firme | No | El sistema requiere un mandato para este tipo de transacción | Asegúrese de que el flujo de configuración del mandato esté completo antes de cobrar |
+| `NETWORK_ERROR` | Suave | No | Se produjo un error de red durante la transacción | Transitorio — reintente el pago después de una breve demora |
+| `NETWORK_TIMEOUT` | Suave | No | La solicitud de red agotó el tiempo | Transitorio — reintente el pago después de una breve demora |
+| `ORDER_ALREADY_EXISTS` | Suave | No | Ya existe un pedido para esta transacción (creación de pedido duplicado) | Verifique el estado del pedido existente antes de reintentar; contacte a soporte si persiste |
+| `ORDER_CREATION_FAILED` | Suave | No | No se pudo crear el pedido para la transacción | Error transitorio/sistema — reintente el pago; contacte a soporte si persiste |
+| `PAYMENT_METHOD_PROVIDER_DECLINED` | Firme | Sí | El proveedor del método de pago rechazó la transacción | Pida al cliente que contacte a su proveedor o use otro método de pago |
+| `PAYMENT_METHOD_UNSUPPORTED` | Firme | Sí | El método de pago no es compatible para esta transacción | Pida al cliente que use un método de pago compatible |
+| `PICKUP_CARD` | Firme | Sí | La tarjeta ha sido reportada como perdida o robada y marcada para recogida | Muestre al cliente un mensaje genérico de rechazo — no revele la razón. Pida que use otra tarjeta |
+| `PROCESSING_ERROR` | Suave | No | Ocurrió un error al procesar la transacción | Transitorio — reintente el pago; si persiste, pida al cliente que contacte a su banco |
+| `PROVIDER_UNSUPPORTED` | Firme | No | El proveedor de pagos no soporta este tipo de transacción | Pida al cliente que use otro método de pago |
+| `REENTER_TRANSACTION` | Suave | Sí | La transacción necesita ser re-ingresada | Pida al cliente que reintente el pago |
+| `REVOCATION_OF_AUTHORIZATION` | Firme | Sí | La autorización para la transacción fue revocada | Pida al cliente que use otro método de pago |
+| `STOLEN_CARD` | Firme | Sí | La tarjeta ha sido reportada como robada | Muestre al cliente un mensaje genérico de rechazo — no revele la razón. Pida que use otra tarjeta |
+| `SUBSCRIPTION_NOT_ACTIVE` | Firme | No | La suscripción no está activa, por lo que no se pudo procesar el cargo recurrente | Reactivar la suscripción (por ejemplo, actualizando el método de pago) antes de intentar el cobro nuevamente |
+| `TRANSACTION_NOT_ALLOWED` | Firme | Sí | La transacción no está permitida para esta tarjeta o cuenta | Pida al cliente que contacte a su banco para permitir este tipo de transacción, o use otra tarjeta |
+| `TRANSACTION_NOT_APPROVED` | Firme | Sí | La transacción no fue aprobada | Pida al cliente que contacte a su banco o pruebe con otra tarjeta |
+| `TRY_AGAIN_LATER` | Suave | No | La transacción debe reintentarse más tarde | Transitorio — reintente el pago más tarde |
+| `UNKNOWN_ERROR` | Suave | No | Se produjo un error desconocido | Reintente el pago; si persiste, contacte a soporte |
+
+**Error del Usuario** indica si el cliente puede resolver el rechazo del pago. Cuando `Yes`, el cliente puede tomar medidas para solucionar el problema (por ejemplo, ingresando detalles correctos de la tarjeta). Cuando `No`, el rechazo se debe a problemas a nivel de sistema o restricciones del banco que el cliente no puede resolver directamente.
+
+## Manejo de Fallas Programáticamente
+
+Lea `error_code` desde el `payment.failed` webhook o el objeto de pago, asígnelo a la acción recomendada arriba, y decida si reintentar. Para renovaciones de suscripción, los rechazos suaves son reintentados automáticamente — vea [Reintentos de pago de suscripción](/features/recovery/payment-retries).
+
+Para errores a nivel de API y lógica de negocio (como `PAYMENT_NOT_SUCCEEDED` o `REFUND_WINDOW_EXPIRED`) que no son rechazos de tarjetas, consulte la referencia de [Códigos de Error](/api-reference/error-codes).
+
+## Relacionados
+
+End-to-end guide to detecting, surfacing, and retrying failed payments.
+
+API and business-logic error codes for non-decline failures.
+
+Automatic retries that recover soft declines on subscription renewals.
+
+Email sequences that recover hard declines by prompting a payment method update.
 
 ## Soporte
 
-Para obtener ayuda adicional con fallos de transacción o problemas de integración, comuníquese con nuestro equipo de soporte en support@dodopayments.com.
+Para obtener ayuda adicional con fallas de transacción o problemas de integración, por favor contacte a nuestro equipo de soporte en support@dodopayments.com.

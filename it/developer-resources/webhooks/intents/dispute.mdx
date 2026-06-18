@@ -2,7 +2,8 @@
 openapi-schema: DisputeResponse
 title: Disputa
 description: Il payload inviato al tuo endpoint webhook quando una disputa viene
-  creata o aggiornata.
+  creata o aggiornata, e come gestire ogni evento del ciclo di vita della
+  disputa.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -10,4 +11,91 @@ keywords:
   - eventi di chargeback
   - integrazione webhook
   - disputa
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+Come tuo [Merchant of Record](/features/mor-introduction), Dodo Payments gestisce il processo di disputa e chargeback con i circuiti delle carte per tuo conto. Questi webhook mantengono i tuoi sistemi sincronizzati mentre una disputa attraversa il suo ciclo di vita in modo da poter revocare l'accesso, raccogliere prove e conciliare i tuoi registri.
+</Info>
+
+## Eventi Webhook di Disputa
+
+Una disputa emette un evento in ogni fase del suo ciclo di vita:
+
+| Evento | Quando si attiva | Cosa significa di solito |
+|-------|-----------|-----------------------|
+| `dispute.opened` | Un titolare di carta apre una disputa su un pagamento | I fondi sono bloccati; preparati a rispondere |
+| `dispute.challenged` | Le prove sono state presentate per contestare la disputa | La disputa è in revisione da parte del network |
+| `dispute.accepted` | La disputa è stata accettata (non contestata) | I fondi vengono restituiti al titolare della carta |
+| `dispute.cancelled` | La disputa è stata ritirata o annullata | Nessuna ulteriore azione necessaria |
+| `dispute.expired` | La finestra di risposta è scaduta senza risoluzione | Tipicamente si risolve contro di te |
+| `dispute.won` | La disputa è stata risolta a tuo favore | I fondi vengono trattenuti |
+| `dispute.lost` | La disputa è stata risolta a favore del titolare della carta | I fondi vengono restituiti al titolare della carta |
+
+<Note>
+Le dispute risolte automaticamente tramite [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) appaiono come `dispute.lost` con `is_resolved_by_rdr: true`. Questo è previsto — il rimborso è stato emesso automaticamente per prevenire un chargeback formale.
+</Note>
+
+## Gestione degli Eventi di Disputa
+
+Quando `dispute.opened` si attiva, l'importo contestato è immediatamente bloccato. Usa l'evento per aggiornare i tuoi registri e, se intendi contestarlo, raccogli le prove nel dashboard.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Verifica sempre la firma del webhook prima di elaborarlo — vedi la [guida ai Webhook](/developer-resources/webhooks) per la configurazione. Il gestore sopra omette la verifica per brevità.
+</Tip>
+
+<Warning>
+Hai **4 giorni** per rispondere a una disputa dopo che è stata creata. Vedi [Migliori pratiche di risposta alla disputa](/features/transactions/disputes#dispute-response-best-practices) per le prove da raccogliere e come formattarle.
+</Warning>
+
+## Status e Fase della Disputa
+
+L'oggetto della disputa riporta i suoi progressi attraverso due campi:
+
+| Campo | Valori |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Correlati
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+Come rispondere alle dispute, presentare prove e come RDR protegge il tuo tasso di dispute.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Rileva e recupera pagamenti falliti prima che diventino dispute.
+</Card>
+</CardGroup>
+
+## Schema del Payload Webhook

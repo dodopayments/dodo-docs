@@ -1,0 +1,232 @@
+---
+sidebarTitle: "Handle Payment Failures"
+title: "Handle Payment Failures"
+description: "Detect failed payments from webhooks and the API, read the failure reason, surface it to customers safely, and decide when to retry or collect a new payment method."
+icon: "screwdriver-wrench"
+keywords: ["Dodo Payments", "handle payment failures", "payment.failed", "decline codes", "error_code", "retry payments", "failed payment webhook", "soft decline", "hard decline"]
+---
+
+<Info>
+When a payment fails, Dodo Payments tells you **why** through a standardized `error_code` and a human-readable `error_message`. This guide shows how to read those fields, decide whether a retry is worthwhile, and recover the payment without exposing sensitive information to customers.
+</Info>
+
+## How Dodo Payments Reports a Failure
+
+Every failed payment — whether a one-time checkout or a subscription renewal — carries the same failure fields on the payment object:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | `failed` for a failed payment. Other non-success states include `cancelled`, `requires_customer_action`, and `requires_payment_method`. |
+| `error_code` | string \| null | The standardized failure reason, for example `INSUFFICIENT_FUNDS` or `PROCESSING_ERROR`. See the [Transaction Failures](/api-reference/transaction-failures) reference for the full list. |
+| `error_message` | string \| null | A human-readable explanation of the failure. |
+| `retry_attempt` | integer | `0` for the original charge. `1` or higher identifies a scheduled subscription renewal retry. |
+
+<Note>
+`error_code` and `error_message` are `null` until a payment actually fails. Always check `status` first, then read the error fields.
+</Note>
+
+## The `payment.failed` Webhook
+
+The most reliable way to detect a failure is the `payment.failed` webhook. The event wraps the full payment object in `data`:
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+A minimal handler reads `error_code` and routes on it:
+
+<CodeGroup>
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+</CodeGroup>
+
+<Tip>
+Always verify the webhook signature before processing. See the [Webhooks guide](/developer-resources/webhooks) for the full setup, including signature verification and idempotency.
+</Tip>
+
+## Decide Whether to Retry: Soft vs. Hard Declines
+
+The `error_code` tells you whether retrying the same payment method is worthwhile.
+
+| Decline type | What it means | What to do |
+|--------------|---------------|------------|
+| **Soft decline** | Temporary or correctable (for example `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Retrying — after a delay, or once the customer fixes their input — can succeed. |
+| **Hard decline** | Terminal (for example `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Do **not** retry the same card. Ask the customer for a different payment method. |
+
+The [Transaction Failures](/api-reference/transaction-failures) reference lists the decline type and recommended action for every `error_code`.
+
+## Handling Failures at Checkout vs. on Renewal
+
+How you recover depends on whether the customer is present.
+
+<Tabs>
+<Tab title="At checkout (customer present)">
+The customer is actively checking out. Surface a clear message and let them retry immediately or use another card.
+
+- `requires_payment_method` — the customer never provided a payment method: they didn't enter card details, or were prompted for one and took no action. This is usually a checkout **drop-off**, not a decline — re-engage the customer to complete payment (see [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — additional authentication (such as 3DS) is needed; have the customer complete it. See [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication).
+</Tab>
+
+<Tab title="On subscription renewal (customer not present)">
+The customer is not present, so you cannot prompt them in real time. When a renewal fails, the subscription moves to `on_hold` and `subscription.on_hold` fires.
+
+- **Soft declines** are re-attempted automatically by [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Hard declines** (and exhausted retries) are best recovered with [Subscription Dunning](/features/recovery/subscription-dunning), which emails the customer to update their payment method.
+
+See the [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) for the full on-hold → reactivate flow.
+</Tab>
+</Tabs>
+
+## Retrying a Failed Payment
+
+- **Subscriptions:** Enable [Subscription Payment Retries](/features/recovery/payment-retries) to recover soft declines with no integration work. You can also trigger recovery by having the customer update their payment method via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method), which charges any outstanding dues.
+- **One-time payments:** Resend the checkout or `payment_link` so the customer can try again with a different method. There is no automatic retry for one-time payments.
+
+<Warning>
+Do not retry hard declines against the same card. Card networks can flag repeated declines as abusive, which hurts your authorization rate.
+</Warning>
+
+## Surface Errors to Customers Safely
+
+Show customers a friendly message — never the raw `error_code`.
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+<Warning>
+**Never reveal the real reason for `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, or `FRAUDULENT`.** Surfacing these can tip off a fraudulent actor. Show a generic decline message and only log the specific `error_code` internally.
+</Warning>
+
+## Related
+
+<CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+Every decline code, its type, and the recommended action.
+</Card>
+
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+API and business-logic errors that are not card declines.
+</Card>
+
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Automatic recovery of soft declines on subscription renewals.
+</Card>
+
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Email sequences that recover hard declines.
+</Card>
+
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+Full payload schema for payment events.
+</Card>
+
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+Test cards that simulate declines and renewal failures.
+</Card>
+</CardGroup>

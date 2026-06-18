@@ -1,0 +1,243 @@
+---
+sidebarTitle: 处理支付失败
+title: 处理支付失败
+description: 从 Webhook 和 API 检测支付失败，读取失败原因，安全地向客户展示，并决定何时重试或收集新的支付方式。
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - 处理支付失败
+  - payment.failed
+  - decline codes
+  - error_code
+  - retry payments
+  - failed payment webhook
+  - soft decline
+  - hard decline
+---
+
+<Info>
+当付款失败时，Dodo Payments 会通过标准化的 `error_code` 和人类可读的 `error_message` 告诉您失败原因。此指南展示如何读取这些字段、决定是否值得重试，并在不向客户暴露敏感信息的情况下恢复付款。
+</Info>
+
+## Dodo Payments 如何报告失败
+
+每个失败的支付——无论是一次性结账还是订阅续订——都会在支付对象上携带相同的失败字段：
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `status` | string | 用于失败支付的 `failed`。其他非成功状态包括 `cancelled`、`requires_customer_action` 和 `requires_payment_method`。 |
+| `error_code` | string \| null | 标准化的失败原因，例如 `INSUFFICIENT_FUNDS` 或 `PROCESSING_ERROR`。请参阅 [Transaction Failures](/api-reference/transaction-failures) 参考获取完整列表。 |
+| `error_message` | string \| null | 人类可读的失败解释。 |
+| `retry_attempt` | integer | 原始收费的 `0`。`1` 或更高标识计划的订阅续订重试。 |
+
+<Note>
+`error_code` 和 `error_message` 在付款实际失败之前是 `null`。始终先检查 `status`，然后读取错误字段。
+</Note>
+
+## `payment.failed` Webhook
+
+检测失败的最可靠方法是 `payment.failed` webhook。事件在 `data` 中封装完整的支付对象：
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+一个最小的处理器读取 `error_code` 并基于它进行路由：
+
+<CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+</CodeGroup>
+
+<Tip>
+始终在处理之前验证 webhook 签名。请参阅 [Webhooks guide](/developer-resources/webhooks) 获取完整设置，包括签名验证和幂等性。
+</Tip>
+
+## 决定是否重试：软拒绝 vs. 硬拒绝
+
+`error_code` 告诉您重试相同的支付方式是否值得。
+
+| 拒绝类型 | 意味着什么 | 该怎么办 |
+|--------------|---------------|------------|
+| **软拒绝** | 临时或可纠正的（例如 `INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 重试——延迟后，或客户修复输入后——可以成功。 |
+| **硬拒绝** | 终端（例如 `STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | **不要**重试同一张卡。请客户提供不同的支付方式。 |
+
+[Transaction Failures](/api-reference/transaction-failures) 参考列出了每个 `error_code` 的拒绝类型和建议操作。
+
+## 处理结账与续订失败
+
+您的恢复方式取决于客户是否在场。
+
+<Tabs>
+<Tab title="At checkout (customer present)">
+客户正在积极结账。显示清晰的消息并让他们立即重试或使用其他卡。
+
+- `requires_payment_method` — 客户未提供支付方式：他们未输入卡片详情，或受到提示未采取行动。这通常是结账**放弃**，而不是拒绝——重新接触客户完成付款（参见 [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)）。
+- `requires_customer_action` — 需要额外验证（如 3DS）；让客户完成验证。参见 [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)。
+</Tab>
+
+<Tab title="On subscription renewal (customer not present)">
+客户不在场，因此您无法实时提示他们。当续订失败时，订阅转为 `on_hold`，并触发 `subscription.on_hold`。
+
+- **软拒绝** 由 [Subscription Payment Retries](/features/recovery/payment-retries) 自动重试。
+- **硬拒绝**（和已耗尽的重试）最好通过 [Subscription Dunning](/features/recovery/subscription-dunning) 恢复，该方式通过电子邮件要求客户更新他们的付款方式。
+
+请参阅 [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) 获取完整的 on-hold → reactivate 流程。
+</Tab>
+</Tabs>
+
+## 重试失败的付款
+
+- **订阅：** 启用 [Subscription Payment Retries](/features/recovery/payment-retries) 来恢复软拒绝，且无需集成工作。您还可以通过让客户通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 更新他们的支付方式来触发恢复，该方法将收取所有未缴款项。
+- **一次性付款：** 重新发送结账或 `payment_link`，以便客户可以使用不同的方法重试。对于一次性付款，没有自动重试。
+
+<Warning>
+不要对同一张卡进行硬拒绝重试。卡片网络可能会将重复拒绝标记为滥用行为，这会影响您的授权率。
+</Warning>
+
+## 安全地向客户展示错误
+
+向客户显示友好的消息——永远不要显示原始 `error_code`。
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+<Warning>
+**切勿透露 `STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD` 或 `FRAUDULENT` 的真实原因。** 公开这些可能会给骗子提供线索。显示通用的拒绝消息，并只在内部记录特定的 `error_code`。
+</Warning>
+
+## 相关
+
+<CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+每个拒绝代码、其类型和建议的操作。
+</Card>
+
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+不是卡片拒绝的 API 和业务逻辑错误。
+</Card>
+
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+订阅续订时软拒绝的自动恢复。
+</Card>
+
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+恢复硬拒绝的电子邮件序列。
+</Card>
+
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+支付事件的完整负载模式。
+</Card>
+
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+模拟拒绝和续订失败的测试卡。
+</Card>
+</CardGroup>

@@ -182,34 +182,51 @@ When a payment succeeds, you'll receive the following webhooks:
 
 <Info>**Best Practice**: To simplify implementation, we recommend primarily tracking subscription events for managing the subscription lifecycle.</Info>
 
-### Handling Subscription On Hold
+<Tip>
+有关阅读 `error_code`/`error_message`、决定何时重试以及向客户报告失败的完整步骤，请参阅[处理付款失败](/developer-resources/handle-payment-failures)。
+</Tip>
 
-When a subscription enters `on_hold` state, you need to update the payment method to reactivate it. This section explains when subscriptions go on hold and how to handle them.
+#### `subscription.failed` 与 `subscription.on_hold`
 
-#### When Subscriptions Go On Hold
+这两个事件容易混淆，但需要非常不同的处理方式：
 
-A subscription is placed on hold when:
-
-- **Renewal payment fails**: The automatic renewal charge fails due to insufficient funds, expired card, or bank decline
-- **Plan change charge fails**: An immediate charge during plan upgrade/downgrade fails
-- **Payment method authorization fails**: The payment method cannot be authorized for recurring charges
+| 事件 | 触发时间 | 状态 | 可恢复？ | 处理方法 |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | **初始**授权未能在订阅**创建**时创建 | `failed` | **不可恢复 — 终端状态** | 不授予访问权限。请客户使用不同的付款方式开始一个**新**订阅。 |
+| `subscription.on_hold` | 已激活订阅的**续费**付款（或计划更改费用）失败 | `on_hold` | **是** | 通过更新付款方式进行恢复；请参阅下面的[处理暂停订阅](#handling-subscription-on-hold) 。 |
 
 <Warning>
-Subscriptions in `on_hold` state will not renew automatically. You must update the payment method to reactivate the subscription.
+`subscription.failed` 是终端状态— 该订阅无法重新激活。客户必须创建新的订阅。此事件触发时绝不要授予权利。
 </Warning>
 
-#### Reactivating Subscriptions from On Hold
+### 处理暂停订阅
 
-To reactivate a subscription from `on_hold` state, use the Update Payment Method API. This automatically:
+当订阅进入 `on_hold` 状态时，您需要更新付款方式以重新激活它。本节解释了订阅何时暂停以及如何处理它们。
 
-1. Creates a charge for remaining dues
-2. Generates an invoice for the charge
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+#### 何时订阅会暂停
+
+订阅暂停的情况：
+
+- **续费付款失败**：自动续费因资金不足、卡片过期或银行拒绝而失败
+- **计划更改费用失败**：计划升级/降级期间的即时费用失败
+- **付款方式授权失败**：该付款方式无法授权进行重复收费
+
+<Warning>
+处于 `on_hold` 状态的订阅不会自动续订。您必须更新付款方式以重新激活订阅。
+</Warning>
+
+#### 重新激活暂停的订阅
+
+要从 `on_hold` 状态重新激活订阅，请使用更新付款方式 API。这自动：
+
+1. 为剩余欠款生成收款
+2. 为费用生成发票
+3. 使用新的付款方式处理付款
+4. 付款成功后，将订阅重新激活为 `active` 状态
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-When you receive a `subscription.on_hold` webhook, update your application state and notify the customer:
+接收到 `subscription.on_hold` webhook 时，更新您的应用程序状态并通知客户：
 
 ```javascript
 // Webhook handler
@@ -236,7 +253,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-When the customer is ready to update their payment method, call the Update Payment Method API:
+客户准备好更新付款方式时，请调用更新付款方式 API：
 
 <CodeGroup>
 
@@ -271,7 +288,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-You can also use an existing payment method ID if the customer has saved payment methods:
+如果客户已保存付款方式，可以使用现有的付款方式 ID：
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -284,10 +301,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-After updating the payment method, monitor for these webhook events:
+更新付款方式后，监控这些 webhook 事件：
 
-1. **`payment.succeeded`** - The charge for remaining dues was successful
-2. **`subscription.active`** - The subscription has been reactivated
+1. **`payment.succeeded`** - 剩余欠款的收费成功
+2. **`subscription.active`** - 订阅已重新激活
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -319,91 +336,91 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Sample Subscription event payload
+### 示例订阅事件负载
 
 ---
 
-| Property | Type | Required | Description |
+| 属性 | 类型 | 必需 | 描述 |
 |----------|------|----------|-------------|
-| `business_id` | string | Yes | The unique identifier for the business |
-| `timestamp` | string | Yes | The timestamp of when the event occurred (not necessarily the same as when it was delivered) |
-| `type` | string | Yes | The type of event. See [Event Types](#event-types) |
-| `data` | object | Yes | The main data payload. See [Data Object](#data-object) |
+| `business_id` | string | 是 | 业务的唯一标识符 |
+| `timestamp` | string | 是 | 事件发生的时间戳（不一定与交付时间相同） |
+| `type` | string | 是 | 事件类型。请参阅[事件类型](#event-types) |
+| `data` | object | 是 | 主要数据负载。请参阅[数据对象](#data-object) |
 
-## Changing Subscription Plans
+## 更改订阅计划
 
-You can upgrade or downgrade a subscription plan using the change plan API endpoint. This allows you to modify the subscription's product, quantity, and handle proration.
+您可以使用更改计划 API 端点升级或降级订阅计划。这使您可以修改订阅的产品、数量以及处理分摊。
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  For detailed information about changing subscription plans, please refer to our Change Plan API documentation.
+  有关更改订阅计划的详细信息，请参阅我们的计划更改 API 文档。
 </Card>
 
-### Proration Options
+### 分摊选项
 
-When changing subscription plans, you have two options for handling the immediate charge:
+更改订阅计划时，您有两种方式来处理即时收费：
 
 #### 1. `prorated_immediately`
-- Calculates the prorated amount based on the remaining time in the current billing cycle
-- Charges the customer only for the difference between the old and new plan
-- During a trial period, this will immediately switch the user to the new plan, charging the customer right away
+- 根据当前计费周期的剩余时间计算分摊金额
+- 仅对新旧计划之间的差额向客户收费
+- 在试用期内，这会立即将用户切换到新计划，并立即向客户收费
 
 #### 2. `full_immediately`
-- Charges the customer the full subscription amount for the new plan
-- Ignores any remaining time or credits from the previous plan
-- Useful when you want to reset the billing cycle or charge the full amount regardless of proration
+- 对新计划的全部订阅金额向客户收费
+- 忽略之前计划的剩余时间或积分
+- 适用于您希望重置计费周期或无论分摊与否都要收取全部金额的情况
 
 #### 3. `difference_immediately`
-- When upgrading, the customer is immediately charged the difference between the two plan amounts.
-- For example, if the current plan is 30 Dollars and the customer upgrades to an 80 Dollars, they are charged $50 instantly. 
-- When downgrading, the unused amount from the current plan is added as internal credit and automatically applied to future subscription renewals.
-- For example, if the current plan is 50 Dollars and the customer switches to a 20 Dollars plan, the remaining $30 is credited and used toward the next billing cycle.
+- 升级时，客户会立即支付两个计划金额差额。
+- 例如，如果当前计划为 30 美元并且客户升级到 80 美元，则他们会立即被收取 50 美元。
+- 降级时，当前计划的未使用金额会以内部积分形式添加，并自动应用于未来的订阅续期。
+- 例如，如果当前计划为 50 美元，而客户切换到 20 美元计划，则剩余的 30 美元将被计入，并用于下一计费周期。
 
-### Behavior
+### 行为
 
-- When you invoke this API, Dodo Payments immediately initiates a charge based on your selected proration option
-- If the plan change is a downgrade and you use `prorated_immediately`, credits will be automatically calculated and added to the subscription's credit balance. These credits are specific to that subscription and will only be used to offset future recurring payments of the same subscription
-- The `full_immediately` option bypasses credit calculations and charges the complete new plan amount
+- 调用此 API 时，Dodo Payments 会立即根据您选择的分摊选项发起收费
+- 如果计划更改是降级并且您使用 `prorated_immediately`，积分将被自动计算并添加到订阅的积分余额中。这些积分特定于该订阅，仅用于抵消相同订阅的未来重复付款
+- `full_immediately` 选项绕过积分计算并收取完整的新计划金额
 
 <Tip>
-**Choose your proration option carefully**: Use `prorated_immediately` for fair billing that accounts for unused time, or `full_immediately` when you want to charge the complete new plan amount regardless of the current billing cycle.
+**谨慎选择您的分摊选项**：使用 `prorated_immediately` 进行公平的计费，考虑到未使用的时间，或当您希望无论当前计费周期如何都收取完整的新计划金额时使用 `full_immediately`。
 </Tip>
 
-### Charge Processing
+### 收费处理
 
-- The immediate charge initiated upon plan change usually completes processing in less than 2 minutes
-- If this immediate charge fails for any reason, the subscription is automatically placed on hold until the issue is resolved
+- 更改计划时发起的即时收费通常在不到2分钟内完成处理
+- 如果此即时费用因任何原因失败，订阅会被自动暂停，直至问题解决
 
-## On-Demand Subscriptions
+## 按需订阅
 
 <Info>
-  On-demand subscriptions let you charge customers flexibly, not just on a fixed schedule. This feature is available for all accounts.
+  按需订阅允许您灵活地向客户收费，而不仅仅是按固定时间表。这项功能适用于所有帐户。
 </Info>
 
-**To create an on-demand subscription:**
+**创建按需订阅：**
 
-To create an on-demand subscription, use the [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint and include the `on_demand` field in your request body. This allows you to authorize a payment method without an immediate charge, or set a custom initial price.
+要创建按需订阅，请使用[POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API 端点，并在请求体中包含 `on_demand` 字段。这使您可以授权不立即收费的付款方式，或设置自定义初始价格。
 
-**To charge an on-demand subscription:**
+**对按需订阅收费：**
 
-对于后续扣费，使用 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) 端点，并指定该交易向客户收取的金额。
+对于后续收费，请使用[POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge)端点并指定向客户收费的金额。
 
 <Note>
-For a complete, step-by-step guide—including request/response examples, safe retry policies, and webhook handling—see the <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
+有关完整的分步指南，包括请求/响应示例、安全重试策略和 webhook 处理，请参阅<a href="/developer-resources/ondemand-subscriptions">按需订阅指南</a>。
 </Note>
 
-## Related API Reference
+## 相关 API 参考
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  API reference for creating subscription products and managing subscription lifecycle
+  创建订阅产品和管理订阅生命周期的 API 参考
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  API reference for upgrading, downgrading, or changing subscription plans with proration options
+  升级、降级或更改订阅计划的 API 参考以及分摊选项
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  API reference for updating payment methods and reactivating on-hold subscriptions
+  更新付款方式和重新激活暂停订阅的 API 参考
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  API reference for updating subscription details and configuration
+  更新订阅详情和配置的 API 参考
 </Card>
 </CardGroup>

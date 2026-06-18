@@ -1,0 +1,244 @@
+---
+sidebarTitle: Xử Lý Thanh Toán Thất Bại
+title: Xử Lý Thanh Toán Thất Bại
+description: Phát hiện thanh toán thất bại từ webhooks và API, đọc lý do thất
+  bại, hiển thị an toàn cho khách hàng và quyết định khi nào thử lại hoặc thu
+  thập phương thức thanh toán mới.
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - xử lý thanh toán thất bại
+  - payment.failed
+  - decline codes
+  - error_code
+  - thử lại thanh toán
+  - failed payment webhook
+  - từ chối nhẹ
+  - từ chối cứng
+---
+
+<Info>
+Khi một khoản thanh toán thất bại, Dodo Payments sẽ cho bạn biết **tại sao** thông qua một `error_code` đã chuẩn hóa và một `error_message` có thể đọc được. Hướng dẫn này cho thấy cách đọc các trường đó, quyết định xem có đáng thử lại không, và khôi phục thanh toán mà không tiết lộ thông tin nhạy cảm cho khách hàng.
+</Info>
+
+## Cách Dodo Payments Báo Cáo Một Thất Bại
+
+Mỗi thanh toán thất bại — dù là thanh toán một lần hay gia hạn đăng ký — đều mang cùng các trường thất bại trên đối tượng thanh toán:
+
+| Trường | Loại | Mô tả |
+|-------|------|-------------|
+| `status` | string | `failed` cho một khoản thanh toán thất bại. Các trạng thái không thành công khác bao gồm `cancelled`, `requires_customer_action`, và `requires_payment_method`. |
+| `error_code` | string \| null | Lý do thất bại đã chuẩn hóa, ví dụ `INSUFFICIENT_FUNDS` hoặc `PROCESSING_ERROR`. Xem [Transaction Failures](/api-reference/transaction-failures) để biết danh sách đầy đủ. |
+| `error_message` | string \| null | Một giải thích có thể đọc được về thất bại. |
+| `retry_attempt` | integer | `0` cho khoảng phí gốc. `1` hoặc cao hơn xác định một thử lại gia hạn đăng ký đã lên lịch. |
+
+<Note>
+`error_code` và `error_message` là `null` cho đến khi khoản thanh toán thực sự thất bại. Luôn kiểm tra `status` trước, sau đó đọc các trường lỗi.
+</Note>
+
+## The `payment.failed` Webhook
+
+Cách đáng tin cậy nhất để phát hiện một thất bại là webhook `payment.failed`. Sự kiện bao bọc toàn bộ đối tượng thanh toán trong `data`:
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+Một handler tối thiểu đọc `error_code` và định tuyến trên nó:
+
+<CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+</CodeGroup>
+
+<Tip>
+Luôn xác minh chữ ký webhook trước khi xử lý. Xem [Webhooks guide](/developer-resources/webhooks) để có thiết lập đầy đủ, bao gồm xác minh chữ ký và đảm bảo không trùng lặp.
+</Tip>
+
+## Quyết Định Thử Lại Hay Không: Từ Chối Nhẹ So Với Từ Chối Cứng
+
+`error_code` cho bạn biết liệu việc thử lại cùng một phương thức thanh toán có đáng giá hay không.
+
+| Loại từ chối | Ý nghĩa | Phải làm gì |
+|--------------|---------------|------------|
+| **Từ chối nhẹ** | Tạm thời hoặc có thể sửa (ví dụ `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Thử lại — sau một khoảng thời gian chờ, hoặc khi khách hàng sửa đổi đầu vào — có thể thành công. |
+| **Từ chối cứng** | Không thể khắc phục (ví dụ `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Đừng thử lại cùng thẻ đó. Yêu cầu khách hàng cung cấp phương thức thanh toán khác. |
+
+[Transaction Failures](/api-reference/transaction-failures) liệt kê loại từ chối và hành động khuyến nghị cho mỗi `error_code`.
+
+## Xử Lý Thất Bại Tại Checkout VS. Khi Gia Hạn
+
+Cách bạn khôi phục phụ thuộc vào việc khách hàng có mặt hay không.
+
+<Tabs>
+<Tab title="At checkout (customer present)">
+Khách hàng đang tích cực thanh toán. Hiển thị một thông điệp rõ ràng và cho phép họ thử lại ngay lập tức hoặc sử dụng thẻ khác.
+
+- `requires_payment_method` — khách hàng chưa bao giờ cung cấp một phương thức thanh toán: họ không nhập chi tiết thẻ hoặc được nhắc nhập nhưng không thực hiện hành động nào. Đây thường là một **bỏ qua** tại checkout, không phải từ chối — tương tác lại với khách hàng để hoàn thành thanh toán (xem [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — cần thêm xác thực (như 3DS); yêu cầu khách hàng hoàn tất nó. Xem [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication). 
+</Tab>
+
+<Tab title="On subscription renewal (customer not present)">
+Khách hàng không có mặt, nên bạn không thể nhắc nhở họ trong thời gian thực. Khi gia hạn thất bại, đăng ký di chuyển đến `on_hold` và `subscription.on_hold` được kích hoạt.
+
+- **Từ chối nhẹ** được thử lại tự động bằng [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Từ chối cứng** (và các thử lại đã hết sức) thì tốt nhất được khôi phục bằng [Subscription Dunning](/features/recovery/subscription-dunning), cách này gửi email cho khách hàng để cập nhật phương thức thanh toán của họ.
+
+Xem [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) để biết quy trình từ giữ chỗ đến kích hoạt lại hoàn toàn.
+</Tab>
+</Tabs>
+
+## Thử Lại Một Khoản Thanh Toán Thất Bại
+
+- **Đăng ký:** Kích hoạt [Subscription Payment Retries](/features/recovery/payment-retries) để khôi phục các từ chối nhẹ mà không cần tích hợp. Bạn cũng có thể kích hoạt khôi phục bằng cách yêu cầu khách hàng cập nhật phương thức thanh toán của họ thông qua [Update Payment Method API](/api-reference/subscriptions/update-payment-method), mà sẽ tính phí bất kỳ khoản nợ nào.
+
+<Warning>
+Không thử lại các từ chối cứng trên cùng một thẻ. Mạng thẻ có thể gắn cờ những từ chối lặp lại là lạm dụng, điều này sẽ ảnh hưởng xấu đến tỷ lệ cho phép của bạn.
+</Warning>
+
+## Hiển Thị Lỗi Cho Khách Hàng Một Cách An Toàn
+
+Hiển thị cho khách hàng một thông báo thân thiện — không bao giờ là lý do thô như `error_code`.
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+<Warning>
+**Không bao giờ tiết lộ lý do thực sự cho `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, hoặc `FRAUDULENT`.** Việc hiển thị những thông tin này có thể cảnh báo kẻ lừa đảo. Hiển thị một thông báo từ chối chung và chỉ ghi lại nội bộ cụ thể về `error_code`.
+</Warning>
+
+## Liên Quan
+
+<CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+Mã từ chối, loại của nó và hành động khuyến nghị.
+</Card>
+
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+API và lỗi logic nghiệp vụ không phải là từ chối thẻ.
+</Card>
+
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Khôi phục tự động các từ chối nhẹ khi gia hạn đăng ký.
+</Card>
+
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Chuỗi email để khôi phục các từ chối cứng.
+</Card>
+
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+Schema đầy đủ của payload cho sự kiện thanh toán.
+</Card>
+
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+Thẻ thử mô phỏng các từ chối và thất bại khi gia hạn.
+</Card>
+</CardGroup>

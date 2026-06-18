@@ -1,0 +1,245 @@
+---
+sidebarTitle: Gérer les Échecs de Paiement
+title: Gérer les Échecs de Paiement
+description: Détecter les paiements échoués depuis les webhooks et l'API, lire
+  la raison de l'échec, la présenter aux clients en toute sécurité, et décider
+  quand réessayer ou collecter un nouveau mode de paiement.
+icon: screwdriver-wrench
+keywords:
+  - Dodo Payments
+  - gérer les échecs de paiement
+  - payment.failed
+  - codes de refus
+  - error_code
+  - réessayer les paiements
+  - webhook de paiement échoué
+  - refus temporaire
+  - refus définitif
+---
+
+<Info>
+Lorsqu'un paiement échoue, Dodo Payments vous indique **pourquoi** grâce à un `error_code` standardisé et une `error_message` lisible par l'homme. Ce guide montre comment lire ces champs, décider si un nouvel essai est valable, et récupérer le paiement sans exposer d'informations sensibles aux clients.
+</Info>
+
+## Comment Dodo Payments Signale un Échec
+
+Chaque paiement échoué — qu'il s'agisse d'un achat unique ou d'un renouvellement d'abonnement — comporte les mêmes champs d'échec sur l'objet de paiement :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `status` | chaîne | `failed` pour un paiement échoué. D'autres états non réussis incluent `cancelled`, `requires_customer_action`, et `requires_payment_method`. |
+| `error_code` | chaîne \| null | La raison de l'échec standardisée, par exemple `INSUFFICIENT_FUNDS` ou `PROCESSING_ERROR`. Voir la référence des [Échecs de Transaction](/api-reference/transaction-failures) pour la liste complète. |
+| `error_message` | chaîne \| null | Une explication lisible par l'homme de l'échec. |
+| `retry_attempt` | entier | `0` pour la charge initiale. `1` ou supérieur identifie une nouvelle tentative de renouvellement d'abonnement programmée. |
+
+ <Note>
+`error_code` et `error_message` sont `null` jusqu'à ce qu'un paiement échoue réellement. Vérifiez toujours d'abord `status`, puis lisez les champs d'erreur.
+</Note>
+
+## Le Webhook `payment.failed`
+
+La manière la plus fiable de détecter un échec est le webhook `payment.failed`. L'événement enveloppe l'objet de paiement complet dans `data` :
+
+```json payment.failed payload expandable
+{
+  "business_id": "bus_P3SXLcppjXgagmHS",
+  "type": "payment.failed",
+  "timestamp": "2025-08-04T05:36:41.609359Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_2IjeQm4hqU6RA4Z4kwDee",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "subscription_id": null,
+    "currency": "USD",
+    "total_amount": 400,
+    "payment_method": "card",
+    "card_last_four": "0119",
+    "card_network": "VISA",
+    "payment_link": "https://test.checkout.dodopayments.com/cbq",
+    "customer": {
+      "customer_id": "cus_8VbC6JDZzPEqfB",
+      "email": "test@acme.com",
+      "name": "Test user"
+    }
+  }
+}
+```
+
+Un gestionnaire minimal lit `error_code` et l'oriente :
+
+ <CodeGroup>
+
+```javascript Node.js expandable
+import { Webhook } from "standardwebhooks";
+import express from "express";
+
+const app = express();
+// Mount the raw body parser so the exact payload is available for verification
+app.use(express.raw({ type: "application/json" }));
+
+const webhook = new Webhook(process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+app.post("/webhooks/dodo", async (req, res) => {
+  // Verify the signature against the raw body before trusting the payload
+  const payload = req.body.toString();
+  await webhook.verify(payload, req.headers);
+
+  const event = JSON.parse(payload);
+
+  if (event.type === "payment.failed") {
+    const payment = event.data;
+
+    console.log(
+      `Payment ${payment.payment_id} failed: ${payment.error_code} (${payment.error_message})`
+    );
+
+    if (payment.subscription_id) {
+      // Subscription renewal — Dodo retries soft declines for you
+      await flagSubscriptionPaymentIssue(payment.subscription_id, payment.error_code);
+    } else {
+      // One-time payment — prompt the customer to try again
+      await notifyCustomerOfFailedPayment(payment.customer.customer_id, payment.error_code);
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+```python Python expandable
+import os
+from fastapi import FastAPI, Request
+from standardwebhooks import Webhook
+
+app = FastAPI()
+webhook = Webhook(os.environ["DODO_PAYMENTS_WEBHOOK_KEY"])
+
+@app.post("/webhooks/dodo")
+async def handle_webhook(request: Request):
+    # Verify the signature before trusting the payload
+    payload = await request.body()
+    webhook.verify(payload, dict(request.headers))
+
+    event = await request.json()
+
+    if event["type"] == "payment.failed":
+        payment = event["data"]
+
+        print(
+            f"Payment {payment['payment_id']} failed: "
+            f"{payment['error_code']} ({payment['error_message']})"
+        )
+
+        if payment["subscription_id"]:
+            # Subscription renewal — Dodo retries soft declines for you
+            flag_subscription_payment_issue(payment["subscription_id"], payment["error_code"])
+        else:
+            # One-time payment — prompt the customer to try again
+            notify_customer_of_failed_payment(payment["customer"]["customer_id"], payment["error_code"])
+
+    return {"received": True}
+```
+
+ </CodeGroup>
+
+ <Tip>
+Vérifiez toujours la signature du webhook avant de traiter. Voir le [guide des Webhooks](/developer-resources/webhooks) pour la configuration complète, y compris la vérification des signatures et l'idempotence.
+</Tip>
+
+## Décider de Retenter: Refus Temporaires vs. Définitifs
+
+Le `error_code` vous indique si réessayer le même mode de paiement vaut la peine.
+
+| Type de refus | Ce que cela signifie | Que faire |
+|--------------|---------------|------------|
+| **Refus temporaire** | Temporaire ou corrigeable (par exemple `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Un nouvel essai — après un délai, ou une fois que le client a corrigé son entrée — peut réussir. |
+| **Refus définitif** | Terminal (par exemple `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Ne **pas** réessayer avec la même carte. Demandez au client un autre mode de paiement. |
+
+La référence [Échecs de Transaction](/api-reference/transaction-failures) liste le type de refus et l'action recommandée pour chaque `error_code`.
+
+## Gérer les Échecs à la Caisse vs. au Renouvellement
+
+La façon de récupérer dépend de la présence ou non du client.
+
+ <Tabs>
+<Tab title="At checkout (customer present)">
+Le client est activement en train de passer à la caisse. Affichez un message clair et permettez-lui de réessayer immédiatement ou d'utiliser une autre carte.
+
+- `requires_payment_method` — le client n'a jamais fourni de mode de paiement : il n'a pas saisi les détails de la carte, ou a été invité à le faire et n'a pris aucune mesure. Cela représente généralement un abandon de panier à la caisse, non un refus — réengagez le client pour compléter le paiement (voir [Récupération de Panier Abandonné](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — une authentification supplémentaire (comme 3DS) est nécessaire ; faites compléter cela par le client. Voir [gestion du 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
+</Tab>
+
+ <Tab title="On subscription renewal (customer not present)">
+Le client n'est pas présent, donc vous ne pouvez pas le solliciter en temps réel. Lorsqu'un renouvellement échoue, l'abonnement passe à `on_hold` et `subscription.on_hold` est déclenché.
+
+- **Refus temporaires** sont réessayés automatiquement par [Reprises de Paiement d'Abonnement](/features/recovery/payment-retries).
+- **Refus définitifs** (et tentatives épuisées) sont mieux récupérés avec le [Recouvrement d'Abonnement](/features/recovery/subscription-dunning), qui envoie un e-mail au client pour mettre à jour son mode de paiement.
+
+Voir le [Guide d'Intégration des Abonnements](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) pour le flux complet de mise en attente → réactivation.
+</Tab>
+</Tabs>
+
+## Réessayer un Paiement Échoué
+
+- **Abonnements :** Activez [Reprises de Paiement d'Abonnement](/features/recovery/payment-retries) pour récupérer les refus temporaires sans travail d'intégration. Vous pouvez également déclencher la récupération en demandant au client de mettre à jour son mode de paiement via l'[API de Mise à Jour du Mode de Paiement](/api-reference/subscriptions/update-payment-method), ce qui prélève les dus en suspens.
+- **Paiements uniques :** Renvoyez la caisse ou `payment_link` pour que le client puisse réessayer avec un autre mode. Il n'y a pas de réessai automatique pour les paiements uniques.
+
+ <Warning>
+Ne réessayez pas les refus définitifs avec la même carte. Les réseaux de cartes peuvent considérer les refus répétés comme abusifs, ce qui nuit à votre taux d'autorisation.
+</Warning>
+
+## Présenter les Erreurs aux Clients en toute Sécurité
+
+Montrez aux clients un message amical — jamais le `error_code` brut.
+
+```javascript Customer-facing messaging expandable
+const CUSTOMER_MESSAGES = {
+  INSUFFICIENT_FUNDS: "Your card has insufficient funds. Please use another card.",
+  EXPIRED_CARD: "Your card has expired. Please use a card with a valid expiry date.",
+  INCORRECT_CVC: "The security code (CVC) is incorrect. Please re-enter it.",
+};
+
+function customerMessage(errorCode) {
+  // Sensitive declines must never reveal the real reason
+  const SENSITIVE = ["STOLEN_CARD", "LOST_CARD", "PICKUP_CARD", "FRAUDULENT"];
+  if (SENSITIVE.includes(errorCode)) {
+    return "Your card was declined. Please contact your bank or use another card.";
+  }
+  return CUSTOMER_MESSAGES[errorCode] ?? "Your payment could not be processed. Please try another card.";
+}
+```
+
+ <Warning>
+**Ne révélez jamais la vraie raison pour `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, ou `FRAUDULENT`.** Révéler cela peut alerter un acteur frauduleux. Affichez un message de refus générique et ne consignez que le `error_code` spécifique en interne.
+</Warning>
+
+## Liens Connexes
+
+ <CardGroup cols={2}>
+<Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
+Chaque code de refus, son type, et l'action recommandée.
+</Card>
+
+ <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+Erreurs d'API et de logique métier qui ne sont pas des refus de carte.
+</Card>
+
+ <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Récupération automatique des refus temporaires sur les renouvellements d'abonnement.
+</Card>
+
+ <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Séquences d'e-mails qui récupèrent les refus définitifs.
+</Card>
+
+ <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+Schéma de charge utile complet pour les événements de paiement.
+</Card>
+
+ <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+Cartes de test qui simulent les refus et les échecs de renouvellement.
+</Card>
+</CardGroup>

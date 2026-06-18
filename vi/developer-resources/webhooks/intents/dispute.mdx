@@ -1,8 +1,8 @@
 ---
 openapi-schema: DisputeResponse
 title: Tranh chấp
-description: Payload được gửi đến điểm cuối webhook của bạn khi một tranh chấp
-  được tạo hoặc cập nhật.
+description: Payload được gửi tới endpoint webhook của bạn khi một tranh chấp
+  được tạo hoặc cập nhật, và cách xử lý từng sự kiện vòng đời của tranh chấp.
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -10,4 +10,91 @@ keywords:
   - sự kiện bồi hoàn
   - tích hợp webhook
   - tranh chấp
+  - mở tranh chấp
+  - RDR
 ---
+
+<Info>
+Là [Merchant of Record](/features/mor-introduction) của bạn, Dodo Payments quản lý quy trình tranh chấp và hoàn tiền với mạng lưới thẻ thay mặt cho bạn. Những webhook này giữ cho hệ thống của bạn đồng bộ khi một tranh chấp di chuyển qua vòng đời của nó để bạn có thể thu hồi quyền truy cập, thu thập bằng chứng và đối chiếu hồ sơ của mình.
+</Info>
+
+## Các Sự Kiện Webhook Tranh Chấp
+
+Một tranh chấp phát đi một sự kiện ở mỗi giai đoạn của vòng đời của nó:
+
+| Sự kiện | Kích hoạt khi nào | Điều này thường có nghĩa là gì |
+|-------|-----------|-----------------------|
+| `dispute.opened` | Chủ thẻ mở một tranh chấp về một khoản thanh toán | Tiền bị giữ lại; chuẩn bị để đáp ứng |
+| `dispute.challenged` | Bằng chứng đã được nộp để tranh luận tranh chấp | Tranh chấp đang được mạng lưới xem xét |
+| `dispute.accepted` | Tranh chấp đã được chấp nhận (không tranh cãi) | Tiền được hoàn lại cho chủ thẻ |
+| `dispute.cancelled` | Tranh chấp đã được rút lại hoặc hủy bỏ | Không cần hành động nào thêm |
+| `dispute.expired` | Cửa sổ phản hồi đã qua mà không có kết quả giải quyết | Thường thì quyết định không có lợi cho bạn |
+| `dispute.won` | Tranh chấp được giải quyết có lợi cho bạn | Tiền được giữ lại |
+| `dispute.lost` | Tranh chấp được giải quyết có lợi cho chủ thẻ | Tiền được hoàn lại cho chủ thẻ |
+
+<Note>
+Các tranh chấp tự động giải quyết thông qua [Visa Rapid Dispute Resolution (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr) xuất hiện dưới dạng `dispute.lost` với `is_resolved_by_rdr: true`. Điều này được mong đợi — việc hoàn tiền được thực hiện tự động để ngăn chặn một hoàn tiền chính thức.
+</Note>
+
+## Xử Lý Các Sự Kiện Tranh Chấp
+
+Khi `dispute.opened` kích hoạt, số tiền bị tranh chấp được giữ lại ngay lập tức. Sử dụng sự kiện để cập nhật hồ sơ của bạn và, nếu bạn định tranh cãi, thu thập bằng chứng trong bảng điều khiển.
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Luôn xác minh chữ ký webhook trước khi xử lý — xem [hướng dẫn Webhooks](/developer-resources/webhooks) để thiết lập. Trình xử lý trên bỏ qua xác minh để ngắn gọn.
+</Tip>
+
+<Warning>
+Bạn có **4 ngày** để phản hồi một tranh chấp sau khi nó được tạo. Xem [Các Thực Hành Tốt Nhất Phản Hồi Tranh Chấp](/features/transactions/disputes#dispute-response-best-practices) để biết các bằng chứng cần thu thập và cách định dạng.
+</Warning>
+
+## Trạng Thái và Giai Đoạn Tranh Chấp
+
+Đối tượng tranh chấp báo cáo tiến trình của nó thông qua hai trường:
+
+| Trường | Giá trị |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## Liên Quan
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+Cách phản hồi tranh chấp, nộp bằng chứng và cách RDR bảo vệ tỷ lệ tranh chấp của bạn.
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Phát hiện và phục hồi các thanh toán thất bại trước khi chúng trở thành tranh chấp.
+</Card>
+</CardGroup>
+
+## Sơ Đồ Payload Webhook

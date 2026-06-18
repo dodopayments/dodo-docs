@@ -350,34 +350,58 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ## Subscription States
 
-Subscriptions can be in different states throughout their lifecycle:
+Una suscripción pasa por un conjunto definido de estados a lo largo de su vida útil. Esta tabla es la referencia para cada estado, lo que lo causa, y cómo (o si) puede recuperarse.
 
-- **`active`**: Subscription is active and will renew automatically
-- **`on_hold`**: Subscription is paused due to failed payment. Payment method update required to reactivate
-- **`cancelled`**: Subscription is cancelled and will not renew
-- **`expired`**: Subscription has reached its end date
-- **`pending`**: Subscription is being created or processed
-
-### On Hold State
-
-A subscription enters `on_hold` state when:
-
-- A renewal payment fails (insufficient funds, expired card, etc.)
-- A plan change charge fails
-- Payment method authorization fails
+| Estado | Significado | ¿Recuperable? | Ruta de recuperación / próximo paso |
+|--------|---------------|--------------|---------------------------|
+| `pending` | La suscripción está siendo creada o procesada | — | Espere a `subscription.active` (o `subscription.failed`) |
+| `active` | La suscripción está activa y se renovará automáticamente | — | No se necesita acción |
+| `on_hold` | Un pago de renovación (o cargo por cambio de plan) falló; la suscripción está pausada | **Sí** | Actualice el método de pago para reactivar — automáticamente vía [Reintentos de Pago](/features/recovery/payment-retries) y [Dunning](/features/recovery/subscription-dunning), o manualmente vía la [API de Actualización de Método de Pago](/api-reference/subscriptions/update-payment-method) |
+| `cancelled` | La suscripción fue cancelada y no se renovará | Solo re-compra | El cliente debe iniciar una nueva suscripción; [Dunning](/features/recovery/subscription-dunning) puede incitar una re-compra |
+| `failed` | La **creación** de la suscripción falló (el mandato inicial o el pago no tuvieron éxito) | **No — terminal** | El cliente debe crear una nueva suscripción con un método de pago válido |
+| `expired` | La suscripción llegó al final de su plazo | — | El cliente debe iniciar una nueva suscripción si lo desea |
 
 <Warning>
-When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
+`on_hold` e `failed` a menudo se confunden. `on_hold` es un estado **recuperable** para una suscripción ya activa cuya renovación falló. `failed` es un estado **terminal** que solo ocurre cuando la creación **inicial** de la suscripción falla — no puede ser reactivado.
 </Warning>
 
-### Reactivating from On Hold
+### Máquina de Estados
 
-To reactivate a subscription from `on_hold` state, update the payment method. This automatically:
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> active: Creation succeeds
+    pending --> failed: Mandate creation fails
+    active --> on_hold: Renewal or plan-change charge fails
+    on_hold --> active: Payment method updated / retry succeeds
+    active --> cancelled: Cancelled
+    on_hold --> cancelled: Cancelled
+    active --> expired: Term ends
+    failed --> [*]
+    cancelled --> [*]
+    expired --> [*]
+```
 
-1. Creates a charge for remaining dues
-2. Generates an invoice
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+### Estado de Retención
+
+Una suscripción entra en estado `on_hold` cuando:
+
+- Falla un pago de renovación (fondos insuficientes, tarjeta expirada, etc.)
+- Falla un cargo por cambio de plan
+- Falla la autorización del método de pago
+
+<Warning>
+Cuando una suscripción está en estado `on_hold`, no se renovará automáticamente. Debe actualizarse el método de pago para reactivar la suscripción.
+</Warning>
+
+### Reactivando desde la Retención
+
+Para reactivar una suscripción desde el estado `on_hold`, actualice el método de pago. Esto automáticamente:
+
+1. Crea un cargo por deudas pendientes
+2. Genera una factura
+3. Procesa el pago usando el nuevo método de pago
+4. Reactiva la suscripción al estado `active` tras el pago exitoso
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -395,80 +419,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
+Después de actualizar correctamente el método de pago para una suscripción `on_hold`, recibirás eventos webhook `payment.succeeded` seguido de `subscription.active`.
 </Info>
 
-## API Management
+### Eventos Webhook por Transición
+
+Cada transición emite un webhook para que puedas ejecutar la lógica de derechos sin necesidad de sondeo:
+
+| Transición | Evento |
+|------------|-------|
+| Suscripción activada | `subscription.active` |
+| Renovación exitosa | `subscription.renewed` |
+| Renovación fallida → pausado | `subscription.on_hold` |
+| Creación fallida | `subscription.failed` |
+| Plan actualizado/degradado | `subscription.plan_changed` |
+| Cancelado | `subscription.cancelled` |
+| Fin del plazo | `subscription.expired` |
+| Cambios en cualquier campo | `subscription.updated` |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Ve el esquema completo de carga útil para eventos del ciclo de vida de suscripción.
+</Card>
+
+## Gestión de API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Use `POST /subscriptions` to create subscriptions programmatically from products, with optional trials and add‑ons.
+Usa `POST /subscriptions` para crear suscripciones programáticamente a partir de productos, con pruebas opcionales y add‑ons.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-View the create subscription API.
+Ver la API de creación de suscripción.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Use `PATCH /subscriptions/{id}` to update quantities, cancel at next billing date, or modify metadata.
+Usa `PATCH /subscriptions/{id}` para actualizar cantidades, cancelar en la próxima fecha de facturación o modificar metadatos.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Learn how to update subscription details.
+Aprende cómo actualizar los detalles de suscripción.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Change the active product and quantities with proration controls.
+Cambia el producto activo y las cantidades con controles de prorrateo.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Review plan change options.
+Revisa las opciones de cambio de plan.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-For on‑demand subscriptions, charge specific amounts on demand.
+Para suscripciones bajo demanda, cobra cantidades específicas cuando sea necesario.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Charge an on‑demand subscription.
+Carga una suscripción bajo demanda.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Use `GET /subscriptions` to list all subscriptions and `GET /subscriptions/{id}` to retrieve one.
+Usa `GET /subscriptions` para listar todas las suscripciones e `GET /subscriptions/{id}` para recuperar una.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Browse listing and retrieval APIs.
+Explora las APIs de listado y recuperación.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Fetch recorded usage for metered or hybrid pricing models.
+Obtén el uso registrado para modelos de precios medidos o híbridos.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-See usage history API.
+Consulta la API de historial de uso.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Update the payment method for a subscription. For active subscriptions, this updates the payment method for future renewals. For subscriptions in `on_hold` state, this reactivates the subscription by creating a charge for remaining dues.
+Actualiza el método de pago para una suscripción. Para suscripciones activas, esto actualiza el método de pago para futuras renovaciones. Para suscripciones en estado `on_hold`, esto reactiva la suscripción creando un cargo por deudas pendientes.
+
+Al generar un nuevo enlace de método de pago (el tipo de solicitud `New`), puedes pasar `allowed_payment_method_types` para restringir qué métodos de pago ve el cliente en esa página. Los clientes nunca verán un método que no esté en la lista, aunque incluir un método no garantiza que aparezca (la disponibilidad aún depende de factores como la ubicación del cliente y la configuración de tu negocio).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Learn how to update payment methods and reactivate subscriptions.
+Aprende cómo actualizar métodos de pago y reactivar suscripciones.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## Casos de Uso Comunes
 
-- **SaaS and APIs**: Tiered access with add‑ons for seats or usage
-- **Content and media**: Monthly access with introductory trials
-- **B2B support plans**: Annual contracts with premium support add‑ons
-- **Tools and plugins**: License keys and versioned releases
+- **SaaS y APIs**: Acceso escalonado con complementos para asientos o uso
+- **Contenido y medios**: Acceso mensual con pruebas introductorias
+- **Planes de soporte B2B**: Contratos anuales con complementos de soporte premium
+- **Herramientas y complementos**: Claves de licencia y lanzamientos versionados
 
-## Integration Examples
+## Ejemplos de Integración
 
-### Checkout Sessions (subscriptions)
-When creating checkout sessions, include your subscription product and optional add‑ons:
+### Sesiones de Checkout (suscripciones)
+Al crear sesiones de pago, incluye tu producto de suscripción y complementos opcionales:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -481,8 +526,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-Upgrade or downgrade a subscription and control proration behavior:
+### Cambios de plan con prorrateo
+Actualiza o degrada una suscripción y controla el comportamiento de prorrateo:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -492,8 +537,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-Schedule a cancellation that takes effect at the end of the current billing period:
+### Cancelar en la próxima fecha de facturación
+Programa una cancelación que tenga efecto al final del período de facturación actual:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -501,8 +546,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### On‑demand subscriptions
-Create an on‑demand subscription and charge later as needed:
+### Suscripciones bajo demanda
+Crea una suscripción bajo demanda y cobra después según sea necesario:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -518,8 +563,8 @@ await client.subscriptions.charge(onDemand.id, {
 });
 ```
 
-### Update payment method for active subscription
-Update the payment method for an active subscription:
+### Actualizar método de pago para suscripción activa
+Actualiza el método de pago para una suscripción activa:
 
 ```typescript
 // Update with new payment method
@@ -535,8 +580,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-Reactivate a subscription that went on hold due to failed payment:
+### Reactivar suscripción desde on_hold
+Reactiva una suscripción que se detuvo debido a un pago fallido:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -552,70 +597,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## Suscripciones con Mandatos Cumplidos con RBI
 
-  UPI and Indian card subscriptions operate under RBI (Reserve Bank of India) regulations with specific mandate requirements:
+  Las suscripciones de tarjetas UPI e indias operan bajo regulaciones del RBI (Banco de Reserva de la India) con requisitos de mandato específicos:
 
-  ### Mandate Limits
+  ### Límites de Mandato
 
-  The mandate type and amount depend on your subscription's recurring charge:
+  El tipo y monto del mandato dependen del cargo recurrente de tu suscripción:
 
-  - **Cargos por debajo del piso del mandato (por defecto ₹15,000):** Creamos un mandato a demanda por el monto del piso. El monto de la suscripción se cobra periódicamente según la frecuencia de tu suscripción, hasta el límite del mandato.
-  - **Cargos en o por encima del piso del mandato:** Creamos un mandato de suscripción (o un mandato a demanda) por el monto exacto de la suscripción.
+  - **Cargos por debajo del piso del mandato (por defecto ₹15,000):** Creamos un mandato bajo demanda por el monto del piso. El monto de la suscripción se cobra periódicamente según la frecuencia de tu suscripción, hasta el límite del mandato.
+  - **Cargos al mismo nivel o por encima del piso del mandato:** Creamos un mandato de suscripción (o mandato bajo demanda) por el monto exacto de la suscripción.
 
-  El piso del mandato es configurable por comerciante o por solicitud a través de `mandate_min_amount_inr_paise` (INR paise). El monto registrado con el banco es `max(mandate_floor, billing_amount)` — por lo que el piso efectivamente se convierte en el techo de autorización visible para el cliente siempre que la facturación sea menor.
+  El piso del mandato se puede configurar por comerciante o por solicitud vía `mandate_min_amount_inr_paise` (INR paise). La cantidad registrada con el banco es `max(mandate_floor, billing_amount)` — por lo que el piso efectivamente se convierte en el techo de autorización visible para el cliente siempre que la facturación sea menor.
 
-Para obtener información detallada sobre los mandatos conformes al RBI y el piso del mandato configurable para métodos de pago en la India, consulta la página de <a href="/features/payment-methods/india#configurable-mandate-floor">Métodos de Pago en la India</a>.
+Para información detallada sobre mandatos cumplidos con RBI y el piso del mandato configurable para métodos de pago indios, consulta la página de <a href="/features/payment-methods/india#configurable-mandate-floor">Métodos de Pago en India</a>.
 
   ### Consideraciones de Actualización y Degradación
 
   **Importante:** Al actualizar o degradar suscripciones, considera cuidadosamente los límites del mandato:
 
-  - Si una actualización/degradación resulta en un monto de cargo que excede los Rs 15,000 y supera el límite de pago a demanda existente, el cargo de la transacción puede fallar.
+  - Si una actualización/degradación resulta en un monto de cargo que excede Rs 15,000 y supera el límite de pago bajo demanda existente, el cargo de la transacción puede fallar.
   - En tales casos, el cliente puede necesitar actualizar su método de pago o cambiar la suscripción nuevamente para establecer un nuevo mandato con el límite correcto.
 
   ### Autorización para Cargos de Alto Valor
 
-  Para los cargos de suscripción de Rs 15,000 o más:
+  Para cargos de suscripción de Rs 15,000 o más:
 
   - El banco solicitará al cliente que autorice la transacción.
   - Si el cliente no autoriza la transacción, esta fallará y la suscripción se pondrá en espera.
 
-  ### Retraso en el Procesamiento de 48 Horas
+  ### Retraso de Procesamiento de 48 Horas
 
   **Cronograma de Procesamiento:** Los cargos recurrentes en tarjetas indias y suscripciones UPI siguen un patrón de procesamiento único:
 
-  - Los cargos se **inician** en la fecha programada de acuerdo a la frecuencia de tu suscripción.
-  - La **deducción** real de la cuenta del cliente ocurre solo después de **48 horas** desde la iniciación del pago.
-  - Esta ventana de 48 horas puede extenderse hasta **2-3 horas adicionales** dependiendo de las respuestas de la API del banco.
+  - Los cargos se **inician** en la fecha programada según la frecuencia de tu suscripción.
+  - La **deducción** real de la cuenta del cliente ocurre solo después de **48 horas** a partir de la iniciación del pago.
+  - Esta ventana de 48 horas puede extenderse hasta **2-3 horas adicionales** dependiendo de las respuestas API del banco.
 
-  ### Ventana de Cancelación del Mandato
+  ### Ventana de Cancelación de Mandato
 
   Durante la ventana de procesamiento de 48 horas:
 
   - Los clientes pueden cancelar el mandato a través de sus aplicaciones bancarias.
-  - Si un cliente cancela el mandato durante este período, la suscripción permanecerá **activa** (este es un caso especial específico de las suscripciones AutoPay en tarjetas indias y UPI).
-  - Sin embargo, la deducción real puede fallar, y en ese caso, pondremos la suscripción **en espera**.
+  - Si un cliente cancela el mandato durante este período, la suscripción permanecerá **activa** (este es un caso particular específico de las suscripciones con tarjeta india y UPI AutoPay).
+  - Sin embargo, la deducción real puede fallar, y en tal caso, pondremos la suscripción **en espera**.
 
-  **Manejo de Casos Limítrofes:** Si proporcionas beneficios, créditos o uso de suscripción a los clientes inmediatamente al inicio del cargo, necesitas manejar esta ventana de 48 horas adecuadamente en tu aplicación. Considera:
+  **Manejo de Casos Particulares:** Si proporcionas beneficios, créditos o uso de suscripción a los clientes inmediatamente al inicio del cargo, necesitas manejar esta ventana de 48 horas apropiadamente en tu aplicación. Considera:
 
   - Retrasar la activación de beneficios hasta la confirmación del pago
   - Implementar períodos de gracia o acceso temporal
-  - Monitorear el estado de la suscripción para cancelaciones de mandato
-  - Manejar estados de espera de suscripción en la lógica de tu aplicación
+  - Monitorear el estado de suscripción para cancelaciones de mandato
+  - Manejar estados de retención de suscripción en la lógica de tu aplicación
 
   <Tip>
-  Monitorea los webhooks de suscripción para rastrear cambios de estado de pago y manejar casos limítrofes donde los mandatos son cancelados durante la ventana de 48 horas.
+  Monitorea los webhooks de suscripción para rastrear cambios en el estado de pago y manejar casos particulares donde los mandatos se cancelan durante la ventana de 48 horas.
   </Tip>
 
 ## Mejores Prácticas
 
-- **Empieza con niveles claros**: 2-3 planes con diferencias obvias
-- **Comunica el precio**: Muestra totales, prorrateo y la próxima renovación
-- **Usa pruebas con cuidado**: Convierte con integración, no solo con tiempo
-- **Aprovecha las adiciones**: Mantén los planes base simples y vende extras
-- **Prueba cambios**: Valida cambios de plan y prorrateo en modo de prueba
+- **Comienza con niveles claros**: 2–3 planes con diferencias obvias
+- **Comunica precios**: Muestra totales, prorrateos y próxima renovación
+- **Usa pruebas cuidadosamente**: Convierte con incorporación, no solo tiempo
+- **Aprovecha los complementos**: Mantén los planes base simples y vende extras al alza
+- **Prueba cambios**: Valida cambios de plan y prorrateos en modo de prueba
 
 <Info>
-Las suscripciones son una base flexible para ingresos recurrentes. Empieza simple, prueba a fondo e itera basado en métricas de adopción, cancelación y expansión.
+Las suscripciones son una base flexible para ingresos recurrentes. Comienza simple, prueba a fondo e itera basándote en métricas de adopción, deserción y expansión.
 </Info>

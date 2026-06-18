@@ -1,7 +1,7 @@
 ---
 openapi-schema: DisputeResponse
 title: 争议
-description: 当创建或更新争议时发送到您的 webhook 端点的有效负载。
+description: 创建或更新争议时发送到您的 webhook 端点的有效负载，以及如何处理每个争议生命周期事件。
 icon: circle-exclamation
 keywords:
   - Dodo Payments
@@ -9,4 +9,91 @@ keywords:
   - 退款事件
   - webhook 集成
   - 纠纷
+  - dispute.opened
+  - RDR
 ---
+
+<Info>
+作为您的[商户记录](/features/mor-introduction)，Dodo Payments 代表您管理与银行卡网络的争议和拒付流程。这些 webhook 在争议的生命周期中保持您的系统同步，以便您可以撤销访问权、收集证据并对记录进行核对。
+</Info>
+
+## 争议 Webhook 事件
+
+争议在其生命周期的每个阶段会触发一个事件：
+
+| 事件 | 触发时间 | 通常意味着 |
+|-------|-----------|-----------------------|
+| `dispute.opened` | 持卡人在付款上提出争议 | 资金被冻结；准备应对 |
+| `dispute.challenged` | 已提交证据以对争议进行抗辩 | 争议由网络审查中 |
+| `dispute.accepted` | 争议被接受（未抗辩） | 资金退还给持卡人 |
+| `dispute.cancelled` | 争议已撤回或取消 | 无需进一步行动 |
+| `dispute.expired` | 响应窗口过期未解决 | 通常对您不利解决 |
+| `dispute.won` | 争议以您的有利方式解决 | 资金保留 |
+| `dispute.lost` | 争议以持卡人有利解决 | 资金退还给持卡人 |
+
+<Note>
+通过[Visa 快速争议解决 (RDR)](/features/transactions/disputes#visa-rapid-dispute-resolution-rdr)自动解决的争议显示为 `dispute.lost` 与 `is_resolved_by_rdr: true`。这是预期的——退款是自动发出的，以防止正式拒付。
+</Note>
+
+## 处理争议事件
+
+当 `dispute.opened` 触发时，争议金额会立即被冻结。使用该事件更新您的记录，并且如果您打算抗辩，请在仪表盘中收集证据。
+
+```javascript Handling dispute events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'dispute.opened': {
+      const dispute = event.data;
+      // Record the dispute and consider revoking access while it is open
+      await recordDispute(dispute.dispute_id, dispute.payment_id, dispute.amount);
+      // Gather and submit evidence from the Dodo Payments dashboard (within 4 days)
+      break;
+    }
+    case 'dispute.won': {
+      // Funds retained — restore normal state in your records
+      await markDisputeResolved(event.data.dispute_id, 'won');
+      break;
+    }
+    case 'dispute.lost': {
+      // Funds returned to the cardholder — reconcile and keep access revoked
+      await markDisputeResolved(event.data.dispute_id, 'lost');
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+在处理前始终验证 webhook 签名——请参阅 [Webhook 指南](/developer-resources/webhooks) 进行设置。上面的处理程序为了简洁省略了验证。
+</Tip>
+
+<Warning>
+您有 **4 天**的时间来响应争议。请参阅[争议响应最佳实践](/features/transactions/disputes#dispute-response-best-practices)以了解收集的证据及其格式要求。
+</Warning>
+
+## 争议状态和阶段
+
+争议对象通过两个字段报告其进度：
+
+| 字段 | 值 |
+|-------|--------|
+| `dispute_status` | `dispute_opened`, `dispute_expired`, `dispute_accepted`, `dispute_cancelled`, `dispute_challenged`, `dispute_won`, `dispute_lost` |
+| `dispute_stage` | `pre_dispute`, `dispute`, `pre_arbitration` |
+
+## 相关
+
+<CardGroup cols={2}>
+<Card title="Managing Disputes" icon="gavel" href="/features/transactions/disputes">
+如何响应争议、提交证据以及 RDR 如何保护您的争议率。
+</Card>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+在付款失败成为争议之前检测并恢复它们。
+</Card>
+</CardGroup>
+
+## Webhook 有效负载架构

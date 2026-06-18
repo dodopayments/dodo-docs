@@ -350,34 +350,58 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ## Subscription States
 
-Subscriptions can be in different states throughout their lifecycle:
+Uma assinatura passa por um conjunto definido de status ao longo de seu ciclo de vida. Esta tabela é a referência para cada status, o que o causa e como (ou se) você pode recuperá-lo.
 
-- **`active`**: Subscription is active and will renew automatically
-- **`on_hold`**: Subscription is paused due to failed payment. Payment method update required to reactivate
-- **`cancelled`**: Subscription is cancelled and will not renew
-- **`expired`**: Subscription has reached its end date
-- **`pending`**: Subscription is being created or processed
-
-### On Hold State
-
-A subscription enters `on_hold` state when:
-
-- A renewal payment fails (insufficient funds, expired card, etc.)
-- A plan change charge fails
-- Payment method authorization fails
+| Status | O que significa | Recuperável? | Caminho de recuperação / próximo passo |
+|--------|----------------|--------------|------------------------------------|
+| `pending` | A assinatura está sendo criada ou processada | — | Aguardar `subscription.active` (ou `subscription.failed`) |
+| `active` | A assinatura está ativa e será renovada automaticamente | — | Nenhuma ação necessária |
+| `on_hold` | Um pagamento de renovação (ou cobrança por alteração de plano) falhou; a assinatura está em pausa | **Sim** | Atualizar o método de pagamento para reativar — automaticamente via [Repetições de Pagamento](/features/recovery/payment-retries) e [Cobrança](/features/recovery/subscription-dunning), ou manualmente via a [API de Atualização de Método de Pagamento](/api-reference/subscriptions/update-payment-method) |
+| `cancelled` | A assinatura foi cancelada e não será renovada | Somente nova compra | O cliente deve iniciar uma nova assinatura; [Cobrança](/features/recovery/subscription-dunning) pode solicitar uma nova compra |
+| `failed` | A **criação** da assinatura falhou (o mandato inicial ou pagamento não obteve sucesso) | **Não — terminal** | O cliente deve criar uma nova assinatura com um método de pagamento funcional |
+| `expired` | A assinatura atingiu o fim do seu termo | — | O cliente deve começar uma nova assinatura, se desejar |
 
 <Warning>
-When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
+`on_hold` e `failed` são frequentemente confundidos. `on_hold` é um estado **recuperável** para uma assinatura já ativa cuja renovação falhou. `failed` é um estado **terminal** que ocorre apenas quando a **criação inicial** da assinatura falha — não pode ser reativado.
 </Warning>
 
-### Reactivating from On Hold
+### Máquina de Estados
 
-To reactivate a subscription from `on_hold` state, update the payment method. This automatically:
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> active: Creation succeeds
+    pending --> failed: Mandate creation fails
+    active --> on_hold: Renewal or plan-change charge fails
+    on_hold --> active: Payment method updated / retry succeeds
+    active --> cancelled: Cancelled
+    on_hold --> cancelled: Cancelled
+    active --> expired: Term ends
+    failed --> [*]
+    cancelled --> [*]
+    expired --> [*]
+```
 
-1. Creates a charge for remaining dues
-2. Generates an invoice
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+### Estado Em Espera
+
+Uma assinatura entra no estado `on_hold` quando:
+
+- Um pagamento de renovação falha (fundos insuficientes, cartão expirado, etc.)
+- Uma cobrança para alteração de plano falha
+- A autorização do método de pagamento falha
+
+<Warning>
+Quando uma assinatura está no estado `on_hold`, ela não se renovará automaticamente. Você deve atualizar o método de pagamento para reativar a assinatura.
+</Warning>
+
+### Reativando do Estado Em Espera
+
+Para reativar uma assinatura do estado `on_hold`, atualize o método de pagamento. Isso automaticamente:
+
+1. Cria uma cobrança para as dívidas restantes
+2. Gera uma fatura
+3. Processa o pagamento usando o novo método de pagamento
+4. Reativa a assinatura para o estado `active` após o pagamento bem-sucedido
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -395,80 +419,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
+Após atualizar com sucesso o método de pagamento para uma assinatura `on_hold`, você receberá eventos de webhook `payment.succeeded` seguidos por `subscription.active`.
 </Info>
 
-## API Management
+### Eventos Webhook por Transição
+
+Cada transição emite um webhook para que você possa gerenciar a lógica de direito sem polling:
+
+| Transição | Evento |
+|-----------|--------|
+| Assinatura ativada | `subscription.active` |
+| Renovação bem-sucedida | `subscription.renewed` |
+| Renovação falha → pausado | `subscription.on_hold` |
+| Criação falha | `subscription.failed` |
+| Plano atualizado/degradado | `subscription.plan_changed` |
+| Cancelado | `subscription.cancelled` |
+| Termo encerrado | `subscription.expired` |
+| Quaisquer alterações de campo | `subscription.updated` |
+
+<Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
+Veja o esquema completo de payload para eventos do ciclo de vida de assinaturas.
+</Card>
+
+## Gerenciamento de API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Use `POST /subscriptions` to create subscriptions programmatically from products, with optional trials and add‑ons.
+Use `POST /subscriptions` para criar assinaturas programaticamente a partir de produtos, com testes opcionais e complementos.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-View the create subscription API.
+Veja a API de criação de assinatura.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Use `PATCH /subscriptions/{id}` to update quantities, cancel at next billing date, or modify metadata.
+Use `PATCH /subscriptions/{id}` para atualizar quantidades, cancelar na próxima data de cobrança ou modificar metadados.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Learn how to update subscription details.
+Saiba como atualizar os detalhes da assinatura.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Change the active product and quantities with proration controls.
+Altere o produto ativo e as quantidades com controles de rateio.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Review plan change options.
+Revise as opções de alteração de plano.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-For on‑demand subscriptions, charge specific amounts on demand.
+Para assinaturas sob demanda, cobre valores específicos sob demanda.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Charge an on‑demand subscription.
+Cobre uma assinatura sob demanda.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Use `GET /subscriptions` to list all subscriptions and `GET /subscriptions/{id}` to retrieve one.
+Use `GET /subscriptions` para listar todas as assinaturas e `GET /subscriptions/{id}` para recuperar uma.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Browse listing and retrieval APIs.
+Veja as APIs de listagem e recuperação.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Fetch recorded usage for metered or hybrid pricing models.
+Busque o uso registrado para modelos de preços medidos ou híbridos.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-See usage history API.
+Veja a API de histórico de uso.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Update the payment method for a subscription. For active subscriptions, this updates the payment method for future renewals. For subscriptions in `on_hold` state, this reactivates the subscription by creating a charge for remaining dues.
+Atualize o método de pagamento para uma assinatura. Para assinaturas ativas, isso atualiza o método de pagamento para renovações futuras. Para assinaturas no estado `on_hold`, isso reativa a assinatura ao criar uma cobrança para as dívidas restantes.
+
+Ao gerar um novo link de método de pagamento (o tipo de solicitação `New`), você pode passar `allowed_payment_method_types` para restringir quais métodos de pagamento o cliente vê nessa página. Os clientes nunca verão um método que não esteja na lista, embora incluir um método não garanta que ele apareça (a disponibilidade ainda depende de fatores como localização do cliente e configurações da sua empresa).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Learn how to update payment methods and reactivate subscriptions.
+Saiba como atualizar os métodos de pagamento e reativar assinaturas.
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## Casos de Uso Comuns
 
-- **SaaS and APIs**: Tiered access with add‑ons for seats or usage
-- **Content and media**: Monthly access with introductory trials
-- **B2B support plans**: Annual contracts with premium support add‑ons
-- **Tools and plugins**: License keys and versioned releases
+- **SaaS e APIs**: Acesso em níveis com complementos para assentos ou uso
+- **Conteúdo e mídia**: Acesso mensal com testes introdutórios
+- **Planos de suporte B2B**: Contratos anuais com complementos de suporte premium
+- **Ferramentas e plugins**: Chaves de licença e lançamentos versionados
 
-## Integration Examples
+## Exemplos de Integração
 
-### Checkout Sessions (subscriptions)
-When creating checkout sessions, include your subscription product and optional add‑ons:
+### Sessões de Checkout (assinaturas)
+Ao criar sessões de checkout, inclua seu produto de assinatura e complementos opcionais:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -481,8 +526,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-Upgrade or downgrade a subscription and control proration behavior:
+### Alterações de plano com prorrateio
+Faça upgrade ou downgrade de uma assinatura e controle o comportamento de prorrateio:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -492,8 +537,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-Schedule a cancellation that takes effect at the end of the current billing period:
+### Cancelar na próxima data de cobrança
+Agende um cancelamento que entre em vigor no final do período de cobrança atual:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -501,8 +546,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### On‑demand subscriptions
-Create an on‑demand subscription and charge later as needed:
+### Assinaturas sob demanda
+Crie uma assinatura sob demanda e cobre mais tarde conforme necessário:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -518,8 +563,8 @@ await client.subscriptions.charge(onDemand.id, {
 });
 ```
 
-### Update payment method for active subscription
-Update the payment method for an active subscription:
+### Atualizar método de pagamento para assinatura ativa
+Atualize o método de pagamento para uma assinatura ativa:
 
 ```typescript
 // Update with new payment method
@@ -535,8 +580,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-Reactivate a subscription that went on hold due to failed payment:
+### Reativar assinatura de on_hold
+Reative uma assinatura que ficou em espera devido a falha no pagamento:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -552,70 +597,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## Assinaturas com Mandatos Compatíveis com RBI
 
-  UPI and Indian card subscriptions operate under RBI (Reserve Bank of India) regulations with specific mandate requirements:
+UPI e assinaturas de cartão indiano operam sob regulamentos do RBI (Reserve Bank of India) com requisitos específicos de mandato:
 
-  ### Mandate Limits
+### Limites de Mandato
 
-  The mandate type and amount depend on your subscription's recurring charge:
+O tipo e o valor do mandato dependem da cobrança recorrente da sua assinatura:
 
-  - **Cobranças abaixo do valor mínimo do mandato (padrão ₹15.000):** Criamos um mandato sob demanda para o valor mínimo. O valor da assinatura é cobrado periodicamente de acordo com a frequência da sua assinatura, até o limite do mandato.
-  - **Cobranças no valor mínimo do mandato ou acima:** Criamos um mandato de assinatura (ou mandato sob demanda) para o valor exato da assinatura.
+- **Cobranças abaixo do piso do mandato (padrão ₹15.000):** Criamos um mandato sob demanda para o valor do piso. O valor da assinatura é cobrado periodicamente de acordo com a frequência da sua assinatura, até o limite do mandato.
+- **Cobranças no piso do mandato ou acima dele:** Criamos um mandato de assinatura (ou mandato sob demanda) para o valor exato da assinatura.
 
-  O valor mínimo do mandato é configurável por comerciante ou por solicitação via `mandate_min_amount_inr_paise` (INR paise). O valor registrado no banco é `max(mandate_floor, billing_amount)` — assim, o mínimo efetivamente se torna o teto de autorização visível para o cliente sempre que a cobrança for menor.
+O piso do mandato é configurável por comerciante ou por solicitação via `mandate_min_amount_inr_paise` (INR paise). O valor registrado junto ao banco é `max(mandate_floor, billing_amount)` — assim, o piso efetivamente se torna o teto de autorização visível para o cliente sempre que a cobrança for menor.
 
-Para informações detalhadas sobre mandatos compatíveis com RBI e o valor mínimo de mandato configurável para métodos de pagamento indianos, consulte a página <a href="/features/payment-methods/india#configurable-mandate-floor">Métodos de Pagamento na Índia</a>.
+Para informações detalhadas sobre mandatos compatíveis com RBI e o piso de mandato configurável para métodos de pagamento indianos, veja a página <a href="/features/payment-methods/india#configurable-mandate-floor">Métodos de Pagamento na Índia</a>.
 
-  ### Considerações para Upgrade e Downgrade
+### Considerações sobre Upgrade e Downgrade
 
-  **Importante:** Ao atualizar ou rebaixar assinaturas, considere cuidadosamente os limites de mandato:
+**Importante:** Ao fazer upgrade ou downgrade de assinaturas, considere cuidadosamente os limites de mandato:
 
-  - Se uma atualização/rebaixamento resultar em um valor de cobrança que exceda Rs 15.000 e ultrapasse o limite de pagamento sob demanda existente, a cobrança da transação pode falhar.
-  - Nesses casos, o cliente pode precisar atualizar seu método de pagamento ou alterar a assinatura novamente para estabelecer um novo mandato com o limite correto.
+- Se um upgrade/downgrade resultar em um valor de cobrança que excede Rs 15.000 e ultrapassa o limite de pagamento sob demanda existente, a cobrança da transação pode falhar.
+- Nesses casos, o cliente pode precisar atualizar seu método de pagamento ou alterar a assinatura novamente para estabelecer um novo mandato com o limite correto.
 
-  ### Autorização para Cobranças de Alto Valor
+### Autorização para Cobranças de Alto Valor
 
-  Para cobranças de assinatura de Rs 15.000 ou mais:
+Para cobranças de assinatura de Rs 15.000 ou mais:
 
-  - O cliente será solicitado pelo banco a autorizar a transação.
-  - Se o cliente não autorizar a transação, ela falhará e a assinatura será suspensa.
+- O cliente será solicitado por seu banco a autorizar a transação.
+- Se o cliente não autorizar a transação, a transação falhará e a assinatura será colocada em espera.
 
-  ### Atraso de Processamento de 48 Horas
+### Atraso de Processamento de 48 Horas
 
-  **Linha do Tempo de Processamento:** As cobranças recorrentes em cartões indianos e assinaturas UPI seguem um padrão de processamento único:
+**Cronograma de Processamento:** Cobranças recorrentes em cartões indianos e assinaturas UPI seguem um padrão de processamento único:
 
-  - As cobranças são **iniciadas** na data agendada de acordo com a frequência da sua assinatura.
-  - A **dedução** real da conta do cliente ocorre apenas após **48 horas** da iniciação do pagamento.
-  - Essa janela de 48 horas pode se estender até **2-3 horas adicionais** dependendo das respostas da API do banco.
+- Cobranças são **iniciadas** na data programada de acordo com a frequência da sua assinatura.
+- A **dedução** real da conta do cliente ocorre apenas após **48 horas** da iniciação do pagamento.
+- Esta janela de 48 horas pode se estender até **2-3 horas adicionais** dependendo das respostas da API bancária.
 
-  ### Janela de Cancelamento de Mandato
+### Janela de Cancelamento de Mandato
 
-  Durante a janela de processamento de 48 horas:
+Durante a janela de processamento de 48 horas:
 
-  - Os clientes podem cancelar o mandato através de seus aplicativos bancários.
-  - Se um cliente cancelar o mandato durante esse período, a assinatura permanecerá **ativa** (este é um caso específico para assinaturas de cartão indiano e UPI AutoPay).
-  - No entanto, a dedução real pode falhar, e nesse caso, colocaremos a assinatura **em espera**.
+- Os clientes podem cancelar o mandato através de seus aplicativos bancários.
+- Se um cliente cancelar o mandato durante esse período, a assinatura permanecerá **ativa** (este é um caso específico para assinaturas AutoPay de cartões indianos e UPI).
+- No entanto, a dedução real pode falhar e, nesse caso, colocaremos a assinatura **em espera**.
 
-  **Manuseio de Casos Específicos:** Se você fornecer benefícios, créditos ou uso de assinatura aos clientes imediatamente após a iniciação da cobrança, precisará lidar adequadamente com essa janela de 48 horas em seu aplicativo. Considere:
+**Tratamento de Casos Extremos:** Se você oferecer benefícios, créditos ou uso de assinatura aos clientes imediatamente após a iniciação da cobrança, você precisará lidar com essa janela de 48 horas adequadamente em seu aplicativo. Considere:
 
-  - Atrasar a ativação de benefícios até a confirmação do pagamento
-  - Implementar períodos de graça ou acesso temporário
-  - Monitorar o status da assinatura para cancelamentos de mandato
-  - Lidar com estados de espera da assinatura na lógica do seu aplicativo
+- Atrasar a ativação dos benefícios até confirmação do pagamento
+- Implementar períodos de carência ou acesso temporário
+- Monitorar o status da assinatura para cancelamentos de mandato
+- Lidar com estados de espera de assinatura na lógica do seu aplicativo
 
-  <Tip>
-  Monitore os webhooks de assinatura para rastrear mudanças no status de pagamento e lidar com casos específicos em que mandatos são cancelados durante a janela de 48 horas.
-  </Tip>
+<Tip>
+Monitore webhooks de assinatura para rastrear alterações no status de pagamento e lidar com casos extremos onde mandatos são cancelados durante a janela de 48 horas.
+</Tip>
 
 ## Melhores Práticas
 
-- **Comece com categorias claras**: 2–3 planos com diferenças óbvias
-- **Comunique preços**: Mostre totais, rateio e próxima renovação
-- **Use testes com inteligência**: Converta com integração, não apenas com tempo
-- **Aproveite os complementos**: Mantenha planos básicos simples e faça upsell de extras
-- **Teste mudanças**: Valide alterações de plano e rateio em modo de teste
+- **Comece com níveis claros**: 2–3 planos com diferenças óbvias
+- **Comunique preços**: Mostre totais, prorrateio e próxima renovação
+- **Use testes com cautela**: Converta com integração, não apenas tempo
+- **Aproveite os complementos**: Mantenha os planos base simples e ofereça extras
+- **Teste alterações**: Valide alterações de plano e prorrateio no modo de teste
 
 <Info>
-As assinaturas são uma base flexível para receita recorrente. Comece simples, teste minuciosamente e itere com base em métricas de adoção, churn e expansão.
+Assinaturas são uma base flexível para receita recorrente. Comece simples, teste minuciosamente e itere com base em adoção, churn e métricas de expansão.
 </Info>
