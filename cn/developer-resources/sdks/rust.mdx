@@ -1,0 +1,370 @@
+---
+title: Rust
+description: 将 Dodo Payments 集成到使用 Tokio 和 reqwest 构建的异步优先、强类型 SDK 的 Rust 应用程序中
+icon: rust
+keywords:
+  - Dodo Payments
+  - Rust SDK
+  - cargo
+  - crates.io
+  - Tokio
+  - reqwest
+---
+
+Rust SDK 提供方便的异步优先访问，用于从 Rust 应用程序访问 Dodo Payments REST API。它提供了强类型请求和响应、内置分页助手以及可配置的超时和环境。
+
+## 安装
+
+使用 Cargo 将 SDK 添加到您的项目中：
+
+```bash
+cargo add dodopayments
+```
+
+或者手动将其添加到您的 `Cargo.toml` 中：
+
+```toml
+[dependencies]
+dodopayments = "1.106.0"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+futures = "0.3" # required for streaming paginated results
+```
+
+The SDK requires Rust 1.75 or later, leveraging modern async features for optimal performance.
+
+## 快速开始
+
+客户端默认从 `DODO_PAYMENTS_API_KEY` 环境变量中读取您的 API 密钥。初始化客户端并创建您的第一个结账会话：
+
+```rust
+use dodopayments::Client;
+
+#[tokio::main]
+async fn main() -> dodopayments::Result<()> {
+    let client = Client::from_env()?;
+
+    let result = client
+        .checkout_sessions()
+        .create()
+        .body(dodopayments::models::CheckoutSessionsCreateParams {
+            product_cart: Some(vec![dodopayments::models::ProductItemReq {
+                product_id: "product_id".to_string(),
+                quantity: 1,
+                addons: None,
+                amount: None,
+                credit_entitlements: None,
+            }]),
+            ..Default::default()
+        })
+        .await?;
+
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+Always store your API keys securely using environment variables. Never hardcode them in your source code.
+
+## 核心功能
+
+Built on Tokio and reqwest with `async`/`await` support throughout
+
+Strongly typed requests and responses for compile-time safety
+
+Stream every item across pages or advance one page at a time
+
+Configure environments, timeouts, and base URLs per client
+
+## 配置
+
+### 环境变量
+
+默认情况下，`Client::from_env()` 从 `DODO_PAYMENTS_API_KEY` 环境变量中读取您的 API 密钥，并使用默认基本 URL，除非您设置 `DODO_PAYMENTS_BASE_URL`：
+
+```bash
+export DODO_PAYMENTS_API_KEY="your_api_key"
+export DODO_PAYMENTS_BASE_URL="https://test.dodopayments.com" # optional
+```
+
+您也可以显式配置客户端。`Client::new` 返回一个 `Result`，因此在返回 `dodopayments::Result` 的函数中与 `?` 一起解包它：
+
+```rust
+use dodopayments::{Client, ClientConfig};
+
+#[tokio::main]
+async fn main() -> dodopayments::Result<()> {
+    let client = Client::new(
+        ClientConfig::new("https://live.dodopayments.com").with_api_key("My API Key"),
+    )?;
+    println!("{}", client.base_url());
+    Ok(())
+}
+```
+
+### 环境
+
+| 名称        | 基本 URL                          |
+| ----------- | --------------------------------- |
+| `live_mode` | `https://live.dodopayments.com`   |
+| `test_mode` | `https://test.dodopayments.com`   |
+
+默认基本 URL 是 `https://live.dodopayments.com`。使用 `Environment` 枚举选择其他环境，而不是硬编码 URL：
+
+```rust
+use dodopayments::{Client, ClientConfig, Environment};
+
+let client = Client::new(
+    ClientConfig::from_environment(Environment::TestMode).with_api_key("My API Key"),
+)?;
+```
+
+要通过 `from_env()` 继续从 `DODO_PAYMENTS_API_KEY` 读取 API 密钥，同时将目标放在非默认环境中，请在配置中覆盖它：
+
+```rust
+use dodopayments::{Client, ClientConfig, Environment};
+
+let client = Client::new(ClientConfig::from_env()?.with_environment(Environment::TestMode))?;
+```
+
+### 超时
+
+默认请求超时为 30 秒。为每个客户端覆盖它：
+
+```rust
+use std::time::Duration;
+use dodopayments::{Client, ClientConfig};
+
+let client = Client::new(
+    ClientConfig::new("https://live.dodopayments.com")
+        .with_api_key("My API Key")
+        .with_timeout(Duration::from_secs(60)),
+)?;
+```
+
+## 常用操作
+
+### 创建结账会话
+
+生成一个结账会话：
+
+```rust
+let session = client
+    .checkout_sessions()
+    .create()
+    .body(dodopayments::models::CheckoutSessionsCreateParams {
+        product_cart: Some(vec![dodopayments::models::ProductItemReq {
+            product_id: "prod_123".to_string(),
+            quantity: 1,
+            addons: None,
+            amount: None,
+            credit_entitlements: None,
+        }]),
+        return_url: Some("https://yourdomain.com/return".to_string()),
+        ..Default::default()
+    })
+    .await?;
+
+println!("{session:?}");
+```
+
+### 管理客户
+
+创建和检索客户信息：
+
+```rust
+// Create a customer
+let customer = client
+    .customers()
+    .create()
+    .body(dodopayments::models::CustomerCreateParams {
+        email: "customer@example.com".to_string(),
+        name: "John Doe".to_string(),
+        ..Default::default()
+    })
+    .await?;
+
+// Retrieve a customer
+let customer = client
+    .customers()
+    .retrieve("cus_123")
+    .await?;
+
+println!("{customer:?}");
+```
+
+### 处理订阅
+
+创建和管理定期订阅：
+
+```rust
+let subscription = client
+    .subscriptions()
+    .create()
+    .body(dodopayments::models::SubscriptionCreateParams {
+        billing: dodopayments::models::BillingAddress {
+            country: "US".to_string(),
+            city: "San Francisco".to_string(),
+            state: "CA".to_string(),
+            street: "1 Market St".to_string(),
+            zipcode: "94105".to_string(),
+        },
+        customer: dodopayments::models::CustomerRequest::AttachExisting(
+            dodopayments::models::AttachExistingCustomer {
+                customer_id: "cus_123".to_string(),
+            },
+        ),
+        product_id: "pdt_456".to_string(),
+        quantity: 1,
+        ..Default::default()
+    })
+    .await?;
+
+println!("{subscription:?}");
+```
+
+`billing` requires at minimum the two-letter ISO `country` code. `customer` is a `CustomerRequest` enum — pass `AttachExisting` for an existing customer or `New` for a new one. Amount fields such as `product_price` are in the lowest currency denomination (e.g., `2500` = $25.00 USD).
+
+## 基于使用量的计费
+
+### 引入使用事件
+
+跟踪自定义事件：
+
+```rust
+let response = client
+    .usage_events()
+    .ingest()
+    .body(dodopayments::models::UsageEventsIngestParams {
+        events: vec![dodopayments::models::EventInput {
+            event_id: "api_call_12345".to_string(),
+            customer_id: "cus_abc123".to_string(),
+            event_name: "api_request".to_string(),
+            ..Default::default()
+        }],
+    })
+    .await?;
+
+println!("{response:?}");
+```
+
+### 列出使用情况事件
+
+```rust
+let events = client
+    .usage_events()
+    .list()
+    .query(serde_json::json!({
+        "customer_id": "cus_abc123",
+        "event_name": "api_request",
+    }))
+    .await?;
+
+for event in &events.items {
+    println!("{event:?}");
+}
+```
+
+## 分页
+
+List endpoints return a typed page whose `items` field holds the current page of results. Stream every item across all pages with `into_stream`:
+
+```rust
+use futures::StreamExt;
+
+let mut items = Box::pin(
+    client
+        .payments()
+        .list()
+        .query(serde_json::json!({}))
+        .await?
+        .into_stream(),
+);
+
+while let Some(item) = items.next().await {
+    let item = item?;
+    println!("{item:?}");
+}
+```
+
+Or advance one page at a time with `get_next_page`:
+
+```rust
+let mut page = client
+    .payments()
+    .list()
+    .query(serde_json::json!({}))
+    .await?;
+
+loop {
+    for item in &page.items {
+        println!("{item:?}");
+    }
+    match page.get_next_page().await? {
+        Some(next) => page = next,
+        None => break,
+    }
+}
+```
+
+## 错误处理
+
+Every method returns a `dodopayments::Result<T>`. Failures are represented by the `dodopayments::Error` enum. Match on it to handle API errors distinctly from transport errors:
+
+```rust
+let result = client
+    .checkout_sessions()
+    .create()
+    .body(dodopayments::models::CheckoutSessionsCreateParams {
+        product_cart: Some(vec![dodopayments::models::ProductItemReq {
+            product_id: "product_id".to_string(),
+            quantity: 1,
+            addons: None,
+            amount: None,
+            credit_entitlements: None,
+        }]),
+        ..Default::default()
+    })
+    .await;
+
+match result {
+    Ok(value) => println!("{value:?}"),
+    Err(dodopayments::Error::Api { status, message }) => {
+        eprintln!("API returned {status}: {message}");
+    }
+    Err(err) => eprintln!("request failed: {err}"),
+}
+```
+
+## 未记录的端点
+
+要调用尚未作为类型化方法公开的端点，请使用应用身份验证和基本 URL 的低级 `request` 构建器：
+
+```rust
+let response = client
+    .request(reqwest::Method::GET, "/some/path")
+    .send()
+    .await?;
+```
+
+## 资源
+
+View source code and contribute
+
+View the published crate and versions
+
+Complete API documentation
+
+Get help and connect with developers
+
+## 支持
+
+需要 Rust SDK 的帮助吗？
+
+- **Discord**: 加入我们的[社区服务器](https://discord.gg/bYqAp4ayYh)获取实时支持
+- **Email**: 联系我们 support@dodopayments.com
+- **GitHub**: 在 [repository](https://github.com/dodopayments/dodopayments-rust/issues) 上打开一个 issue
+
+## 贡献
+
+欢迎贡献！查看 [contributing guidelines](https://github.com/dodopayments/dodopayments-rust/blob/main/CONTRIBUTING.md) 开始。
