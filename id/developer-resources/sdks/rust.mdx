@@ -1,0 +1,398 @@
+---
+title: Rust
+description: Integrasikan Dodo Payments ke dalam aplikasi Rust Anda dengan SDK
+  terketik kuat yang mengutamakan keselarasan berbasis async, dibangun di atas
+  Tokio dan reqwest
+icon: rust
+keywords:
+  - Dodo Payments
+  - Rust SDK
+  - cargo
+  - crates.io
+  - Tokio
+  - reqwest
+---
+
+SDK Rust menyediakan akses yang mudah dan berbasis async ke Dodo Payments REST API dari aplikasi yang ditulis dalam Rust. Ini menawarkan permintaan dan respons yang terketik kuat, pembantu penomoran halaman bawaan, dan batas waktu serta lingkungan yang dapat dikonfigurasi.
+
+## Instalasi
+
+Tambahkan SDK ke proyek Anda dengan Cargo:
+
+```bash
+cargo add dodopayments
+```
+
+Atau tambahkan secara manual ke `Cargo.toml` Anda:
+
+```toml
+[dependencies]
+dodopayments = "1.106.0"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+futures = "0.3" # required for streaming paginated results
+```
+
+<Info>
+SDK memerlukan Rust 1.75 atau yang lebih baru, memanfaatkan fitur async modern untuk kinerja optimal.
+</Info>
+
+## Pengantar Cepat
+
+Klien membaca API key Anda dari variabel lingkungan `DODO_PAYMENTS_API_KEY` secara default. Inisialisasi klien dan buat sesi checkout pertama Anda:
+
+```rust
+use dodopayments::Client;
+
+#[tokio::main]
+async fn main() -> dodopayments::Result<()> {
+    let client = Client::from_env()?;
+
+    let result = client
+        .checkout_sessions()
+        .create()
+        .body(dodopayments::models::CheckoutSessionsCreateParams {
+            product_cart: Some(vec![dodopayments::models::ProductItemReq {
+                product_id: "product_id".to_string(),
+                quantity: 1,
+                addons: None,
+                amount: None,
+                credit_entitlements: None,
+            }]),
+            ..Default::default()
+        })
+        .await?;
+
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+<Warning>
+Selalu simpan API key Anda dengan aman menggunakan variabel lingkungan. Jangan pernah menanamkannya langsung di dalam kode sumber.
+</Warning>
+
+## Fitur Inti
+
+<CardGroup cols={2}>
+<Card title="Async First" icon="bolt">
+  Dibangun di atas Tokio dan reqwest dengan dukungan `async`/`await` di seluruh
+</Card>
+
+<Card title="Strong Typing" icon="shield-check">
+  Permintaan dan respons yang terketik kuat untuk keamanan waktu kompilasi
+</Card>
+
+<Card title="Auto-Pagination" icon="layer-group">
+  Melakukan streaming setiap item di seluruh halaman atau memajukan satu halaman pada satu waktu
+</Card>
+
+<Card title="Configurable" icon="sliders">
+  Mengonfigurasi lingkungan, batas waktu, dan URL dasar per klien
+</Card>
+</CardGroup>
+
+## Konfigurasi
+
+### Variabel Lingkungan
+
+Secara default, `Client::from_env()` membaca API key Anda dari variabel lingkungan `DODO_PAYMENTS_API_KEY` dan menggunakan URL dasar default kecuali Anda mengatur `DODO_PAYMENTS_BASE_URL`:
+
+```bash
+export DODO_PAYMENTS_API_KEY="your_api_key"
+export DODO_PAYMENTS_BASE_URL="https://test.dodopayments.com" # optional
+```
+
+Anda juga dapat mengonfigurasi klien secara eksplisit. `Client::new` mengembalikan `Result`, jadi buka dengan `?` di dalam fungsi yang mengembalikan `dodopayments::Result`:
+
+```rust
+use dodopayments::{Client, ClientConfig};
+
+#[tokio::main]
+async fn main() -> dodopayments::Result<()> {
+    let client = Client::new(
+        ClientConfig::new("https://live.dodopayments.com").with_api_key("My API Key"),
+    )?;
+    println!("{}", client.base_url());
+    Ok(())
+}
+```
+
+### Lingkungan
+
+| Nama        | URL Dasar                          |
+| ----------- | --------------------------------- |
+| `live_mode` | `https://live.dodopayments.com`   |
+| `test_mode` | `https://test.dodopayments.com`   |
+
+URL dasar default adalah `https://live.dodopayments.com`. Pilih lingkungan lain dengan enum `Environment` alih-alih menanamkan URL langsung:
+
+```rust
+use dodopayments::{Client, ClientConfig, Environment};
+
+let client = Client::new(
+    ClientConfig::from_environment(Environment::TestMode).with_api_key("My API Key"),
+)?;
+```
+
+Untuk terus membaca API key dari `DODO_PAYMENTS_API_KEY` via `from_env()` sambil menargetkan lingkungan non-default, menimpanya pada konfigurasi:
+
+```rust
+use dodopayments::{Client, ClientConfig, Environment};
+
+let client = Client::new(ClientConfig::from_env()?.with_environment(Environment::TestMode))?;
+```
+
+### Batas Waktu
+
+Batas waktu permintaan default adalah 30 detik. Timpakan per klien:
+
+```rust
+use std::time::Duration;
+use dodopayments::{Client, ClientConfig};
+
+let client = Client::new(
+    ClientConfig::new("https://live.dodopayments.com")
+        .with_api_key("My API Key")
+        .with_timeout(Duration::from_secs(60)),
+)?;
+```
+
+## Operasi Umum
+
+### Buat Sesi Checkout
+
+Hasilkan sesi checkout:
+
+```rust
+let session = client
+    .checkout_sessions()
+    .create()
+    .body(dodopayments::models::CheckoutSessionsCreateParams {
+        product_cart: Some(vec![dodopayments::models::ProductItemReq {
+            product_id: "prod_123".to_string(),
+            quantity: 1,
+            addons: None,
+            amount: None,
+            credit_entitlements: None,
+        }]),
+        return_url: Some("https://yourdomain.com/return".to_string()),
+        ..Default::default()
+    })
+    .await?;
+
+println!("{session:?}");
+```
+
+### Kelola Pelanggan
+
+Buat dan ambil informasi pelanggan:
+
+```rust
+// Create a customer
+let customer = client
+    .customers()
+    .create()
+    .body(dodopayments::models::CustomerCreateParams {
+        email: "customer@example.com".to_string(),
+        name: "John Doe".to_string(),
+        ..Default::default()
+    })
+    .await?;
+
+// Retrieve a customer
+let customer = client
+    .customers()
+    .retrieve("cus_123")
+    .await?;
+
+println!("{customer:?}");
+```
+
+### Tangani Langganan
+
+Buat dan kelola langganan berulang:
+
+```rust
+let subscription = client
+    .subscriptions()
+    .create()
+    .body(dodopayments::models::SubscriptionCreateParams {
+        billing: dodopayments::models::BillingAddress {
+            country: "US".to_string(),
+            city: "San Francisco".to_string(),
+            state: "CA".to_string(),
+            street: "1 Market St".to_string(),
+            zipcode: "94105".to_string(),
+        },
+        customer: dodopayments::models::CustomerRequest::AttachExisting(
+            dodopayments::models::AttachExistingCustomer {
+                customer_id: "cus_123".to_string(),
+            },
+        ),
+        product_id: "pdt_456".to_string(),
+        quantity: 1,
+        ..Default::default()
+    })
+    .await?;
+
+println!("{subscription:?}");
+```
+
+<Info>
+`billing` memerlukan minimal kode ISO dua huruf `country`. `customer` adalah enum `CustomerRequest` — berikan `AttachExisting` untuk pelanggan yang sudah ada atau `New` untuk yang baru. Bidang jumlah seperti `product_price` ada pada denominasi mata uang terendah (mis., `2500` = $25.00 USD).
+</Info>
+
+## Penagihan Berdasarkan Penggunaan
+
+### Memasukkan Event Penggunaan
+
+Lacak event khusus:
+
+```rust
+let response = client
+    .usage_events()
+    .ingest()
+    .body(dodopayments::models::UsageEventsIngestParams {
+        events: vec![dodopayments::models::EventInput {
+            event_id: "api_call_12345".to_string(),
+            customer_id: "cus_abc123".to_string(),
+            event_name: "api_request".to_string(),
+            ..Default::default()
+        }],
+    })
+    .await?;
+
+println!("{response:?}");
+```
+
+### Daftar Event Penggunaan
+
+```rust
+let events = client
+    .usage_events()
+    .list()
+    .query(serde_json::json!({
+        "customer_id": "cus_abc123",
+        "event_name": "api_request",
+    }))
+    .await?;
+
+for event in &events.items {
+    println!("{event:?}");
+}
+```
+
+## Pagination
+
+Endpoint daftar mengembalikan halaman yang terketik yang bidang `items` memegang halaman hasil saat ini. Melakukan streaming setiap item di seluruh halaman dengan `into_stream`:
+
+```rust
+use futures::StreamExt;
+
+let mut items = Box::pin(
+    client
+        .payments()
+        .list()
+        .query(serde_json::json!({}))
+        .await?
+        .into_stream(),
+);
+
+while let Some(item) = items.next().await {
+    let item = item?;
+    println!("{item:?}");
+}
+```
+
+Atau majukan satu halaman pada satu waktu dengan `get_next_page`:
+
+```rust
+let mut page = client
+    .payments()
+    .list()
+    .query(serde_json::json!({}))
+    .await?;
+
+loop {
+    for item in &page.items {
+        println!("{item:?}");
+    }
+    match page.get_next_page().await? {
+        Some(next) => page = next,
+        None => break,
+    }
+}
+```
+
+## Penanganan Kesalahan
+
+Setiap metode mengembalikan `dodopayments::Result<T>`. Kegagalan diwakili oleh enum `dodopayments::Error`. Cocokkan untuk menangani kesalahan API secara berbeda dari kesalahan transportasi:
+
+```rust
+let result = client
+    .checkout_sessions()
+    .create()
+    .body(dodopayments::models::CheckoutSessionsCreateParams {
+        product_cart: Some(vec![dodopayments::models::ProductItemReq {
+            product_id: "product_id".to_string(),
+            quantity: 1,
+            addons: None,
+            amount: None,
+            credit_entitlements: None,
+        }]),
+        ..Default::default()
+    })
+    .await;
+
+match result {
+    Ok(value) => println!("{value:?}"),
+    Err(dodopayments::Error::Api { status, message }) => {
+        eprintln!("API returned {status}: {message}");
+    }
+    Err(err) => eprintln!("request failed: {err}"),
+}
+```
+
+## Endpoint yang Tidak Didokumentasikan
+
+Untuk memanggil endpoint yang belum diungkapkan sebagai metode terketik, gunakan pembangun `request` tingkat rendah, yang menerapkan otentikasi dan URL dasar:
+
+```rust
+let response = client
+    .request(reqwest::Method::GET, "/some/path")
+    .send()
+    .await?;
+```
+
+## Sumber Daya
+
+<CardGroup cols={2}>
+<Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-rust">
+  Lihat kode sumber dan berkontribusi
+</Card>
+
+<Card title="Crates.io" icon="cube" href="https://crates.io/crates/dodopayments">
+  Lihat crate yang dipublikasikan dan versinya
+</Card>
+
+<Card title="API Reference" icon="book" href="/api-reference/introduction">
+  Dokumentasi API lengkap
+</Card>
+
+<Card title="Discord Community" icon="discord" href="https://discord.gg/bYqAp4ayYh">
+  Dapatkan bantuan dan terhubung dengan pengembang
+</Card>
+</CardGroup>
+
+## Dukungan
+
+Butuh bantuan dengan Rust SDK?
+
+- **Discord**: Bergabunglah dengan [server komunitas](https://discord.gg/bYqAp4ayYh) kami untuk dukungan real-time
+- **Email**: Hubungi kami di support@dodopayments.com
+- **GitHub**: Buka isu di [repository](https://github.com/dodopayments/dodopayments-rust/issues)
+
+## Berkontribusi
+
+Kami menerima kontribusi! Periksa [panduan kontribusi](https://github.com/dodopayments/dodopayments-rust/blob/main/CONTRIBUTING.md) untuk memulai.
