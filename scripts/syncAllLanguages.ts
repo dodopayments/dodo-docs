@@ -66,6 +66,8 @@ const FILES_TO_MOVE = [
 // These files will be removed from target language folders after sync
 const FILES_TO_EXCLUDE_FROM_TRANSLATION = [
   'miscellaneous/faq.mdx',
+  'miscellaneous/merchant-acceptance.mdx',
+  'miscellaneous/list-of-countries-we-accept-payments-from.mdx',
 ];
 
 function readJson(filePath) {
