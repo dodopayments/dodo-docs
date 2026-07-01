@@ -25,6 +25,8 @@ const DOCS_PATH = path.join(ROOT, 'docs.json');
 // These pages will be removed from non-English navigation entirely
 const PAGES_TO_EXCLUDE_FROM_TRANSLATION = [
     'miscellaneous/faq',
+    'miscellaneous/merchant-acceptance',
+    'miscellaneous/list-of-countries-we-accept-payments-from',
 ];
 
 function readDocs() {
