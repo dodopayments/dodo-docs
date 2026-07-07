@@ -1,0 +1,280 @@
+---
+title: Feature Flag Entitlement
+sidebarTitle: "Feature Flags"
+description: Gate features in your own application off a purchase. Feature flag entitlements deliver a boolean capability instantly on payment and revoke it automatically on cancellation.
+icon: "flag"
+tag: "NEW"
+keywords: ["Dodo Payments", "feature flags", "entitlement", "feature gating", "boolean capability", "plan features"]
+---
+
+<Info>
+A feature flag entitlement turns Dodo Payments into a billing-aware feature-flag store. Attach a flag like `advanced_reports` to a product, and every paying customer gets a grant your application can check via API or keep in sync with webhooks. No external platform, no OAuth, no delivery step — the grant itself is the capability.
+</Info>
+
+## What gets delivered
+
+Nothing leaves Dodo Payments — the grant **is** the deliverable:
+
+- On purchase, the grant is created and moves straight to `delivered`. There is no `pending` phase, no customer action, and no way for delivery to fail.
+- The grant carries a typed `feature` payload: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. Your application reads `feature_id` to decide what to unlock.
+- Cancellation, refund, or manual revoke moves the grant to `revoked`, and your application sees the flag disappear.
+
+Common uses include plan-based feature gating (Pro unlocks analytics), add-on capabilities (an "API access" upgrade), and early-access programs sold as one-time purchases.
+
+<Note>
+`feature_id` is a merchant-chosen identifier, not unique across entitlements. Two entitlements can confer the same `feature_id` — for example, a monthly and a yearly Pro plan both granting `advanced_reports`.
+</Note>
+
+## Create a feature flag
+
+<Steps>
+<Step title="Open Entitlements">
+In your Dodo Payments dashboard, go to **Entitlements** and click **+** to start a new entitlement, then choose **Feature Flags**.
+</Step>
+
+<Step title="Name the flag">
+Give the flag a **Display Name** for your dashboard, a **Feature ID** your application will check (the dashboard suggests one from the name), and a **Description** so your team knows what it controls.
+
+<Frame caption="Creating a feature flag. The Feature ID is what your application checks; Meta Data attaches limits alongside the flag.">
+<img src="/images/entitlements/feature-flags/create.png" alt="New Feature Flag form with display name, feature ID, description, and metadata key-value entries" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+
+<Step title="Optionally add metadata">
+Toggle **Meta Data** to attach key-value configuration — limits, tier names, quotas — that is delivered to your application alongside the flag. See [Attach limits with metadata](#attach-limits-with-metadata).
+</Step>
+
+<Step title="Confirm">
+Click **Confirm**. The flag appears in your entitlements list, ready to attach to products.
+
+<Frame caption="The created feature flag. The right pane tracks every customer grant issued from it.">
+<img src="/images/entitlements/feature-flags/list.png" alt="Entitlements dashboard showing the Advanced Reports feature flag with its grant activity pane" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+</Steps>
+
+## Attach to a product
+
+Open a product (or create one), find the **Entitlements** card, and click **+** to attach existing entitlements. Select your feature flag and click **Done**.
+
+<Frame caption="Attaching the feature flag to a product. One product can deliver multiple entitlements.">
+<img src="/images/entitlements/feature-flags/attach-picker.png" alt="Entitlements attach panel with the Advanced Reports feature flag selected" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+The attached flag shows on the product form, and the checkout preview lists it under **Includes**.
+
+<Frame caption="The product now includes the feature flag. Every successful purchase or active subscription grants it.">
+<img src="/images/entitlements/feature-flags/attach-to-product.png" alt="Product form with the Advanced Reports feature flag attached in the Entitlements card" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+## Required configuration
+
+| Field | Required | Description |
+|---|---|---|
+| `feature_id` | Yes | Identifier your application checks, e.g. `advanced_reports`. Not unique across entitlements. |
+| `feature_type` | Yes | Type of capability conferred. Only `boolean` is supported today. |
+
+### Create via API
+
+<CodeGroup>
+```typescript TypeScript theme={null}
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments({
+  bearerToken: process.env['DODO_PAYMENTS_API_KEY'],
+  environment: 'test_mode',
+});
+
+const entitlement = await client.entitlements.create({
+  name: 'Advanced Reports',
+  integration_type: 'feature_flag',
+  integration_config: {
+    feature_type: 'boolean',
+    feature_id: 'advanced_reports',
+  },
+  metadata: {
+    tier: 'pro',
+    monthly_report_limit: 100,
+  },
+});
+```
+
+```python Python theme={null}
+client.entitlements.create(
+    name="Advanced Reports",
+    integration_type="feature_flag",
+    integration_config={
+        "feature_type": "boolean",
+        "feature_id": "advanced_reports",
+    },
+    metadata={
+        "tier": "pro",
+        "monthly_report_limit": 100,
+    },
+)
+```
+
+```go Go theme={null}
+client.Entitlements.New(ctx, dodopayments.EntitlementNewParams{
+  Name:            dodopayments.F("Advanced Reports"),
+  IntegrationType: dodopayments.F(dodopayments.EntitlementIntegrationTypeFeatureFlag),
+  IntegrationConfig: dodopayments.F[dodopayments.IntegrationConfigUnionParam](
+    dodopayments.IntegrationConfigFeatureFlagConfigParam{
+      FeatureType: dodopayments.F(dodopayments.FeatureTypeBoolean),
+      FeatureID:   dodopayments.F("advanced_reports"),
+    },
+  ),
+})
+```
+</CodeGroup>
+
+---
+
+## Attach limits with metadata
+
+A boolean flag answers "does this customer have the feature?". Metadata answers "with what configuration?". Entitlement metadata accepts string, integer, number, and boolean values, and every grant takes a **frozen snapshot** of the entitlement's metadata at the moment it is created.
+
+That snapshot behavior is what makes metadata safe to use for plan limits:
+
+- Editing the entitlement's metadata later only affects **future** grants. Customers keep the limits they purchased under.
+- The snapshot is returned on each grant as its `metadata` field, so one API call gives you both the flag and its configuration.
+
+For example, an `advanced_reports` flag with `{ "tier": "pro", "monthly_report_limit": 100 }` lets your application unlock the dashboard *and* enforce the 100-report quota without a second lookup. If you later raise the limit to 250, existing customers stay at 100 until they receive a new grant (for example, after a plan change).
+
+<Tip>
+Use metadata for limits and configuration; use `feature_id` only for identity. Encoding limits in the id (`advanced_reports_100`) forces a new flag for every limit change and breaks your application's checks.
+</Tip>
+
+---
+
+## Check a customer's features
+
+List a customer's delivered feature-flag grants and build the set of enabled features. The endpoint returns one row per grant across all entitlements, filterable by `integration_type` and `status`.
+
+<CodeGroup>
+```typescript TypeScript theme={null}
+const features = new Map<string, Record<string, unknown>>();
+
+for await (const grant of client.customers.listEntitlementGrants('cus_abc123', {
+  integration_type: 'feature_flag',
+  status: 'Delivered',
+})) {
+  if (grant.feature) {
+    features.set(grant.feature.feature_id, grant.metadata ?? {});
+  }
+}
+
+if (features.has('advanced_reports')) {
+  const limit = features.get('advanced_reports')?.monthly_report_limit;
+  // unlock the dashboard, enforce the limit
+}
+```
+
+```python Python theme={null}
+page = client.customers.list_entitlement_grants(
+    customer_id="cus_abc123",
+    integration_type="feature_flag",
+    status="Delivered",
+)
+
+features = {
+    grant.feature.feature_id: grant.metadata
+    for grant in page.items
+    if grant.feature
+}
+
+if "advanced_reports" in features:
+    limit = features["advanced_reports"].get("monthly_report_limit")
+```
+
+```go Go theme={null}
+page, _ := client.Customers.ListEntitlementGrants(
+  ctx, "cus_abc123",
+  dodopayments.CustomerListEntitlementGrantsParams{
+    IntegrationType: dodopayments.F("feature_flag"),
+    Status:          dodopayments.F("Delivered"),
+  },
+)
+
+features := map[string]bool{}
+for _, grant := range page.Items {
+  if grant.Feature.FeatureID != "" {
+    features[grant.Feature.FeatureID] = true
+  }
+}
+```
+</CodeGroup>
+
+<Note>
+The `feature` payload is populated only on `feature_flag` grants; it is `null` for every other integration type. See the [List Customer Grants](/api-reference/entitlements/list-customer-grants) API reference for the full response shape.
+</Note>
+
+Checking the API on every request adds latency to your hot path. Cache the feature set per customer with a short TTL (minutes, not hours), and invalidate the cache from your webhook handler when a grant changes state — that combination keeps checks fast and revocations near-instant.
+
+---
+
+## Lifecycle
+
+Feature flag grants follow the standard [grant lifecycle](/features/entitlements/introduction#how-grants-work) with one simplification: there is no delivery step, so grants never sit in `pending` and never move to `failed`.
+
+| Trigger | Effect |
+|---|---|
+| One-time payment succeeds / subscription becomes active | Grant created with `status: delivered` and `delivered_at` set. |
+| Subscription put on hold, cancelled, or expired | Grant revoked with the matching `revocation_reason`. |
+| Refund on a one-time payment | Grant revoked with `revocation_reason: refund`. |
+| Subscription recovers (for example, dunning succeeds) | The revoked grant is restored to `delivered` — same grant `id`, revocation fields cleared. |
+| Manual API revoke | Grant revoked with `revocation_reason: manual`. Not auto-restored on renewal. |
+
+Grants are idempotent per entitlement and customer: while a customer has a non-revoked grant for a flag, repeat purchases and renewals do not create duplicates.
+
+---
+
+## Webhooks
+
+Subscribe to the [`entitlement_grant.*` events](/developer-resources/webhooks/intents/entitlement-grant) to mirror flags into your own database instead of polling:
+
+- `entitlement_grant.created` — arrives already `delivered` with the `feature` payload. Enable the feature.
+- `entitlement_grant.delivered` — fires when a previously revoked grant is restored. Re-enable the feature.
+- `entitlement_grant.revoked` — access withdrawn. Disable the feature and check `revocation_reason` to decide your messaging.
+
+```typescript TypeScript theme={null}
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  if (event.type.startsWith('entitlement_grant.') && event.data.feature) {
+    const { customer_id, feature } = event.data;
+    const enabled = event.type !== 'entitlement_grant.revoked';
+
+    await db.customerFeatures.upsert({
+      customerId: customer_id,
+      featureId: feature.feature_id,
+      enabled,
+      config: event.data.metadata ?? {},
+    });
+  }
+
+  res.sendStatus(200);
+});
+```
+
+There is no `entitlement_grant.failed` for feature flags — delivery happens entirely inside Dodo Payments and cannot fail.
+
+---
+
+## Example: Pro plan unlocks advanced reports
+
+1. **Create the flag.** `feature_id: advanced_reports` with metadata `{ "tier": "pro", "monthly_report_limit": 100 }`.
+2. **Attach it** to your Pro Plan subscription product.
+3. **A customer subscribes.** Dodo Payments creates a `delivered` grant and fires `entitlement_grant.created`; your webhook handler enables `advanced_reports` for the customer with a limit of 100.
+4. **Your app gates the feature.** On dashboard load, check the cached feature set (or call `listEntitlementGrants`) and render the reports tab only when `advanced_reports` is present.
+5. **The customer cancels.** Dodo Payments revokes the grant and fires `entitlement_grant.revoked`; your handler disables the feature. If the customer later recovers via dunning, `entitlement_grant.delivered` restores it — no code changes needed.
+
+---
+
+## Best practices
+
+- **Use stable, snake_case feature ids.** Your application code checks these strings; renaming one is a breaking change on both sides.
+- **One flag per capability.** Prefer `advanced_reports` + `api_access` as two entitlements over a single `pro_bundle` — revocation and plan mixes stay clean.
+- **Drive state from webhooks, verify with the API.** Webhooks keep your database current; the list endpoint is the source of truth for reconciliation jobs and cache misses.
+- **Treat `revoked` as immediate.** A revoked flag means the customer is no longer paying for the feature. Gate on the next request, not the next session.
+- **Put limits in metadata, not in code.** Changing a quota then only requires editing the entitlement — new customers pick it up automatically while existing grants keep their purchased snapshot.
