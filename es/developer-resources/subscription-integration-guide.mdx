@@ -130,86 +130,101 @@ The following is an example of the response:
   "session_id": "cks_Gi6KGJ2zFJo9rq9Ukifwa",
   "checkout_url": "https://test.checkout.dodopayments.com/session/cks_Gi6KGJ2zFJo9rq9Ukifwa"
 }
-```
+```  
 
-  
-
-Redirect the customer to `checkout_url`.  
+Redirige al cliente a `checkout_url`.  
 
 ### Webhooks
 
-When integrating subscriptions, you'll receive webhooks to track the subscription lifecycle. These webhooks help you manage subscription states and payment scenarios effectively.
+Al integrar suscripciones, recibirás webhooks para rastrear el ciclo de vida de la suscripción. Estos webhooks te ayudan a gestionar los estados de suscripción y escenarios de pago de manera efectiva.
 
-To set up your webhook endpoint, please follow our [Detailed Integration Guide](/developer-resources/integration-guide#implementing-webhooks).
+Para configurar tu endpoint de webhook, sigue nuestra [Guía de Integración Detallada](/developer-resources/integration-guide#implementing-webhooks).
 
-#### Subscription Event Types
+#### Tipos de Eventos de Suscripción
 
-The following webhook events track subscription status changes:
+Los siguientes eventos de webhook rastrean los cambios de estado de la suscripción:
 
-1. **`subscription.active`** - Subscription is successfully activated.
-2. **`subscription.updated`** - Subscription object was updated (fires on any field change).
-3. **`subscription.on_hold`** - Subscription is put on hold due to failed renewal.
-4. **`subscription.failed`** - Subscription creation failed during mandate creation.
-5. **`subscription.renewed`** - Subscription is renewed for the next billing period.
+1. **`subscription.active`** - La suscripción se activa con éxito.
+2. **`subscription.updated`** - El objeto de la suscripción fue actualizado (se dispara con cualquier cambio de campo).
+3. **`subscription.on_hold`** - La suscripción se pone en espera debido a una renovación fallida.
+4. **`subscription.failed`** - La creación de la suscripción falló durante la creación del mandato.
+5. **`subscription.renewed`** - La suscripción se renueva para el siguiente período de facturación.
 
-For reliable subscription lifecycle management, we recommend tracking these subscription events.
+Para una gestión confiable del ciclo de vida de la suscripción, recomendamos rastrear estos eventos de suscripción.
 
 <Tip>
-Use `subscription.updated` to get real-time notifications about any subscription changes, keeping your application state in sync without polling the API.
+Usa `subscription.updated` para obtener notificaciones en tiempo real sobre cualquier cambio de suscripción, manteniendo el estado de tu aplicación sincronizado sin sondeo de la API.
 </Tip>
 
-#### Payment Scenarios
+#### Escenarios de Pago
 
-**Successful Payment Flow**
+**Flujo de Pago Exitoso**
 
-When a payment succeeds, you'll receive the following webhooks:
+Cuando un pago tiene éxito, recibirás los siguientes webhooks:
 
-1. `subscription.active` - Indicates subscription activation
-2. `payment.succeeded` - Confirms the initial payment:
-    - For immediate billing (0 trial days): Expect within 2-10 minutes
-    - For trial days: whenever that ends
-3. `subscription.renewed` - Indicates payment deduction and renewal for next cycle. (Basically, whenever payment gets deducted for subscription products, you will get `subscription.renewed` webhook along with `payment.succeeded`)
+1. `subscription.active` - Indica activación de la suscripción
+2. `payment.succeeded` - Confirma el pago inicial:
+    - Para facturación inmediata (0 días de prueba): Espera dentro de 2-10 minutos
+    - Para días de prueba: cuando eso termine
+3. `subscription.renewed` - Indica deducción de pago y renovación para el próximo ciclo. (Básicamente, cada vez que se deduce el pago por productos de suscripción, recibirás el webhook `subscription.renewed` junto con `payment.succeeded`)
 
-**Payment Failure Scenarios**
+**Escenarios de Fallo de Pago**
 
-1. Subscription Failure
-  - `subscription.failed` - Subscription creation failed due to failure to create a mandate.
-  - `payment.failed` - Indicates failed payment.
+1. Fallo de la Suscripción
+  - `subscription.failed` - La creación de la suscripción falló debido a un fallo en la creación de un mandato.
+  - `payment.failed` - Indica un fallo de pago.
 
-2. Subscription On Hold
-  - `subscription.on_hold` - Subscription is put on hold due to failed renewal payment or failed plan change charge.
-  - When a subscription goes on hold, it will not renew automatically until the payment method is updated.
+2. Suscripción en Espera
+  - `subscription.on_hold` - La suscripción se pone en espera debido a un fallo en el pago de renovación o un fallo al cambiar el plan.
+  - Cuando una suscripción está en espera, no se renovará automáticamente hasta que se actualice el método de pago.
 
-<Info>**Best Practice**: To simplify implementation, we recommend primarily tracking subscription events for managing the subscription lifecycle.</Info>
+<Info>**Mejor Práctica**: Para simplificar la implementación, recomendamos principalmente rastrear eventos de suscripción para gestionar el ciclo de vida de la suscripción.</Info>
 
-### Handling Subscription On Hold
+<Tip>
+Para una guía completa sobre cómo leer `error_code`/`error_message`, decidir cuándo reintentar y visibilizar los fallos a los clientes, consulta [Manejo de Fallos de Pago](/developer-resources/handle-payment-failures).
+</Tip>
 
-When a subscription enters `on_hold` state, you need to update the payment method to reactivate it. This section explains when subscriptions go on hold and how to handle them.
+#### `subscription.failed` vs. `subscription.on_hold`
 
-#### When Subscriptions Go On Hold
+Estos dos eventos son fáciles de confundir, pero requieren manejos muy diferentes:
 
-A subscription is placed on hold when:
-
-- **Renewal payment fails**: The automatic renewal charge fails due to insufficient funds, expired card, or bank decline
-- **Plan change charge fails**: An immediate charge during plan upgrade/downgrade fails
-- **Payment method authorization fails**: The payment method cannot be authorized for recurring charges
+| Evento | Cuándo se dispara | Estado | ¿Recuperable? | Qué hacer |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | El mandato **inicial** no pudo ser creado en la **creación** de la suscripción | `failed` | **No — terminal** | No conceder acceso. Pedir al cliente que inicie una **nueva** suscripción con un método de pago diferente. |
+| `subscription.on_hold` | Un pago de **renovación** (o un cargo por cambio de plan) falló en una suscripción ya activa | `on_hold` | **Sí** | Recuperar actualizando el método de pago; ver [Manejo de Suscripción en Espera](#handling-subscription-on-hold) a continuación. |
 
 <Warning>
-Subscriptions in `on_hold` state will not renew automatically. You must update the payment method to reactivate the subscription.
+`subscription.failed` es terminal: la suscripción no puede reactivarse. El cliente debe crear una nueva suscripción. Nunca conceder derechos cuando se dispara este evento.
 </Warning>
 
-#### Reactivating Subscriptions from On Hold
+### Manejo de Suscripción en Espera
 
-To reactivate a subscription from `on_hold` state, use the Update Payment Method API. This automatically:
+Cuando una suscripción entra en el estado `on_hold`, necesitas actualizar el método de pago para reactivarla. Esta sección explica cuándo las suscripciones se ponen en espera y cómo manejarlas.
 
-1. Creates a charge for remaining dues
-2. Generates an invoice for the charge
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+#### Cuándo las Suscripciones se Ponen en Espera
+
+Una suscripción se coloca en espera cuando:
+
+- **Falló el pago de renovación**: El cargo automático de renovación falla debido a fondos insuficientes, tarjeta expirada o rechazo del banco
+- **Falla el cargo por cambio de plan**: Un cargo inmediato durante la actualización/degradación del plan falla
+- **Falla la autorización del método de pago**: El método de pago no puede ser autorizado para cargos recurrentes
+
+<Warning>
+Las suscripciones en estado `on_hold` no se renovarán automáticamente. Debes actualizar el método de pago para reactivar la suscripción.
+</Warning>
+
+#### Reactivación de Suscripciones desde en Espera
+
+Para reactivar una suscripción desde el estado `on_hold`, usa la API de Actualización de Método de Pago. Esto automáticamente:
+
+1. Crea un cargo por deudas pendientes
+2. Genera una factura por el cargo
+3. Procesa el pago usando el nuevo método de pago
+4. Reactiva la suscripción al estado `active` tras el pago exitoso
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-When you receive a `subscription.on_hold` webhook, update your application state and notify the customer:
+Cuando recibes un webhook `subscription.on_hold`, actualiza el estado de tu aplicación y notifica al cliente:
 
 ```javascript
 // Webhook handler
@@ -236,7 +251,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-When the customer is ready to update their payment method, call the Update Payment Method API:
+Cuando el cliente esté listo para actualizar su método de pago, llama a la API de Actualización de Método de Pago:
 
 <CodeGroup>
 
@@ -271,7 +286,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-You can also use an existing payment method ID if the customer has saved payment methods:
+También puedes usar una ID de método de pago existente si el cliente ha guardado métodos de pago:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -284,10 +299,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-After updating the payment method, monitor for these webhook events:
+Después de actualizar el método de pago, monitorea estos eventos de webhook:
 
-1. **`payment.succeeded`** - The charge for remaining dues was successful
-2. **`subscription.active`** - The subscription has been reactivated
+1. **`payment.succeeded`** - El cargo por deudas pendientes fue exitoso
+2. **`subscription.active`** - La suscripción ha sido reactivada
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -319,101 +334,76 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Sample Subscription event payload
+### Ejemplo de Payload de Evento de Suscripción
 
 ---
 
-| Property | Type | Required | Description |
-|----------|------|----------|-------------|
-| `business_id` | string | Yes | The unique identifier for the business |
-| `timestamp` | string | Yes | The timestamp of when the event occurred (not necessarily the same as when it was delivered) |
-| `type` | string | Yes | The type of event. See [Event Types](#event-types) |
-| `data` | object | Yes | The main data payload. See [Data Object](#data-object) |
+| Propiedad | Tipo | Obligatorio | Descripción |
+|----------|------|------------|-------------|
+| `business_id` | string | Sí | El identificador único para el negocio |
+| `timestamp` | string | Sí | La marca de tiempo de cuando ocurrió el evento (no necesariamente igual a cuando se entregó) |
+| `type` | string | Sí | El tipo de evento. Ver [Tipos de Evento](#event-types) |
+| `data` | object | Sí | La carga útil principal de datos. Ver [Objeto de Datos](#data-object) |
 
-## Changing Subscription Plans
+## Cambiar Planes de Suscripción
 
-You can upgrade or downgrade a subscription plan using the change plan API endpoint. This allows you to modify the subscription's product, quantity, and handle proration.
+Puedes mejorar o degradar un plan de suscripción usando el endpoint API de cambio de plan. Esto te permite modificar el producto de la suscripción, la cantidad y manejar la prorrata.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  For detailed information about changing subscription plans, please refer to our Change Plan API documentation.
+  Para obtener información detallada sobre el cambio de planes de suscripción, consulta nuestra documentación de la API de Cambio de Plan.
 </Card>
 
-### Proration Options
+### Opciones de Prorrata
 
-When changing subscription plans, you have two options for handling the immediate charge:
+Al cambiar planes de suscripción, tienes dos opciones para manejar el cargo inmediato:
 
 #### 1. `prorated_immediately`
-- Calculates the prorated amount based on the remaining time in the current billing cycle
-- Charges the customer only for the difference between the old and new plan
-- During a trial period, this will immediately switch the user to the new plan, charging the customer right away
+- Calcula el monto prorrateado basado en el tiempo restante en el ciclo de facturación actual
+- Cobra al cliente solo la diferencia entre el plan antiguo y el nuevo
+- Durante un período de prueba, esto cambiará inmediatamente al usuario al nuevo plan, cobrando al cliente de inmediato
 
 #### 2. `full_immediately`
-- Charges the customer the full subscription amount for the new plan
-- Ignores any remaining time or credits from the previous plan
-- Useful when you want to reset the billing cycle or charge the full amount regardless of proration
+- Cobra al cliente el monto completo de la suscripción para el nuevo plan
+- Ignora cualquier tiempo restante o créditos del plan anterior
+- Útil cuando deseas restablecer el ciclo de facturación o cobrar el monto completo sin importar la prorrata
 
 #### 3. `difference_immediately`
-- When upgrading, the customer is immediately charged the difference between the two plan amounts.
-- For example, if the current plan is 30 Dollars and the customer upgrades to an 80 Dollars, they are charged $50 instantly. 
-- When downgrading, the unused amount from the current plan is added as internal credit and automatically applied to future subscription renewals.
-- For example, if the current plan is 50 Dollars and the customer switches to a 20 Dollars plan, the remaining $30 is credited and used toward the next billing cycle.
+- Al mejorar, el cliente se cobra de inmediato la diferencia entre los dos montos de los planes.
+- Por ejemplo, si el plan actual es de 30 Dólares y el cliente mejora a uno de 80 Dólares, se le cobran $50 instantáneamente.
+- Al degradar, la cantidad no utilizada del plan actual se añade como crédito interno y se aplica automáticamente a renovaciones futuras de suscripción.
+- Por ejemplo, si el plan actual es de 50 Dólares y el cliente cambia a un plan de 20 Dólares, los $30 restantes se acreditan y se usan para el siguiente ciclo de facturación.
 
-### Behavior
+### Comportamiento
 
-- When you invoke this API, Dodo Payments immediately initiates a charge based on your selected proration option
-- If the plan change is a downgrade and you use `prorated_immediately`, credits will be automatically calculated and added to the subscription's credit balance. These credits are specific to that subscription and will only be used to offset future recurring payments of the same subscription
-- The `full_immediately` option bypasses credit calculations and charges the complete new plan amount
+- Cuando invocas esta API, Dodo Payments inicia inmediatamente un cargo basado en tu opción de prorrata seleccionada
+- Si el cambio de plan es una degradación y usas `prorated_immediately`, se calcularán automáticamente los créditos y se añadirán al saldo de crédito de la suscripción. Estos créditos son específicos de esa suscripción y solo se usarán para compensar futuros pagos recurrentes de la misma suscripción
+- La opción `full_immediately` omite los cálculos de crédito y cobra el monto completo del nuevo plan
 
 <Tip>
-**Choose your proration option carefully**: Use `prorated_immediately` for fair billing that accounts for unused time, or `full_immediately` when you want to charge the complete new plan amount regardless of the current billing cycle.
+**Elige tu opción de prorrata cuidadosamente**: Usa `prorated_immediately` para una facturación justa que tenga en cuenta el tiempo no utilizado, o `full_immediately` cuando desees cobrar el monto completo del nuevo plan sin importar el ciclo de facturación actual.
 </Tip>
 
-### Charge Processing
+### Procesamiento del Cargo
 
-- The immediate charge initiated upon plan change usually completes processing in less than 2 minutes
-- If this immediate charge fails for any reason, the subscription is automatically placed on hold until the issue is resolved
+- El cargo inmediato iniciado al cambiar el plan usualmente completa el procesamiento en menos de 2 minutos
+- Si este cargo inmediato falla por alguna razón, la suscripción se coloca automáticamente en espera hasta que se resuelva el problema
 
-## On-Demand Subscriptions
+## Suscripciones Bajo Demanda
 
 <Info>
-  On-demand subscriptions let you charge customers flexibly, not just on a fixed schedule. This feature is available for all accounts.
+  Las suscripciones bajo demanda te permiten cobrar a los clientes de manera flexible, no solo en un horario fijo. Esta función está disponible para todas las cuentas.
 </Info>
 
-**To create an on-demand subscription:**
+**Para crear una suscripción bajo demanda:**
 
-To create an on-demand subscription, use the [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint and include the `on_demand` field in your request body. This allows you to authorize a payment method without an immediate charge, or set a custom initial price.
-
-**To charge an on-demand subscription:**
-
-Para cargos posteriores, utiliza el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica el monto a cobrar al cliente por esa transacción.
-
-<Note>
-For a complete, step-by-step guide—including request/response examples, safe retry policies, and webhook handling—see the <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
-</Note>
-
-## Related API Reference
-
-<CardGroup cols={2}>
-<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  API reference for creating subscription products and managing subscription lifecycle
-</Card>
-<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  API reference for upgrading, downgrading, or changing subscription plans with proration options
-</Card>
-<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  API reference for updating payment methods and reactivating on-hold subscriptions
-</Card>
-<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  API reference for updating subscription details and configuration
-</Card>
-</CardGroup>
+Para crear una suscripción bajo demanda, utiliza el endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e incluye el campo `on_demand` en el cuerpo de tu solicitud. Esto te permite autorizar un método de pago sin un cargo inmediato o establecer un precio inicial personalizado.
 
 **Para cobrar una suscripción bajo demanda:**
 
-Para cargos posteriores, utiliza el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica el monto a cobrar al cliente por esa transacción.
+Para cargos posteriores, utiliza el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica la cantidad a cobrar al cliente por esa transacción.
 
 <Note>
-Para una guía completa y paso a paso, incluyendo ejemplos de solicitud/respuesta, políticas de repetición segura, y manejo de webhook, consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de Suscripciones Bajo Demanda</a>.
+Para obtener una guía completa, paso a paso, incluyendo ejemplos de solicitudes/respuestas, políticas de reintento seguro y manejo de webhooks, consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de Suscripciones Bajo Demanda</a>.
 </Note>
 
 ## Referencia de API Relacionada
@@ -423,12 +413,12 @@ Para una guía completa y paso a paso, incluyendo ejemplos de solicitud/respuest
   Referencia de API para crear productos de suscripción y gestionar el ciclo de vida de la suscripción
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Referencia de API para actualizar, degradar o cambiar planes de suscripción con opciones de prorrateo
+  Referencia de API para mejorar, degradar o cambiar planes de suscripción con opciones de prorrata
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
   Referencia de API para actualizar métodos de pago y reactivar suscripciones en espera
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  Referencia de API para actualizar detalles y configuración de suscripción
+  Referencia de API para actualizar los detalles y la configuración de suscripciones
 </Card>
 </CardGroup>

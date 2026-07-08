@@ -334,15 +334,20 @@ sequenceDiagram
 
 ### Proration Modes
 
-| Mode | Adding Seats | Removing Seats |
-|------|-------------|----------------|
-| `prorated_immediately` | Charge for remaining days in cycle | Credit for unused days |
-| `difference_immediately` | Charge full seat price | Credit applied to future renewals |
-| `full_immediately` | Charge full seat price, reset billing cycle | No credit |
+| 模式 | 添加座位 | 移除座位 | 计费周期 |
+|------|-------------|----------------|---------------|
+| `prorated_immediately` | 收取周期内剩余天数费用 | 未使用天数的信用 | 重置为今天 |
+| `difference_immediately` | 收取座位全价 | 将信用应用于未来续订 | 重置为今天 |
+| `full_immediately` | 收取座位全价 | 无信用 | 重置为今天 |
+| `do_not_bill` | 添加座位，当前不收费 | 移除座位，无信用 | 保持不变 |
 
-### Proration Examples
+<Warning>
+`prorated_immediately`、`difference_immediately` 和 `full_immediately` 都会**将计费周期重置为更改日期**——下次续订将重新锚定到座位更改应用的日期。只有 **`do_not_bill`** 保持原始续订日期（新座位数量将在下次续订时全额计费，变更时不收费）。
+</Warning>
 
-**Scenario: 15-day billing cycle remaining, adding 5 seats at $10/seat**
+### 按比例收费示例
+
+**场景：剩余15天计费周期，添加5个座位，每个座位10美元**
 
 <Tabs>
 <Tab title="prorated_immediately">
@@ -351,18 +356,20 @@ sequenceDiagram
 Prorated charge = ($10 × 5 seats) × (15 days / 30 days)
                 = $50 × 0.5
                 = $25 immediate charge
+Billing cycle resets to today
 ```
 
-Customer pays $25 now, then $50/month on renewal.
+客户现在支付按比例费用，计费周期重新锚定到更改日期——下次续订（新增座位每月50美元）将从今天起的一周期后收取，而不是从原续订日期起。
 </Tab>
 
 <Tab title="difference_immediately">
 
 ```
 Immediate charge = $10 × 5 seats = $50
+Billing cycle resets to today
 ```
 
-Customer pays full $50 now, regardless of cycle position.
+客户现在支付座位全价，无论周期位置如何，计费周期重新锚定到更改日期。
 </Tab>
 
 <Tab title="full_immediately">
@@ -372,11 +379,21 @@ Immediate charge = Full subscription + add-ons
 Billing cycle resets to today
 ```
 
-Customer pays full amount, new billing cycle starts.
+支付全额，新的计费周期开始。
+</Tab>
+
+<Tab title="do_not_bill">
+
+```
+Immediate charge = $0
+Billing cycle unchanged
+```
+
+座位立即添加，变更时不收费。保留原始续订日期，新的座位数量将在下次续订时全额计费。此模式用于需要保持现有计费周期的情况。
 </Tab>
 </Tabs>
 
-**Scenario: Removing 3 seats mid-cycle with prorated_immediately**
+**场景：周期中期删除3个座位，立即按比例收费**
 
 ```
 Current: Team Plan ($99/month) + 10 extra seats × $10/seat = $199/month
@@ -394,12 +411,12 @@ Credit for removed seats:
 ```
 
 <Tip>
-**Choosing a proration mode for seat changes**: Use `prorated_immediately` for fair day-based billing when teams frequently adjust seats. Use `difference_immediately` for simpler math that charges or credits the full seat price. See the [Proration Guide](/developer-resources/subscription-upgrade-downgrade#proration-modes) for detailed comparisons.
+**选择座位更改的按比例收费模式**：当团队经常调整座位时，使用 `prorated_immediately` 实现按天收费的公平性。使用 `difference_immediately` 进行更简单的数学运算，收取或抵扣座位全价。如果需要保持现有续订日期不变，请使用 `do_not_bill`——唯一不重置计费周期的模式（新座位数量将在下次续订时收费）。请参见 [Proration Guide](/developer-resources/subscription-upgrade-downgrade#proration-modes) 以获取详细比较。
 </Tip>
 
-### Preview Before Changing
+### 更改前的预览
 
-Always preview proration before making changes:
+更改前始终预览按比例收费：
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -415,20 +432,20 @@ console.log('Immediate charge:', preview.immediate_charge.summary);
 
 ---
 
-## Tracking Seats with Webhooks
+## 使用 Webhooks 跟踪座位
 
-Monitor seat changes by listening to subscription webhooks:
+通过监听订阅 Webhooks 来监控座位更改：
 
-### Relevant Events
+### 相关事件
 
-| Event | When Triggered | Use Case |
+| 事件 | 触发时间 | 用例 |
 |-------|----------------|----------|
-| `subscription.active` | New subscription activated | Provision initial seats |
-| `subscription.plan_changed` | Seats added/removed | Update seat count in your app |
-| `subscription.renewed` | Subscription renewed | Confirm seat count unchanged |
-| `subscription.cancelled` | Subscription cancelled | Deprovision all seats |
+| `subscription.active` | 新订阅激活 | 配备初始座位 |
+| `subscription.plan_changed` | 添加/移除座位 | 更新应用程序中的座位数 |
+| `subscription.renewed` | 订阅续订 | 确认座位数未变 |
+| `subscription.cancelled` | 订阅取消 | 停用所有座位 |
 
-### Webhook Handler Example
+### Webhook 处理程序示例
 
 ```typescript
 app.post('/webhooks/dodo', async (req, res) => {
@@ -467,15 +484,15 @@ function calculateTotalSeats(subscriptionData) {
 
 ---
 
-## Enforcing Seat Limits
+## 强制执行座位限制
 
-Your application must enforce seat limits. Dodo Payments tracks billing, but you control access.
+您的应用程序必须强制执行座位限制。Dodo Payments 负责计费，但您控制访问权限。
 
-### Enforcement Strategies
+### 执行策略
 
 <Tabs>
 <Tab title="Hard Limit">
-Strictly prevent adding users beyond the seat count.
+严格阻止添加超过座位数的用户。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -495,7 +512,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="Soft Limit with Warning">
-Allow exceeding with a warning and grace period.
+允许超出并带有警告和宽限期。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -515,7 +532,7 @@ async function inviteUser(teamId: string, email: string) {
 </Tab>
 
 <Tab title="Auto-Upgrade">
-Automatically add seats when limit is reached.
+当达到限制时自动添加座位。
 
 ```typescript
 async function inviteUser(teamId: string, email: string) {
@@ -543,11 +560,11 @@ async function inviteUser(teamId: string, email: string) {
 
 ---
 
-## Advanced Patterns
+## 高级模式
 
-### Different Seat Types
+### 不同类型的座位
 
-Offer different seat types with different pricing:
+提供不同定价的座位类型：
 
 ```
 Full Seats: $20/month - Full access to all features
@@ -555,7 +572,7 @@ View-Only Seats: $5/month - Read-only access
 Guest Seats: $0/month - Limited external collaborator access
 ```
 
-**Implementation:** Create separate add-ons for each seat type.
+**实现：** 为每种座位类型创建单独的附加组件。
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -571,20 +588,20 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Annual Seat Discounts
+### 年度座位折扣
 
-Offer discounted annual seat pricing:
+提供年度座位定价折扣：
 
 ```
 Monthly: $15/seat/month
 Annual: $12/seat/month (20% savings)
 ```
 
-**Implementation:** Create separate products for monthly and annual plans with different add-on prices.
+**实现：** 为月度和年度计划创建不同附加价格的单独产品。
 
-### Minimum Seat Requirements
+### 最低座位要求
 
-Require a minimum number of seats for certain plans:
+对某些计划要求最低座位数：
 
 ```typescript
 async function validateSeatCount(planId: string, seatCount: number) {
@@ -602,103 +619,103 @@ async function validateSeatCount(planId: string, seatCount: number) {
 
 ---
 
-## Best Practices
+## 最佳实践
 
-### Pricing Best Practices
+### 定价最佳实践
 
-- **Clear Communication**: Show per-seat pricing prominently on your pricing page
-- **Included Seats**: Consider including a few seats in the base price to reduce friction
-- **Volume Discounts**: Offer lower per-seat rates for larger teams to win enterprise deals
-- **Annual Incentives**: Discount annual plans to improve cash flow and retention
+- **清晰沟通**：在定价页面上突出显示每个座位的定价
+- **包含座位**：考虑在基本价格中包含一些座位以减少摩擦
+- **数量折扣**：为较大的团队提供较低的每座位费率以赢得企业交易
+- **年度激励**：年费计划折扣以改善现金流和保留率
 
-### Technical Best Practices
+### 技术最佳实践
 
-- **Cache Seat Counts**: Cache subscription seat counts locally to avoid API calls on every request
-- **Sync Regularly**: Periodically sync your local seat count with Dodo Payments via API
-- **Handle Failures**: If a seat change fails, show clear error messages and retry options
-- **Audit Trail**: Log all seat changes for billing disputes and compliance
+- **缓存座位数**：在本地缓存订阅座位数以避免每次请求时进行 API 调用
+- **定期同步**：通过 API 定期将本地座位数与 Dodo Payments 同步
+- **处理失败**：如果座位更改失败，显示清晰的错误信息和重试选项
+- **审计追踪**：记录所有座位更改以解决计费争议和合规性
 
-### User Experience Best Practices
+### 用户体验最佳实践
 
-- **Real-Time Feedback**: Show immediate cost impact when adjusting seats
-- **Confirmation Steps**: Require confirmation before billing changes
-- **Proration Transparency**: Clearly explain prorated charges before applying
-- **Easy Downgrades**: Don't make it difficult to reduce seats (it builds trust)
+- **实时反馈**：在调整座位时立即显示成本影响
+- **确认步骤**：在计费变更前要求确认
+- **按比例收费透明**：在应用收费前清楚解释按比例收费
+- **轻松降级**：不要使减少座位变得困难（这会建立信任）
 
 ---
 
-## Troubleshooting
+## 故障排除
 
 <AccordionGroup>
 <Accordion title="Seat count mismatch between app and billing">
-**Symptom**: Your app shows a different seat count than the subscription.
+**症状**：您的应用程序显示的座位数与订阅不同。
 
-**Causes**:
-- Webhook not received or processed
-- Race condition during seat change
-- Cached data not updated
+**原因**：
+- 未接收或处理 Webhook
+- 座位更改期间的竞争条件
+- 缓存数据未更新
 
-**Solutions**:
-1. Implement webhook handlers for `subscription.plan_changed`
-2. Add a "Sync with billing" button that fetches current subscription
-3. Set cache TTL to ensure regular refresh
+**解决方案**：
+1. 为 `subscription.plan_changed` 实现 Webhook 处理程序
+2. 添加“与计费同步”按钮以获取当前订阅
+3. 设置缓存 TTL 以确保定期刷新
 </Accordion>
 
 <Accordion title="Proration charges unexpected">
-**Symptom**: Customer confused by mid-cycle charge amount.
+**症状**：客户对周期中期费用金额感到困惑。
 
-**Causes**:
-- Proration mode not communicated clearly
-- Customer didn't see preview before confirming
+**原因**：
+- 未清晰传达按比例收费模式
+- 客户未看到确认前的预览
 
-**Solutions**:
-1. Always use `previewChangePlan` before making changes
-2. Show clear breakdown: "Adding X seats = $Y today (prorated for Z days)"
-3. Document your proration policy in help center
+**解决方案**：
+1. 更改前始终使用 `previewChangePlan`
+2. 清晰地展示细分："添加 X 个座位 = 今天 $Y（按 Z 天按比例收费）"
+3. 在帮助中心记录您的按比例收费政策
 </Accordion>
 
 <Accordion title="Add-on not appearing in checkout">
-**Symptom**: Seat add-on not available during checkout.
+**症状**：结账时座位附加组件不可用。
 
-**Causes**:
-- Add-on not attached to product
-- Add-on archived or deleted
-- Currency mismatch between product and add-on
+**原因**：
+- 附加组件未附加到产品
+- 附加组件已存档或删除
+- 产品和附加组件之间的货币不匹配
 
-**Solutions**:
-1. Verify add-on is attached in product settings
-2. Check add-on status in Add-Ons dashboard
-3. Ensure currencies match exactly
+**解决方案**：
+1. 在产品设置中验证附加组件是否附加
+2. 在“附加组件”仪表板中检查附加组件状态
+3. 确保货币完全匹配
 </Accordion>
 
 <Accordion title="Cannot reduce seats below current usage">
-**Symptom**: Customer wants to reduce seats but has users assigned.
+**症状**：客户希望减少座位数量，但已分配用户。
 
-**Solutions**:
-1. Show which users must be removed before reducing seats
-2. Implement a workflow: Remove users → Reduce seats
-3. Consider a grace period before enforcing seat reduction
+**解决方案**：
+1. 显示必须在减少座位数前移除哪些用户
+2. 实现工作流程：移除用户 → 减少座位
+3. 考虑在实施座位减少前设置宽限期
 </Accordion>
 </AccordionGroup>
 
 ---
 
-## Related Documentation
+## 相关文档
 
 <CardGroup cols={2}>
 <Card title="Seat-Based Pricing Tutorial" icon="code" href="/developer-resources/seat-based-pricing">
-  Complete implementation guide with code.
+  完整实现指南，含代码。
 </Card>
 
 <Card title="Add-ons" icon="puzzle" href="/features/addons">
-  Understand the add-on system in depth.
+  深入了解附加系统。
 </Card>
 
 <Card title="Plan Changes & Proration" icon="arrows-rotate" href="/developer-resources/subscription-upgrade-downgrade">
-  Handle subscription modifications.
+  处理订阅修改。
 </Card>
 
 <Card title="Subscription Webhooks" icon="bell" href="/developer-resources/webhooks/intents/subscription">
-  Track subscription events.
+  跟踪订阅事件。
 </Card>
 </CardGroup>
