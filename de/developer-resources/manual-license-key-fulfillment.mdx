@@ -55,16 +55,6 @@ Gehen Sie zu **Berechtigungen** in Ihrem Dashboard und klicken Sie auf **+**, um
 
 Erstellen Sie die Berechtigung mit `integration_config.fulfillment_mode` eingestellt auf `manual`.
 
-
-
-
-
-
-
-
-
-
-
 `fulfillment_mode` ist standardmäßig `auto`. Wenn es weggelassen wird oder unverändert bleibt, bleibt das automatische Verhalten bestehen. Nur Berechtigungen, die explizit auf `manual` eingestellt sind, erstellen ausstehende Zuweisungen.
 
 ## Schritt 2 — Die Berechtigung an ein Produkt anhängen
@@ -89,17 +79,9 @@ Die Zuweisungsdaten tragen `integration_type: "license_key"`, sodass Sie eine Li
 
 Wenn Sie nicht auf Webhooks angewiesen sein möchten, listen Sie Zuweisungen für die Berechtigung auf und filtern Sie nach `integration_type` und `status`:
 
-
-
-
-
 ## Schritt 4 — Den Schlüssel liefern
 
 Erhalten Sie den Schlüsselwert aus Ihrem eigenen System und übermitteln Sie ihn über den [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) Endpunkt. Dies erfordert Ihren geheimen API-Schlüssel (Editor-Berechtigung); es ist **nicht** einer der öffentlichen Lizenzendpunkte.
-
-
-
-
 
 ### Anforderungsfelder
 
@@ -109,13 +91,25 @@ Per-Schlüssel-Aktivierungslimit. Fällt auf die Berechtigungskonfiguration zur�
 
 Per-Schlüssel-Ablaufdatum (ISO 8601). Fällt auf die Dauer der Berechtigungskonfiguration zurück, wenn nicht angegeben. Für Abonnements ausgegebene Zuweisungen bleibt die Gültigkeit trotzdem an das Abonnement gebunden.
 
-Bei Erfolg wechselt die Zuweisung zu `delivered`, der Kunde erhält den Schlüssel automatisch (die gleiche E-Mail, die er bei automatischer Erfüllung erhalten würde), und `entitlement_grant.delivered` wird ausgelöst.
+Wenn Sie sich nicht auf Webhooks verlassen möchten, listen Sie die Berechtigungen für Ihre Lizenzschlüssel-Zuweisung auf und filtern Sie nach `status`. Jede Berechtigung auf einer Lizenzschlüssel-Zuweisung ist bereits eine Lizenzschlüssel-Berechtigung, daher ist kein `integration_type` Filter erforderlich:
 
 Der Kunde erhält eine E-Mail mit dem Lizenzschlüssel, dem Produkt, dem Aktivierungslimit, dem Ablaufdatum und Ihren Aktivierungsanweisungen:
 
-Sie müssen den Schlüssel nicht selbst per E-Mail senden — die Lieferung erfolgt automatisch, wenn die Zuweisung erfüllt wird.
+```typescript Node.js theme={null}
+const pending = await client.entitlements.grants.list('ent_license_key_id', {
+  status: 'Pending',
+});
 
-## Schritt 5 — Fehler und Wiederholungen behandeln
+for (const grant of pending.items) {
+  console.log(`Grant ${grant.id} for customer ${grant.customer_id} needs a key`);
+}
+```
+
+```bash cURL theme={null}
+curl -G https://test.dodopayments.com/entitlements/ent_license_key_id/grants \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  --data-urlencode "status=Pending"
+```
 
 Der Endpunkt überprüft die Zuweisung, bevor er etwas liefert. Behandeln Sie diese Antworten:
 
@@ -171,5 +165,49 @@ Deliver the key value and transition the grant to delivered.
 </Card>
 <Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
 The `entitlement_grant.*` events that signal pending and delivered grants.
+</Card>
+</CardGroup>
+
+## Schritt 5 — Fehler und Wiederholungen behandeln
+
+Der Endpunkt validiert die Berechtigung, bevor er etwas liefert. Gehen Sie wie folgt mit diesen Antworten um:
+
+| Status | Bedeutung | Was zu tun ist |
+|---|---|---|
+| `200` | Schlüssel geliefert, Berechtigung ist jetzt `delivered`. | Erledigt. |
+| `400` | Keine Lizenzschlüssel-Berechtigung oder der Schlüssel ist leer/Leerzeichen. | Anfrage korrigieren; nicht unverändert wiederholen. |
+| `404` | Keine Berechtigung mit dieser ID für Ihr Unternehmen. | `grant_id` überprüfen. |
+| `409` | Berechtigung erwartet keine Erfüllung (bereits geliefert oder hat bereits einen Schlüssel), **oder** der Schlüsselwert existiert bereits. | Wenn bereits geliefert, als Erfolg behandeln. Bei einem doppelten Schlüssel einen anderen Schlüssel angeben. |
+| `422` | Anforderungstext hat die Validierung nicht bestanden (z.B. `activations_limit < 1`). | Feld korrigieren und erneut versuchen. |
+
+<Info>
+Erfüllung kann bei vorübergehenden Fehlern (Timeouts, `5xx`) sicher wiederholt werden. Jede Berechtigung kann nur einmal erfüllt werden, daher gibt eine Wiederholung nach einem erfolgreichen, aber nicht bestätigten Anruf `409` zurück, anstatt einen zweiten Schlüssel auszugeben oder eine doppelte E-Mail zu senden. Verwenden Sie die Berechtigung `id` als Ihren Idempotenz-Schlüssel.
+</Info>
+
+## Überprüfung des Ablaufs
+
+1. Kaufen Sie das Produkt im Testmodus (siehe die [Checkout-Anleitungen](/developer-resources/integration-guide)).
+2. Bestätigen Sie, dass Ihr Webhook `entitlement_grant.created` mit `status: "pending"` und `integration_type: "license_key"` empfangen hat, oder dass die Berechtigung in der Listenkriterienantwort mit diesen Filtern erscheint.
+3. Rufen Sie den Erfüllungsendpunkt mit einem Testschlüssel auf.
+4. Bestätigen Sie, dass die Antwort `status: "delivered"` mit einem gefüllten `license_key` anzeigt, der Kunde die Schlüssel-E-Mail erhält und `entitlement_grant.delivered` ausgeführt wird.
+
+<Check>
+Sobald geliefert, kann der Kunde den Schlüssel gegen die öffentlichen Lizenzendpunkte [aktivieren und validieren](/features/license-keys#activation-validation-deactivation) genau wie einen automatisch generierten Schlüssel.
+</Check>
+
+## Verwandte API-Referenz
+
+<CardGroup cols={2}>
+<Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
+Erstellen Sie die Lizenzschlüssel-Berechtigung mit `fulfillment_mode: manual`.
+</Card>
+<Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
+Filtern Sie nach `integration_type` und `status`, um ausstehende Berechtigungen zu finden.
+</Card>
+<Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+Liefern Sie den Schlüsselwert und ändern Sie die Berechtigung in geliefert.
+</Card>
+<Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
+Die `entitlement_grant.*` Ereignisse, die auf ausstehende und gelieferte Berechtigungen hinweisen.
 </Card>
 </CardGroup>
