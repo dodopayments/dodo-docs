@@ -120,8 +120,16 @@ function expectedPages(srcBase) {
   return set;
 }
 
-// A page is "broken" when the target file is missing, or its prose is
-// overwhelmingly Latin with little/no native script (i.e. never translated).
+const squish = (s) => s.replace(/\s+/g, ' ').trim();
+
+// A page is "broken" when the target file is missing, or its prose was never
+// translated. Detection depends on the target script:
+//   - Non-Latin targets (cn/ja/ko/ar/hi): prose is overwhelmingly Latin with
+//     little/no native script.
+//   - Latin targets (de/es/fr/...): English and the target share an alphabet, so
+//     the only reliable passthrough signal is prose that is byte-identical to the
+//     English source after whitespace normalization. This catches full
+//     passthrough (the dominant failure) but not partial translations.
 function detectBroken(lingoCode, expected) {
   const mint = toMintlify(lingoCode);
   const langDir = path.join(ROOT, mint);
@@ -132,11 +140,15 @@ function detectBroken(lingoCode, expected) {
     if (!fs.existsSync(p)) { broken.push(rel); continue; }
     const prose = bodyProse(p);
     if (prose.trim().length < 150) continue; // API stubs / near-empty pages
-    const latin = (prose.match(/[A-Za-z]/g) || []).length;
-    if (!range) continue; // can't reliably score this script; skip
-    const native = (prose.match(range) || []).length;
-    const ratio = (native + latin) > 0 ? native / (native + latin) : 1;
-    if ((native < 5 && latin > 100) || (ratio < 0.25 && latin > 150)) broken.push(rel);
+    if (range) {
+      const latin = (prose.match(/[A-Za-z]/g) || []).length;
+      const native = (prose.match(range) || []).length;
+      const ratio = (native + latin) > 0 ? native / (native + latin) : 1;
+      if ((native < 5 && latin > 100) || (ratio < 0.25 && latin > 150)) broken.push(rel);
+    } else {
+      const enPath = path.join(ROOT, rel);
+      if (fs.existsSync(enPath) && squish(prose) === squish(bodyProse(enPath))) broken.push(rel);
+    }
   }
   return broken.sort();
 }
@@ -160,6 +172,10 @@ function moveBackFromEn() {
 }
 
 function renameDir(from, to) {
+  // No-op when the Mintlify folder name already equals the Lingo code (every
+  // locale except zh-CN). Without this guard, src === dst so the rmSync below
+  // would delete the folder we are about to "rename" onto itself, destroying it.
+  if (from === to) return;
   const src = path.join(ROOT, from);
   const dst = path.join(ROOT, to);
   if (!fs.existsSync(src)) return;
@@ -226,13 +242,10 @@ function intArg(argv, name, def) {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
-function validateLocale(lingoCode) {
-  if (!fs.existsSync(I18N_PATH)) return;
+function i18nTargets() {
+  if (!fs.existsSync(I18N_PATH)) return [];
   const cfg = JSON.parse(fs.readFileSync(I18N_PATH, 'utf8'));
-  const targets = cfg?.locale?.targets || [];
-  if (!targets.includes(lingoCode)) {
-    console.warn(`[warn] "${lingoCode}" is not a target in i18n.json (${targets.join(', ')}).`);
-  }
+  return cfg?.locale?.targets || [];
 }
 
 function main() {
@@ -244,10 +257,9 @@ function main() {
   const maxAttempts = intArg(argv, '--max-attempts', 3);
   const concurrency = intArg(argv, '--concurrency', 8);
 
-  validateLocale(locale);
-
-  if (!SCRIPT_RANGES[mint]) {
-    console.error(`[error] No passthrough detector for "${mint}". Supported: ${Object.keys(SCRIPT_RANGES).join(', ')}.`);
+  const targets = i18nTargets();
+  if (targets.length && !targets.includes(locale)) {
+    console.error(`[error] "${locale}" is not a target in i18n.json. Valid: ${targets.join(', ')}.`);
     process.exitCode = 1;
     return;
   }
