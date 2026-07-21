@@ -1,166 +1,165 @@
 ---
-title: Build an AI API Platform with Credit-Based Billing
-description: Build a tiered AI API service with token credits — issue credits
-  via subscription plans and one-time top-up packs, and auto-deduct as customers
-  call your API.
+title: 크레딧 기반 결제로 AI API 플랫폼 구축
+description: 토큰 크레딧을 사용하는 계층형 AI API 서비스를 구축하세요. 구독 플랜과 일회성 충전 팩을 통해 크레딧을 지급하고
+  고객이 API를 호출할 때 자동으로 차감합니다.
 icon: coins
 keywords:
-  - Dodo Payments
-  - developer guide
-  - credit-based billing
-  - token billing
+  - "Dodo Payments"
+  - 개발자 가이드
+  - 크레딧 기반 결제
+  - 토큰 결제
   - AI API
-  - credits
-  - overage
+  - 크레딧
+  - 초과 사용
 ---
 
 <Tip>
-  <strong>Let Sentra write your integration code for you.</strong><br />
-  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, credit grants, and more — just by describing what you want.
+  <strong>Sentra가 통합 코드를 대신 작성하도록 하세요.</strong><br />
+  VS Code, Cursor 또는 Windsurf에서 AI assistant를 사용하면 SDK/API 코드, webhook handler, 크레딧 지급 등을 원하는 내용을 설명하는 것만으로 생성할 수 있습니다.
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    Try Sentra: AI-Powered Integration &rarr;
+    Sentra 사용해 보기: AI 기반 통합 &rarr;
   </a>
 </Tip>
 
-In this tutorial, you'll build **NeuralAPI** — a tiered AI platform where each subscription plan comes with a monthly token credit allowance, customers can buy top-up packs when they run low, and your backend automatically deducts credits as requests are processed by OpenAI.
+이 튜토리얼에서는 **NeuralAPI**를 구축합니다. 각 구독 플랜에 월별 토큰 크레딧이 포함되고, 크레딧이 부족해지면 고객이 충전 팩을 구매할 수 있으며, 백엔드가 OpenAI에서 요청을 처리할 때 크레딧을 자동으로 차감하는 계층형 AI 플랫폼입니다.
 
 <Note>
-This tutorial uses Node.js/Express + the OpenAI SDK. The Dodo Payments concepts (credits, meters, webhooks) apply to any framework or AI provider — adapt freely.
+이 튜토리얼에서는 Node.js/Express와 OpenAI SDK를 사용합니다. Dodo Payments 개념(크레딧, meter, webhook)은 모든 framework 또는 AI provider에 적용할 수 있으므로 자유롭게 맞춰 사용하세요.
 </Note>
 
-By the end of this tutorial, you'll know how to:
+이 튜토리얼을 완료하면 다음 방법을 알게 됩니다:
 
-- Create a custom credit entitlement (tokens) and a meter that auto-deducts from it
-- Attach credits to subscription plans (with and without overage) and a one-time top-up product
-- Wire a real OpenAI completion endpoint that bills tokens through Dodo Payments
-- Query a customer's live credit balance via the SDK
-- Verify webhook signatures and route Dodo Payments credit events
+- 사용자 지정 크레딧 entitlement(토큰)과 이를 자동으로 차감하는 meter 생성
+- 구독 플랜(초과 사용 허용 및 비허용)과 일회성 충전 제품에 크레딧 연결
+- 실제 OpenAI completion endpoint를 연결하고 Dodo Payments을 통해 토큰 결제
+- SDK를 통해 고객의 실시간 크레딧 잔액 조회
+- webhook signature를 검증하고 Dodo Payments 크레딧 이벤트 라우팅
 
-## What We're Building
+## 구축할 내용
 
-Here's the pricing model for NeuralAPI:
+NeuralAPI의 가격 모델은 다음과 같습니다:
 
-| Product | Price | Tokens | Overage |
+| 제품 | 가격 | 토큰 | 초과 사용 |
 |---------|-------|--------|---------|
-| Starter Plan | $29/month | 10,000,000 tokens/cycle | Blocked at zero |
-| Pro Plan | $99/month | 40,000,000 tokens/cycle | $0.005 per 1K tokens |
-| Token Top-Up Pack | $19 one-time | +5,000,000 tokens | — |
+| Starter Plan | $29/월 | 10,000,000 토큰/주기 | 0에서 차단 |
+| Pro Plan | $99/월 | 40,000,000 토큰/주기 | 1K 토큰당 $0.005 |
+| Token Top-Up Pack | $19 일회성 | +5,000,000 토큰 | — |
 
 <Info>
-Before you start, make sure you have:
-- A Dodo Payments account (test mode is fine)
-- An OpenAI API key
+시작하기 전에 다음을 준비하세요:
+- Dodo Payments 계정(test mode도 가능)
+- OpenAI API key
 - Node.js 18+
-- Basic familiarity with TypeScript/Node.js
+- TypeScript/Node.js 기본 지식
 </Info>
 
-## Step 1: Create Your Token Credit Entitlement
+## 1단계: 토큰 크레딧 Entitlement 생성
 
-First, create the credit entitlement that both subscription plans and the top-up pack will share. Think of this as defining the "token" unit your platform uses.
+먼저 두 구독 플랜과 충전 팩이 공유할 크레딧 entitlement를 생성합니다. 이를 플랫폼에서 사용하는 "토큰" 단위를 정의하는 과정이라고 생각하면 됩니다.
 
 <Frame caption="The Credits tab under Products shows all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Credits listing page showing created credit entitlements" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="생성된 크레딧 entitlement가 표시된 크레딧 목록 페이지" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Navigate to Credits">
-1. Log into your Dodo Payments dashboard
-2. Click **Products** in the left sidebar
-3. Select the **Credits** tab
-4. Click **Create Credit**
+1. Dodo Payments dashboard에 로그인합니다.
+2. 왼쪽 sidebar에서 **Products**를 클릭합니다.
+3. **Credits** 탭을 선택합니다.
+4. **Create Credit**을 클릭합니다.
 </Step>
 
 <Step title="Configure the credit unit">
-Fill in the basic details for your token credit:
+토큰 크레딧의 기본 정보를 입력합니다:
 
 **Credit Name**: `API Tokens`
 
-**Credit Type**: Select **Custom Unit**
+**Credit Type**: **Custom Unit** 선택
 
 **Unit Name**: `token`
 
-**Precision**: `0` (tokens are always whole numbers)
+**Precision**: `0` (토큰은 항상 정수입니다)
 
-**Credit Expiry**: `30 days` (credits reset each billing cycle)
+**Credit Expiry**: `30 days` (각 billing cycle마다 크레딧이 초기화됩니다)
 
 <Warning>
-Precision cannot be changed after a credit is created. For token counts, `0` (whole numbers) is almost always correct.
+크레딧을 생성한 후에는 Precision을 변경할 수 없습니다. 토큰 수에는 `0`(정수)가 거의 항상 올바른 설정입니다.
 </Warning>
 </Step>
 
 <Step title="Skip overage at the credit level">
-Leave overage **disabled** here — you'll configure it per-plan when attaching the credit to products. This lets the Starter plan block usage at zero while the Pro plan allows overage.
+여기서는 초과 사용을 **비활성화** 상태로 두세요. 크레딧을 제품에 연결할 때 플랜별로 설정합니다. 그러면 Starter 플랜은 잔액이 0이 되면 사용을 차단하고 Pro 플랜은 초과 사용을 허용할 수 있습니다.
 
 <Tip>
-Overage settings configured here are *defaults*. Each product attachment can override them — which is exactly what we'll do in Step 3.
+여기서 설정한 초과 사용 설정은 *기본값*입니다. 각 제품 연결에서 이를 재정의할 수 있으며, 3단계에서 바로 그렇게 합니다.
 </Tip>
 </Step>
 
 <Step title="Save and copy the credit ID">
-Click **Create Credit**. Once saved, open the credit and copy its ID — it looks like `cent_xxxxxxxxxxxx`.
+**Create Credit**을 클릭합니다. 저장한 후 크레딧을 열고 ID를 복사합니다. ID는 `cent_xxxxxxxxxxxx`와 같은 형식입니다.
 
 <Check>
-Your `API Tokens` credit entitlement is ready. Next, create a meter so usage events can drive deductions automatically.
+`API Tokens` 크레딧 entitlement가 준비되었습니다. 이제 사용량 이벤트가 자동으로 차감을 수행할 수 있도록 meter를 생성합니다.
 </Check>
 </Step>
 </Steps>
 
-## Step 2: Create a Meter for Token Usage
+## 2단계: 토큰 사용량용 Meter 생성
 
-A meter aggregates incoming usage events and converts them into credit deductions. You need this *before* creating the plan products, since you'll attach it during product creation in Step 3.
+meter는 들어오는 사용량 이벤트를 집계하고 이를 크레딧 차감으로 변환합니다. 3단계에서 제품을 생성할 때 meter를 연결하므로, 플랜 제품을 만들기 *전에* 생성해야 합니다.
 
 <Steps>
 <Step title="Open the Meters section">
-1. In the dashboard sidebar, go to **Products** → **Meters**
-2. Click **Create Meter**
+1. dashboard sidebar에서 **Products** → **Meters**로 이동합니다.
+2. **Create Meter**를 클릭합니다.
 </Step>
 
 <Step title="Configure the meter">
-Fill in:
+다음과 같이 입력합니다:
 
 **Meter Name**: `Token Usage Meter`
 
-**Event Name**: `api.tokens_used` *(this must match exactly what your app sends)*
+**Event Name**: `api.tokens_used` *(앱이 전송하는 값과 정확히 일치해야 합니다)*
 
-**Aggregation Type**: `Sum` — we sum the token count from each event
+**Aggregation Type**: `Sum` — 각 이벤트의 토큰 수를 합산합니다.
 
-**Over Property**: `tokens` — the metadata key on each event whose value will be summed
+**Over Property**: `tokens` — 각 이벤트에서 합산할 값이 있는 metadata key입니다.
 
 **Measurement Unit**: `tokens`
 
 <Warning>
-Event names are case-sensitive. `api.tokens_used` ≠ `Api.Tokens.Used` — pick one and stick to it.
+이벤트 이름은 대소문자를 구분합니다. `api.tokens_used` ≠ `Api.Tokens.Used`이므로 하나를 선택해 일관되게 사용하세요.
 </Warning>
 
-Save the meter and copy its ID — you'll reference it when attaching to products.
+meter를 저장하고 ID를 복사합니다. 제품에 연결할 때 참조하게 됩니다.
 
 <Check>
-Meter is created. Now we can wire it to the credit when we configure products.
+Meter가 생성되었습니다. 이제 제품을 설정할 때 이를 크레딧에 연결할 수 있습니다.
 </Check>
 </Step>
 </Steps>
 
-## Step 3: Create the Plan Products
+## 3단계: 플랜 제품 생성
 
-Both plans need to be **Usage Based Billing** products, not plain Subscriptions — meters can only attach to UBB products, and you need the meter to auto-deduct credits as customers call your API. UBB products still support a recurring base fee (the `$29` / `$99`); usage on top of that gets billed in credits.
+두 플랜 모두 일반 Subscription이 아닌 **Usage Based Billing** 제품이어야 합니다. meter는 UBB 제품에만 연결할 수 있으며 고객이 API를 호출할 때 크레딧을 자동 차감하려면 meter가 필요합니다. UBB 제품은 반복되는 기본 요금( `$29` / `$99`)도 지원합니다. 이 기본 요금에 더해 발생한 사용량은 크레딧으로 결제됩니다.
 
 <Frame caption="Usage Based Billing pricing type with meter configuration.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billing pricing configuration" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billing 가격 설정" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-### Starter Plan ($29/month — 10M tokens, no overage)
+### Starter Plan ($29/월 — 10M 토큰, 초과 사용 없음)
 
 <Steps>
 <Step title="Create the Starter UBB product">
-1. Go to **Products → Create Product**
-2. Select **Usage Based Billing** as the pricing type
-3. Fill in:
+1. **Products → Create Product**로 이동합니다.
+2. 가격 유형으로 **Usage Based Billing**을 선택합니다.
+3. 다음을 입력합니다:
 
 **Product Name**: `NeuralAPI Starter`
 
 **Description**: `10 million API tokens per month. Perfect for individual developers and small projects.`
 
-**Fixed Price**: `29.00` (the recurring base fee — billed monthly even before any usage)
+**Fixed Price**: `29.00` (반복되는 기본 요금으로, 사용량이 없어도 매월 청구됩니다)
 
 **Billing Cycle**: `Monthly`
 
@@ -168,46 +167,46 @@ Both plans need to be **Usage Based Billing** products, not plain Subscriptions 
 </Step>
 
 <Step title="Attach the meter">
-In the **Select meter** section, click **+** and add `Token Usage Meter`. Then on the meter:
+**Select meter** 섹션에서 **+**를 클릭하고 `Token Usage Meter`를 추가합니다. 그런 다음 meter에서 다음을 설정합니다:
 
-1. Toggle **Bill usage in Credits** on
-2. **Credit Entitlement**: select `API Tokens`
-3. **Meter units per credit**: `1` — each token in the event maps to 1 credit deducted
-4. **Free Threshold**: `0` — the credit allocation itself is the customer's "free tier"; we don't need an extra free band
+1. **Bill usage in Credits**를 켭니다.
+2. **Credit Entitlement**: `API Tokens`를 선택합니다.
+3. **Meter units per credit**: `1` — 이벤트의 각 토큰이 차감되는 크레딧 1개에 매핑됩니다.
+4. **Free Threshold**: `0` — 크레딧 할당 자체가 고객의 "free tier"이므로 추가 무료 구간은 필요하지 않습니다.
 
 <Frame caption="Toggle 'Bill usage in Credits' on the meter and pick the credit entitlement.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Meter with Bill usage in Credits enabled and API Tokens selected" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Bill usage in Credits가 활성화되고 API Tokens가 선택된 meter" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-This is the wiring that makes incoming `api.tokens_used` events actually deduct from the customer's balance.
+이 설정이 들어오는 `api.tokens_used` 이벤트를 고객 잔액에서 실제로 차감하도록 연결합니다.
 </Step>
 
 <Step title="Configure credit issuance for Starter">
-Still on the product, scroll to the credit configuration section that appears once a credit-billed meter is attached:
+제품 화면에서 credit-billed meter를 연결하면 표시되는 크레딧 설정 섹션으로 스크롤합니다:
 
 **Credits issued per billing cycle**: `10000000`
 
-**Allow Overage**: **Disabled** — Starter customers are blocked when tokens run out
+**Allow Overage**: **Disabled** — Starter 고객은 토큰이 소진되면 차단됩니다.
 
-**Import Default Credit Settings**: Enabled — use the 30-day expiry from the credit entitlement
+**Import Default Credit Settings**: Enabled — 크레딧 entitlement의 30일 만료를 사용합니다.
 
 <Frame caption="Configure credit issuance per cycle on the UBB product.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="Credit configuration form with per-cycle amount and overage settings" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="주기별 금액과 초과 사용 설정이 있는 크레딧 설정 양식" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-Click **Save** and copy the product ID.
+**Save**를 클릭하고 제품 ID를 복사합니다.
 
 <Check>
-Starter Plan: $29/month base fee, 10M tokens/cycle, blocked at zero, auto-deducts via meter.
+Starter Plan: 월 기본 요금 $29, 주기당 10M 토큰, 잔액 0에서 차단, meter를 통한 자동 차감.
 </Check>
 </Step>
 </Steps>
 
-### Pro Plan ($99/month — 40M tokens, overage enabled)
+### Pro Plan ($99/월 — 40M 토큰, 초과 사용 허용)
 
 <Steps>
 <Step title="Create the Pro UBB product">
-Same flow as Starter, with bigger numbers:
+Starter와 같은 흐름으로 진행하되 수치만 더 크게 설정합니다:
 
 **Product Name**: `NeuralAPI Pro`
 
@@ -221,43 +220,43 @@ Same flow as Starter, with bigger numbers:
 </Step>
 
 <Step title="Attach the meter">
-Identical to Starter: add `Token Usage Meter`, toggle **Bill usage in Credits** on, select `API Tokens`, **Meter units per credit** `1`, **Free Threshold** `0`.
+Starter와 동일하게 `Token Usage Meter`를 추가하고, **Bill usage in Credits**를 켜고, `API Tokens`를 선택한 다음 **Meter units per credit**을 `1`, **Free Threshold**를 `0`로 설정합니다.
 </Step>
 
 <Step title="Configure credit issuance with overage">
-Configure the credit issuance, this time enabling overage:
+이번에는 초과 사용을 활성화하여 크레딧 발급을 설정합니다:
 
 **Credits issued per billing cycle**: `40000000`
 
-**Import Default Credit Settings**: **Disable** — we need to customize overage settings per product
+**Import Default Credit Settings**: **Disable** — 제품별로 초과 사용 설정을 사용자 지정해야 합니다.
 
 **Allow Overage**: **Enabled**
 
-**Price Per Unit**: `0.000005` USD per token (i.e., $0.005 per 1K tokens, or $5 per 1M tokens — above the plan's effective per-token rate to discourage spillover)
+**Price Per Unit**: `0.000005` USD/토큰 (즉, 1K 토큰당 $0.005 또는 1M 토큰당 $5이며, 초과 사용을 억제하기 위해 플랜의 유효 토큰당 요금보다 높게 설정합니다)
 
-**Overage Behavior**: `Bill overage at billing` — overage is charged on the next invoice, then the balance resets
+**Overage Behavior**: `Bill overage at billing` — 초과 사용 요금은 다음 invoice에 청구된 후 잔액이 초기화됩니다.
 
-Save the product and copy the product ID.
+제품을 저장하고 제품 ID를 복사합니다.
 
 <Check>
-Pro Plan: $99/month base fee, 40M tokens/cycle, overage at $0.005/1K tokens, auto-deducts via meter.
+Pro Plan: 월 기본 요금 $99, 주기당 40M 토큰, 1K 토큰당 $0.005의 초과 사용, meter를 통한 자동 차감.
 </Check>
 </Step>
 </Steps>
 
-## Step 4: Create the Token Top-Up Pack
+## 4단계: 토큰 충전 팩 생성
 
-The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existing customer's balance.
+충전 팩은 기존 고객의 잔액에 5,000,000 토큰을 추가하는 일회성 구매 제품입니다.
 
 <Frame caption="Single Payment pricing selected for a one-time credit product.">
-<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Product pricing section with Single Payment selected" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Single Payment가 선택된 제품 가격 섹션" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Create a one-time product">
-1. Go to **Products → Create Product**
-2. Select **Single Payment** as the pricing type
-3. Fill in:
+1. **Products → Create Product**로 이동합니다.
+2. 가격 유형으로 **Single Payment**를 선택합니다.
+3. 다음을 입력합니다:
 
 **Product Name**: `Token Top-Up Pack`
 
@@ -269,28 +268,28 @@ The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existi
 </Step>
 
 <Step title="Attach the token credit">
-1. In the **Entitlements** section, click **Attach** next to **Credits**
-2. Select `API Tokens`
-3. Set **Credits issued**: `5000000`
-4. **Disable** *Import Default Credit Settings* — we want to override the default 30-day expiry
-5. Set **Credit Expiry**: `365 days`
-6. Save the product
+1. **Entitlements** 섹션에서 **Credits** 옆의 **Attach**를 클릭합니다.
+2. `API Tokens`를 선택합니다.
+3. **Credits issued**를 `5000000`로 설정합니다.
+4. *Import Default Credit Settings*을 **Disable**합니다. 기본 30일 만료를 재정의하려는 목적입니다.
+5. **Credit Expiry**를 `365 days`로 설정합니다.
+6. 제품을 저장합니다.
 
-Copy the product ID.
+제품 ID를 복사합니다.
 
 <Tip>
-Why a longer expiry on top-ups? Subscription credits reset every 30 days because that's the cycle. Top-ups are *prepaid purchases* — the customer paid $19 upfront and reasonably expects those tokens to last beyond a month. 365 days matches how real prepaid credits work at OpenAI, AWS, and Anthropic, while still capping your liability so customers can't stockpile indefinitely.
+충전 팩의 만료 기간을 더 길게 설정하는 이유는 무엇일까요? 구독 크레딧은 주기가 30일이므로 30일마다 초기화됩니다. 충전 팩은 *선불 구매*이므로 고객은 $19를 미리 지불하고 해당 토큰이 한 달 이상 유지되기를 기대합니다. 365일은 OpenAI, AWS, Anthropic에서 실제 선불 크레딧이 작동하는 방식과 일치하면서도 고객이 무기한으로 크레딧을 축적하지 못하도록 책임을 제한합니다.
 </Tip>
 
 <Check>
-Top-Up Pack configured — purchasing it grants 5,000,000 tokens that remain valid for 365 days.
+충전 팩이 설정되었습니다. 구매하면 365일 동안 유효한 5,000,000 토큰이 지급됩니다.
 </Check>
 </Step>
 </Steps>
 
-## Step 5: Build the Backend
+## 5단계: 백엔드 구축
 
-Now let's build the Express server that handles subscription checkout, top-up checkout, real OpenAI completions with token billing, balance queries, and credit webhook events.
+이제 구독 checkout, 충전 checkout, 토큰 결제가 적용된 실제 OpenAI completion, 잔액 조회 및 크레딧 webhook 이벤트를 처리하는 Express server를 구축합니다.
 
 <Steps>
 <Step title="Set up your project">
@@ -303,7 +302,7 @@ npm install dodopayments openai express dotenv
 npm install -D @types/node @types/express typescript tsx
 ```
 
-Create a `tsconfig.json`:
+`tsconfig.json`을 생성합니다:
 
 ```json tsconfig.json
 {
@@ -319,7 +318,7 @@ Create a `tsconfig.json`:
 }
 ```
 
-Update `package.json` scripts:
+`package.json` scripts를 업데이트합니다:
 
 ```json package.json
 {
@@ -334,7 +333,7 @@ Update `package.json` scripts:
 </Step>
 
 <Step title="Set up environment variables">
-Create `.env` with your credentials and IDs from the previous steps:
+이전 단계의 자격 증명과 ID를 사용해 `.env`를 생성합니다:
 
 ```bash .env
 DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
@@ -349,14 +348,14 @@ BASE_URL=http://localhost:3000
 ```
 
 <Warning>
-Never commit `.env` to version control. Add it to `.gitignore` immediately.
+`.env`를 version control에 절대 commit하지 마세요. 즉시 `.gitignore`에 추가합니다.
 </Warning>
 
-You'll fill in `DODO_PAYMENTS_WEBHOOK_KEY` in Step 7 after registering your webhook endpoint.
+webhook endpoint를 등록한 후 7단계에서 `DODO_PAYMENTS_WEBHOOK_KEY`를 입력합니다.
 </Step>
 
 <Step title="Implement the server">
-Create `src/server.ts`:
+`src/server.ts`를 생성합니다:
 
 <CodeGroup>
 
@@ -587,30 +586,30 @@ app.listen(3000, () => {
 </CodeGroup>
 
 <Check>
-Backend done: subscription checkout, top-up checkout, OpenAI completion with metered token billing, balance query, and a verified webhook handler.
+백엔드가 완성되었습니다. 구독 checkout, 충전 checkout, meter가 적용된 OpenAI completion, 잔액 조회 및 검증된 webhook handler가 포함됩니다.
 </Check>
 
 <Tip>
-[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) provides drop-in trackers that automate the `usageEvents.ingest` call for you — including the [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), and [time-range](/developer-resources/ingestion-blueprints/time-range) usage.
+[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints)는 `usageEvents.ingest` 호출을 자동화하는 즉시 사용 가능한 tracker를 제공합니다. [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), [time-range](/developer-resources/ingestion-blueprints/time-range) 사용량이 포함됩니다.
 </Tip>
 </Step>
 
 <Step title="A note on how deductions actually happen">
-You may have noticed there's no explicit "deduct N credits" call. That's by design:
+명시적인 "N개 크레딧 차감" 호출이 없다는 것을 알아차렸을 수 있습니다. 이는 의도된 설계입니다:
 
-1. Your handler calls OpenAI and gets back `usage.total_tokens` (e.g., 1532).
-2. You ingest a single usage event: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
-3. The `Token Usage Meter` aggregates events by customer.
-4. Because the meter is wired to the `API Tokens` credit with **Bill usage in Credits**, Dodo Payments deducts 1532 credits from the customer's oldest non-expired grant (FIFO).
-5. If overage is enabled and the customer goes below zero, the deficit is tracked and billed on the next invoice.
+1. handler가 OpenAI를 호출하고 `usage.total_tokens`(예: 1532)를 반환받습니다.
+2. 단일 사용량 이벤트를 수집합니다: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
+3. `Token Usage Meter`가 고객별로 이벤트를 집계합니다.
+4. meter가 **Bill usage in Credits**를 사용해 `API Tokens` 크레딧에 연결되어 있으므로, Dodo Payments가 고객의 만료되지 않은 가장 오래된 지급분에서 1532 크레딧을 차감합니다(FIFO).
+5. 초과 사용이 활성화되어 고객 잔액이 0 미만이 되면 부족분이 추적되고 다음 invoice에 청구됩니다.
 
-The meter handles all of that. Your code only ingests events.
+이 모든 작업을 meter가 처리합니다. 코드에서는 이벤트만 수집하면 됩니다.
 </Step>
 </Steps>
 
-## Step 6: Add a Demo Frontend
+## 6단계: Demo Frontend 추가
 
-Create `public/index.html` to test all the flows in your browser. We persist the customer ID to `localStorage` so subscribe → generate → top-up all share the same identity, mimicking a logged-in app:
+브라우저에서 모든 흐름을 테스트할 수 있도록 `public/index.html`를 생성합니다. 고객 ID를 `localStorage`에 저장하므로 subscribe → generate → top-up이 동일한 identity를 공유하며 로그인된 앱을 재현합니다:
 
 <CodeGroup>
 
@@ -786,162 +785,162 @@ Create `public/index.html` to test all the flows in your browser. We persist the
 
 </CodeGroup>
 
-## Step 7: Wire Up the Webhook
+## 7단계: Webhook 연결
 
-Webhooks let your server react to balance changes — you'll use them to send "running low" emails before customers hit zero.
+Webhook을 사용하면 server가 잔액 변경에 반응할 수 있습니다. 고객의 잔액이 0이 되기 전에 "잔액 부족" 이메일을 보내는 데 사용합니다.
 
 <Steps>
 <Step title="Expose your local server">
-Webhooks need a public URL. For local development, use [ngrok](https://ngrok.com) or any tunnel:
+Webhook에는 public URL이 필요합니다. local development에서는 [ngrok](https://ngrok.com) 또는 다른 tunnel을 사용하세요:
 
 ```bash
 ngrok http 3000
 ```
 
-Copy the `https://...ngrok-free.app` URL.
+`https://...ngrok-free.app` URL을 복사합니다.
 </Step>
 
 <Step title="Register the webhook in Dodo Payments">
-1. In the dashboard, go to **Developers → Webhooks → Add Endpoint**
+1. dashboard에서 **Developers → Webhooks → Add Endpoint**로 이동합니다.
 2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
-3. Subscribe to (at minimum):
+3. 최소한 다음 이벤트를 subscribe합니다:
    - `credit.added`
    - `credit.deducted`
    - `credit.overage_charged`
-4. Save and copy the **Signing Secret**
-5. Paste it into `.env` as `DODO_PAYMENTS_WEBHOOK_KEY`, then restart `npm run dev`
+4. 저장하고 **Signing Secret**을 복사합니다.
+5. 이를 `.env`에 `DODO_PAYMENTS_WEBHOOK_KEY`로 붙여넣은 다음 `npm run dev`를 다시 시작합니다.
 
 <Tip>
-The SDK's `dodo.webhooks.unwrap()` validates the `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers using your signing secret. You don't need to hand-roll HMAC verification — and you shouldn't, because Dodo Payments uses [Standard Webhooks](https://www.standardwebhooks.com/), which signs `id.timestamp.body` rather than just the body.
+SDK의 `dodo.webhooks.unwrap()`가 signing secret을 사용해 `webhook-id`, `webhook-timestamp` 및 `webhook-signature` header를 검증합니다. HMAC verification을 직접 구현할 필요가 없습니다. 구현해서도 안 됩니다. Dodo Payments는 [Standard Webhooks](https://www.standardwebhooks.com/)를 사용하며 body만이 아니라 `id.timestamp.body`에 signature를 적용하기 때문입니다.
 </Tip>
 </Step>
 </Steps>
 
-## Step 8: Test the Full Flow
+## 8단계: 전체 흐름 테스트
 
 <Steps>
 <Step title="Subscribe a test customer">
-1. Run `npm run dev`
-2. Open `http://localhost:3000`
-3. Pick **Pro Plan**, enter a test email + name, click **Get Checkout Link**, complete checkout with [test card details](/miscellaneous/testing-process)
-4. In the dashboard, go to **Customers → most recent** and copy the `cus_...` ID
-5. Paste it into the "Logged-in customer ID" field on the demo and click **Save**
+1. `npm run dev`를 실행합니다.
+2. `http://localhost:3000`를 엽니다.
+3. **Pro Plan**을 선택하고 테스트 email과 name을 입력한 후 **Get Checkout Link**를 클릭합니다. [test card details](/miscellaneous/testing-process)로 checkout을 완료합니다.
+4. dashboard에서 **Customers → most recent**로 이동하고 `cus_...` ID를 복사합니다.
+5. 이를 demo의 "Logged-in customer ID" 필드에 붙여넣고 **Save**를 클릭합니다.
 
 <Check>
-The customer should have 40,000,000 tokens. Click **Refresh Balance** to confirm.
+고객에게 40,000,000 토큰이 있어야 합니다. **Refresh Balance**를 클릭해 확인합니다.
 </Check>
 </Step>
 
 <Step title="Generate a real AI response">
-Type a prompt and click **Generate**. The server calls OpenAI, gets back the actual `total_tokens`, ingests a usage event, and returns the response.
+prompt를 입력하고 **Generate**를 클릭합니다. server가 OpenAI를 호출하고 실제 `total_tokens`를 반환받은 뒤 사용량 이벤트를 수집하고 응답을 반환합니다.
 
 <Info>
-Usage events are processed by a background worker every ~minute. The balance won't tick down instantly — wait 30–90 seconds and click **Refresh Balance** again. Don't conclude it's broken if the first refresh doesn't show movement.
+사용량 이벤트는 약 1분마다 background worker가 처리합니다. 잔액은 즉시 줄어들지 않습니다. 30~90초 기다린 뒤 다시 **Refresh Balance**를 클릭하세요. 첫 번째 새로 고침에서 변동이 보이지 않는다고 문제가 있다고 판단하지 마세요.
 </Info>
 </Step>
 
 <Step title="Test the top-up flow">
-Click **Buy 5M Tokens — $19** and complete checkout. After the payment succeeds, refresh the balance — it should jump by 5,000,000 tokens. Your server log should show a `credit.added` event.
+**Buy 5M Tokens — $19**를 클릭하고 checkout을 완료합니다. 결제가 성공한 후 잔액을 새로 고치면 5,000,000 토큰이 증가해야 합니다. server log에는 `credit.added` 이벤트가 표시되어야 합니다.
 </Step>
 </Steps>
 
-## Troubleshooting
+## 문제 해결
 
 <AccordionGroup>
 <Accordion title="Credits not deducting after usage events">
-**Possible causes:**
-- The meter's event name doesn't match the `event_name` you're sending (`api.tokens_used` is case-sensitive)
-- The meter isn't linked to the `API Tokens` credit on the product — go to the product's meter configuration and confirm **Bill usage in Credits** is on
-- The `metadata.tokens` key doesn't match the meter's "Over Property" field
-- The customer's grant has expired (check the customer's credit history)
+**가능한 원인:**
+- meter의 이벤트 이름이 전송하는 `event_name`와 일치하지 않음(`api.tokens_used`는 대소문자를 구분함)
+- meter가 제품의 `API Tokens` 크레딧에 연결되지 않음. 제품의 meter 설정으로 이동해 **Bill usage in Credits**가 켜져 있는지 확인
+- `metadata.tokens` key가 meter의 "Over Property" 필드와 일치하지 않음
+- 고객의 grant가 만료됨(고객의 크레딧 history 확인)
 
-**What to check:**
-1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
-2. The **Events** tab on the meter — ingested events should appear there even before deduction
-3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
+**확인할 항목:**
+1. **Products → Meters**: meter를 열고 제품 연결에 연결된 크레딧 이름이 표시되는지 확인
+2. meter의 **Events** 탭: 차감 전에도 수집된 이벤트가 여기에 표시되어야 함
+3. **Customers → \[Customer\] → Credits**: 1~2분 이내에 ledger entry가 표시되어야 함
 </Accordion>
 
 <Accordion title="Balance always shows 0 or 'customer not found'">
-**Possible causes:**
-- The customer hasn't completed checkout yet — credits are only issued after a successful payment
-- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
-- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
+**가능한 원인:**
+- 고객이 아직 checkout을 완료하지 않음. 크레딧은 결제가 성공한 후에만 지급됨
+- 잘못된 `customer_id`로 조회함(dashboard의 `cus_...` ID를 사용하며 자체 DB ID는 사용하지 않음)
+- `.env`의 `CREDIT_ENTITLEMENT_ID`가 제품에 연결된 크레딧과 일치하지 않음
 
-**What to check:**
-Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
+**확인할 항목:**
+**Customers → \[Customer\] → Credits**를 엽니다. 크레딧이 표시되지 않으면 제품 entitlement가 연결되지 않았거나 결제가 완료되지 않은 것입니다.
 </Accordion>
 
 <Accordion title="Overage not working for Pro plan customers">
-**Possible causes:**
-- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
-- The customer is actually on Starter, not Pro
-- Overage limit was set to 0
+**가능한 원인:**
+- **Pro product의 credit attachment**에서 초과 사용이 활성화되지 않음(credit-level 설정은 기본값일 뿐임)
+- 고객이 실제로는 Pro가 아니라 Starter를 사용 중임
+- 초과 사용 limit가 0으로 설정됨
 
-**What to check:**
-Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
+**확인할 항목:**
+Pro → Entitlements → Credits를 편집하고 **Allow Overage**가 켜져 있으며 **Price Per Unit**이 `0.000005`인지 확인합니다(= 1백만 토큰당 $5. 앞의 0을 다시 확인하세요. 이 필드는 1K당 가격이 아니라 토큰당 가격을 입력합니다).
 </Accordion>
 
 <Accordion title="`Webhook verification failed` in logs">
-**Possible causes:**
-- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
-- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
-- Reverse proxy is rewriting headers
+**가능한 원인:**
+- Body parsing 순서: `express.json()`가 `/webhooks/dodo`에 `express.raw()`보다 먼저 적용됨. SDK에는 parsing된 JSON이 아니라 request의 **raw bytes**가 필요함
+- `DODO_PAYMENTS_WEBHOOK_KEY`의 signing secret이 잘못됨
+- Reverse proxy가 header를 재작성함
 
-**What to check:**
-Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
+**확인할 항목:**
+`app.use('/webhooks/dodo', express.raw(...))` line이 `server.ts`에서 `app.use(express.json())`보다 *앞에* 있는지 확인합니다.
 </Accordion>
 </AccordionGroup>
 
-## Need help?
+## 도움이 필요하신가요?
 
 - [Discord Community](https://discord.gg/bYqAp4ayYh)
 - [support@dodopayments.com](mailto:support@dodopayments.com)
 
-## Congratulations! You've Built Credit-Based Billing for NeuralAPI
+## 축하합니다! NeuralAPI에 크레딧 기반 결제를 구축했습니다
 
-Your platform now has a complete, production-ready credit billing system:
+이제 플랫폼에 완전한 production-ready 크레딧 결제 시스템이 갖춰졌습니다:
 
 <CardGroup cols={2}>
 <Card title="Token Credit Entitlement" icon="coins">
-A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
+모든 플랜과 충전 팩에서 공유하는 30일 만료의 재사용 가능한 `API Tokens` 크레딧
 </Card>
 
 <Card title="Tiered Plans, One Credit" icon="layer-group">
-Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
+크레딧을 중복 생성하지 않고 제품별로 설정된 Starter(10M, hard limit)와 Pro(40M + 초과 사용)
 </Card>
 
 <Card title="One-Time Top-Up Pack" icon="circle-plus">
-Customers add 5M tokens for $19 without changing their subscription
+고객이 구독을 변경하지 않고 $19에 5M 토큰을 추가
 </Card>
 
 <Card title="Auto-Deduction via Meter" icon="bolt">
-Real OpenAI token counts ingested as events; the meter deducts credits FIFO with no manual tracking
+실제 OpenAI 토큰 수를 이벤트로 수집하고, 수동 추적 없이 meter가 FIFO 방식으로 크레딧 차감
 </Card>
 
 <Card title="Live Balance API" icon="gauge">
-Real-time balance via the SDK to gate access, display usage, or warn customers in-app
+SDK를 통한 실시간 잔액으로 access를 제어하고, 사용량을 표시하거나 앱에서 고객에게 경고
 </Card>
 
 <Card title="Verified Webhook Pipeline" icon="bell">
-Credit ledger events (`credit.added`, `credit.deducted`, `credit.overage_charged`) routed through a signature-verified handler using the SDK's Standard Webhooks helper
+SDK의 Standard Webhooks helper를 사용해 signature가 검증된 handler로 라우팅되는 크레딧 ledger 이벤트(`credit.added`, `credit.deducted`, `credit.overage_charged`)
 </Card>
 </CardGroup>
 
 <Info>
-**Going to production?** Tighten these:
-- **Auth on `/credits/:customerId` and `/api/generate`** — currently anyone can hit these with any customer ID. Authenticate users and look up *their* customer ID server-side.
-- **Stable `event_id`s** — the example uses `Date.now() + random`. In production, use your request ID so retries are idempotent (Dodo Payments deduplicates by `event_id`).
-- **Persist the customer↔user mapping** — store `customer_id` in your DB after the first checkout so you don't need a manual paste step.
-- **Decide what happens when a subscription ends.** Plan credits remain in the customer's ledger until their natural expiry (30 days from issuance) and top-up credits stay valid for 365 days — but the cookbook's `/api/generate` only checks *balance*, not subscription status. So a cancelled customer can still consume their remaining tokens. That's the consumer-friendly default. If you want stricter access control, either (a) listen to the `subscription.cancelled` webhook and gate `/api/generate` on subscription status, or (b) call Dodo's ledger API to debit unused plan credits on cancel while leaving top-up credits intact.
-- **Monitor the Usage Billing dashboard** to catch metering anomalies early.
+**production으로 전환하시나요?** 다음 설정을 강화하세요:
+- **`/credits/:customerId` 및 `/api/generate`에 auth 적용** — 현재는 누구나 임의의 customer ID로 호출할 수 있습니다. 사용자를 인증하고 server-side에서 해당 사용자의 customer ID를 조회하세요.
+- **안정적인 `event_id`s** — 예제에서는 `Date.now() + random`를 사용합니다. production에서는 request ID를 사용해 retry가 idempotent하도록 하세요(Dodo Payments가 `event_id`별로 중복 제거함).
+- **customer↔user mapping 저장** — 첫 checkout 후 DB에 `customer_id`를 저장하여 수동으로 붙여넣는 단계를 없애세요.
+- **구독 종료 시 동작 결정** — 플랜 크레딧은 자연 만료(지급 후 30일)까지 고객 ledger에 남고 충전 크레딧은 365일 동안 유효합니다. 하지만 cookbook의 `/api/generate`는 구독 상태가 아니라 *잔액*만 확인합니다. 따라서 취소된 고객도 남은 토큰을 사용할 수 있습니다. 이는 소비자 친화적인 기본 동작입니다. 더 엄격한 access control이 필요하면 (a) `subscription.cancelled` webhook을 수신해 구독 상태에 따라 `/api/generate`를 허용하거나, (b) Dodo의 ledger API를 호출해 취소 시 사용하지 않은 플랜 크레딧을 차감하되 충전 크레딧은 유지하세요.
+- **Usage Billing dashboard를 모니터링**하여 metering 이상을 조기에 발견하세요.
 </Info>
 
 <CardGroup cols={2}>
 <Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
-Full CBB documentation: rollover, overage modes, ledger management, all API endpoints.
+전체 CBB 문서: rollover, 초과 사용 mode, ledger management 및 모든 API endpoint.
 </Card>
 
 <Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
-Payload schemas for every credit event your server might receive.
+server가 수신할 수 있는 모든 크레딧 이벤트의 payload schema.
 </Card>
 </CardGroup>
