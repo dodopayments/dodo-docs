@@ -86,13 +86,23 @@ function getAllMdx(dir, base, out = []) {
   return out;
 }
 
-// Strip frontmatter, code, JSX tags and URLs so we only weigh prose.
+// Strip frontmatter, code, JSX tags and URLs so we only weigh prose. The output
+// is used solely for character-ratio counting, never rendered.
 function bodyProse(filePath) {
   let t = fs.readFileSync(filePath, 'utf8');
   t = t.replace(/^---[\s\S]*?---/, '');
   t = t.replace(/```[\s\S]*?```/g, '');
   t = t.replace(/`[^`]*`/g, '');
-  t = t.replace(/<[^>]+>/g, '');
+  // Loop to a fixpoint, then drop any leftover angle brackets. A single pass can
+  // leave a bracket behind for nested input like "<a<b>c>"; looping until stable
+  // and stripping stray "<"/">" guarantees no "<tag" survives (CodeQL
+  // incomplete-sanitization). The string strictly shrinks, so the loop ends.
+  let prev;
+  do {
+    prev = t;
+    t = t.replace(/<[^>]+>/g, '');
+  } while (t !== prev);
+  t = t.replace(/[<>]/g, '');
   t = t.replace(/https?:\/\/\S+/g, '');
   return t;
 }
@@ -189,6 +199,11 @@ function getArg(argv, name, def) {
   return a.includes('=') ? a.split('=')[1] : argv[argv.indexOf(a) + 1];
 }
 
+function intArg(argv, name, def) {
+  const n = parseInt(getArg(argv, name, String(def)), 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
 function validateLocale(lingoCode) {
   if (!fs.existsSync(I18N_PATH)) return;
   const cfg = JSON.parse(fs.readFileSync(I18N_PATH, 'utf8'));
@@ -204,8 +219,8 @@ function main() {
   const mint = toMintlify(locale);
   const detectOnly = argv.includes('--detect-only');
   const skipLingo = argv.includes('--skip-lingo');
-  const maxAttempts = parseInt(getArg(argv, '--max-attempts', '3'), 10);
-  const concurrency = parseInt(getArg(argv, '--concurrency', '10'), 10);
+  const maxAttempts = intArg(argv, '--max-attempts', 3);
+  const concurrency = intArg(argv, '--concurrency', 8);
 
   validateLocale(locale);
 
@@ -217,6 +232,7 @@ function main() {
 
   const expected = expectedPages(ROOT);
   let broken = detectBroken(locale, expected);
+  const initialCount = broken.length;
   console.log(`\n[detect] ${mint}: ${broken.length} broken (passthrough/missing) of ${expected.size} translatable pages`);
   broken.forEach((b) => console.log(`   - ${b}`));
 
@@ -255,13 +271,20 @@ function main() {
   }
 
   const finalBroken = detectBroken(locale, expected);
-  if (finalBroken.length) {
-    console.log(`\n[result] ${finalBroken.length} ${mint} page(s) still untranslated:`);
-    finalBroken.forEach((b) => console.log(`   - ${b}`));
-    process.exitCode = skipLingo ? 0 : 1;
-  } else {
-    console.log(`\n[result] All ${mint} pages are translated.`);
+  const fixedCount = initialCount - finalBroken.length;
+
+  if (finalBroken.length === 0) {
+    console.log(`\n[result] All ${mint} pages are translated (fixed ${fixedCount}/${initialCount}).`);
+    return;
   }
+
+  console.log(`\n[result] Fixed ${fixedCount}/${initialCount}. ${finalBroken.length} ${mint} page(s) still untranslated:`);
+  finalBroken.forEach((b) => console.log(`   - ${b}`));
+
+  // Fail only on ZERO progress. Partial progress exits 0 so the pages that were
+  // fixed still reach a PR (the workflow opens one from `git status`); the list
+  // above is the record of what still needs another pass.
+  if (fixedCount <= 0 && !skipLingo) process.exitCode = 1;
 }
 
-main();
+if (require.main === module) main();
