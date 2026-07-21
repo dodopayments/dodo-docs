@@ -167,6 +167,28 @@ function renameDir(from, to) {
   fs.renameSync(src, dst);
 }
 
+// Lingo's --file is a substring match, so a bare filter like "introduction.mdx"
+// also hits "api-reference/introduction.mdx", "mor-introduction.mdx", etc. Read
+// the target files that a filter would collaterally match but that we are NOT
+// fixing, so we can restore them verbatim after the run and keep the change set
+// to exactly the intended pages.
+function snapshotCollateral(targets, expected, mint) {
+  const targetSet = new Set(targets);
+  const snap = new Map();
+  for (const rel of expected) {
+    if (targetSet.has(rel)) continue;
+    if (!targets.some((t) => rel.includes(t))) continue;
+    const fp = path.join(ROOT, mint, rel);
+    if (fs.existsSync(fp)) snap.set(fp, fs.readFileSync(fp));
+  }
+  if (snap.size) console.log(`[guard] protecting ${snap.size} over-matched file(s) from --file collateral`);
+  return snap;
+}
+
+function restoreCollateral(snap) {
+  for (const [fp, buf] of snap) fs.writeFileSync(fp, buf);
+}
+
 function runLingo(lingoCode, files, concurrency) {
   const args = [
     '--yes', 'lingo.dev@latest', 'run',
@@ -239,10 +261,11 @@ function main() {
   if (detectOnly) return;
   if (broken.length === 0) { console.log('[done] Nothing to fix.'); return; }
 
-  moveToEn();
-  try {
-    for (let attempt = 1; attempt <= maxAttempts && broken.length; attempt++) {
-      console.log(`\n=== Attempt ${attempt}/${maxAttempts}: retranslating ${broken.length} file(s) into ${locale} ===`);
+  for (let attempt = 1; attempt <= maxAttempts && broken.length; attempt++) {
+    console.log(`\n=== Attempt ${attempt}/${maxAttempts}: retranslating ${broken.length} file(s) into ${locale} ===`);
+    const collateral = snapshotCollateral(broken, expected, mint);
+    moveToEn();
+    try {
       renameDir(mint, locale); // cn -> zh-CN so Lingo can find the target
       try {
         if (skipLingo) console.log('[skip-lingo] skipping actual translation call');
@@ -250,36 +273,29 @@ function main() {
       } finally {
         renameDir(locale, mint); // zh-CN -> cn for Mintlify
       }
-      // Detection is script-ratio based, so it works while English is still in
-      // /en. MDX repair, however, needs the English source at ROOT, so it is
-      // deferred until after moveBackFromEn() below.
-      const still = detectBroken(locale, expected);
-      console.log(`[verify] after attempt ${attempt}: ${still.length} still broken`);
-      if (skipLingo) break; // plumbing test: don't loop
-      broken = still;
+    } finally {
+      moveBackFromEn();
     }
-  } finally {
-    moveBackFromEn();
+    restoreCollateral(collateral);
+    // Repair runs each pass with English back at ROOT (enSourcePath resolves).
+    // A page lingo translated but left as invalid MDX is reverted to English
+    // here, which re-detects as passthrough below and is retried next pass
+    // instead of being silently lost.
+    if (!skipLingo) repairLang(mint);
+    broken = detectBroken(locale, expected);
+    console.log(`[verify] after attempt ${attempt}: ${broken.length} still broken`);
+    if (skipLingo) break; // plumbing test: don't loop
   }
 
-  // English is back at ROOT now, so enSourcePath() resolves and the source-
-  // dependent repairs (locked JSX/frontmatter, English fallback) work correctly.
-  // Mirrors the separate repair step in sync-languages.yml.
-  if (!skipLingo) {
-    console.log('\n[repair] Running MDX repair (restore locked JSX/frontmatter, fix fences)...');
-    repairLang(mint);
-  }
+  const fixedCount = initialCount - broken.length;
 
-  const finalBroken = detectBroken(locale, expected);
-  const fixedCount = initialCount - finalBroken.length;
-
-  if (finalBroken.length === 0) {
+  if (broken.length === 0) {
     console.log(`\n[result] All ${mint} pages are translated (fixed ${fixedCount}/${initialCount}).`);
     return;
   }
 
-  console.log(`\n[result] Fixed ${fixedCount}/${initialCount}. ${finalBroken.length} ${mint} page(s) still untranslated:`);
-  finalBroken.forEach((b) => console.log(`   - ${b}`));
+  console.log(`\n[result] Fixed ${fixedCount}/${initialCount}. ${broken.length} ${mint} page(s) still untranslated:`);
+  broken.forEach((b) => console.log(`   - ${b}`));
 
   // Fail only on ZERO progress. Partial progress exits 0 so the pages that were
   // fixed still reach a PR (the workflow opens one from `git status`); the list
