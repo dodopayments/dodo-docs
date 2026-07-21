@@ -1,8 +1,6 @@
 ---
-title: Build an AI API Platform with Credit-Based Billing
-description: Build a tiered AI API service with token credits — issue credits
-  via subscription plans and one-time top-up packs, and auto-deduct as customers
-  call your API.
+title: 构建基于信用计费的 AI API 平台
+description: 构建分级 AI API 服务，使用代币信用进行计费——通过订阅计划和一次性充值包发放信用，客户调用您的 API 时自动扣除。
 icon: coins
 keywords:
   - Dodo Payments
@@ -15,199 +13,199 @@ keywords:
 ---
 
 <Tip>
-  <strong>Let Sentra write your integration code for you.</strong><br />
-  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, credit grants, and more — just by describing what you want.
+  <strong>让 Sentra 为您编写集成代码。</strong><br />
+  使用我们在 VS Code、Cursor 或 Windsurf 中的 AI 助手生成 SDK/API 代码、webhook 处理程序、信用授权等——只需描述您的需求即可。
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    Try Sentra: AI-Powered Integration &rarr;
+    试用 Sentra：AI 驱动的集成 &rarr;
   </a>
 </Tip>
 
-In this tutorial, you'll build **NeuralAPI** — a tiered AI platform where each subscription plan comes with a monthly token credit allowance, customers can buy top-up packs when they run low, and your backend automatically deducts credits as requests are processed by OpenAI.
+在本教程中，您将构建 **NeuralAPI** —— 一个分级 AI 平台，每个订阅计划附带每月代币信用额度，当客户用完时可以购买充值包，您的后端会在 OpenAI 处理请求时自动扣除信用。
 
-<Note>
-This tutorial uses Node.js/Express + the OpenAI SDK. The Dodo Payments concepts (credits, meters, webhooks) apply to any framework or AI provider — adapt freely.
+ <Note>
+本教程使用 Node.js/Express + OpenAI SDK。Dodo Payments 的概念（信用、计量器、webhooks）适用于任何框架或 AI 提供商——可以自由调整。
 </Note>
 
-By the end of this tutorial, you'll know how to:
+通过本教程，您将学会如何：
 
-- Create a custom credit entitlement (tokens) and a meter that auto-deducts from it
-- Attach credits to subscription plans (with and without overage) and a one-time top-up product
-- Wire a real OpenAI completion endpoint that bills tokens through Dodo Payments
-- Query a customer's live credit balance via the SDK
-- Verify webhook signatures and route Dodo Payments credit events
+- 创建自定义信用授权（代币）和自动扣除的计量器
+- 将信用附加到订阅计划（有或没有超额使用）和一次性充值产品
+- 连接真正的 OpenAI 完成端点，通过 Dodo Payments 以代币计费
+- 通过 SDK 查询客户的实时信用余额
+- 验证 webhook 签名并路由 Dodo Payments 信用事件
 
-## What We're Building
+## 我们要构建的内容
 
-Here's the pricing model for NeuralAPI:
+这是 NeuralAPI 的定价模型：
 
-| Product | Price | Tokens | Overage |
+| 产品 | 价格 | 代币 | 超额使用 |
 |---------|-------|--------|---------|
-| Starter Plan | $29/month | 10,000,000 tokens/cycle | Blocked at zero |
-| Pro Plan | $99/month | 40,000,000 tokens/cycle | $0.005 per 1K tokens |
-| Token Top-Up Pack | $19 one-time | +5,000,000 tokens | — |
+| 入门计划 | $29/月 | 10,000,000 代币/周期 | 在零时阻止 |
+| 专业计划 | $99/月 | 40,000,000 代币/周期 | $0.005 每千代币 |
+| 代币充值包 | $19 一次性 | +5,000,000 代币 | — |
 
-<Info>
-Before you start, make sure you have:
-- A Dodo Payments account (test mode is fine)
-- An OpenAI API key
+ <Info>
+在开始之前，请确保您拥有：
+- Dodo Payments 账户（测试模式即可）
+- OpenAI API 密钥
 - Node.js 18+
-- Basic familiarity with TypeScript/Node.js
+- 对 TypeScript/Node.js 的基本熟悉
 </Info>
 
-## Step 1: Create Your Token Credit Entitlement
+## 第一步：创建代币信用授权
 
-First, create the credit entitlement that both subscription plans and the top-up pack will share. Think of this as defining the "token" unit your platform uses.
+首先，创建订阅计划和充值包共享的信用授权。把这看作是定义平台使用的“代币”单位。
 
-<Frame caption="The Credits tab under Products shows all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="Credits listing page showing created credit entitlements" style={{ maxHeight: '500px', width: 'auto' }} />
+ <Frame caption="The Credits tab under Products shows all your credit entitlements.">
+<img src="/images/CBB/Desktop - Cookbook - NeuralAPI - Credit.png" alt="信用清单页面显示创建的信用授权" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-<Steps>
+ <Steps>
 <Step title="Navigate to Credits">
-1. Log into your Dodo Payments dashboard
-2. Click **Products** in the left sidebar
-3. Select the **Credits** tab
-4. Click **Create Credit**
+1. 登录您的 Dodo Payments 仪表板
+2. 在左侧栏中点击 **Products**
+3. 选择 **Credits** 标签
+4. 点击 **Create Credit**
 </Step>
 
-<Step title="Configure the credit unit">
-Fill in the basic details for your token credit:
+ <Step title="Configure the credit unit">
+填写代币信用的基本信息：
 
 **Credit Name**: `API Tokens`
 
-**Credit Type**: Select **Custom Unit**
+**Credit Type**: 选择 **Custom Unit**
 
 **Unit Name**: `token`
 
-**Precision**: `0` (tokens are always whole numbers)
+**Precision**: `0` （代币始终为整数）
 
-**Credit Expiry**: `30 days` (credits reset each billing cycle)
+**Credit Expiry**: `30 days` （信用在每个计费周期重置）
 
-<Warning>
-Precision cannot be changed after a credit is created. For token counts, `0` (whole numbers) is almost always correct.
+ <Warning>
+创建信用后，精度无法更改。对于代币计数，`0`（整数）几乎总是正确的。
 </Warning>
 </Step>
 
-<Step title="Skip overage at the credit level">
-Leave overage **disabled** here — you'll configure it per-plan when attaching the credit to products. This lets the Starter plan block usage at zero while the Pro plan allows overage.
+ <Step title="Skip overage at the credit level">
+此处保持超额使用**禁用**——在将信用附加到产品时，每个计划配置它。这允许入门计划在零时阻止使用，而专业计划允许超额使用。
 
-<Tip>
-Overage settings configured here are *defaults*. Each product attachment can override them — which is exactly what we'll do in Step 3.
+ <Tip>
+在此处配置的超额使用设置是*默认值*。每个产品附件可以覆盖它们——这正是我们将在步骤 3 中做的。
 </Tip>
 </Step>
 
-<Step title="Save and copy the credit ID">
-Click **Create Credit**. Once saved, open the credit and copy its ID — it looks like `cent_xxxxxxxxxxxx`.
+ <Step title="Save and copy the credit ID">
+点击 **Create Credit**。保存后，打开信用并复制其 ID —— 它看起来像 `cent_xxxxxxxxxxxx`。
 
-<Check>
-Your `API Tokens` credit entitlement is ready. Next, create a meter so usage events can drive deductions automatically.
+ <Check>
+您的 `API Tokens` 信用授权已准备好。接下来，创建一个计量器，以便使用事件能自动驱动扣除。
 </Check>
 </Step>
 </Steps>
 
-## Step 2: Create a Meter for Token Usage
+## 第二步：为代币使用创建计量器
 
-A meter aggregates incoming usage events and converts them into credit deductions. You need this *before* creating the plan products, since you'll attach it during product creation in Step 3.
+计量器聚合传入的使用事件，并将其转换为信用扣除。您需要在创建计划产品*之前*准备好这个，因为您将在步骤 3 的产品创建期间附加它。
 
-<Steps>
+ <Steps>
 <Step title="Open the Meters section">
-1. In the dashboard sidebar, go to **Products** → **Meters**
-2. Click **Create Meter**
+1. 在仪表板侧边栏中，转到 **Products → Meters**
+2. 点击 **Create Meter**
 </Step>
 
-<Step title="Configure the meter">
-Fill in:
+ <Step title="Configure the meter">
+填写信息：
 
 **Meter Name**: `Token Usage Meter`
 
-**Event Name**: `api.tokens_used` *(this must match exactly what your app sends)*
+**Event Name**: `api.tokens_used` *(此名称必须与您的应用程序发送的内容完全匹配)*
 
-**Aggregation Type**: `Sum` — we sum the token count from each event
+**Aggregation Type**: `Sum` —— 我们对来自每个事件的代币数量进行求和
 
-**Over Property**: `tokens` — the metadata key on each event whose value will be summed
+**Over Property**: `tokens` —— 每个事件中的元数据键，其值将被求和
 
 **Measurement Unit**: `tokens`
 
-<Warning>
-Event names are case-sensitive. `api.tokens_used` ≠ `Api.Tokens.Used` — pick one and stick to it.
+ <Warning>
+事件名称区分大小写。`api.tokens_used` ≠ `Api.Tokens.Used` —— 选择一个并坚持使用它。
 </Warning>
 
-Save the meter and copy its ID — you'll reference it when attaching to products.
+保存计量器并复制其 ID —— 您将在附加到产品时引用它。
 
-<Check>
-Meter is created. Now we can wire it to the credit when we configure products.
+ <Check>
+计量器已创建。现在我们可以在配置产品时将其连接到信用上。
 </Check>
 </Step>
 </Steps>
 
-## Step 3: Create the Plan Products
+## 第三步：创建计划产品
 
-Both plans need to be **Usage Based Billing** products, not plain Subscriptions — meters can only attach to UBB products, and you need the meter to auto-deduct credits as customers call your API. UBB products still support a recurring base fee (the `$29` / `$99`); usage on top of that gets billed in credits.
+两个计划需要是**使用计费**产品，而不是普通订阅——计量器只能附加到 UBB 产品，您需要计量器在客户调用 API 时自动扣除信用。UBB 产品仍支持循环基础费用（`$29` / `$99`）；在此基础上的使用以信用计费。
 
-<Frame caption="Usage Based Billing pricing type with meter configuration.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="Usage Based Billing pricing configuration" style={{ maxHeight: '500px', width: 'auto' }} />
+ <Frame caption="Usage Based Billing pricing type with meter configuration.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB.jpg" alt="基于使用的计费定价配置" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-### Starter Plan ($29/month — 10M tokens, no overage)
+### 入门计划 ($29/月 — 10M 代币，无超额使用)
 
-<Steps>
+ <Steps>
 <Step title="Create the Starter UBB product">
-1. Go to **Products → Create Product**
-2. Select **Usage Based Billing** as the pricing type
-3. Fill in:
+1. 转到 **Products → Create Product**
+2. 选择 **Usage Based Billing** 作为定价类型
+3. 填写：
 
 **Product Name**: `NeuralAPI Starter`
 
 **Description**: `10 million API tokens per month. Perfect for individual developers and small projects.`
 
-**Fixed Price**: `29.00` (the recurring base fee — billed monthly even before any usage)
+**Fixed Price**: `29.00` （循环基础费用——即使在使用前也每月收费）
 
 **Billing Cycle**: `Monthly`
 
 **Currency**: `USD`
 </Step>
 
-<Step title="Attach the meter">
-In the **Select meter** section, click **+** and add `Token Usage Meter`. Then on the meter:
+ <Step title="Attach the meter">
+在 **Select meter** 部分，点击 **+** 并添加 `Token Usage Meter`。然后在计量器上：
 
-1. Toggle **Bill usage in Credits** on
-2. **Credit Entitlement**: select `API Tokens`
-3. **Meter units per credit**: `1` — each token in the event maps to 1 credit deducted
-4. **Free Threshold**: `0` — the credit allocation itself is the customer's "free tier"; we don't need an extra free band
+1. 打开 **Bill usage in Credits**
+2. **Credit Entitlement**: 选择 `API Tokens`
+3. **Meter units per credit**: `1` —— 事件中的每个代币映射到扣除的 1 个信用
+4. **Free Threshold**: `0` —— 信用分配本身是客户的“免费层级”；我们不需要额外的免费带宽
 
-<Frame caption="Toggle 'Bill usage in Credits' on the meter and pick the credit entitlement.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="Meter with Bill usage in Credits enabled and API Tokens selected" style={{ maxHeight: '500px', width: 'auto' }} />
+ <Frame caption="Toggle 'Bill usage in Credits' on the meter and pick the credit entitlement.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB-5.jpg" alt="启用 Bill usage in Credits 并选择 API Tokens 的计量器" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-This is the wiring that makes incoming `api.tokens_used` events actually deduct from the customer's balance.
+这就是使传入的 `api.tokens_used` 事件实际扣除客户余额的连接。
 </Step>
 
-<Step title="Configure credit issuance for Starter">
-Still on the product, scroll to the credit configuration section that appears once a credit-billed meter is attached:
+ <Step title="Configure credit issuance for Starter">
+仍在产品上，向下滚动到信用配置部分，附加信用计费计量器后会出现：
 
-**Credits issued per billing cycle**: `10000000`
+**每个计费周期发放的信用额度**: `10000000`
 
-**Allow Overage**: **Disabled** — Starter customers are blocked when tokens run out
+**允许超额使用**: **禁用** —— 入门客户在代币用尽时被阻止
 
-**Import Default Credit Settings**: Enabled — use the 30-day expiry from the credit entitlement
+**导入默认信用设置**: 启用 —— 使用来自信用授权的 30 天到期
 
-<Frame caption="Configure credit issuance per cycle on the UBB product.">
-<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="Credit configuration form with per-cycle amount and overage settings" style={{ maxHeight: '500px', width: 'auto' }} />
+ <Frame caption="Configure credit issuance per cycle on the UBB product.">
+<img src="/images/CBB/Desktop - Attach Credit - UBB-6.jpg" alt="具有每周期金额和超额使用设置的信用配置表单" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-Click **Save** and copy the product ID.
+点击 **Save** 并复制产品 ID。
 
-<Check>
-Starter Plan: $29/month base fee, 10M tokens/cycle, blocked at zero, auto-deducts via meter.
+ <Check>
+入门计划：$29/月基础费用，10M代币/周期，在零时阻止，通过计量器自动扣除。
 </Check>
 </Step>
 </Steps>
 
-### Pro Plan ($99/month — 40M tokens, overage enabled)
+### 专业计划 ($99/月 — 40M 代币，启用超额使用)
 
-<Steps>
+ <Steps>
 <Step title="Create the Pro UBB product">
-Same flow as Starter, with bigger numbers:
+与入门计划相同的流程，但数字更大：
 
 **Product Name**: `NeuralAPI Pro`
 
@@ -220,44 +218,44 @@ Same flow as Starter, with bigger numbers:
 **Currency**: `USD`
 </Step>
 
-<Step title="Attach the meter">
-Identical to Starter: add `Token Usage Meter`, toggle **Bill usage in Credits** on, select `API Tokens`, **Meter units per credit** `1`, **Free Threshold** `0`.
+ <Step title="Attach the meter">
+与入门计划相同：添加 `Token Usage Meter`，切换 **Bill usage in Credits**，选择 `API Tokens`，**Meter units per credit** `1`， **Free Threshold** `0`。
 </Step>
 
-<Step title="Configure credit issuance with overage">
-Configure the credit issuance, this time enabling overage:
+ <Step title="Configure credit issuance with overage">
+配置信用发行，这次启用超额使用：
 
-**Credits issued per billing cycle**: `40000000`
+**每个计费周期发放的信用额度**: `40000000`
 
-**Import Default Credit Settings**: **Disable** — we need to customize overage settings per product
+**导入默认信用设置**: **禁用** —— 我们需要每个产品自定义超额设置
 
-**Allow Overage**: **Enabled**
+**允许超额使用**: **启用**
 
-**Price Per Unit**: `0.000005` USD per token (i.e., $0.005 per 1K tokens, or $5 per 1M tokens — above the plan's effective per-token rate to discourage spillover)
+**单位价格**: `0.000005` 美元每代币（即 $0.005 每千代币，或 $5 每百万代币——高于计划的有效代币单价以防止外溢）
 
-**Overage Behavior**: `Bill overage at billing` — overage is charged on the next invoice, then the balance resets
+**超额行为**: `Bill overage at billing` —— 超额将在下一个发票中收费，然后余额重置
 
-Save the product and copy the product ID.
+保存产品并复制产品 ID。
 
-<Check>
-Pro Plan: $99/month base fee, 40M tokens/cycle, overage at $0.005/1K tokens, auto-deducts via meter.
+ <Check>
+专业计划：$99/月基础费用，40M代币/周期，超额使用为 $0.005/1K 代币，通过计量器自动扣除。
 </Check>
 </Step>
 </Steps>
 
-## Step 4: Create the Token Top-Up Pack
+## 第四步：创建代币充值包
 
-The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existing customer's balance.
+充值包是一次性购买，为现有客户余额增加 5,000,000 代币。
 
-<Frame caption="Single Payment pricing selected for a one-time credit product.">
-<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="Product pricing section with Single Payment selected" style={{ maxHeight: '500px', width: 'auto' }} />
+ <Frame caption="Single Payment pricing selected for a one-time credit product.">
+<img src="/images/CBB/Desktop - Attach Credit - OTP.jpg" alt="产品定价部分选择单次支付" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
-<Steps>
+ <Steps>
 <Step title="Create a one-time product">
-1. Go to **Products → Create Product**
-2. Select **Single Payment** as the pricing type
-3. Fill in:
+1. 转到 **Products → Create Product**
+2. 选择 **Single Payment** 作为定价类型
+3. 填写：
 
 **Product Name**: `Token Top-Up Pack`
 
@@ -268,31 +266,31 @@ The top-up pack is a one-time purchase that grants 5,000,000 tokens to an existi
 **Currency**: `USD`
 </Step>
 
-<Step title="Attach the token credit">
-1. In the **Entitlements** section, click **Attach** next to **Credits**
-2. Select `API Tokens`
-3. Set **Credits issued**: `5000000`
-4. **Disable** *Import Default Credit Settings* — we want to override the default 30-day expiry
-5. Set **Credit Expiry**: `365 days`
-6. Save the product
+ <Step title="Attach the token credit">
+1. 在 **Entitlements** 部分，点击 **Attach** 在 **Credits** 旁边
+2. 选择 `API Tokens`
+3. 设置 **Credits issued**: `5000000`
+4. **禁用** *导入默认信用设置* —— 我们希望覆盖默认的 30 天到期
+5. 设置 **Credit Expiry**: `365 days`
+6. 保存产品
 
-Copy the product ID.
+复制产品 ID。
 
-<Tip>
-Why a longer expiry on top-ups? Subscription credits reset every 30 days because that's the cycle. Top-ups are *prepaid purchases* — the customer paid $19 upfront and reasonably expects those tokens to last beyond a month. 365 days matches how real prepaid credits work at OpenAI, AWS, and Anthropic, while still capping your liability so customers can't stockpile indefinitely.
+ <Tip>
+为什么充值包的到期时间更长？订阅信用每 30 天重置一次，因为这就是周期。充值包是*预付费购买*——客户预先支付了 $19，合理预期这些代币将持续超过一个月。365 天的期限与 OpenAI、AWS 和 Anthropic 的真实预付费信用相匹配，同时仍然封顶您的责任，使客户无法无限期囤积。
 </Tip>
 
-<Check>
-Top-Up Pack configured — purchasing it grants 5,000,000 tokens that remain valid for 365 days.
+ <Check>
+充值包已配置——购买后即可授予 5,000,000 代币，这些代币在 365 天内有效。
 </Check>
 </Step>
 </Steps>
 
-## Step 5: Build the Backend
+## 第五步：构建后端
 
-Now let's build the Express server that handles subscription checkout, top-up checkout, real OpenAI completions with token billing, balance queries, and credit webhook events.
+现在让我们构建一个 Express 服务器来处理订阅结账、充值结账、带有代币计费的真正 OpenAI 完成、余额查询和信用 webhook 事件。
 
-<Steps>
+ <Steps>
 <Step title="Set up your project">
 
 ```bash
@@ -303,7 +301,7 @@ npm install dodopayments openai express dotenv
 npm install -D @types/node @types/express typescript tsx
 ```
 
-Create a `tsconfig.json`:
+创建 `tsconfig.json`：
 
 ```json tsconfig.json
 {
@@ -319,7 +317,7 @@ Create a `tsconfig.json`:
 }
 ```
 
-Update `package.json` scripts:
+更新 `package.json` 脚本：
 
 ```json package.json
 {
@@ -331,10 +329,10 @@ Update `package.json` scripts:
 }
 ```
 
-</Step>
+ </Step>
 
-<Step title="Set up environment variables">
-Create `.env` with your credentials and IDs from the previous steps:
+ <Step title="Set up environment variables">
+使用您在前面步骤中获取的凭据和 ID 创建 `.env`：
 
 ```bash .env
 DODO_PAYMENTS_API_KEY=your_dodo_api_key_here
@@ -348,17 +346,17 @@ TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
 BASE_URL=http://localhost:3000
 ```
 
-<Warning>
-Never commit `.env` to version control. Add it to `.gitignore` immediately.
+ <Warning>
+切勿将 `.env` 提交到版本控制。立即将其添加到 `.gitignore`。
 </Warning>
 
-You'll fill in `DODO_PAYMENTS_WEBHOOK_KEY` in Step 7 after registering your webhook endpoint.
+您将在步骤 7 注册您的 webhook 端点后填写 `DODO_PAYMENTS_WEBHOOK_KEY`。
 </Step>
 
-<Step title="Implement the server">
-Create `src/server.ts`:
+ <Step title="Implement the server">
+创建 `src/server.ts`：
 
-<CodeGroup>
+ <CodeGroup>
 
 ```typescript src/server.ts expandable
 import 'dotenv/config';
@@ -584,35 +582,35 @@ app.listen(3000, () => {
 }
 ```
 
-</CodeGroup>
+ </CodeGroup>
 
-<Check>
-Backend done: subscription checkout, top-up checkout, OpenAI completion with metered token billing, balance query, and a verified webhook handler.
+ <Check>
+后端完成：订阅结账、充值结账、带有计量代币计费的 OpenAI 完成、余额查询和经过验证的 webhook 处理程序。
 </Check>
 
-<Tip>
-[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) provides drop-in trackers that automate the `usageEvents.ingest` call for you — including the [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), and [time-range](/developer-resources/ingestion-blueprints/time-range) usage.
+ <Tip>
+[`@dodopayments/ingestion-blueprints`](/features/usage-based-billing/ingestion-blueprints) 提供自动进行 `usageEvents.ingest` 调用的即插即用跟踪器，包括 [LLM Blueprint](/developer-resources/ingestion-blueprints/llm), [API gateway](/developer-resources/ingestion-blueprints/api-gateway), [object storage](/developer-resources/ingestion-blueprints/object-storage), [streams](/developer-resources/ingestion-blueprints/stream), 和 [time-range](/developer-resources/ingestion-blueprints/time-range) 使用。
 </Tip>
 </Step>
 
-<Step title="A note on how deductions actually happen">
-You may have noticed there's no explicit "deduct N credits" call. That's by design:
+ <Step title="A note on how deductions actually happen">
+您可能已经注意到，没有明确的“扣除 N 个信用”的调用。这是设计使然：
 
-1. Your handler calls OpenAI and gets back `usage.total_tokens` (e.g., 1532).
-2. You ingest a single usage event: `event_name: api.tokens_used`, `metadata: { tokens: 1532 }`.
-3. The `Token Usage Meter` aggregates events by customer.
-4. Because the meter is wired to the `API Tokens` credit with **Bill usage in Credits**, Dodo Payments deducts 1532 credits from the customer's oldest non-expired grant (FIFO).
-5. If overage is enabled and the customer goes below zero, the deficit is tracked and billed on the next invoice.
+1. 您的处理程序调用 OpenAI 并返回 `usage.total_tokens`（例如，1532）。
+2. 您摄入一个使用事件：`event_name: api.tokens_used`, `metadata: { tokens: 1532 }`。
+3. `Token Usage Meter` 按客户聚合事件。
+4. 因为计量器连接到带有 **Bill usage in Credits** 的 `API Tokens` 信用，Dodo Payments 从客户的最早未过期授予中扣除 1532 个信用（FIFO）。
+5. 如果启用了超额使用且客户低于零，则赤字会在下一张发票中跟踪和计费。
 
-The meter handles all of that. Your code only ingests events.
+计量器处理所有这些。您的代码只需摄入事件。
 </Step>
 </Steps>
 
-## Step 6: Add a Demo Frontend
+## 第六步：添加演示前端
 
-Create `public/index.html` to test all the flows in your browser. We persist the customer ID to `localStorage` so subscribe → generate → top-up all share the same identity, mimicking a logged-in app:
+创建 `public/index.html` 来测试您浏览器中的所有流程。我们将客户 ID 保存在 `localStorage` 中，以便订阅 → 生成 → 充值都共享相同身份，模拟登录应用程序：
 
-<CodeGroup>
+ <CodeGroup>
 
 ```html public/index.html expandable
 <!DOCTYPE html>
@@ -784,164 +782,164 @@ Create `public/index.html` to test all the flows in your browser. We persist the
 </html>
 ```
 
-</CodeGroup>
+ </CodeGroup>
 
-## Step 7: Wire Up the Webhook
+## 第七步：连接 Webhook
 
-Webhooks let your server react to balance changes — you'll use them to send "running low" emails before customers hit zero.
+Webhooks 使您的服务器能够响应余额变化——您将使用它们在客户达到零之前发送“余额不足”电子邮件。
 
-<Steps>
+ <Steps>
 <Step title="Expose your local server">
-Webhooks need a public URL. For local development, use [ngrok](https://ngrok.com) or any tunnel:
+Webhooks 需要一个公共 URL。对于本地开发，使用 [ngrok](https://ngrok.com) 或其他隧道：
 
 ```bash
 ngrok http 3000
 ```
 
-Copy the `https://...ngrok-free.app` URL.
+复制 `https://...ngrok-free.app` URL。
 </Step>
 
-<Step title="Register the webhook in Dodo Payments">
-1. In the dashboard, go to **Developers → Webhooks → Add Endpoint**
+ <Step title="Register the webhook in Dodo Payments">
+1. 在仪表板中，转到 **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://your-tunnel.ngrok-free.app/webhooks/dodo`
-3. Subscribe to (at minimum):
+3. 至少订阅：
    - `credit.added`
    - `credit.deducted`
    - `credit.overage_charged`
-4. Save and copy the **Signing Secret**
-5. Paste it into `.env` as `DODO_PAYMENTS_WEBHOOK_KEY`, then restart `npm run dev`
+4. 保存并复制 **Signing Secret**
+5. 将其粘贴到 `.env` 中作为 `DODO_PAYMENTS_WEBHOOK_KEY`，然后重启 `npm run dev`
 
-<Tip>
-The SDK's `dodo.webhooks.unwrap()` validates the `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers using your signing secret. You don't need to hand-roll HMAC verification — and you shouldn't, because Dodo Payments uses [Standard Webhooks](https://www.standardwebhooks.com/), which signs `id.timestamp.body` rather than just the body.
+ <Tip>
+SDK 的 `dodo.webhooks.unwrap()` 使用您的签名秘密验证 `webhook-id`, `webhook-timestamp` 和 `webhook-signature` 标头。您无需手动进行 HMAC 验证——而且您不应该，因为 Dodo Payments 使用 [Standard Webhooks](https://www.standardwebhooks.com/)，签署 `id.timestamp.body` 而不仅仅是主体。
 </Tip>
 </Step>
 </Steps>
 
-## Step 8: Test the Full Flow
+## 第八步：测试整个流程
 
-<Steps>
+ <Steps>
 <Step title="Subscribe a test customer">
-1. Run `npm run dev`
-2. Open `http://localhost:3000`
-3. Pick **Pro Plan**, enter a test email + name, click **Get Checkout Link**, complete checkout with [test card details](/miscellaneous/testing-process)
-4. In the dashboard, go to **Customers → most recent** and copy the `cus_...` ID
-5. Paste it into the "Logged-in customer ID" field on the demo and click **Save**
+1. 运行 `npm run dev`
+2. 打开 `http://localhost:3000`
+3. 选择 **Pro Plan**，输入测试电子邮件 + 名称，点击 **Get Checkout Link**，使用 [测试卡详情](/miscellaneous/testing-process) 完成结账
+4. 在仪表板中，转到 **Customers → 最新** 并复制 `cus_...` ID
+5. 将其粘贴到演示中的“登录客户 ID”字段并点击 **Save**
 
-<Check>
-The customer should have 40,000,000 tokens. Click **Refresh Balance** to confirm.
+ <Check>
+客户应拥有 40,000,000 代币。点击 **Refresh Balance** 以确认。
 </Check>
 </Step>
 
-<Step title="Generate a real AI response">
-Type a prompt and click **Generate**. The server calls OpenAI, gets back the actual `total_tokens`, ingests a usage event, and returns the response.
+ <Step title="Generate a real AI response">
+输入提示并点击 **Generate**。服务器调用 OpenAI，获取实际的 `total_tokens`，摄入使用事件，并返回响应。
 
-<Info>
-Usage events are processed by a background worker every ~minute. The balance won't tick down instantly — wait 30–90 seconds and click **Refresh Balance** again. Don't conclude it's broken if the first refresh doesn't show movement.
+ <Info>
+使用事件由后台工作程序每隔大约 1 分钟处理一次。余额不会立即减少——等待 30–90 秒，然后再次点击 **Refresh Balance**。如果第一次刷新没有显示变化，不要认为它已中断。
 </Info>
 </Step>
 
-<Step title="Test the top-up flow">
-Click **Buy 5M Tokens — $19** and complete checkout. After the payment succeeds, refresh the balance — it should jump by 5,000,000 tokens. Your server log should show a `credit.added` event.
+ <Step title="Test the top-up flow">
+点击 **Buy 5M Tokens — $19** 并完成结账。付款成功后，刷新余额——它应增加 5,000,000 代币。您的服务器日志应显示 `credit.added` 事件。
 </Step>
 </Steps>
 
-## Troubleshooting
+## 故障排除
 
-<AccordionGroup>
+ <AccordionGroup>
 <Accordion title="Credits not deducting after usage events">
-**Possible causes:**
-- The meter's event name doesn't match the `event_name` you're sending (`api.tokens_used` is case-sensitive)
-- The meter isn't linked to the `API Tokens` credit on the product — go to the product's meter configuration and confirm **Bill usage in Credits** is on
-- The `metadata.tokens` key doesn't match the meter's "Over Property" field
-- The customer's grant has expired (check the customer's credit history)
+**可能的原因：**
+- 计量器的事件名称与您发送的 `event_name` 不匹配（`api.tokens_used` 区分大小写）
+- 计量器未链接到产品上的 `API Tokens` 信用——转到产品的计量器配置并确认 **Bill usage in Credits** 已启用
+- `metadata.tokens` 键与计量器的“Over Property”字段不匹配
+- 客户的授予已过期（查看客户的信用历史）
 
-**What to check:**
-1. **Products → Meters**: open the meter and confirm it shows the linked credit name on the product attachment
-2. The **Events** tab on the meter — ingested events should appear there even before deduction
-3. **Customers → \[Customer\] → Credits**: ledger entries should appear within a minute or two
+**检查内容：**
+1. **Products → Meters**：打开计量器并确认其在产品附件上显示链接的信用名称
+2. 计量器上的 **Events** 标签 —— 即使在扣除之前，已摄入的事件也应显示在那里
+3. **Customers → \[Customer\] → Credits**：分类帐条目应在一到两分钟内出现
 </Accordion>
 
-<Accordion title="Balance always shows 0 or 'customer not found'">
-**Possible causes:**
-- The customer hasn't completed checkout yet — credits are only issued after a successful payment
-- You're querying with the wrong `customer_id` (use the `cus_...` ID from the dashboard, not your own DB ID)
-- The `CREDIT_ENTITLEMENT_ID` in `.env` doesn't match the credit attached to the product
+ <Accordion title="Balance always shows 0 or 'customer not found'">
+**可能的原因：**
+- 客户尚未完成结账 —— 信用在成功付款后才会发放
+- 您使用的 `customer_id` 查询不正确（使用来自仪表板的 `cus_...` ID，而不是您自己的数据库 ID）
+- `CREDIT_ENTITLEMENT_ID` 在 `.env` 中与附加到产品的信用不匹配
 
-**What to check:**
-Open **Customers → \[Customer\] → Credits**. If no credits appear there, the product entitlement wasn't attached or the payment didn't complete.
+**检查内容：**
+打开 **Customers → \[Customer\] → Credits**。如果没有信用出现在那里，则产品授权未附加或付款未完成。
 </Accordion>
 
-<Accordion title="Overage not working for Pro plan customers">
-**Possible causes:**
-- Overage wasn't enabled on the **Pro product's credit attachment** (the credit-level setting is just a default)
-- The customer is actually on Starter, not Pro
-- Overage limit was set to 0
+ <Accordion title="Overage not working for Pro plan customers">
+**可能的原因：**
+- 在 **Pro 产品的信用附件** 上未启用超额使用（信用级别设置只是默认值）
+- 客户实际上在入门计划，而不是专业计划
+- 超额使用限制设置为 0
 
-**What to check:**
-Edit Pro → Entitlements → Credits → confirm **Allow Overage** is on and **Price Per Unit** is `0.000005` (= $5 per million tokens; double-check the leading zeros — the field takes per-token price, not per-1K).
+**检查内容：**
+编辑 Pro → Entitlements → Credits → 确认 **Allow Overage** 已启用并且 **单位价格** 是 `0.000005` （= 每百万代币 $5；再次检查前导零——字段填的是每代币价格，而不是每千）
 </Accordion>
 
-<Accordion title="`Webhook verification failed` in logs">
-**Possible causes:**
-- Body parsing order: `express.json()` was applied to `/webhooks/dodo` before `express.raw()` — the SDK needs the **raw bytes** of the request, not parsed JSON
-- Wrong signing secret in `DODO_PAYMENTS_WEBHOOK_KEY`
-- Reverse proxy is rewriting headers
+ <Accordion title="`Webhook verification failed` in logs">
+**可能的原因：**
+- 身体解析顺序：`express.json()` 在 `/webhooks/dodo` 之前应用于 `express.raw()` —— SDK 需要请求的**原始字节**，而不是解析的 JSON
+- `DODO_PAYMENTS_WEBHOOK_KEY` 中的签名秘钥错误
+- 反向代理正在重写标头
 
-**What to check:**
-Confirm the `app.use('/webhooks/dodo', express.raw(...))` line comes *before* `app.use(express.json())` in `server.ts`.
+**检查内容：**
+确认 `app.use('/webhooks/dodo', express.raw(...))` 行在 `app.use(express.json())` *之前* 在 `server.ts` 中。
 </Accordion>
 </AccordionGroup>
 
-## Need help?
+## 需要帮助？
 
-- [Discord Community](https://discord.gg/bYqAp4ayYh)
+- [Discord 社区](https://discord.gg/bYqAp4ayYh)
 - [support@dodopayments.com](mailto:support@dodopayments.com)
 
-## Congratulations! You've Built Credit-Based Billing for NeuralAPI
+## 恭喜！您已为 NeuralAPI 构建基于信用的计费
 
-Your platform now has a complete, production-ready credit billing system:
+您的平台现在拥有完整、生产就绪的信用计费系统：
 
-<CardGroup cols={2}>
+ <CardGroup cols={2}>
 <Card title="Token Credit Entitlement" icon="coins">
-A reusable `API Tokens` credit with 30-day expiry, shared across all plans and the top-up pack
+可重复使用的 `API Tokens` 信用，30 天到期，适用于所有计划和充值包
 </Card>
 
-<Card title="Tiered Plans, One Credit" icon="layer-group">
-Starter (10M, hard limit) and Pro (40M + overage) configured per-product without duplicating the credit
+ <Card title="Tiered Plans, One Credit" icon="layer-group">
+入门计划（10M，硬限制）和专业计划（40M + 超额）按产品配置，无需重复信用
 </Card>
 
-<Card title="One-Time Top-Up Pack" icon="circle-plus">
-Customers add 5M tokens for $19 without changing their subscription
+ <Card title="One-Time Top-Up Pack" icon="circle-plus">
+客户添加 5M 代币，费用为 $19，无需更改订阅
 </Card>
 
-<Card title="Auto-Deduction via Meter" icon="bolt">
-Real OpenAI token counts ingested as events; the meter deducts credits FIFO with no manual tracking
+ <Card title="Auto-Deduction via Meter" icon="bolt">
+真正的 OpenAI 代币计数作为事件摄入；计量器在不进行手动跟踪的情况下按 FIFO 扣除信用
 </Card>
 
-<Card title="Live Balance API" icon="gauge">
-Real-time balance via the SDK to gate access, display usage, or warn customers in-app
+ <Card title="Live Balance API" icon="gauge">
+通过 SDK 提供的实时余额以限制访问、显示使用情况或在应用程序中警告客户
 </Card>
 
-<Card title="Verified Webhook Pipeline" icon="bell">
-Credit ledger events (`credit.added`, `credit.deducted`, `credit.overage_charged`) routed through a signature-verified handler using the SDK's Standard Webhooks helper
+ <Card title="Verified Webhook Pipeline" icon="bell">
+信用分类帐事件（`credit.added`, `credit.deducted`, `credit.overage_charged`）通过使用 SDK 的标准 Webhook 助手进行签名验证的处理程序路由
 </Card>
 </CardGroup>
 
-<Info>
-**Going to production?** Tighten these:
-- **Auth on `/credits/:customerId` and `/api/generate`** — currently anyone can hit these with any customer ID. Authenticate users and look up *their* customer ID server-side.
-- **Stable `event_id`s** — the example uses `Date.now() + random`. In production, use your request ID so retries are idempotent (Dodo Payments deduplicates by `event_id`).
-- **Persist the customer↔user mapping** — store `customer_id` in your DB after the first checkout so you don't need a manual paste step.
-- **Decide what happens when a subscription ends.** Plan credits remain in the customer's ledger until their natural expiry (30 days from issuance) and top-up credits stay valid for 365 days — but the cookbook's `/api/generate` only checks *balance*, not subscription status. So a cancelled customer can still consume their remaining tokens. That's the consumer-friendly default. If you want stricter access control, either (a) listen to the `subscription.cancelled` webhook and gate `/api/generate` on subscription status, or (b) call Dodo's ledger API to debit unused plan credits on cancel while leaving top-up credits intact.
-- **Monitor the Usage Billing dashboard** to catch metering anomalies early.
+ <Info>
+**准备上线？** 收紧以下内容：
+- **在 `/credits/:customerId` 和 `/api/generate` 上进行身份验证**——目前任何人都可以使用任何客户 ID 访问这些接口。验证用户并在服务器端查找*他们的*客户 ID。
+- **稳定的 `event_id`**——示例使用 `Date.now() + random`。在生产中，使用您的请求 ID 以便重试时幂等（Dodo Payments 通过 `event_id` 进行去重）。
+- **持久化客户↔用户映射**——在首次结账后将 `customer_id` 存储在数据库中，以便您不需要手动粘贴步骤。
+- **决定订阅结束时会发生什么。** 计划信用在其自然到期（自发放之日起 30 天）前将在客户的分类帐中保留，而充值信用在 365 天内保持有效——但食谱中的 `/api/generate` 仅检查*余额*，而不是订阅状态。因此，已取消的客户仍可以使用他们剩余的代币。这是消费者友好的默认设置。如果您想要更严格的权限控制，则可以 (a) 听 `subscription.cancelled` webhook 并限制 `/api/generate` 的订阅状态，或者 (b) 调用 Dodo 的分类帐 API 以在取消时借记未使用的计划信用，同时保留充值信用不变。
+- **监控使用计费仪表板**以便及早发现计量异常。
 </Info>
 
-<CardGroup cols={2}>
+ <CardGroup cols={2}>
 <Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
-Full CBB documentation: rollover, overage modes, ledger management, all API endpoints.
+完整的 CBB 文档：滚动、超额模式、分类帐管理、所有 API 端点。
 </Card>
 
-<Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
-Payload schemas for every credit event your server might receive.
+ <Card title="Credit Webhook Events" icon="bell" href="/developer-resources/webhooks/intents/credit">
+您的服务器可能接收到的每个信用事件的有效负载模式。
 </Card>
 </CardGroup>
