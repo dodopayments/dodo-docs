@@ -152,14 +152,25 @@ Use `subscription.updated` to get real-time notifications about any subscription
 
 **Successful Payment Flow**
 
-When a payment succeeds, you'll receive the following webhooks:
+The webhooks you receive, and their timing, depend on whether the product has a trial.
 
+_Immediate billing (0 trial days):_
 
-1. `subscription.active` - Indicates subscription activation
-2. `payment.succeeded` - Confirms the initial payment:
-    - For immediate billing (0 trial days): Expect within 2-10 minutes
-    - For trial days: whenever that ends
-3. `subscription.renewed` - Indicates payment deduction and renewal for next cycle. (Basically, whenever payment gets deducted for subscription products, you will get `subscription.renewed` webhook along with `payment.succeeded`)
+1. `subscription.active`: the mandate is authorized and the subscription is activated.
+2. `payment.succeeded`: confirms the first charge. Expect this within **2–10 minutes** of checkout.
+
+_With a trial period:_
+
+1. **At trial start (checkout):** `subscription.active` fires once the payment method is authorized. **No recurring charge is taken yet.** The first real charge is deferred until the trial ends.
+2. **At trial end:** the recurring amount is charged, and you receive `payment.succeeded` **together with** `subscription.renewed`.
+
+_Every subsequent renewal:_
+
+- `subscription.renewed`: fires on each billing cycle when the renewal payment is deducted, **always alongside** `payment.succeeded`. It also carries the updated `next_billing_date`.
+
+<Info>
+Whenever money is actually deducted for a subscription product, you get `subscription.renewed` **and** `payment.succeeded`. Use `subscription.renewed` (rather than `payment.succeeded` alone) as your signal to extend access for the next cycle.
+</Info>
 
 **Payment Failure Scenarios**
 
@@ -183,11 +194,11 @@ These two events are easy to confuse, but they require very different handling:
 
 | Event | When it fires | Status | Recoverable? | What to do |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | The **initial** mandate could not be created at subscription **creation** | `failed` | **No — terminal** | Do not grant access. Ask the customer to start a **new** subscription with a different payment method. |
+| `subscription.failed` | The **initial** mandate could not be created at subscription **creation** | `failed` | **No (terminal)** | Do not grant access. Ask the customer to start a **new** subscription with a different payment method. |
 | `subscription.on_hold` | A **renewal** payment (or plan-change charge) failed on an already-active subscription | `on_hold` | **Yes** | Recover by updating the payment method; see [Handling Subscription On Hold](#handling-subscription-on-hold) below. |
 
 <Warning>
-`subscription.failed` is terminal — the subscription cannot be reactivated. The customer must create a new subscription. Never grant entitlements when this event fires.
+`subscription.failed` is terminal. The subscription cannot be reactivated. The customer must create a new subscription. Never grant entitlements when this event fires.
 </Warning>
 
 ### Handling Subscription On Hold
@@ -356,9 +367,17 @@ When changing subscription plans, you have two options for handling the immediat
 
 #### 3. `difference_immediately`
 - When upgrading, the customer is immediately charged the difference between the two plan amounts.
-- For example, if the current plan is 30 Dollars and the customer upgrades to an 80 Dollars, they are charged $50 instantly. 
+- For example, if the current plan is 30 Dollars and the customer upgrades to an 80 Dollars, they are charged \$50 instantly. 
 - When downgrading, the unused amount from the current plan is added as internal credit and automatically applied to future subscription renewals.
-- For example, if the current plan is 50 Dollars and the customer switches to a 20 Dollars plan, the remaining $30 is credited and used toward the next billing cycle.
+- For example, if the current plan is 50 Dollars and the customer switches to a 20 Dollars plan, the remaining \$30 is credited and used toward the next billing cycle.
+
+#### 4. `do_not_bill`
+- Applies the plan change immediately but does **not** charge anything at the time of the change.
+- The updated plan (and quantity/add-ons) is billed at the **next scheduled renewal**, and the **original billing date is preserved**.
+
+<Warning>
+**All three "charge now" modes reset the billing cycle.** `prorated_immediately`, `difference_immediately`, and `full_immediately` move the subscription's `next_billing_date` to the change date. Only `do_not_bill` keeps the original renewal date, but it applies no immediate charge.
+</Warning>
 
 ### Behavior
 
@@ -390,9 +409,35 @@ To create an on-demand subscription, use the [POST /subscriptions](/api-referenc
 For subsequent charges, use the [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint and specify the amount to charge the customer for that transaction.
 
 <Note>
-For a complete, step-by-step guide—including request/response examples, safe retry policies, and webhook handling—see the <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
+For a complete, step-by-step guide (including request/response examples, safe retry policies, and webhook handling), see the <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
 </Note>
 
+
+## Key Things to Know About Subscription Billing
+
+<Warning>
+**Set the subscription period longer than the payment frequency.** If the subscription period equals the payment frequency (e.g. period = 1 month, frequency = 1 month), the subscription is valid for a **single cycle** and then moves to `expired` instead of renewing. For an ongoing monthly plan, set a long subscription period (e.g. 20 years) with a monthly payment frequency.
+</Warning>
+
+<Warning>
+**Currency locks at the first successful charge.** Always pass `billing_currency` **and** `billing_address.country` explicitly when creating the checkout. If omitted, they're detected from the customer's IP (Adaptive Currency), and once the subscription takes its first charge the currency is fixed for its lifetime. A customer who later travels can't switch it.
+</Warning>
+
+<Info>
+**Trials take a \$0 authorization, not a charge.** When a subscription has a trial, the trial start creates a **\$0 mandate authorization** to save the card; the first real charge happens when the trial ends. In the payments list a subscription in trial shows exactly one payment with `amount: 0`.
+</Info>
+
+<Info>
+**Subscription lifecycle:** `on_hold` = a renewal failed (recoverable: prompt the customer to update their payment method; dunning retries apply). `expired` = the term ended without renewal and **cannot be reactivated**. The customer must resubscribe. `cancelled` = ended by the customer or merchant. Most renewal failures are **issuer-side declines** (insufficient funds, card declined), not a Dodo error.
+</Info>
+
+<Warning>
+**Indian cards run on an RBI e-mandate.** Off-session charges (renewals and plan-change charges) can take **up to ~48 hours** to settle, and recurring auto-debits **above ₹15,000** require fresh customer authentication (so an upgrade crossing that limit can't ride the existing mandate). While one charge is still `processing`, a second charge on the same subscription fails with *"Cannot create new charge as previous payment is not successful yet."* Non-Indian cards confirm near-instantly.
+</Warning>
+
+<Tip>
+**Subscription charges have a \$1 minimum** (or currency equivalent). Amounts of `$0.01–$0.99` are rejected with `product_price: value out of range`; only `$0` is allowed, via an on-demand `mandate_only` setup.
+</Tip>
 
 ## Related API Reference
 
