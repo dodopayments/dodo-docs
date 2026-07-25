@@ -154,6 +154,104 @@ function stripCodeAndFrontmatter(content) {
 const COMPONENT_NAMES =
   'Note|Tip|Warning|Info|Check|Steps|Step|Tabs|Tab|CodeGroup|Card|CardGroup|Accordion|AccordionGroup|Frame|Expandable|ResponseField|ParamField|RequestExample|ResponseExample|Tooltip|Update|Snippet|Icon';
 
+// A line that consists solely of one Mintlify component tag.
+// Groups: 1 = leading indent, 2 = `<` or `</`, 3 = name, 4 = attrs, 5 = `/` if
+// self-closing.
+const TAG_LINE_RE = new RegExp(
+  `^([ \\t]*)(<\\/?)(${COMPONENT_NAMES})\\b([^>]*?)(\\/?)>[ \\t]*$`,
+);
+
+const LIST_ITEM_RE = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)\S/;
+
+/**
+ * Map each line to the id of the innermost list item that owns it, or null.
+ *
+ * A list item opened at indent `i` with a marker+gap width of `w` owns every
+ * subsequent line indented `>= i + w`. Blank lines inherit the current context;
+ * the following non-blank line decides whether the item continues.
+ */
+function listItemContext(lines) {
+  const ctx = new Array(lines.length).fill(null);
+  const stack = []; // [{ threshold, id }]
+  let inFence = false;
+  let nextId = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const top = () => (stack.length ? stack[stack.length - 1].id : null);
+
+    if (/^[ \t]*```/.test(line)) {
+      inFence = !inFence;
+      ctx[i] = top();
+      continue;
+    }
+    if (inFence || line.trim() === '') {
+      ctx[i] = top();
+      continue;
+    }
+
+    const indent = line.length - line.trimStart().length;
+    while (stack.length && indent < stack[stack.length - 1].threshold) stack.pop();
+
+    const m = line.match(LIST_ITEM_RE);
+    if (m) {
+      ctx[i] = top(); // the marker line itself belongs to the parent context
+      stack.push({
+        threshold: m[1].length + m[2].length + m[3].length,
+        id: nextId++,
+      });
+      continue;
+    }
+
+    ctx[i] = top();
+  }
+
+  return ctx;
+}
+
+/**
+ * Find component tag pairs whose opening and closing tags sit in different list
+ * item contexts. Such a pairing crosses a block boundary, which MDX rejects.
+ *
+ * Returns [{ name, openLine, closeLine }] with zero-based line indices.
+ */
+function findTagListCrossings(lines) {
+  const ctx = listItemContext(lines);
+  const stack = [];
+  const crossings = [];
+  let inFence = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (/^[ \t]*```/.test(lines[i])) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const m = lines[i].match(TAG_LINE_RE);
+    if (!m) continue;
+
+    const isClosing = m[2] === '</';
+    const isSelfClosing = m[5] === '/';
+    const name = m[3];
+
+    if (isSelfClosing && !isClosing) continue;
+
+    if (isClosing) {
+      // Only reason about well-nested pairs; mismatches are reported elsewhere.
+      if (!stack.length || stack[stack.length - 1].name !== name) continue;
+      const open = stack.pop();
+      if (open.list !== ctx[i]) {
+        crossings.push({ name, openLine: open.line, closeLine: i });
+      }
+    } else {
+      stack.push({ name, line: i, list: ctx[i] });
+    }
+  }
+
+  return crossings;
+}
+
 /** Lightweight MDX syntax validation (no dependencies). */
 function validateMdx(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
@@ -233,6 +331,37 @@ function validateMdx(filePath) {
 
   if (tagStack.length > 0) {
     return `Unclosed tag(s): ${tagStack.join(', ')}`;
+  }
+
+  // Stray straight quote inside a double-quoted JSX attribute value. MDX reads
+  // the interior quote as the end of the value and then chokes on the following
+  // word ("Unexpected character `\"` in attribute name").
+  {
+    const lines = content.split('\n');
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^[ \t]*```/.test(lines[i])) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      if (!/^\s*<[A-Za-z]/.test(lines[i])) continue;
+      if (repairAttrQuotesInLine(lines[i]) !== lines[i]) {
+        return `Stray double quote inside a JSX attribute value (line ${i + 1})`;
+      }
+    }
+  }
+
+  // Component tag pair split across a list-item boundary — usually a JSX block
+  // that was re-indented into the preceding list item by the translator.
+  // Uses the raw lines: findTagListCrossings tracks fences itself, and list
+  // structure depends on indentation that stripCodeAndFrontmatter discards.
+  {
+    const crossings = findTagListCrossings(content.split('\n'));
+    if (crossings.length > 0) {
+      const c = crossings[0];
+      return `<${c.name}> opened outside a list item but closed inside it (or vice versa)`;
+    }
   }
 
   return null;
@@ -497,6 +626,245 @@ function repairHtmlComments(langDirs, dryRun) {
   } else {
     console.log(`  Converted ${totalFixes} HTML comment(s) in ${filesFixed} file(s)`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2ba: Repair stray double quotes inside JSX attribute values
+// ---------------------------------------------------------------------------
+
+// Translator sometimes emphasises a term by wrapping it in straight double
+// quotes *inside* an already double-quoted JSX attribute, e.g.
+//   alt="dashboard showing the "Advanced Reports" flag"
+// The first inner quote terminates the attribute, so MDX then reads the next
+// word as an attribute name and fails with
+//   "Unexpected character `\"` (U+0022) in attribute name".
+// Replace the inner straight quotes with typographic quotes, which are valid
+// inside the attribute and preserve the translator's emphasis.
+function repairJsxAttributeQuotes(langDirs, dryRun) {
+  console.log('\n[repair:attr-quotes] Scanning for stray quotes in JSX attributes...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      const original = fs.readFileSync(f, 'utf8');
+      const lines = original.split('\n');
+      let fixes = 0;
+      let inFence = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (/^[ \t]*```/.test(lines[i])) {
+          inFence = !inFence;
+          continue;
+        }
+        if (inFence) continue;
+        // Only consider lines that are a JSX tag.
+        if (!/^\s*<[A-Za-z]/.test(lines[i])) continue;
+
+        const repaired = repairAttrQuotesInLine(lines[i]);
+        if (repaired !== lines[i]) {
+          lines[i] = repaired;
+          fixes++;
+        }
+      }
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, lines.join('\n'), 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No stray attribute quotes found.');
+  } else {
+    console.log(`  Fixed ${totalFixes} attribute value(s) in ${filesFixed} file(s)`);
+  }
+}
+
+/**
+ * Replace stray straight double quotes inside double-quoted JSX attribute
+ * values on a single tag line. Exported for unit testing.
+ *
+ * The closing quote of a value is identified as the `"` followed by either
+ * another `attr=` pair or the end of the tag — anything before that is interior
+ * text and must not contain a raw `"`.
+ */
+function repairAttrQuotesInLine(line) {
+  const attrStart = /\s([a-zA-Z-]+)="/g;
+  let out = line;
+  let m;
+
+  attrStart.lastIndex = 0;
+  while ((m = attrStart.exec(out)) !== null) {
+    const valueStart = m.index + m[0].length;
+    const rest = out.slice(valueStart);
+    const endMatch = rest.match(/"(?=\s+[a-zA-Z-]+=|\s*\/?>\s*$)/);
+    if (!endMatch) continue;
+
+    const endIdx = endMatch.index;
+    const value = rest.slice(0, endIdx);
+    if (!value.includes('"')) {
+      attrStart.lastIndex = valueStart + endIdx + 1;
+      continue;
+    }
+
+    // Convert interior straight quotes to typographic pairs.
+    let open = true;
+    const fixedValue = value.replace(/"/g, () => {
+      const ch = open ? '\u201c' : '\u201d';
+      open = !open;
+      return ch;
+    });
+
+    out = out.slice(0, valueStart) + fixedValue + rest.slice(endIdx);
+    attrStart.lastIndex = valueStart + fixedValue.length + 1;
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2bb: Repair JSX tags swallowed by an adjacent list item
+// ---------------------------------------------------------------------------
+
+// Translator sometimes re-indents a whole JSX block by a couple of spaces.
+// That is normally harmless, but when the indented block sits directly after a
+// list item the indented lines become *continuation content of that list item*.
+// The opening tag then lives outside the list while the closing tag lives
+// inside it, and MDX reports
+//   "Expected the closing tag `</Tab>` either after the end of `listItem` ..."
+//
+// Detection is structural (see listItemContext / findTagListCrossings) so only
+// genuinely broken pairings are touched — an indented tag whose partner is in
+// the *same* list item is legal and left alone. Repair de-indents both ends of
+// each crossing pair to column 0, which is where the English source keeps them.
+function repairListSwallowedJsxTags(langDirs, dryRun) {
+  console.log('\n[repair:list-swallowed-tags] Scanning for JSX tags absorbed by list items...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      const original = fs.readFileSync(f, 'utf8');
+      let lines = original.split('\n');
+      let fixes = 0;
+
+      // De-indenting one pair can change the list context of later lines, so
+      // iterate until stable. Bounded to avoid pathological input looping.
+      for (let pass = 0; pass < 10; pass++) {
+        const crossings = findTagListCrossings(lines);
+        if (crossings.length === 0) break;
+
+        let touched = 0;
+        for (const c of crossings) {
+          for (const idx of [c.openLine, c.closeLine]) {
+            const tm = lines[idx].match(TAG_LINE_RE);
+            // Only unindent shallow indents: 4+ spaces is a code block.
+            if (tm && tm[1].length >= 1 && tm[1].length <= 3) {
+              lines[idx] = lines[idx].trimStart();
+              touched++;
+            }
+          }
+        }
+        if (touched === 0) break; // cannot repair — leave for Phase 3
+        fixes += touched;
+      }
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, lines.join('\n'), 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No list-swallowed JSX tags found.');
+  } else {
+    console.log(`  De-indented ${totalFixes} tag line(s) in ${filesFixed} file(s)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2bc: Delimit bare URLs followed immediately by non-ASCII text
+// ---------------------------------------------------------------------------
+
+// English writes bare URLs like `Open http://localhost:3000.` and the trailing
+// ASCII period is excluded from the autolink. Translators frequently attach
+// native punctuation or a grammatical particle directly to the URL instead
+// (`http://localhost:3000。`, `http://localhost:3000을`), and those characters
+// are *not* excluded — they end up inside the href, so the link 404s.
+//
+// Rewrite the bare URL as an explicit `[url](url)` markdown link so the
+// boundary is unambiguous and the trailing character stays outside the link.
+// Note: angle-bracket autolinks (`<https://x>`) are NOT usable here — MDX reads
+// `<` as the start of a JSX tag and fails on the `//` in the scheme.
+function repairBareUrlPunctuation(langDirs, dryRun) {
+  console.log('\n[repair:bare-urls] Scanning for URLs glued to non-ASCII characters...');
+
+  let filesFixed = 0;
+  let totalFixes = 0;
+
+  for (const lang of langDirs) {
+    const langDir = path.join(ROOT, lang);
+
+    for (const f of walkMdx(langDir)) {
+      const original = fs.readFileSync(f, 'utf8');
+      const lines = original.split('\n');
+      let fixes = 0;
+      let inFence = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (/^[ \t]*```/.test(lines[i])) {
+          inFence = !inFence;
+          continue;
+        }
+        if (inFence) continue;
+
+        const before = lines[i];
+        const repaired = delimitBareUrlsInLine(before);
+        if (repaired !== before) {
+          lines[i] = repaired;
+          fixes += countBareUrlHits(before);
+        }
+      }
+
+      if (fixes > 0) {
+        if (!dryRun) fs.writeFileSync(f, lines.join('\n'), 'utf8');
+        filesFixed++;
+        totalFixes += fixes;
+      }
+    }
+  }
+
+  if (totalFixes === 0) {
+    console.log('  No undelimited bare URLs found.');
+  } else {
+    console.log(`  Delimited ${totalFixes} URL(s) in ${filesFixed} file(s)`);
+  }
+}
+
+// A bare URL that is immediately followed by a non-ASCII character. The URL must
+// not be preceded by `(`, `[`, `<` or a backtick, which would mean it is already
+// part of a markdown link, an autolink, or inline code.
+const BARE_URL_RE = /(^|[^([<`])(https?:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+)(?=[^\x00-\x7F])/g;
+
+/** Rewrite undelimited bare URLs on a line as `[url](url)`. */
+function delimitBareUrlsInLine(line) {
+  return line.replace(BARE_URL_RE, (full, pre, url) => `${pre}[${url}](${url})`);
+}
+
+function countBareUrlHits(line) {
+  const m = line.match(BARE_URL_RE);
+  return m ? m.length : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +1156,34 @@ const SELF_TEST_CASES = [
     null,
   ],
   [
+    // Indented tag pair fully inside one list item is legal and common.
+    'valid-indented-tags-inside-list-item',
+    '---\ntitle: x\n---\n\n- item one\n  <Card title="a">\n  body\n  </Card>\n',
+    null,
+  ],
+  [
+    'valid-attribute-with-apostrophe',
+    '---\ntitle: x\n---\n\n<Frame caption="the user\'s account">\nhi\n</Frame>\n',
+    null,
+  ],
+  [
+    // Quotes inside a fenced code block must not be flagged.
+    'valid-quoted-attribute-in-code-fence',
+    '---\ntitle: x\n---\n\n```html\n<div class="a "b" c"></div>\n```\n',
+    null,
+  ],
+  [
+    'detect-stray-quote-in-attribute',
+    '---\ntitle: x\n---\n\n<img src="/a.png" alt="dashboard showing the "Advanced Reports" flag" />\n',
+    /Stray double quote inside a JSX attribute/,
+  ],
+  [
+    // <Tab> opens outside the list, closes on a line absorbed by the list item.
+    'detect-tag-swallowed-by-list-item',
+    '---\ntitle: x\n---\n\n<Tabs>\n<Tab title="a">\ntext\n\n- bullet one\n  </Tab>\n\n  <Tab title="b">\n  text\n  </Tab>\n</Tabs>\n',
+    /opened outside a list item but closed inside it/,
+  ],
+  [
     'detect-html-comment',
     '---\ntitle: x\n---\n\n<!-- <Frame> -->\nhello\n<!-- </Frame> -->\n',
     /HTML-style comment/,
@@ -867,6 +1263,115 @@ function runSelfTest() {
   }
 
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+
+  // -------------------------------------------------------------------------
+  // repairAttrQuotesInLine unit tests
+  // -------------------------------------------------------------------------
+  const attrCases = [
+    [
+      'attr-quotes-converted',
+      '<img src="/a.png" alt="showing the "Advanced Reports" flag" />',
+      '<img src="/a.png" alt="showing the \u201cAdvanced Reports\u201d flag" />',
+    ],
+    [
+      'attr-quotes-untouched-when-clean',
+      '<img src="/a.png" alt="showing the flag" style={{ width: \'auto\' }} />',
+      '<img src="/a.png" alt="showing the flag" style={{ width: \'auto\' }} />',
+    ],
+    [
+      'attr-quotes-preserve-later-attributes',
+      '<Frame caption="the "big" one" id="x">',
+      '<Frame caption="the \u201cbig\u201d one" id="x">',
+    ],
+  ];
+  for (const [name, input, want] of attrCases) {
+    const got = repairAttrQuotesInLine(input);
+    if (got === want) {
+      passed++;
+      console.log(`  PASS  ${name}`);
+    } else {
+      failed++;
+      console.log(`  FAIL  ${name}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // delimitBareUrlsInLine unit tests
+  // -------------------------------------------------------------------------
+  const urlCases = [
+    [
+      'bare-url-with-cjk-period-delimited',
+      '\u6253\u5f00 http://localhost:3000\u3002',
+      '\u6253\u5f00 [http://localhost:3000](http://localhost:3000)\u3002',
+    ],
+    [
+      'bare-url-with-korean-particle-delimited',
+      'http://localhost:3000\uc744 \uc5fd\ub2c8\ub2e4.',
+      '[http://localhost:3000](http://localhost:3000)\uc744 \uc5fd\ub2c8\ub2e4.',
+    ],
+    [
+      // Trailing ASCII period is already handled correctly by the renderer.
+      'bare-url-with-ascii-period-untouched',
+      'Open http://localhost:3000.',
+      'Open http://localhost:3000.',
+    ],
+    [
+      'markdown-link-untouched',
+      '[docs](https://docs.dodopayments.com)\u3002',
+      '[docs](https://docs.dodopayments.com)\u3002',
+    ],
+    [
+      'inline-code-url-untouched',
+      '`https://docs.dodopayments.com`\u3002',
+      '`https://docs.dodopayments.com`\u3002',
+    ],
+  ];
+  for (const [name, input, want] of urlCases) {
+    const got = delimitBareUrlsInLine(input);
+    if (got === want) {
+      passed++;
+      console.log(`  PASS  ${name}`);
+    } else {
+      failed++;
+      console.log(`  FAIL  ${name}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // findTagListCrossings unit tests
+  // -------------------------------------------------------------------------
+  const crossingCases = [
+    [
+      'crossing-detected-when-close-absorbed-by-list',
+      ['<Tabs>', '<Tab title="a">', '', '- bullet', '  </Tab>', '</Tabs>'],
+      1,
+    ],
+    [
+      'no-crossing-when-pair-inside-same-list-item',
+      ['- bullet', '  <Card title="a">', '  body', '  </Card>'],
+      0,
+    ],
+    [
+      'no-crossing-for-flush-tags-after-list',
+      ['<Tabs>', '<Tab title="a">', '- bullet', '</Tab>', '</Tabs>'],
+      0,
+    ],
+    [
+      'no-crossing-inside-code-fence',
+      ['- bullet', '  ```html', '  <Tab title="a">', '  ```', '<Note>', 'x', '</Note>'],
+      0,
+    ],
+  ];
+  for (const [name, lines, want] of crossingCases) {
+    const got = findTagListCrossings(lines).length;
+    if (got === want) {
+      passed++;
+      console.log(`  PASS  ${name}`);
+    } else {
+      failed++;
+      console.log(`  FAIL  ${name}: expected ${want} crossing(s), got ${got}`);
+    }
+  }
 
   // -------------------------------------------------------------------------
   // restoreEnglishFrontmatterDirectives self-test: build a tiny ROOT-like
@@ -1002,6 +1507,9 @@ function main() {
   restoreLockedPatterns(langDirs, dryRun);
   repairBrokenCodeFences(langDirs, dryRun);
   repairHtmlComments(langDirs, dryRun);
+  repairJsxAttributeQuotes(langDirs, dryRun);
+  repairListSwallowedJsxTags(langDirs, dryRun);
+  repairBareUrlPunctuation(langDirs, dryRun);
   repairLiteralNewlines(langDirs, dryRun);
   restoreEnglishFrontmatterDirectives(langDirs, dryRun);
   const remaining = validateAndReplace(langDirs, dryRun);
@@ -1015,7 +1523,7 @@ function main() {
 }
 
 // Export for use from syncAllLanguages.ts
-module.exports = { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, repairLiteralNewlines, restoreEnglishFrontmatterDirectives, validateAndReplace, validateMdx, stripCodeAndFrontmatter };
+module.exports = { restoreLockedPatterns, repairBrokenCodeFences, repairHtmlComments, repairJsxAttributeQuotes, repairListSwallowedJsxTags, repairBareUrlPunctuation, repairLiteralNewlines, restoreEnglishFrontmatterDirectives, validateAndReplace, validateMdx, stripCodeAndFrontmatter, repairAttrQuotesInLine, delimitBareUrlsInLine, listItemContext, findTagListCrossings };
 
 // Run directly if executed as a script
 if (require.main === module) {
