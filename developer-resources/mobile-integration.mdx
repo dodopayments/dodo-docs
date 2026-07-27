@@ -16,15 +16,12 @@ keywords: ["Dodo Payments", "developer guide", "mobile payments", "Android", "iO
 </CardGroup>
 
 <Info>
-**Prefer an SDK over hand-rolled browser code.** Dodo Payments ships an
-official checkout SDK for [iOS](/developer-resources/ios-checkout-sdk),
-[Android](/developer-resources/android-checkout-sdk), and
-[React Native](/developer-resources/react-native-checkout-sdk), with Flutter
-coming soon. Each one wraps the pattern documented below (open the checkout
-URL, capture the return, parse the result) behind a single typed
-`start(...)` call, with abandoned-session recovery built in. The manual
-code below still works and shows what the SDKs do internally, but start
-with the SDK for new integrations where one's available.
+Dodo Payments ships an official checkout SDK for iOS, Android, and React
+Native, with Flutter coming soon. Each one wraps the pattern documented
+below (open the checkout URL, capture the return, parse the result) behind
+a single typed `start(...)` call, with abandoned-session recovery built in.
+Flutter's tab below still shows the manual WebView approach until its SDK
+ships.
 </Info>
 
 ## Prerequisites
@@ -53,7 +50,8 @@ Learn how to create a checkout session in your backend using Node.js, Python, an
 
 <Step title="Mobile: Get Checkout URL">
 
-Your mobile app calls your backend to get the checkout URL:
+Your mobile app calls your backend to get the checkout URL. Authenticate
+this request with the signed-in user's own session token.
 
 <Tabs>
 <Tab title="iOS (Swift)">
@@ -63,6 +61,7 @@ func getCheckoutURL(productId: String, customerEmail: String, customerName: Stri
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(userSessionToken)", forHTTPHeaderField: "Authorization")
     
     let requestData: [String: Any] = [
         "productId": productId,
@@ -89,6 +88,7 @@ suspend fun getCheckoutURL(productId: String, customerEmail: String, customerNam
     
     val request = Request.Builder()
         .url("https://your-backend.com/api/create-checkout-session")
+        .header("Authorization", "Bearer $userSessionToken")
         .post(requestBody)
         .build()
     
@@ -107,6 +107,7 @@ const getCheckoutURL = async (productId, customerEmail, customerName) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${userSessionToken}`,
       },
       body: JSON.stringify({
         productId,
@@ -159,63 +160,57 @@ Choose your mobile platform below for complete implementation examples:
 
 ### Android Integration
 
-<Card
-  title="Kotlin Mobile SDK"
-  icon="android"
-  href="/developer-resources/android-checkout-sdk"
->
-  Recommended: one `DodoCheckout.start(...)` call over Chrome Custom Tabs,
-  with typed results and abandoned-session recovery built in. The manual
-  implementation below is what it does internally.
-</Card>
+Install the Kotlin Mobile SDK (`com.dodopayments.api:checkout-android`), which
+opens the checkout in a Chrome Custom Tab and hands back a typed result —
+no manual `CustomTabsClient` wiring needed.
 
-#### Chrome Custom Tabs Implementation (manual)
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
 
 ```kotlin
-// Add Chrome Custom Tabs dependency to build.gradle
-implementation 'androidx.browser:browser:1.5.0'
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
 
-// In your Activity
-class PaymentActivity : AppCompatActivity() {
-    private var customTabsSession: CustomTabsSession? = null
-    private var customTabsClient: CustomTabsClient? = null
-    private var customTabsServiceConnection: CustomTabsServiceConnection? = null
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // Initialize Custom Tabs
-        customTabsServiceConnection = object : CustomTabsServiceConnection() {
-            override fun onCustomTabsServiceConnected(name: ComponentName, client: CustomTabsClient) {
-                customTabsClient = client
-                customTabsClient?.warmup(0L)
-                customTabsSession = customTabsClient?.newSession(object : CustomTabsCallback() {
-                    override fun onNavigationEvent(navigationEvent: Int, extras: Bundle?) {
-                        // Handle navigation events
-                    }
-                })
-            }
-            override fun onServiceDisconnected(name: ComponentName) {
-                customTabsClient = null
-            }
-        }
-        CustomTabsClient.bindCustomTabsService(
-            this,
-            "com.android.chrome",
-            customTabsServiceConnection!!
-        )
-        // Get checkout URL from backend and launch
-        lifecycleScope.launch {
-            try {
-                val checkoutURL = getCheckoutURL("prod_123", "customer@example.com", "Customer Name")
-                val customTabsIntent = CustomTabsIntent.Builder(customTabsSession)
-                    .build()
-                customTabsIntent.launchUrl(this@PaymentActivity, Uri.parse(checkoutURL))
-            } catch (e: Exception) {
-                // Handle error
-                Log.e("PaymentActivity", "Failed to get checkout URL", e)
-            }
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
         }
     }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+`start` throws `CheckoutError` only for misuse or a platform failure —
+`INVALID_CHECKOUT_URL`, `INVALID_RETURN_URL`, `ALREADY_IN_PROGRESS`, or
+`PLATFORM_ERROR`. A cancelled or declined payment is always a result, never
+a thrown error.
+
+If the app is killed mid-checkout, recover the session on next launch:
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
 }
 ```
 
@@ -224,86 +219,53 @@ class PaymentActivity : AppCompatActivity() {
 
 ### iOS Integration
 
-<Card
-  title="Swift Mobile SDK"
-  icon="apple"
-  href="/developer-resources/ios-checkout-sdk"
->
-  Recommended: one `DodoCheckout.start(...)` call over SFSafariViewController,
-  with typed results and abandoned-session recovery built in. The manual
-  implementation below is what it does internally.
-</Card>
-
-#### SFSafariViewController Implementation (manual)
+Install the Swift Mobile SDK
+(`https://github.com/dodopayments/dodopayments-mobile-sdk-ios`), which
+opens the checkout in `SFSafariViewController` and hands back a typed result
+— no manual `SFSafariViewControllerDelegate` or deep-link parsing needed.
 
 ```swift
-import SafariServices
-class PaymentViewController: UIViewController {
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        Task {
-            do {
-                let checkoutURL = try await getCheckoutURL(
-                    productId: "prod_123",
-                    customerEmail: "customer@example.com",
-                    customerName: "Customer Name"
-                )
-                if let url = URL(string: checkoutURL) {
-                    let safariVC = SFSafariViewController(url: url)
-                    present(safariVC, animated: true, completion: nil)
-                }
-            } catch {
-                // Handle error
-                print("Failed to get checkout URL: \(error)")
-            }
-        }
-    }
+.package(url: "https://github.com/dodopayments/dodopayments-mobile-sdk-ios", from: "1.0.0")
+```
+
+```swift
+import DodoCheckout
+
+let result = try await DodoCheckout.start(
+    checkoutUrl: checkoutUrl,   // from your backend's checkout session
+    returnUrl: URL(string: "myapp://checkout/return")!,
+    onEvent: { event in print(event.name) }  // logging only
+)
+
+switch result.status {
+case .succeeded: showSuccess(result.paymentId)
+case .failed:    showFailure()
+case .cancelled: dismiss()
+case .pending:   showPending()
+case .expired:   showExpired()
 }
 ```
 
-#### Deep Link Handling
+`SFSafariViewController` can't catch its own return URL, so forward incoming
+URLs to `DodoCheckout.handleOpenURL(_:)`:
 
-Configure URL schemes to handle payment completion redirects:
-
-**1. Set up URL schemes in Info.plist:**
-```xml
-<key>CFBundleURLTypes</key>
-<array>
-  <dict>
-    <key>CFBundleURLName</key>
-    <string>myapp</string>
-    <key>CFBundleURLSchemes</key>
-    <array>
-      <string>myapp</string>
-    </array>
-  </dict>
-</array>
-```
-
-**2. Handle redirects in AppDelegate:**
-```swift
-func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
-    if url.scheme == "myapp" && url.host == "payment-status" {
-        NotificationCenter.default.post(name: .paymentCompleted, object: url)
-        return true
-    }
-    return false
+```swift SwiftUI
+.onOpenURL { url in
+    DodoCheckout.handleOpenURL(url)
 }
 ```
 
-**3. Listen for payment completion:**
-```swift
-NotificationCenter.default.addObserver(self, selector: #selector(handlePaymentCompletion(_:)), name: .paymentCompleted, object: nil)
+`start` throws `CheckoutError` only for misuse or a platform failure —
+`INVALID_CHECKOUT_URL`, `INVALID_RETURN_URL`, `ALREADY_IN_PROGRESS`, or
+`PLATFORM_ERROR`. A cancelled or declined payment is always a result, never
+a thrown error.
 
-@objc func handlePaymentCompletion(_ notification: Notification) {
-    if let url = notification.object as? URL {
-        safariVC?.dismiss(animated: true)
-        // Parse payment status from URL parameters
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let paymentId = components?.queryItems?.first(where: { $0.name == "payment_id" })?.value
-        let status = components?.queryItems?.first(where: { $0.name == "status" })?.value
-        // Handle payment completion
-    }
+If the app is killed mid-checkout, recover the session on next launch:
+
+```swift
+if let abandoned = DodoCheckout.getAbandonedSession() {
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession()
 }
 ```
 
@@ -311,190 +273,51 @@ NotificationCenter.default.addObserver(self, selector: #selector(handlePaymentCo
 <Tab title="React Native">
 ### React Native Integration
 
-<Card
-  title="React Native SDK"
-  icon="react"
-  href="/developer-resources/react-native-checkout-sdk"
->
-  Recommended: one `DodoCheckout.start(...)` call over the native iOS/Android
-  checkout cores, with typed results and abandoned-session recovery built
-  in. No `react-native-inappbrowser-reborn` dependency needed. The manual
-  implementation below uses a generic in-app browser library instead.
-</Card>
+Install the React Native SDK (`@dodopayments/react-native-checkout`), a
+thin Turbo Module bridge over the same Swift/Kotlin cores — no
+`react-native-inappbrowser-reborn` dependency needed. Requires the New
+Architecture, React Native 0.76+, iOS 16+, and Android `minSdk` 24.
 
-#### Using Checkout Links (InAppBrowser, manual)
-
-Open Dodo's hosted checkout page in an in-app browser.
-
-##### InAppBrowser Implementation
-
-```javascript
-import React from 'react';
-import { View, TouchableOpacity, Text, Alert } from 'react-native';
-import { InAppBrowser } from 'react-native-inappbrowser-reborn';
-
-const PaymentButton = ({ productId, onPaymentComplete }) => {
-  const openPaymentLink = async () => {
-    try {
-      // Get checkout URL from backend
-      const checkoutURL = await getCheckoutURL(
-        productId,
-        'customer@example.com',
-        'Customer Name'
-      );
-      
-      const result = await InAppBrowser.open(checkoutURL, {
-        // iOS options
-        dismissButtonStyle: 'cancel',
-        preferredBarTintColor: '#453AA4',
-        preferredControlTintColor: 'white',
-        readerMode: false,
-        animated: true,
-        modalPresentationStyle: 'fullScreen',
-        modalTransitionStyle: 'coverVertical',
-        modalEnabled: true,
-        enableBarCollapsing: false,
-        // Android options
-        showTitle: true,
-        toolbarColor: '#453AA4',
-        secondaryToolbarColor: 'black',
-        navigationBarColor: 'black',
-        navigationBarDividerColor: 'white',
-        enableUrlBarHiding: true,
-        enableDefaultShare: true,
-        forceCloseOnRedirection: false,
-        animations: {
-          startEnter: 'slide_in_right',
-          startExit: 'slide_out_left',
-          endEnter: 'slide_in_left',
-          endExit: 'slide_out_right'
-        },
-        headers: {
-          'my-custom-header': 'my custom header value'
-        }
-      });
-
-      // Handle payment completion based on result
-      if (result.type === 'dismiss') {
-        // User dismissed the browser
-        console.log('Payment browser dismissed');
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to open payment page');
-      console.error('InAppBrowser error:', error);
-    }
-  };
-
-  return (
-    <View style={{ padding: 20 }}>
-      <TouchableOpacity
-        style={{
-          backgroundColor: '#007AFF',
-          padding: 15,
-          borderRadius: 8,
-          alignItems: 'center'
-        }}
-        onPress={openPaymentLink}
-      >
-        <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold' }}>
-          Pay Now
-        </Text>
-      </TouchableOpacity>
-    </View>
-  );
-};
-
-export default PaymentButton;
+```sh
+npm i @dodopayments/react-native-checkout
 ```
 
-#### Deep Link Handling for Payment Callbacks
-
-```javascript
-// App.js or your main component
-import React, { useEffect } from 'react';
+```ts
 import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
 
-const App = () => {
-  useEffect(() => {
-    // Handle deep links when app is already running
-    const handleDeepLink = (url) => {
-      if (url.includes('payment-status')) {
-        const urlParams = new URLSearchParams(url.split('?')[1]);
-        const paymentId = urlParams.get('payment_id');
-        const status = urlParams.get('status');
-        
-        // Handle payment completion
-        handlePaymentCallback(paymentId, status);
-      }
-    };
+Linking.addEventListener('url', ({ url }) => DodoCheckout.handleOpenURL(url));
 
-    // Listen for deep links
-    const subscription = Linking.addEventListener('url', ({ url }) => {
-      handleDeepLink(url);
-    });
+const result = await DodoCheckout.start({
+  checkoutUrl,                          // from your backend's checkout session
+  returnUrl: 'myapp://checkout/return', // scheme must be registered (see SDK docs)
+  onEvent: (e) => console.log(e.type),  // logging only
+});
 
-    // Handle deep link if app was opened from a link
-    Linking.getInitialURL().then((url) => {
-      if (url) {
-        handleDeepLink(url);
-      }
-    });
-
-    return () => subscription?.remove();
-  }, []);
-
-  const handlePaymentCallback = (paymentId, status) => {
-    if (status === 'succeeded') {
-      // Navigate to success screen or show success message
-      console.log('Payment successful:', paymentId);
-    } else {
-      // Handle payment failure
-      console.log('Payment failed:', paymentId);
-    }
-  };
-
-  // Your app components...
-};
-
-export default App;
-```
-
-#### Package Dependencies
-
-Add this dependency to your `package.json`:
-
-```json
-{
-  "dependencies": {
-    "react-native-inappbrowser-reborn": "^6.4.0"
-  }
+switch (result.status) {
+  case 'succeeded': break;
+  case 'failed':    break;
+  case 'cancelled': break;
+  case 'pending':   break;
+  case 'expired':   break;
 }
 ```
 
-#### Installation Commands
+Register your callback scheme — a Gradle manifest placeholder on Android,
+a `Info.plist` URL type on iOS:
 
-```bash
-# Install InAppBrowser
-npm install react-native-inappbrowser-reborn
-cd ios && pod install
+<Tabs>
+<Tab title="Android (Gradle)">
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
 ```
-
-#### Android Configuration
-
-Add to `android/app/src/main/AndroidManifest.xml`:
-
-```xml
-<activity
-  android:name="com.reactnativeinappbrowserreborn.InAppBrowserActivity"
-  android:theme="@style/Theme.AppCompat.Dialog"
-  android:exported="false" />
-```
-
-#### iOS Configuration
-
-Add to `ios/YourApp/Info.plist`:
-
-```xml
+</Tab>
+<Tab title="iOS (Info.plist)">
+```xml Info.plist
 <key>CFBundleURLTypes</key>
 <array>
   <dict>
@@ -507,10 +330,50 @@ Add to `ios/YourApp/Info.plist`:
   </dict>
 </array>
 ```
+</Tab>
+<Tab title="Expo (both platforms)">
+```sh
+npx expo install expo-build-properties
+```
 
-<Tip>
-Use InAppBrowser for native browser experience. Handle deep links for payment callbacks.
-</Tip>
+```json app.json
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-build-properties",
+        { "android": { "manifestPlaceholders": { "dodoCallbackScheme": "myapp" } } }
+      ]
+    ],
+    "ios": {
+      "infoPlist": {
+        "CFBundleURLTypes": [{ "CFBundleURLSchemes": ["myapp"] }]
+      }
+    }
+  }
+}
+```
+
+Works with development builds only, not Expo Go — rebuild the native
+project (`npx expo prebuild --clean`) after editing `app.json`.
+</Tab>
+</Tabs>
+
+`start` rejects with a `CheckoutError` only for misuse or a platform
+failure — `INVALID_CHECKOUT_URL`, `INVALID_RETURN_URL`,
+`ALREADY_IN_PROGRESS`, or `PLATFORM_ERROR`. A cancelled or declined payment
+is always a result, never a rejection.
+
+If the app or JS bundle is killed mid-checkout, recover the session on next
+mount:
+
+```ts
+const abandoned = await DodoCheckout.getAbandonedSession();
+if (abandoned) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.clearAbandonedSession();
+}
+```
 
 </Tab>
 <Tab title="Flutter">
