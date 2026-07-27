@@ -75,6 +75,7 @@ Pick the most accurate tax category to ensure correct tax collection per region.
 - **Repeat payment every** (required): Interval for renewals, e.g., every 1 Month. Select the cadence (months or years) and quantity.
 - **Subscription Period** (required): Total term for which the subscription remains active (e.g., 10 Years). After this period ends, renewals stop unless extended.
 - **Trial Period Days** (required): Set trial length in days. Use 0 to disable trials. The first charge occurs automatically when the trial ends.
+- **Trial Amount**: Optional upfront charge for a paid trial. Leave it unset for a free trial. See [Paid Trials](#paid-trials).
 - **Select add‑on**: Attach up to 10 add‑ons that customers can purchase alongside the base plan.
 
 <Warning>
@@ -98,7 +99,7 @@ Use metadata to store identifiers from your system (e.g., accountId) so you can 
 
 ## Subscription Trials
 
-Trials let customers access subscriptions without immediate payment. The first charge occurs automatically when the trial ends.
+Trials let customers evaluate a subscription before paying the full recurring price. A trial can be **free**, where nothing is charged until the trial ends, or **paid**, where a reduced amount is charged upfront. In both cases the full price begins at the first renewal after the trial ends.
 
 ### Configuring Trials
 
@@ -123,13 +124,71 @@ const session = await client.checkoutSessions.create({
 The `trial_period_days` value must be between 0 and 10,000 days.
 </Warning>
 
+### Paid Trials
+
+Trials do not have to be free. Set a **Trial Amount** on a subscription product's recurring price to charge a reduced upfront fee for the trial window. The full recurring price then takes over at the first renewal.
+
+<Frame>
+<img src="/images/subscriptions/paid-trials.png" alt="Subscription pricing form with a trial duration and an optional trial amount for a paid trial" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Paid trials are configured on the product's price, not per subscription or per checkout session:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trial_amount` | integer | Amount charged today for the trial, in the price currency's minor units (for example, `500` for $5.00). Requires `trial_period_days > 0`. Omit or set to `null` for a free trial. |
+| `trial_apply_discounts` | boolean | Whether checkout discount codes reduce the trial charge. Defaults to `false`, so the trial amount is charged in full even when a discount applies to the recurring price. |
+
+```typescript
+const product = await client.products.create({
+  name: 'Pro Plan',
+  tax_category: 'saas',
+  price: {
+    type: 'recurring_price',
+    price: 2900,                      // $29.00 per month after the trial
+    currency: 'USD',
+    payment_frequency_count: 1,
+    payment_frequency_interval: 'Month',
+    subscription_period_count: 1,
+    subscription_period_interval: 'Year',
+    trial_period_days: 14,            // A paid trial requires a positive trial period
+    trial_amount: 500,                // $5.00 charged today
+    trial_apply_discounts: false      // Discounts apply to the recurring price only
+  }
+});
+```
+
+Paid trials flow through checkout as well. The trial amount is taxed, surfaced in checkout session calculations and payment link pricing, and Adaptive Currency markup is applied per currency. The [preview endpoint](/developer-resources/checkout-session) returns `trial_amount` and `trial_period_days` so you can show the amount due today before the subscription is created.
+
+<Info>
+Free trials are unchanged. Leaving **Trial Amount** unset keeps the existing behavior, where the first charge is `0` and the full price is charged when the trial ends.
+</Info>
+
+### Preventing Trial Misuse
+
+**Prevent Trial Misuse** stops customers from repeatedly claiming trials for the same business. When enabled, a customer who has already redeemed a trial is automatically degraded to a **paid, no-trial purchase** instead of receiving a fresh trial.
+
+<Frame>
+<img src="/images/subscriptions/prevent-trial-misuse.png" alt="Prevent Trial Misuse toggle in the Subscriptions settings tab" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Enable it from the **Subscriptions** tab in **Settings**. Once enabled:
+
+- Customers are matched by **normalized email**, with plus-aliases stripped, so `user+trial@example.com` and `user@example.com` count as the same person.
+- Redemptions are recorded at **trial activation**, so a customer who cancels the same day has still consumed their trial.
+- Existing customers are backfilled from their historical trials by email, so past trial users are recognized immediately.
+
+<Info>
+The setting is **off by default**. See [Subscription Settings](/features/product-collections#subscription-settings) for the full list of business-level subscription controls.
+</Info>
+
 ### Detecting Trial Status
 
 <Warning>
 Currently, there is no direct field to detect trial status. The following is a workaround that requires querying payments, which is inefficient. We are working on a more efficient solution.
 </Warning>
 
-To determine if a subscription is in trial, retrieve the list of payments for the subscription. If there is exactly one payment with amount 0, the subscription is in trial period:
+To determine if a **free trial** subscription is in trial, retrieve the list of payments for the subscription. If there is exactly one payment with amount 0, the subscription is in trial period:
 
 ```typescript
 const subscription = await client.subscriptions.retrieve('sub_123');
@@ -141,6 +200,10 @@ const payments = await client.payments.list({
 const isInTrial = payments.items.length === 1 && 
                   payments.items[0].total_amount === 0;
 ```
+
+<Warning>
+This zero-amount check only works for free trials. For a [paid trial](#paid-trials) the first payment equals the trial amount, not `0`. Compare the first payment against the subscription's `trial_amount` instead, or check whether `next_billing_date` is still within the trial window.
+</Warning>
 
 ### Updating Trial Period
 
