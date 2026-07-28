@@ -160,56 +160,83 @@ Use `subscription.updated` to get real-time notifications about any subscription
 
 #### Payment Scenarios
 
-**Successful Payment Flow**
+Les webhooks que vous recevez, ainsi que leur délai, dépendent du fait que le produit inclue ou non une période d’essai.
 
-When a payment succeeds, you'll receive the following webhooks:
+_Facturation immédiate (0 jour d’essai) :_
 
-1. `subscription.active` - Indicates subscription activation
-2. `payment.succeeded` - Confirms the initial payment:
-    - For immediate billing (0 trial days): Expect within 2-10 minutes
-    - For trial days: whenever that ends
-3. `subscription.renewed` - Indicates payment deduction and renewal for next cycle. (Basically, whenever payment gets deducted for subscription products, you will get `subscription.renewed` webhook along with `payment.succeeded`)
+1. `subscription.active` : le mandat est autorisé et l’abonnement est activé.
+2. `payment.succeeded` : confirme le premier débit. Attendez-vous à le recevoir dans les **2 à 10 minutes** suivant le checkout.
 
-**Payment Failure Scenarios**
+_Avec une période d’essai :_
 
-1. Subscription Failure
-  - `subscription.failed` - Subscription creation failed due to failure to create a mandate.
-  - `payment.failed` - Indicates failed payment.
+1. **Au début de l’essai (checkout) :** `subscription.active` est déclenché une fois le moyen de paiement autorisé. **Aucun débit récurrent n’est encore effectué.** Le premier débit réel est reporté à la fin de l’essai.
+2. **À la fin de l’essai :** le montant récurrent est débité et vous recevez `payment.succeeded` **avec** `subscription.renewed`.
 
-2. Subscription On Hold
-  - `subscription.on_hold` - Subscription is put on hold due to failed renewal payment or failed plan change charge.
-  - When a subscription goes on hold, it will not renew automatically until the payment method is updated.
+_À chaque renouvellement suivant :_
 
-<Info>**Best Practice**: To simplify implementation, we recommend primarily tracking subscription events for managing the subscription lifecycle.</Info>
+- `subscription.renewed` : est déclenché à chaque cycle de facturation lorsque le paiement du renouvellement est débité, **toujours avec** `payment.succeeded`. Il contient également le `next_billing_date` mis à jour.
 
-### Handling Subscription On Hold
+<Info>
+Chaque fois qu’un montant est effectivement débité pour un produit d’abonnement, vous recevez `subscription.renewed` **et** `payment.succeeded`. Utilisez `subscription.renewed` (plutôt que `payment.succeeded` seul) comme signal pour prolonger l’accès au cycle suivant.
+</Info>
 
-When a subscription enters `on_hold` state, you need to update the payment method to reactivate it. This section explains when subscriptions go on hold and how to handle them.
+**Scénarios d’échec de paiement**
 
-#### When Subscriptions Go On Hold
+1. Échec de l’abonnement
+  - `subscription.failed` - La création de l’abonnement a échoué, car le mandat n’a pas pu être créé.
+  - `payment.failed` - Indique un paiement échoué.
 
-A subscription is placed on hold when:
+2. Abonnement suspendu
+  - `subscription.on_hold` - L’abonnement est suspendu en raison de l’échec du paiement du renouvellement ou du débit lié à la modification du plan.
+  - Lorsqu’un abonnement est suspendu, il ne se renouvelle pas automatiquement tant que le moyen de paiement n’a pas été mis à jour.
 
-- **Renewal payment fails**: The automatic renewal charge fails due to insufficient funds, expired card, or bank decline
-- **Plan change charge fails**: An immediate charge during plan upgrade/downgrade fails
-- **Payment method authorization fails**: The payment method cannot be authorized for recurring charges
+<Info>**Bonne pratique** : pour simplifier l’implémentation, nous vous recommandons de suivre principalement les événements d’abonnement afin de gérer le cycle de vie de l’abonnement.</Info>
+
+<Tip>
+Pour consulter un guide complet sur la lecture de `error_code`/`error_message`, déterminer quand effectuer une nouvelle tentative et présenter les échecs aux clients, consultez [Gérer les échecs de paiement](/developer-resources/handle-payment-failures).
+</Tip>
+
+#### `subscription.failed` contre `subscription.on_hold`
+
+Ces deux événements sont faciles à confondre, mais nécessitent une gestion très différente :
+
+| Événement | Déclenchement | Statut | Récupérable ? | Action |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | Le mandat **initial** n’a pas pu être créé lors de la **création** de l’abonnement | `failed` | **Non (définitif)** | N’accordez pas l’accès. Demandez au client de créer un **nouvel** abonnement avec un autre moyen de paiement. |
+| `subscription.on_hold` | Le paiement d’un **renouvellement** (ou le débit lié à une modification du plan) a échoué pour un abonnement déjà actif | `on_hold` | **Oui** | Récupérez l’abonnement en mettant à jour le moyen de paiement ; consultez [Gérer un abonnement suspendu](#handling-subscription-on-hold) ci-dessous. |
 
 <Warning>
-Subscriptions in `on_hold` state will not renew automatically. You must update the payment method to reactivate the subscription.
+`subscription.failed` est définitif. L’abonnement ne peut pas être réactivé. Le client doit créer un nouvel abonnement. N’accordez jamais de droits d’accès lorsque cet événement est déclenché.
 </Warning>
 
-#### Reactivating Subscriptions from On Hold
+### Gérer un abonnement suspendu
 
-To reactivate a subscription from `on_hold` state, use the Update Payment Method API. This automatically:
+Lorsqu’un abonnement passe à l’état `on_hold`, vous devez mettre à jour le moyen de paiement pour le réactiver. Cette section explique quand les abonnements sont suspendus et comment les gérer.
 
-1. Creates a charge for remaining dues
-2. Generates an invoice for the charge
-3. Processes the payment using the new payment method
-4. Reactivates the subscription to `active` state upon successful payment
+#### Quand les abonnements sont suspendus
+
+Un abonnement est suspendu lorsque :
+
+- **Le paiement du renouvellement échoue** : le débit automatique du renouvellement échoue en raison de fonds insuffisants, d’une carte expirée ou d’un refus bancaire
+- **Le débit lié à la modification du plan échoue** : un débit immédiat lors de la mise à niveau ou de la rétrogradation du plan échoue
+- **L’autorisation du moyen de paiement échoue** : le moyen de paiement ne peut pas être autorisé pour des débits récurrents
+
+<Warning>
+Les abonnements à l’état `on_hold` ne se renouvellent pas automatiquement. Vous devez mettre à jour le moyen de paiement pour réactiver l’abonnement.
+</Warning>
+
+#### Réactiver un abonnement suspendu
+
+Pour réactiver un abonnement à l’état `on_hold`, utilisez l’API Update Payment Method. Cette opération :
+
+1. Crée un débit correspondant aux sommes restantes dues
+2. Génère une facture pour ce débit
+3. Traite le paiement avec le nouveau moyen de paiement
+4. Réactive l’abonnement à l’état `active` lorsque le paiement est effectué avec succès
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-When you receive a `subscription.on_hold` webhook, update your application state and notify the customer:
+Lorsque vous recevez un webhook `subscription.on_hold`, mettez à jour l’état de votre application et informez le client :
 
 ```javascript
 // Webhook handler
@@ -236,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-When the customer is ready to update their payment method, call the Update Payment Method API:
+Lorsque le client est prêt à mettre à jour son moyen de paiement, appelez l’API Update Payment Method :
 
 <CodeGroup>
 
@@ -271,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-You can also use an existing payment method ID if the customer has saved payment methods:
+Vous pouvez également utiliser l’ID d’un moyen de paiement existant si le client a enregistré des moyens de paiement :
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -284,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-After updating the payment method, monitor for these webhook events:
+Après avoir mis à jour le moyen de paiement, surveillez les événements webhook suivants :
 
-1. **`payment.succeeded`** - The charge for remaining dues was successful
-2. **`subscription.active`** - The subscription has been reactivated
+1. **`payment.succeeded`** - Le débit des sommes restantes dues a été effectué avec succès
+2. **`subscription.active`** - L’abonnement a été réactivé
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -319,104 +346,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Sample Subscription event payload
+### Exemple de payload d’événement Subscription
 
 ---
 
-| Property | Type | Required | Description |
+| Propriété | Type | Obligatoire | Description |
 |----------|------|----------|-------------|
-| `business_id` | string | Yes | The unique identifier for the business |
-| `timestamp` | string | Yes | The timestamp of when the event occurred (not necessarily the same as when it was delivered) |
-| `type` | string | Yes | The type of event. See [Event Types](#event-types) |
-| `data` | object | Yes | The main data payload. See [Data Object](#data-object) |
+| `business_id` | string | Oui | Identifiant unique de l’entreprise |
+| `timestamp` | string | Oui | Horodatage du moment où l’événement s’est produit (pas nécessairement identique à celui de sa livraison) |
+| `type` | string | Oui | Type d’événement. Consultez [Types d’événements](#event-types) |
+| `data` | object | Oui | Payload principal des données. Consultez [Objet de données](#data-object) |
 
-## Changing Subscription Plans
+## Modifier les plans d’abonnement
 
-You can upgrade or downgrade a subscription plan using the change plan API endpoint. This allows you to modify the subscription's product, quantity, and handle proration.
+Vous pouvez mettre à niveau ou rétrograder un plan d’abonnement à l’aide de l’endpoint change plan API. Cela vous permet de modifier le produit et la quantité de l’abonnement, ainsi que de gérer le prorata.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  For detailed information about changing subscription plans, please refer to our Change Plan API documentation.
+  Pour obtenir des informations détaillées sur la modification des plans d’abonnement, consultez notre documentation de l’API Change Plan.
 </Card>
 
-### Proration Options
+### Options de prorata
 
-When changing subscription plans, you have two options for handling the immediate charge:
+Lors de la modification des plans d’abonnement, vous disposez de deux options pour gérer le débit immédiat :
 
 #### 1. `prorated_immediately`
-- Calculates the prorated amount based on the remaining time in the current billing cycle
-- Charges the customer only for the difference between the old and new plan
-- During a trial period, this will immediately switch the user to the new plan, charging the customer right away
+- Calcule le montant au prorata en fonction du temps restant dans le cycle de facturation actuel
+- Ne facture au client que la différence entre l’ancien et le nouveau plan
+- Pendant une période d’essai, bascule immédiatement l’utilisateur vers le nouveau plan et facture le client immédiatement
 
 #### 2. `full_immediately`
-- Charges the customer the full subscription amount for the new plan
-- Ignores any remaining time or credits from the previous plan
-- Useful when you want to reset the billing cycle or charge the full amount regardless of proration
+- Facture au client le montant total de l’abonnement du nouveau plan
+- Ignore le temps restant ou les crédits du plan précédent
+- Utile lorsque vous souhaitez réinitialiser le cycle de facturation ou facturer le montant total indépendamment du prorata
 
 #### 3. `difference_immediately`
-- When upgrading, the customer is immediately charged the difference between the two plan amounts.
-- For example, if the current plan is 30 Dollars and the customer upgrades to an 80 Dollars, they are charged $50 instantly. 
-- When downgrading, the unused amount from the current plan is added as internal credit and automatically applied to future subscription renewals.
-- For example, if the current plan is 50 Dollars and the customer switches to a 20 Dollars plan, the remaining $30 is credited and used toward the next billing cycle.
+- Lors d’une mise à niveau, la différence entre les deux montants des plans est immédiatement facturée au client.
+- Par exemple, si le plan actuel coûte 30 Dollars et que le client passe à un plan de 80 Dollars, il est immédiatement facturé de \$50. 
+- Lors d’une rétrogradation, le montant inutilisé du plan actuel est ajouté sous forme de crédit interne et automatiquement appliqué aux futurs renouvellements de l’abonnement.
+- Par exemple, si le plan actuel coûte 50 Dollars et que le client passe à un plan de 20 Dollars, les \$30 restants sont crédités et utilisés lors du prochain cycle de facturation.
 
-### Behavior
+#### 4. `do_not_bill`
+- Applique immédiatement la modification du plan, mais **ne facture rien au moment de la modification**.
+- Le plan mis à jour (ainsi que la quantité et les modules complémentaires) est facturé lors du **prochain renouvellement planifié**, et la **date de facturation initiale est conservée**.
 
-- When you invoke this API, Dodo Payments immediately initiates a charge based on your selected proration option
-- If the plan change is a downgrade and you use `prorated_immediately`, credits will be automatically calculated and added to the subscription's credit balance. These credits are specific to that subscription and will only be used to offset future recurring payments of the same subscription
-- The `full_immediately` option bypasses credit calculations and charges the complete new plan amount
+<Warning>
+**Les trois modes « débiter maintenant » réinitialisent le cycle de facturation.** `prorated_immediately`, `difference_immediately` et `full_immediately` déplacent le `next_billing_date` de l’abonnement à la date de modification. Seul `do_not_bill` conserve la date de renouvellement initiale, mais il n’applique aucun débit immédiat.
+</Warning>
+
+### Comportement
+
+- Lorsque vous appelez cette API, Dodo Payments initie immédiatement un débit selon l’option de prorata sélectionnée
+- Si la modification du plan est une rétrogradation et que vous utilisez `prorated_immediately`, les crédits sont automatiquement calculés et ajoutés au solde de crédits de l’abonnement. Ces crédits sont propres à cet abonnement et ne seront utilisés que pour compenser les futurs paiements récurrents du même abonnement
+- L’option `full_immediately` ignore le calcul des crédits et facture le montant total du nouveau plan
 
 <Tip>
-**Choose your proration option carefully**: Use `prorated_immediately` for fair billing that accounts for unused time, or `full_immediately` when you want to charge the complete new plan amount regardless of the current billing cycle.
+**Choisissez soigneusement votre option de prorata** : utilisez `prorated_immediately` pour une facturation équitable qui tient compte du temps inutilisé, ou `full_immediately` lorsque vous souhaitez facturer le montant total du nouveau plan indépendamment du cycle de facturation actuel.
 </Tip>
 
-### Charge Processing
+### Traitement du débit
 
-- The immediate charge initiated upon plan change usually completes processing in less than 2 minutes
-- If this immediate charge fails for any reason, the subscription is automatically placed on hold until the issue is resolved
+- Le débit immédiat initié lors de la modification du plan termine généralement son traitement en moins de 2 minutes
+- Si ce débit immédiat échoue pour quelque raison que ce soit, l’abonnement est automatiquement suspendu jusqu’à la résolution du problème
 
-## On-Demand Subscriptions
-
-<Info>
-  On-demand subscriptions let you charge customers flexibly, not just on a fixed schedule. This feature is available for all accounts.
-</Info>
-
-**To create an on-demand subscription:**
-
-To create an on-demand subscription, use the [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint and include the `on_demand` field in your request body. This allows you to authorize a payment method without an immediate charge, or set a custom initial price.
-
-**To charge an on-demand subscription:**
-
-Pour les charges suivantes, utilisez l'endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) et spécifiez le montant à facturer au client pour cette transaction.
-
-<Note>
-For a complete, step-by-step guide—including request/response examples, safe retry policies, and webhook handling—see the <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
-</Note>
-
-## Related API Reference
-
-<CardGroup cols={2}>
-<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  API reference for creating subscription products and managing subscription lifecycle
-</Card>
-<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  API reference for upgrading, downgrading, or changing subscription plans with proration options
-</Card>
-<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  API reference for updating payment methods and reactivating on-hold subscriptions
-</Card>
-<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  API reference for updating subscription details and configuration
-</Card>
-</CardGroup>
-
-**Pour facturer un abonnement à la demande :**
-
-Pour les charges ultérieures, utilisez le point de terminaison [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) et spécifiez le montant à facturer au client pour cette transaction.
-
-<Note>
-Pour un guide complet, étape par étape—y compris des exemples de requêtes/réponses, des politiques de nouvelle tentative sûres, et la gestion des webhooks—voir le <a href="/developer-resources/ondemand-subscriptions">Guide des Abonnements à la Demande</a>.
-</Note>
-
-## Référence API Connexe
+## Abonnements à la demande
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -430,5 +422,60 @@ Pour un guide complet, étape par étape—y compris des exemples de requêtes/r
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   Référence API pour mettre à jour les détails et la configuration de l'abonnement
+</Card>
+</CardGroup>
+
+**Pour créer un abonnement à la demande :**
+
+Pour créer un abonnement à la demande, utilisez l’endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) et incluez le champ `on_demand` dans le corps de votre requête. Cela vous permet d’autoriser un moyen de paiement sans débit immédiat ou de définir un prix initial personnalisé.
+
+**Pour débiter un abonnement à la demande :**
+
+Pour les débits suivants, utilisez l’endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) et indiquez le montant à facturer au client pour cette transaction.
+
+<Note>
+Pour consulter un guide complet étape par étape (avec des exemples de requêtes et de réponses, des politiques de nouvelle tentative sécurisées et la gestion des webhooks), consultez le <a href="/developer-resources/ondemand-subscriptions">Guide des abonnements à la demande</a>.
+</Note>
+
+## Points essentiels à connaître sur la facturation des abonnements
+
+<Warning>
+**Définissez une période d’abonnement plus longue que la fréquence de paiement.** Si la période d’abonnement est égale à la fréquence de paiement (par exemple, période = 1 mois, fréquence = 1 mois), l’abonnement est valide pour un **seul cycle**, puis passe à `expired` au lieu de se renouveler. Pour un plan mensuel continu, définissez une longue période d’abonnement (par exemple, 20 ans) avec une fréquence de paiement mensuelle.
+</Warning>
+
+<Warning>
+**La devise est verrouillée lors du premier débit réussi.** Transmettez toujours `billing_currency` **et** `billing_address.country` explicitement lors de la création du checkout. S’ils sont omis, ils sont détectés à partir de l’adresse IP du client (Adaptive Currency) et, dès que l’abonnement reçoit son premier débit, la devise est fixée pour toute sa durée de vie. Un client qui voyage par la suite ne peut pas la modifier.
+</Warning>
+
+<Info>
+**Les essais utilisent une autorisation de \$0, et non un débit.** Lorsqu’un abonnement comprend une période d’essai, le début de l’essai crée une **autorisation de mandat de \$0** pour enregistrer la carte ; le premier débit réel a lieu à la fin de l’essai. Dans la liste des paiements, un abonnement en période d’essai affiche exactement un paiement avec `amount: 0`.
+</Info>
+
+<Info>
+**Cycle de vie de l’abonnement :** `on_hold` = un renouvellement a échoué (récupérable : invitez le client à mettre à jour son moyen de paiement ; les nouvelles tentatives de recouvrement s’appliquent). `expired` = la durée s’est terminée sans renouvellement et **ne peut pas être réactivée**. Le client doit se réabonner. `cancelled` = l’abonnement a été terminé par le client ou le marchand. La plupart des échecs de renouvellement sont des **refus du côté de l’émetteur** (fonds insuffisants, carte refusée), et non une erreur de Dodo.
+</Info>
+
+<Warning>
+**Les cartes indiennes utilisent un e-mandat RBI.** Les débits hors session (renouvellements et débits liés aux modifications de plan) peuvent prendre **jusqu’à environ 48 heures** pour être réglés, et les auto-débits récurrents **supérieurs à ₹15,000** nécessitent une nouvelle authentification du client (une mise à niveau dépassant cette limite ne peut donc pas utiliser le mandat existant). Tant qu’un débit est encore à l’état `processing`, un second débit sur le même abonnement échoue avec *"Cannot create new charge as previous payment is not successful yet."* Les cartes non indiennes sont confirmées presque instantanément.
+</Warning>
+
+<Tip>
+**Les débits d’abonnement ont un minimum de \$1** (ou l’équivalent dans la devise concernée). Les montants `$0.01–$0.99` sont rejetés avec `product_price: value out of range` ; seul `$0` est autorisé, via une configuration `mandate_only` à la demande.
+</Tip>
+
+## Référence API associée
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  Référence API pour créer des produits d’abonnement et gérer le cycle de vie des abonnements
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  Référence API pour mettre à niveau, rétrograder ou modifier des plans d’abonnement avec des options de prorata
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  Référence API pour mettre à jour les moyens de paiement et réactiver les abonnements suspendus
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  Référence API pour mettre à jour les détails et la configuration des abonnements
 </Card>
 </CardGroup>

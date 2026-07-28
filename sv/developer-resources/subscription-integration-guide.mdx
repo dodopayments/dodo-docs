@@ -160,56 +160,83 @@ Använd `subscription.updated` för att få realtidsnotifikationer om alla prenu
 
 #### Betalningsscenarier
 
-**Framgångsrik betalningsflöde**
+De webhooks du tar emot och deras timing beror på om produkten har en provperiod.
 
-När en betalning lyckas kommer du att få följande webhooks:
+_Omedelbar debitering (0 provdagar):_
 
-1. `subscription.active` - Anger prenumerationsaktivering
-2. `payment.succeeded` - Bekräftar den initiala betalningen:
-    - För omedelbar fakturering (0 provdagar): Förvänta inom 2–10 minuter
-    - För provdagar: när de avslutas
-3. `subscription.renewed` - Indikerar att betalning dragits och förnyelse sker för nästa cykel. (I princip, när betalning dras för prenumerationsprodukter får du `subscription.renewed` webhook tillsammans med `payment.succeeded`)
+1. `subscription.active`: medgivandet auktoriseras och prenumerationen aktiveras.
+2. `payment.succeeded`: bekräftar den första debiteringen. Förvänta dig detta inom **2–10 minuter** efter checkout.
 
-**Betalningsfelsscenarier**
+_Med en provperiod:_
+
+1. **Vid provperiodens start (checkout):** `subscription.active` utlöses när betalningsmetoden har auktoriserats. **Ingen återkommande debitering görs ännu.** Den första riktiga debiteringen skjuts upp tills provperioden är slut.
+2. **Vid provperiodens slut:** det återkommande beloppet debiteras och du tar emot `payment.succeeded` **tillsammans med** `subscription.renewed`.
+
+_Varje efterföljande förnyelse:_
+
+- `subscription.renewed`: utlöses vid varje faktureringsperiod när förnyelsebetalningen dras, **alltid tillsammans med** `payment.succeeded`. Den innehåller även den uppdaterade `next_billing_date`.
+
+<Info>
+Varje gång pengar faktiskt dras för en prenumerationsprodukt får du `subscription.renewed` **och** `payment.succeeded`. Använd `subscription.renewed` (i stället för endast `payment.succeeded`) som signal för att förlänga åtkomsten till nästa period.
+</Info>
+
+**Scenarier för misslyckade betalningar**
 
 1. Prenumerationsfel
-  - `subscription.failed` - Skapandet av prenumerationen misslyckades eftersom mandatet inte kunde skapas.
-  - `payment.failed` - Indikerar misslyckad betalning.
+  - `subscription.failed` – Det gick inte att skapa prenumerationen eftersom ett medgivande inte kunde skapas.
+  - `payment.failed` – Anger en misslyckad betalning.
 
-2. Prenumerationen pausas
-  - `subscription.on_hold` - Prenumerationen sätts på paus på grund av misslyckad förnyelsebetalning eller misslyckad avgift vid planändring.
-  - När en prenumeration pausas förnyas den inte automatiskt förrän betalningsmetoden uppdateras.
+2. Prenumeration pausad
+  - `subscription.on_hold` – Prenumerationen pausas på grund av en misslyckad förnyelsebetalning eller en misslyckad debitering för planändring.
+  - När en prenumeration pausas förnyas den inte automatiskt förrän betalningsmetoden har uppdaterats.
 
-<Info>**Bästa praxis**: För att förenkla implementeringen rekommenderar vi att du främst spårar prenumerationsevenemang för att hantera prenumerationslivscykeln.</Info>
+<Info>**Bästa praxis**: För att förenkla implementeringen rekommenderar vi att du främst spårar prenumerationshändelser för att hantera prenumerationens livscykel.</Info>
 
-### Hantera prenumeration på paus
+<Tip>
+För en fullständig genomgång av hur du läser `error_code`/`error_message`, avgör när du ska försöka igen och visar fel för kunder, se [Hantera misslyckade betalningar](/developer-resources/handle-payment-failures).
+</Tip>
 
-När en prenumeration går in i `on_hold`-tillståndet måste du uppdatera betalningsmetoden för att återaktivera den. Detta avsnitt förklarar när prenumerationer pausas och hur du hanterar dem.
+#### `subscription.failed` jämfört med `subscription.on_hold`
 
-#### När prenumerationer sätts på paus
+Dessa två händelser är lätta att blanda ihop, men de kräver helt olika hantering:
 
-En prenumeration sätts på paus när:
-
-- **Förnyelsebetalning misslyckas**: Den automatiska förnyelseavgiften misslyckas på grund av otillräckliga medel, utgången kort eller bankavslag
-- **Avgift vid planändring misslyckas**: En omedelbar avgift under planuppgradering/nedgradering misslyckas
-- **Behörighet för betalningsmetod misslyckas**: Betalningsmetoden kan inte auktoriseras för återkommande avgifter
+| Händelse | När den utlöses | Status | Kan den återställas? | Åtgärd |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | Det **ursprungliga** medgivandet kunde inte skapas när prenumerationen **skapades** | `failed` | **Nej (slutgiltigt)** | Ge inte åtkomst. Be kunden starta en **ny** prenumeration med en annan betalningsmetod. |
+| `subscription.on_hold` | En **förnyelse** (eller debitering för planändring) misslyckades för en redan aktiv prenumeration | `on_hold` | **Ja** | Återställ genom att uppdatera betalningsmetoden; se [Hantera pausad prenumeration](#handling-subscription-on-hold) nedan. |
 
 <Warning>
-Prenumerationer i `on_hold`-tillstånd förnyas inte automatiskt. Du måste uppdatera betalningsmetoden för att återaktivera prenumerationen.
+`subscription.failed` är slutgiltig. Prenumerationen kan inte återaktiveras. Kunden måste skapa en ny prenumeration. Ge aldrig behörigheter när denna händelse utlöses.
 </Warning>
 
-#### Återaktivera prenumerationer från paus
+### Hantera pausad prenumeration
 
-För att återaktivera en prenumeration från `on_hold`-tillståndet, använd Update Payment Method API. Detta gör automatiskt:
+När en prenumeration övergår till tillståndet `on_hold` måste du uppdatera betalningsmetoden för att återaktivera den. Det här avsnittet förklarar när prenumerationer pausas och hur du hanterar dem.
 
-1. Skapar en avgift för återstående skuld
-2. Skapar en faktura för avgiften
-3. Bearbetar betalningen med den nya betalningsmetoden
-4. Återaktiverar prenumerationen till `active`-tillstånd efter lyckad betalning
+#### När prenumerationer pausas
+
+En prenumeration pausas när:
+
+- **Förnyelsebetalningen misslyckas**: Den automatiska förnyelsedebiteringen misslyckas på grund av otillräckliga medel, ett utgånget kort eller att banken nekar betalningen
+- **Debiteringen för planändringen misslyckas**: En omedelbar debitering under en upp- eller nedgradering av planen misslyckas
+- **Auktorisering av betalningsmetoden misslyckas**: Betalningsmetoden kan inte auktoriseras för återkommande debiteringar
+
+<Warning>
+Prenumerationer i tillståndet `on_hold` förnyas inte automatiskt. Du måste uppdatera betalningsmetoden för att återaktivera prenumerationen.
+</Warning>
+
+#### Återaktivera prenumerationer från pausat tillstånd
+
+För att återaktivera en prenumeration från tillståndet `on_hold` använder du API:t Update Payment Method. Detta gör automatiskt följande:
+
+1. Skapar en debitering för återstående belopp
+2. Genererar en faktura för debiteringen
+3. Behandlar betalningen med den nya betalningsmetoden
+4. Återaktiverar prenumerationen till tillståndet `active` när betalningen har genomförts
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-När du mottar en `subscription.on_hold`-webhook, uppdatera applikationens tillstånd och meddela kunden:
+När du tar emot en webhook av typen `subscription.on_hold` uppdaterar du applikationens tillstånd och meddelar kunden:
 
 ```javascript
 // Webhook handler
@@ -236,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-När kunden är redo att uppdatera sin betalningsmetod, anropa Update Payment Method API:
+När kunden är redo att uppdatera sin betalningsmetod anropar du API:t Update Payment Method:
 
 <CodeGroup>
 
@@ -271,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-Du kan också använda ett befintligt betalningsmetod-ID om kunden har sparade betalningsmetoder:
+Du kan även använda ett befintligt ID för betalningsmetoden om kunden har sparade betalningsmetoder:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -284,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Efter att ha uppdaterat betalningsmetoden, övervaka dessa webhook-händelser:
+När du har uppdaterat betalningsmetoden övervakar du följande webhook-händelser:
 
-1. **`payment.succeeded`** - Avgiften för återstående skuld lyckades
-2. **`subscription.active`** - Prenumerationen har återaktiverats
+1. **`payment.succeeded`** – Debiteringen för återstående belopp genomfördes
+2. **`subscription.active`** – Prenumerationen har återaktiverats
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -319,94 +346,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Exempel på prenumerationseventpayload
+### Exempel på payload för prenumerationshändelse
 
 ---
 
 | Egenskap | Typ | Obligatorisk | Beskrivning |
-|----------|------|-------------|-------------|
-| `business_id` | string | Ja | Det unika identifieraren för företaget |
-| `timestamp` | string | Ja | Tidsstämpeln för när händelsen inträffade (inte nödvändigtvis samma som när den levererades) |
-| `type` | string | Ja | Typen av händelse. Se [Event Types](#event-types) |
-| `data` | object | Ja | Huvuddatafältet. Se [Data Object](#data-object) |
+|----------|------|----------|-------------|
+| `business_id` | string | Ja | Den unika identifieraren för företaget |
+| `timestamp` | string | Ja | Tidsstämpeln för när händelsen inträffade (inte nödvändigtvis samma tidpunkt som när den levererades) |
+| `type` | string | Ja | Händelsetypen. Se [Händelsetyper](#event-types) |
+| `data` | object | Ja | Den huvudsakliga datapayloaden. Se [Dataobjekt](#data-object) |
 
 ## Ändra prenumerationsplaner
 
-Du kan uppgradera eller nedgradera en prenumerationsplan med hjälp av API-slutpunkten för att ändra plan. Detta gör att du kan modifiera prenumerationens produkt, kvantitet och hantera proration.
+Du kan uppgradera eller nedgradera en prenumerationsplan med API-endpointen för planändring. Detta låter dig ändra prenumerationens produkt och antal samt hantera proportionell debitering.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  För detaljerad information om att ändra prenumerationsplaner, se vår Change Plan API-dokumentation.
+  Mer detaljerad information om hur du ändrar prenumerationsplaner finns i vår API-dokumentation för Change Plan.
 </Card>
 
-### Prorationsalternativ
+### Alternativ för proportionell debitering
 
-När du ändrar prenumerationsplaner har du två alternativ för att hantera den omedelbara avgiften:
+När du ändrar prenumerationsplaner har du två alternativ för hur den omedelbara debiteringen ska hanteras:
 
 #### 1. `prorated_immediately`
-- Beräknar det pro rata-belopp som baseras på den återstående tiden i den nuvarande faktureringscykeln
-- Debiterar kunden endast för skillnaden mellan den gamla och den nya planen
-- Under en provperiod kommer detta omedelbart att byta användaren till den nya planen och debitera kunden direkt
+- Beräknar det proportionella beloppet baserat på den återstående tiden i den aktuella faktureringsperioden
+- Debiterar kunden endast skillnaden mellan den gamla och den nya planen
+- Under en provperiod växlar användaren omedelbart till den nya planen och kunden debiteras direkt
 
 #### 2. `full_immediately`
 - Debiterar kunden hela prenumerationsbeloppet för den nya planen
-- Ignorerar kvarvarande tid eller krediter från den tidigare planen
-- Användbart när du vill återställa faktureringscykeln eller debitera hela beloppet oberoende av proration
+- Ignorerar eventuell återstående tid eller krediter från den föregående planen
+- Användbart när du vill återställa faktureringsperioden eller debitera hela beloppet oavsett proportionell debitering
 
 #### 3. `difference_immediately`
 - Vid uppgradering debiteras kunden omedelbart skillnaden mellan de två planbeloppen.
-- Till exempel, om den nuvarande planen är 30 dollars och kunden uppgraderar till 80 dollars, debiteras 50 dollars direkt.
-- Vid nedgradering läggs det oanvända beloppet från den aktuella planen till som intern kredit och appliceras automatiskt på framtida prenumerationsförnyelser.
-- Till exempel, om den nuvarande planen är 50 dollars och kunden byter till en 20 dollars-plan, krediteras resterande 30 dollars och används för nästa faktureringscykel.
+- Om den aktuella planen till exempel kostar 30 dollar och kunden uppgraderar till en plan på 80 dollar debiteras de \$50 direkt. 
+- Vid nedgradering läggs det outnyttjade beloppet från den aktuella planen till som en intern kredit och används automatiskt vid framtida förnyelser av prenumerationen.
+- Om den aktuella planen till exempel kostar 50 dollar och kunden byter till en plan på 20 dollar krediteras de återstående \$30 och används under nästa faktureringsperiod.
+
+#### 4. `do_not_bill`
+- Tillämpas planändringen omedelbart men **debiterar ingenting vid ändringstillfället**.
+- Den uppdaterade planen (samt antal/tillägg) faktureras vid **nästa schemalagda förnyelse**, och det **ursprungliga faktureringsdatumet bevaras**.
+
+<Warning>
+**Alla tre lägena för "debitera nu" återställer faktureringsperioden.** `prorated_immediately`, `difference_immediately` och `full_immediately` flyttar prenumerationens `next_billing_date` till ändringsdatumet. Endast `do_not_bill` behåller det ursprungliga förnyelsedatumet, men tillämpar ingen omedelbar debitering.
+</Warning>
 
 ### Beteende
 
-- När du anropar detta API initierar Dodo Payments omedelbart en avgift baserat på ditt valda proration-alternativ
-- Om planändringen är en nedgradering och du använder `prorated_immediately`, beräknas krediter automatiskt och läggs till prenumerationens kreditbalans. Dessa krediter är specifika för den prenumerationen och används endast för att kvitta framtida återkommande betalningar för samma prenumeration
-- Alternativet `full_immediately` kringgår kreditberäkningar och debiterar hela det nya planbeloppet
+- När du anropar detta API initierar Dodo Payments omedelbart en debitering baserat på det valda alternativet för proportionell debitering
+- Om planändringen är en nedgradering och du använder `prorated_immediately` beräknas krediter automatiskt och läggs till i prenumerationens kreditsaldo. Dessa krediter gäller endast den prenumerationen och används bara för att kvitta framtida återkommande betalningar för samma prenumeration
+- Alternativet `full_immediately` kringgår kreditberäkningar och debiterar hela beloppet för den nya planen
 
 <Tip>
-**Välj ditt proration-alternativ noggrant**: Använd `prorated_immediately` för rättvis fakturering som tar hänsyn till oanvänd tid, eller `full_immediately` när du vill debitera hela det nya planbeloppet oberoende av den nuvarande faktureringscykeln.
+**Välj alternativet för proportionell debitering noggrant**: Använd `prorated_immediately` för rättvis debitering som tar hänsyn till outnyttjad tid, eller `full_immediately` när du vill debitera hela beloppet för den nya planen oavsett aktuell faktureringsperiod.
 </Tip>
 
-### Avgiftsbehandling
+### Debiteringsbehandling
 
-- Den omedelbara avgiften som initieras vid planändring slutförs vanligtvis inom mindre än 2 minuter
-- Om denna omedelbara avgift misslyckas av någon anledning, sätts prenumerationen automatiskt på paus tills problemet är löst
+- Den omedelbara debiteringen som initieras vid planändringen slutförs vanligtvis på mindre än 2 minuter
+- Om denna omedelbara debitering misslyckas av någon anledning pausas prenumerationen automatiskt tills problemet har lösts
 
-## On-Demand Prenumerationer
-
-<Info>
-  On-demand-prenumerationer låter dig debitera kunder flexibelt, inte bara enligt ett fast schema. Denna funktion är tillgänglig för alla konton.
-</Info>
-
-**För att skapa en on-demand prenumeration:**
-
-För att skapa en on-demand-prenumeration, använd [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API-slutpunkt och inkludera fältet `on_demand` i din förfrågningskropp. Detta låter dig auktorisera en betalningsmetod utan omedelbar debitering eller ange ett anpassat startpris.
-
-**För att ta betalt för en on-demand prenumeration:**
-
-För efterföljande debiteringar, använd slutpunkten [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) och ange beloppet som kunden ska debiteras för den transaktionen.
-
-<Note>
-För en komplett, steg-för-steg-guide—including request/response-exempel, säkra retry-policyer och webhook-hantering—se <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
-</Note>
-
-## Relaterad API-referens
-
-API-referens för att skapa prenumerationsprodukter och hantera prenumerationslivscykel
-  API-referens för uppgradering, nedgradering eller ändring av prenumerationsplaner med proratering
-  API-referens för att uppdatera betalningsmetoder och återaktivera prenumerationer på väntelista
-  API-referens för att uppdatera prenumerationsdetaljer och konfiguration
-
-**För att debitera en on-demand-prenumeration:**
-
-För efterföljande debiteringar, använd slutpunkten [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) och specificera beloppet som ska debiteras kunden för den transaktionen.
-
-<Note>
-För en komplett, steg-för-steg-guide—inklusive exempel på begäran/svar, säkra återföringspolicyer och webhook-hantering—se <a href="/developer-resources/ondemand-subscriptions">Guiden för On-Demand-prenumerationer</a>.
-</Note>
-
-## Relaterad API-referens
+## On-demand-prenumerationer
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -420,5 +422,60 @@ För en komplett, steg-för-steg-guide—inklusive exempel på begäran/svar, s�
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   API-referens för att uppdatera prenumerationsdetaljer och konfiguration
+</Card>
+</CardGroup>
+
+**Så här skapar du en on-demand-prenumeration:**
+
+För att skapa en on-demand-prenumeration använder du API-endpointen [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) och inkluderar fältet `on_demand` i request body. Detta låter dig auktorisera en betalningsmetod utan en omedelbar debitering eller ange ett anpassat startpris.
+
+**Så här debiterar du en on-demand-prenumeration:**
+
+För efterföljande debiteringar använder du endpointen [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) och anger det belopp som ska debiteras kunden för transaktionen.
+
+<Note>
+För en fullständig steg-för-steg-guide (inklusive exempel på request/response, säkra retry-policyer och webhook-hantering), se <a href="/developer-resources/ondemand-subscriptions">guiden för on-demand-prenumerationer</a>.
+</Note>
+
+## Viktigt att känna till om prenumerationsfakturering
+
+<Warning>
+**Ange en längre prenumerationsperiod än betalningsfrekvensen.** Om prenumerationsperioden är lika lång som betalningsfrekvensen (t.ex. period = 1 månad, frekvens = 1 månad) gäller prenumerationen under **en enda period** och övergår sedan till `expired` i stället för att förnyas. För en löpande månadsplan anger du en lång prenumerationsperiod (t.ex. 20 år) med månadsvis betalningsfrekvens.
+</Warning>
+
+<Warning>
+**Valutan låses vid den första lyckade debiteringen.** Ange alltid `billing_currency` **och** `billing_address.country` uttryckligen när du skapar checkout. Om de utelämnas identifieras de utifrån kundens IP (Adaptive Currency), och när prenumerationen debiteras för första gången är valutan fast under hela dess livstid. En kund som senare reser kan inte byta valuta.
+</Warning>
+
+<Info>
+**Provperioder innebär en auktorisering på \$0, inte en debitering.** När en prenumeration har en provperiod skapar provperiodens start en **medgivandeauktorisering på \$0** för att spara kortet; den första riktiga debiteringen sker när provperioden slutar. I betalningslistan visas en prenumeration under provperiod med exakt en betalning med `amount: 0`.
+</Info>
+
+<Info>
+**Prenumerationens livscykel:** `on_hold` = en förnyelse misslyckades (kan återställas: be kunden uppdatera sin betalningsmetod; dunning-försök tillämpas). `expired` = perioden avslutades utan förnyelse och **kan inte återaktiveras**. Kunden måste prenumerera igen. `cancelled` = avslutad av kunden eller handlaren. De flesta misslyckade förnyelser beror på **avslag från kortutgivaren** (otillräckliga medel, nekade kort), inte på ett Dodo-fel.
+</Info>
+
+<Warning>
+**Indiska kort använder ett RBI-e-mandat.** Off-session-debiteringar (förnyelser och debiteringar för planändringar) kan ta **upp till cirka 48 timmar** att avräknas, och återkommande autogirodebiteringar **över ₹15,000** kräver ny kundautentisering (så en uppgradering som överskrider gränsen kan inte använda det befintliga medgivandet). Så länge en debitering fortfarande har `processing` misslyckas en andra debitering på samma prenumeration med *"Cannot create new charge as previous payment is not successful yet."* Icke-indiska kort bekräftas nästan omedelbart.
+</Warning>
+
+<Tip>
+**Prenumerationsdebiteringar har ett minimibelopp på \$1** (eller motsvarande i annan valuta). Belopp på `$0.01–$0.99` avvisas med `product_price: value out of range`; endast `$0` är tillåtet via en on-demand `mandate_only`-konfiguration.
+</Tip>
+
+## Relaterad API-referens
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  API-referens för att skapa prenumerationsprodukter och hantera prenumerationens livscykel
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  API-referens för att uppgradera, nedgradera eller ändra prenumerationsplaner med alternativ för proportionell debitering
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  API-referens för att uppdatera betalningsmetoder och återaktivera pausade prenumerationer
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  API-referens för att uppdatera prenumerationsuppgifter och konfiguration
 </Card>
 </CardGroup>

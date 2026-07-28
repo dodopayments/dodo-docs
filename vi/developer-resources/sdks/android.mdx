@@ -1,0 +1,225 @@
+---
+title: Android
+sidebarTitle: Android
+tag: "NEW"
+description: Mở checkout được lưu trữ của Dodo Payments từ ứng dụng Android
+  trong Chrome Custom Tab và nhận kết quả có kiểu trong một lần gọi.
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - mobile checkout SDK
+  - Custom Tabs
+---
+
+<Info>
+Đây là Android checkout SDK chính thức (`com.dodopayments.api:checkout-android`),
+dùng để mở checkout được lưu trữ của Dodo. SDK này khác với
+[backend Kotlin SDK](/developer-resources/sdks/kotlin), vốn gọi Dodo
+Payments API từ máy chủ của bạn.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    Tạo `checkout_url` mà SDK này mở
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Các phương pháp tốt nhất cho quy trình checkout trên thiết bị di động
+  </Card>
+</CardGroup>
+
+Android SDK mở checkout được lưu trữ của Dodo trong Chrome Custom Tab bằng `androidx.browser.customtabs`. SDK không chứa mã networking nào và không lưu API key. Bạn truyền một `checkoutUrl` từ checkout session ở backend, sau đó SDK trả về một `CheckoutResult` có kiểu khi người dùng hoàn tất hoặc rời bỏ quy trình.
+
+**Yêu cầu:** `minSdk` 23, Kotlin, Java 17.
+
+## Cài đặt
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+Đặt callback scheme của bạn làm Gradle manifest placeholder. Manifest riêng của thư viện
+đã khai báo intent filter của redirect activity bằng token
+`${dodoCallbackScheme}`, vì vậy thuộc tính này là toàn bộ phần thiết lập —
+bạn không cần thêm manifest XML nào:
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+Giá trị này phải khớp với scheme trong `CheckoutParams.returnUrl` (ví dụ:
+`myapp://checkout/return`).
+
+<Note>
+Nếu hoàn toàn bỏ qua placeholder, quá trình build sẽ ngay lập tức thất bại với lỗi
+unresolved-placeholder thay vì âm thầm thất bại tại thời điểm checkout. Nếu bạn đặt giá trị nhưng không khớp với scheme của `returnUrl`, `DodoCheckout.start`
+sẽ ném `PLATFORM_ERROR` trước khi hiển thị bất kỳ nội dung nào.
+</Note>
+</Step>
+</Steps>
+
+## Cách sử dụng
+
+SDK hỗ trợ hai kiểu gọi.
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+Đăng ký contract bằng `registerForActivityResult`, sau đó khởi chạy contract:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+Ưu tiên kiểu này. Kết quả được cung cấp thông qua
+`ActivityResultRegistry` do hệ điều hành Android quản lý, nên vẫn tồn tại sau khi process bị hủy.
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+Gọi `DodoCheckout.start` từ coroutine scope:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+Kiểu này phân giải một `CompletableDeferred` trong bộ nhớ, vì vậy **không**
+tồn tại sau khi process bị hủy. `onEvent` chỉ khả dụng ở đây, không khả dụng trên contract.
+</Warning>
+</Tab>
+</Tabs>
+
+## Ý nghĩa của kết quả
+
+<Warning>
+Trường `status` là gợi ý cho UI, không phải bằng chứng thanh toán. Luôn xác minh khoản thanh toán trên backend bằng webhook hoặc endpoint Get Payment Detail trước khi cấp quyền truy cập.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+Một trong các giá trị `SUCCEEDED`, `FAILED`, `CANCELLED`, `PENDING`, `EXPIRED`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Được đặt khi return URL có chứa giá trị này. Hiển thị giá trị trong UI, không dùng giá trị này để
+cấp quyền truy cập. Xem phần Verify the Payment bên dưới.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Được đặt cho subscription checkout.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+Được đặt khi checkout bao gồm các sản phẩm license key.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Được đặt khi checkout thu thập email.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+Mọi query parameter từ return URL, giữ nguyên văn.
+</ParamField>
+
+## Xác minh khoản thanh toán
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    Lắng nghe các sự kiện thanh toán theo thời gian thực
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    Truy vấn trạng thái thanh toán theo yêu cầu
+  </Card>
+</CardGroup>
+
+Chỉ cấp quyền truy cập cho người dùng sau khi một trong các cách này xác nhận khoản thanh toán. Không chỉ dựa vào `CheckoutResult.status`.
+
+## Lỗi
+
+`DodoCheckout.start` chỉ ném `CheckoutError` khi sử dụng sai hoặc nền tảng gặp sự cố. Đọc mã lỗi từ `CheckoutError.code`:
+
+- `INVALID_CHECKOUT_URL`: không phải là URL session `checkout.dodopayments.com`.
+- `INVALID_RETURN_URL`: không phải là URL tuyệt đối hợp lệ.
+- `ALREADY_IN_PROGRESS`: một checkout đang chạy.
+- `PLATFORM_ERROR`: nền tảng gặp sự cố không mong đợi, bao gồm `returnUrl` có
+  scheme không khớp với placeholder `dodoCallbackScheme` của bạn.
+
+Việc người dùng hủy hoặc khoản thanh toán bị từ chối luôn trả về kết quả (`CANCELLED` hoặc
+`FAILED`), không bao giờ là lỗi được ném ra. Với kiểu launcher, lỗi xác thực
+sẽ được ném ra từ `launcher.launch(...)`.
+
+## Session bị bỏ dở
+
+Nếu ứng dụng bị tắt hoặc người dùng buộc dừng ứng dụng trong lúc checkout, SDK sẽ lưu session cục bộ. Trong lần khởi chạy ứng dụng tiếp theo, hãy kiểm tra session bị bỏ dở và đối soát session đó với backend của bạn:
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+`abandoned.createdAt` là timestamp epoch tính bằng mili giây.
+
+## Liên quan
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Các phương pháp tốt nhất cho quy trình checkout trên thiết bị di động
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    Backend SDK cho các thao tác phía máy chủ
+  </Card>
+</CardGroup>

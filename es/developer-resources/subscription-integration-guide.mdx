@@ -160,71 +160,83 @@ Usa `subscription.updated` para obtener notificaciones en tiempo real sobre cual
 
 **Flujo de Pago Exitoso**
 
-Cuando un pago tiene éxito, recibirás los siguientes webhooks:
+Los webhooks que recibes y el momento en que los recibes dependen de si el producto tiene un período de prueba.
 
-1. `subscription.active` - Indica activación de la suscripción
-2. `payment.succeeded` - Confirma el pago inicial:
-    - Para facturación inmediata (0 días de prueba): Espera dentro de 2-10 minutos
-    - Para días de prueba: cuando eso termine
-3. `subscription.renewed` - Indica deducción de pago y renovación para el próximo ciclo. (Básicamente, cada vez que se deduce el pago por productos de suscripción, recibirás el webhook `subscription.renewed` junto con `payment.succeeded`)
+_Facturación inmediata (0 días de prueba):_
 
-**Escenarios de Fallo de Pago**
+1. `subscription.active`: el mandato se autoriza y la suscripción se activa.
+2. `payment.succeeded`: confirma el primer cobro. Recíbelo normalmente entre **2 y 10 minutos** después del checkout.
 
-1. Fallo de la Suscripción
-  - `subscription.failed` - La creación de la suscripción falló debido a un fallo en la creación de un mandato.
-  - `payment.failed` - Indica un fallo de pago.
+_Con un período de prueba:_
 
-2. Suscripción en Espera
-  - `subscription.on_hold` - La suscripción se pone en espera debido a un fallo en el pago de renovación o un fallo al cambiar el plan.
-  - Cuando una suscripción está en espera, no se renovará automáticamente hasta que se actualice el método de pago.
+1. **Al inicio de la prueba (checkout):** `subscription.active` se activa una vez autorizado el método de pago. **Todavía no se realiza ningún cobro recurrente.** El primer cobro real se pospone hasta que finalice la prueba.
+2. **Al finalizar la prueba:** se cobra el importe recurrente y recibes `payment.succeeded` **junto con** `subscription.renewed`.
 
-<Info>**Mejor Práctica**: Para simplificar la implementación, recomendamos principalmente rastrear eventos de suscripción para gestionar el ciclo de vida de la suscripción.</Info>
+_Cada renovación posterior:_
+
+- `subscription.renewed`: se activa en cada ciclo de facturación cuando se deduce el pago de renovación, **siempre junto con** `payment.succeeded`. También incluye el `next_billing_date` actualizado.
+
+<Info>
+Siempre que se deduzca dinero realmente por un producto de suscripción, recibes `subscription.renewed` **y** `payment.succeeded`. Usa `subscription.renewed` (en lugar de usar solo `payment.succeeded`) como señal para ampliar el acceso al siguiente ciclo.
+</Info>
+
+**Escenarios de pagos fallidos**
+
+1. Fallo de la suscripción
+  - `subscription.failed` - La creación de la suscripción falló porque no se pudo crear un mandato.
+  - `payment.failed` - Indica un pago fallido.
+
+2. Suscripción en espera
+  - `subscription.on_hold` - La suscripción se pone en espera debido a un pago de renovación fallido o a un cobro fallido por cambio de plan.
+  - Cuando una suscripción pasa a estar en espera, no se renovará automáticamente hasta que se actualice el método de pago.
+
+<Info>**Práctica recomendada**: Para simplificar la implementación, recomendamos realizar principalmente el seguimiento de los eventos de suscripción para gestionar el ciclo de vida de la suscripción.</Info>
 
 <Tip>
-Para una guía completa sobre cómo leer `error_code`/`error_message`, decidir cuándo reintentar y visibilizar los fallos a los clientes, consulta [Manejo de Fallos de Pago](/developer-resources/handle-payment-failures).
+Para consultar una guía completa sobre cómo leer `error_code`/`error_message`, decidir cuándo reintentar y mostrar los fallos a los clientes, consulta [Gestionar fallos de pago](/developer-resources/handle-payment-failures).
 </Tip>
 
-#### `subscription.failed` vs. `subscription.on_hold`
+#### `subscription.failed` frente a `subscription.on_hold`
 
-Estos dos eventos son fáciles de confundir, pero requieren manejos muy diferentes:
+Estos dos eventos se confunden fácilmente, pero requieren un tratamiento muy diferente:
 
-| Evento | Cuándo se dispara | Estado | ¿Recuperable? | Qué hacer |
+| Evento | Cuándo se activa | Estado | ¿Se puede recuperar? | Qué hacer |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | El mandato **inicial** no pudo ser creado en la **creación** de la suscripción | `failed` | **No — terminal** | No conceder acceso. Pedir al cliente que inicie una **nueva** suscripción con un método de pago diferente. |
-| `subscription.on_hold` | Un pago de **renovación** (o un cargo por cambio de plan) falló en una suscripción ya activa | `on_hold` | **Sí** | Recuperar actualizando el método de pago; ver [Manejo de Suscripción en Espera](#handling-subscription-on-hold) a continuación. |
+| `subscription.failed` | El mandato **inicial** no pudo crearse durante la **creación** de la suscripción | `failed` | **No (terminal)** | No concedas acceso. Pide al cliente que inicie una **nueva** suscripción con un método de pago diferente. |
+| `subscription.on_hold` | Falló un pago de **renovación** (o un cobro por cambio de plan) en una suscripción ya activa | `on_hold` | **Sí** | Recupérala actualizando el método de pago; consulta [Gestionar una suscripción en espera](#handling-subscription-on-hold) más abajo. |
 
 <Warning>
-`subscription.failed` es terminal: la suscripción no puede reactivarse. El cliente debe crear una nueva suscripción. Nunca conceder derechos cuando se dispara este evento.
+`subscription.failed` es terminal. La suscripción no se puede reactivar. El cliente debe crear una nueva suscripción. Nunca concedas derechos cuando se active este evento.
 </Warning>
 
-### Manejo de Suscripción en Espera
+### Gestionar una suscripción en espera
 
-Cuando una suscripción entra en el estado `on_hold`, necesitas actualizar el método de pago para reactivarla. Esta sección explica cuándo las suscripciones se ponen en espera y cómo manejarlas.
+Cuando una suscripción entra en el estado `on_hold`, debes actualizar el método de pago para reactivarla. Esta sección explica cuándo las suscripciones pasan a estar en espera y cómo gestionarlas.
 
-#### Cuándo las Suscripciones se Ponen en Espera
+#### Cuándo las suscripciones pasan a estar en espera
 
-Una suscripción se coloca en espera cuando:
+Una suscripción se pone en espera cuando:
 
-- **Falló el pago de renovación**: El cargo automático de renovación falla debido a fondos insuficientes, tarjeta expirada o rechazo del banco
-- **Falla el cargo por cambio de plan**: Un cargo inmediato durante la actualización/degradación del plan falla
-- **Falla la autorización del método de pago**: El método de pago no puede ser autorizado para cargos recurrentes
+- **Falla el pago de renovación**: el cobro automático de renovación falla por fondos insuficientes, una tarjeta caducada o el rechazo del banco
+- **Falla el cobro por cambio de plan**: falla un cobro inmediato durante la actualización o degradación del plan
+- **Falla la autorización del método de pago**: no se puede autorizar el método de pago para cobros recurrentes
 
 <Warning>
-Las suscripciones en estado `on_hold` no se renovarán automáticamente. Debes actualizar el método de pago para reactivar la suscripción.
+Las suscripciones en el estado `on_hold` no se renovarán automáticamente. Debes actualizar el método de pago para reactivar la suscripción.
 </Warning>
 
-#### Reactivación de Suscripciones desde en Espera
+#### Reactivar suscripciones en espera
 
-Para reactivar una suscripción desde el estado `on_hold`, usa la API de Actualización de Método de Pago. Esto automáticamente:
+Para reactivar una suscripción desde el estado `on_hold`, usa la API Update Payment Method. Esto automáticamente:
 
-1. Crea un cargo por deudas pendientes
-2. Genera una factura por el cargo
+1. Crea un cobro por las cantidades pendientes
+2. Genera una factura por el cobro
 3. Procesa el pago usando el nuevo método de pago
-4. Reactiva la suscripción al estado `active` tras el pago exitoso
+4. Reactiva la suscripción al estado `active` cuando el pago se realiza correctamente
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Cuando recibes un webhook `subscription.on_hold`, actualiza el estado de tu aplicación y notifica al cliente:
+Cuando recibas un webhook `subscription.on_hold`, actualiza el estado de tu aplicación y notifica al cliente:
 
 ```javascript
 // Webhook handler
@@ -251,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-Cuando el cliente esté listo para actualizar su método de pago, llama a la API de Actualización de Método de Pago:
+Cuando el cliente esté listo para actualizar su método de pago, llama a la API Update Payment Method:
 
 <CodeGroup>
 
@@ -286,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-También puedes usar una ID de método de pago existente si el cliente ha guardado métodos de pago:
+También puedes usar un ID de método de pago existente si el cliente tiene métodos de pago guardados:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -299,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Después de actualizar el método de pago, monitorea estos eventos de webhook:
+Después de actualizar el método de pago, supervisa estos eventos de webhook:
 
-1. **`payment.succeeded`** - El cargo por deudas pendientes fue exitoso
-2. **`subscription.active`** - La suscripción ha sido reactivada
+1. **`payment.succeeded`** - El cobro por las cantidades pendientes se realizó correctamente
+2. **`subscription.active`** - La suscripción se ha reactivado
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -334,91 +346,125 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Ejemplo de Payload de Evento de Suscripción
+### Ejemplo de payload de evento de suscripción
 
 ---
 
 | Propiedad | Tipo | Obligatorio | Descripción |
-|----------|------|------------|-------------|
-| `business_id` | string | Sí | El identificador único para el negocio |
-| `timestamp` | string | Sí | La marca de tiempo de cuando ocurrió el evento (no necesariamente igual a cuando se entregó) |
-| `type` | string | Sí | El tipo de evento. Ver [Tipos de Evento](#event-types) |
-| `data` | object | Sí | La carga útil principal de datos. Ver [Objeto de Datos](#data-object) |
+|----------|------|----------|-------------|
+| `business_id` | string | Sí | El identificador único de la empresa |
+| `timestamp` | string | Sí | La marca de tiempo en que ocurrió el evento (no necesariamente coincide con el momento en que se entregó) |
+| `type` | string | Sí | El tipo de evento. Consulta [Tipos de eventos](#event-types) |
+| `data` | object | Sí | El payload de datos principal. Consulta [Objeto de datos](#data-object) |
 
-## Cambiar Planes de Suscripción
+## Cambiar planes de suscripción
 
-Puedes mejorar o degradar un plan de suscripción usando el endpoint API de cambio de plan. Esto te permite modificar el producto de la suscripción, la cantidad y manejar la prorrata.
+Puedes actualizar o degradar un plan de suscripción mediante el endpoint de la API de cambio de plan. Esto te permite modificar el producto, la cantidad y gestionar la prorrata de la suscripción.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Para obtener información detallada sobre el cambio de planes de suscripción, consulta nuestra documentación de la API de Cambio de Plan.
+  Para obtener información detallada sobre cómo cambiar planes de suscripción, consulta nuestra documentación de la API Change Plan.
 </Card>
 
-### Opciones de Prorrata
+### Opciones de prorrata
 
-Al cambiar planes de suscripción, tienes dos opciones para manejar el cargo inmediato:
+Al cambiar de plan de suscripción, tienes dos opciones para gestionar el cobro inmediato:
 
 #### 1. `prorated_immediately`
-- Calcula el monto prorrateado basado en el tiempo restante en el ciclo de facturación actual
-- Cobra al cliente solo la diferencia entre el plan antiguo y el nuevo
-- Durante un período de prueba, esto cambiará inmediatamente al usuario al nuevo plan, cobrando al cliente de inmediato
+- Calcula el importe prorrateado según el tiempo restante del ciclo de facturación actual
+- Cobra al cliente únicamente la diferencia entre el plan anterior y el nuevo
+- Durante un período de prueba, cambia inmediatamente al usuario al nuevo plan y cobra al cliente en ese momento
 
 #### 2. `full_immediately`
-- Cobra al cliente el monto completo de la suscripción para el nuevo plan
-- Ignora cualquier tiempo restante o créditos del plan anterior
-- Útil cuando deseas restablecer el ciclo de facturación o cobrar el monto completo sin importar la prorrata
+- Cobra al cliente el importe total de la suscripción del nuevo plan
+- Ignora el tiempo restante o los créditos del plan anterior
+- Es útil cuando quieres reiniciar el ciclo de facturación o cobrar el importe total independientemente de la prorrata
 
 #### 3. `difference_immediately`
-- Al mejorar, el cliente se cobra de inmediato la diferencia entre los dos montos de los planes.
-- Por ejemplo, si el plan actual es de 30 Dólares y el cliente mejora a uno de 80 Dólares, se le cobran $50 instantáneamente.
-- Al degradar, la cantidad no utilizada del plan actual se añade como crédito interno y se aplica automáticamente a renovaciones futuras de suscripción.
-- Por ejemplo, si el plan actual es de 50 Dólares y el cliente cambia a un plan de 20 Dólares, los $30 restantes se acreditan y se usan para el siguiente ciclo de facturación.
+- Al actualizar el plan, se cobra inmediatamente al cliente la diferencia entre los importes de ambos planes.
+- Por ejemplo, si el plan actual cuesta 30 dólares y el cliente cambia a uno de 80 dólares, se le cobran \$50 al instante. 
+- Al degradar el plan, el importe no utilizado del plan actual se añade como crédito interno y se aplica automáticamente a futuras renovaciones de la suscripción.
+- Por ejemplo, si el plan actual cuesta 50 dólares y el cliente cambia a un plan de 20 dólares, los \$30 restantes se acreditan y se utilizan en el siguiente ciclo de facturación.
+
+#### 4. `do_not_bill`
+- Aplica el cambio de plan inmediatamente, pero **no** realiza ningún cobro en el momento del cambio.
+- El plan actualizado (y la cantidad/add-ons) se factura en la **siguiente renovación programada**, y se conserva la **fecha de facturación original**.
+
+<Warning>
+**Los tres modos de «cobrar ahora» reinician el ciclo de facturación.** `prorated_immediately`, `difference_immediately` e `full_immediately` trasladan el `next_billing_date` de la suscripción a la fecha del cambio. Solo `do_not_bill` conserva la fecha de renovación original, pero no aplica ningún cobro inmediato.
+</Warning>
 
 ### Comportamiento
 
-- Cuando invocas esta API, Dodo Payments inicia inmediatamente un cargo basado en tu opción de prorrata seleccionada
-- Si el cambio de plan es una degradación y usas `prorated_immediately`, se calcularán automáticamente los créditos y se añadirán al saldo de crédito de la suscripción. Estos créditos son específicos de esa suscripción y solo se usarán para compensar futuros pagos recurrentes de la misma suscripción
-- La opción `full_immediately` omite los cálculos de crédito y cobra el monto completo del nuevo plan
+- Al invocar esta API, Dodo Payments inicia inmediatamente un cobro según la opción de prorrata seleccionada
+- Si el cambio de plan es una degradación y usas `prorated_immediately`, los créditos se calcularán automáticamente y se añadirán al saldo de crédito de la suscripción. Estos créditos son específicos de esa suscripción y solo se utilizarán para compensar futuros pagos recurrentes de la misma suscripción
+- La opción `full_immediately` omite los cálculos de crédito y cobra el importe completo del nuevo plan
 
 <Tip>
-**Elige tu opción de prorrata cuidadosamente**: Usa `prorated_immediately` para una facturación justa que tenga en cuenta el tiempo no utilizado, o `full_immediately` cuando desees cobrar el monto completo del nuevo plan sin importar el ciclo de facturación actual.
+**Elige cuidadosamente la opción de prorrata**: usa `prorated_immediately` para una facturación justa que tenga en cuenta el tiempo no utilizado, o `full_immediately` cuando quieras cobrar el importe completo del nuevo plan independientemente del ciclo de facturación actual.
 </Tip>
 
-### Procesamiento del Cargo
+### Procesamiento del cobro
 
-- El cargo inmediato iniciado al cambiar el plan usualmente completa el procesamiento en menos de 2 minutos
-- Si este cargo inmediato falla por alguna razón, la suscripción se coloca automáticamente en espera hasta que se resuelva el problema
+- El cobro inmediato iniciado al cambiar de plan normalmente termina de procesarse en menos de 2 minutos
+- Si este cobro inmediato falla por cualquier motivo, la suscripción se pone automáticamente en espera hasta que se resuelva el problema
 
-## Suscripciones Bajo Demanda
+## Suscripciones bajo demanda
 
 <Info>
-  Las suscripciones bajo demanda te permiten cobrar a los clientes de manera flexible, no solo en un horario fijo. Esta función está disponible para todas las cuentas.
+  Las suscripciones bajo demanda te permiten cobrar a los clientes de forma flexible, no solo siguiendo un calendario fijo. Esta función está disponible para todas las cuentas.
 </Info>
 
 **Para crear una suscripción bajo demanda:**
 
-Para crear una suscripción bajo demanda, utiliza el endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e incluye el campo `on_demand` en el cuerpo de tu solicitud. Esto te permite autorizar un método de pago sin un cargo inmediato o establecer un precio inicial personalizado.
+Para crear una suscripción bajo demanda, usa el endpoint de la API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e incluye el campo `on_demand` en el cuerpo de la solicitud. Esto te permite autorizar un método de pago sin realizar un cobro inmediato o establecer un precio inicial personalizado.
 
 **Para cobrar una suscripción bajo demanda:**
 
-Para cargos posteriores, utiliza el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica la cantidad a cobrar al cliente por esa transacción.
+Para los cobros posteriores, usa el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica el importe que se cobrará al cliente por esa transacción.
 
 <Note>
-Para obtener una guía completa, paso a paso, incluyendo ejemplos de solicitudes/respuestas, políticas de reintento seguro y manejo de webhooks, consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de Suscripciones Bajo Demanda</a>.
+Para consultar una guía completa paso a paso (incluidos ejemplos de solicitudes/respuestas, políticas de reintento seguras y gestión de webhooks), consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de suscripciones bajo demanda</a>.
 </Note>
 
-## Referencia de API Relacionada
+## Aspectos clave de la facturación de suscripciones
+
+<Warning>
+**Establece un período de suscripción superior a la frecuencia de pago.** Si el período de suscripción equivale a la frecuencia de pago (por ejemplo, período = 1 mes, frecuencia = 1 mes), la suscripción será válida durante un **solo ciclo** y después pasará a `expired` en lugar de renovarse. Para un plan mensual continuo, establece un período de suscripción largo (por ejemplo, 20 años) con una frecuencia de pago mensual.
+</Warning>
+
+<Warning>
+**La moneda se fija con el primer cobro correcto.** Incluye siempre `billing_currency` **y** `billing_address.country` explícitamente al crear el checkout. Si se omiten, se detectan a partir de la IP del cliente (Adaptive Currency) y, una vez realizado el primer cobro de la suscripción, la moneda queda fijada durante toda su vigencia. Si el cliente viaja posteriormente, no podrá cambiarla.
+</Warning>
+
+<Info>
+**Las pruebas utilizan una autorización de \$0, no un cobro.** Cuando una suscripción tiene una prueba, el inicio de la prueba crea una **autorización de mandato de \$0** para guardar la tarjeta; el primer cobro real se produce al finalizar la prueba. En la lista de pagos, una suscripción en período de prueba muestra exactamente un pago con `amount: 0`.
+</Info>
+
+<Info>
+**Ciclo de vida de la suscripción:** `on_hold` = falló una renovación (se puede recuperar: solicita al cliente que actualice su método de pago; se aplican reintentos de dunning). `expired` = el plazo terminó sin renovación y **no se puede reactivar**. El cliente debe volver a suscribirse. `cancelled` = finalizada por el cliente o el comerciante. La mayoría de los fallos de renovación son **rechazos del emisor** (fondos insuficientes, tarjeta rechazada), no un error de Dodo.
+</Info>
+
+<Warning>
+**Las tarjetas indias funcionan con un mandato electrónico del RBI.** Los cobros sin sesión (renovaciones y cobros por cambios de plan) pueden tardar **hasta aproximadamente 48 horas** en liquidarse, y los débitos automáticos recurrentes **superiores a ₹15,000** requieren una nueva autenticación del cliente (por lo que una actualización que supere ese límite no puede utilizar el mandato existente). Mientras un cobro siga en `processing`, un segundo cobro en la misma suscripción falla con *"Cannot create new charge as previous payment is not successful yet."* Las tarjetas no indias se confirman casi al instante.
+</Warning>
+
+<Tip>
+**Los cobros de suscripciones tienen un mínimo de \$1** (o su equivalente en otra moneda). Los importes de `$0.01–$0.99` se rechazan con `product_price: value out of range`; solo se permite `$0` mediante una configuración bajo demanda de `mandate_only`.
+</Tip>
+
+## Referencia de API relacionada
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  Referencia de API para crear productos de suscripción y gestionar el ciclo de vida de la suscripción
+  Referencia de API para crear productos de suscripción y gestionar el ciclo de vida de las suscripciones
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Referencia de API para mejorar, degradar o cambiar planes de suscripción con opciones de prorrata
+  Referencia de API para actualizar, degradar o cambiar planes de suscripción con opciones de prorrata
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
   Referencia de API para actualizar métodos de pago y reactivar suscripciones en espera
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  Referencia de API para actualizar los detalles y la configuración de suscripciones
+  Referencia de API para actualizar los detalles y la configuración de la suscripción
 </Card>
 </CardGroup>

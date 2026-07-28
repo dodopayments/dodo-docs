@@ -158,7 +158,17 @@ Puoi replicare il modello di fatturazione di OpenAI usando Dodo Payments. Userem
 
     ### Gestione dei webhook per saldo basso
 
-    Non aspettare che l'utente arrivi a 0 \$ per avvisarlo. Usa webhook per attivare un'email o una notifica in-app quando il saldo scende sotto una certa soglia.
+    ```typescript
+    async function checkCreditsBeforeRequest(customerId: string) {
+      const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+        credit_entitlement_id: 'credit_entitlement_id',
+      });
+
+      if (Number(balance.balance) <= 0) {
+        throw new Error('Insufficient credits. Please top up your account.');
+      }
+    }
+    ```
 
     ```typescript
     import DodoPayments from 'dodopayments';
@@ -380,7 +390,65 @@ export async function handleApiRequest(req, res) {
 
 Quando costruisci un sistema di fatturazione complesso come quello di OpenAI, incontrerai diversi casi limite che richiedono attenzione.
 
-### Condizioni di gara
+```typescript
+import DodoPayments from 'dodopayments';
+import OpenAI from 'openai';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+export async function handleApiRequest(req, res) {
+  const { customerId, prompt, model } = req.body;
+
+  try {
+    // 1. Check credit balance
+    const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+      credit_entitlement_id: 'credit_entitlement_id',
+    });
+
+    if (Number(balance.balance) <= 0) {
+      return res.status(402).json({ error: 'Insufficient credits. Please top up.' });
+    }
+
+    // 2. Call OpenAI
+    const completion = await openai.chat.completions.create({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const { prompt_tokens, completion_tokens } = completion.usage;
+
+    // 3. Ingest usage events to Dodo
+    await client.usageEvents.ingest({
+      events: [
+        {
+          event_id: `req_${completion.id}_in`,
+          customer_id: customerId,
+          event_name: 'llm.input_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: prompt_tokens }
+        },
+        {
+          event_id: `req_${completion.id}_out`,
+          customer_id: customerId,
+          event_name: 'llm.output_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: completion_tokens }
+        }
+      ]
+    });
+
+    // 4. Return response to user
+    res.json(completion);
+
+  } catch (error) {
+    console.error('API Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+```
 
 Se un utente ha un saldo molto basso e invia più richieste simultaneamente, potrebbe superare il limite di credito prima che il primo evento venga elaborato. Per evitarlo, puoi implementare un piccolo "buffer" o usare un lock distribuito sul saldo del cliente durante la richiesta.
 

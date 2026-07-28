@@ -160,71 +160,83 @@ Usa `subscription.updated` per ottenere notifiche in tempo reale su qualsiasi mo
 
 **Flusso di pagamento riuscito**
 
-Quando un pagamento ha successo, riceverai i seguenti webhook:
+I webhook che ricevi e la loro tempistica dipendono dal fatto che il prodotto includa o meno un periodo di prova.
 
-1. `subscription.active` - Indica l'attivazione dell'abbonamento
-2. `payment.succeeded` - Conferma il pagamento iniziale:
-    - Per la fatturazione immediata (0 giorni di prova): Aspettati entro 2-10 minuti
-    - Per i giorni di prova: ogni volta che termina
-3. `subscription.renewed` - Indica la deduzione del pagamento e il rinnovo per il prossimo ciclo. (Fondamentalmente, ogni volta che il pagamento viene dedotto per i prodotti in abbonamento, riceverai il webhook `subscription.renewed` insieme a `payment.succeeded`)
+_Fatturazione immediata (0 giorni di prova):_
 
-**Scenari di fallimento del pagamento**
+1. `subscription.active`: il mandato viene autorizzato e la sottoscrizione viene attivata.
+2. `payment.succeeded`: conferma il primo addebito. Attendi questo evento entro **2–10 minuti** dal checkout.
 
-1. Fallimento dell'abbonamento
-  - `subscription.failed` - La creazione dell'abbonamento è fallita a causa del fallimento nella creazione di un mandato.
-  - `payment.failed` - Indica un pagamento fallito.
+_Con un periodo di prova:_
 
-2. Abbonamento in attesa
-  - `subscription.on_hold` - L'abbonamento è messo in attesa a causa di un pagamento di rinnovo fallito o di un addebito per cambio piano fallito.
-  - Quando un abbonamento è in attesa, non si rinnoverà automaticamente fino a quando il metodo di pagamento non sarà aggiornato.
+1. **All'inizio della prova (checkout):** `subscription.active` viene emesso quando il metodo di pagamento è autorizzato. **Non viene ancora effettuato alcun addebito ricorrente.** Il primo addebito effettivo viene posticipato fino al termine della prova.
+2. **Al termine della prova:** viene addebitato l'importo ricorrente e ricevi `payment.succeeded` **insieme a** `subscription.renewed`.
 
-<Info>**Miglior pratica**: Per semplificare l'implementazione, consigliamo di monitorare principalmente gli eventi di abbonamento per gestire il ciclo di vita degli abbonamenti.</Info>
+_Ogni rinnovo successivo:_
+
+- `subscription.renewed`: viene emesso a ogni ciclo di fatturazione quando il pagamento del rinnovo viene detratto, **sempre insieme a** `payment.succeeded`. Contiene anche il valore aggiornato di `next_billing_date`.
+
+<Info>
+Ogni volta che viene effettivamente detratto del denaro per un prodotto in sottoscrizione, ricevi `subscription.renewed` **e** `payment.succeeded`. Usa `subscription.renewed` (anziché il solo `payment.succeeded`) come segnale per estendere l'accesso al ciclo successivo.
+</Info>
+
+**Scenari di pagamento non riuscito**
+
+1. Errore della sottoscrizione
+  - `subscription.failed` - La creazione della sottoscrizione non è riuscita perché non è stato possibile creare un mandato.
+  - `payment.failed` - Indica un pagamento non riuscito.
+
+2. Sottoscrizione sospesa
+  - `subscription.on_hold` - La sottoscrizione viene sospesa a causa di un pagamento di rinnovo non riuscito o di un addebito per la modifica del piano non riuscito.
+  - Quando una sottoscrizione viene sospesa, non si rinnoverà automaticamente finché il metodo di pagamento non verrà aggiornato.
+
+<Info>**Best Practice**: per semplificare l'implementazione, ti consigliamo di monitorare principalmente gli eventi della sottoscrizione per gestirne il ciclo di vita.</Info>
 
 <Tip>
-Per un walkthrough completo della lettura di `error_code`/`error_message`, decidendo quando riprovare, e facendo emergere i fallimenti ai clienti, vedi [Gestire fallimenti dei pagamenti](/developer-resources/handle-payment-failures).
+Per una guida completa alla lettura di `error_code`/`error_message`, alla scelta del momento in cui ritentare e alla comunicazione degli errori ai clienti, consulta [Gestione dei pagamenti non riusciti](/developer-resources/handle-payment-failures).
 </Tip>
 
 #### `subscription.failed` vs. `subscription.on_hold`
 
-Questi due eventi sono facili da confondere, ma richiedono una gestione molto diversa:
+È facile confondere questi due eventi, ma richiedono una gestione molto diversa:
 
-| Evento | Quando si attiva | Stato | Recuperabile? | Cosa fare |
+| Evento | Quando viene emesso | Stato | Recuperabile? | Cosa fare |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | Il **mandato iniziale** non è stato creato alla **creazione** dell'abbonamento | `failed` | **No — terminale** | Non concedere l'accesso. Chiedi al cliente di avviare un **nuovo** abbonamento con un metodo di pagamento diverso. |
-| `subscription.on_hold` | Un pagamento di **rinnovo** (o addebito per cambio piano) è fallito su un abbonamento già attivo | `on_hold` | **Sì** | Recupera aggiornando il metodo di pagamento; vedi [Gestione abbonamento in attesa](#handling-subscription-on-hold) di seguito. |
+| `subscription.failed` | Il mandato **iniziale** non ha potuto essere creato durante la **creazione** della sottoscrizione | `failed` | **No (terminale)** | Non concedere l'accesso. Chiedi al cliente di avviare una **nuova** sottoscrizione con un metodo di pagamento diverso. |
+| `subscription.on_hold` | Un pagamento di **rinnovo** (o un addebito per la modifica del piano) non è riuscito su una sottoscrizione già attiva | `on_hold` | **Sì** | Recupera la sottoscrizione aggiornando il metodo di pagamento; consulta [Gestione delle sottoscrizioni sospese](#handling-subscription-on-hold) di seguito. |
 
 <Warning>
-`subscription.failed` è terminale — l'abbonamento non può essere riattivato. Il cliente deve creare un nuovo abbonamento. Non concedere mai diritti quando questo evento si attiva.
+`subscription.failed` è terminale. La sottoscrizione non può essere riattivata. Il cliente deve creare una nuova sottoscrizione. Non concedere mai entitlement quando viene emesso questo evento.
 </Warning>
 
-### Gestione abbonamento in attesa
+### Gestione delle sottoscrizioni sospese
 
-Quando un abbonamento entra nello stato `on_hold`, devi aggiornare il metodo di pagamento per riattivarlo. Questa sezione spiega quando gli abbonamenti vengono messi in attesa e come gestirli.
+Quando una sottoscrizione entra nello stato `on_hold`, devi aggiornare il metodo di pagamento per riattivarla. Questa sezione spiega quando le sottoscrizioni vengono sospese e come gestirle.
 
-#### Quando gli abbonamenti vengono messi in attesa
+#### Quando le sottoscrizioni vengono sospese
 
-Un abbonamento è messo in attesa quando:
+Una sottoscrizione viene sospesa quando:
 
-- **Il pagamento di rinnovo fallisce**: La carica automatica di rinnovo fallisce a causa di fondi insufficienti, carta scaduta o rifiuto della banca
-- **Il cambio di piano fallisce**: Un addebito immediato durante l'upgrade/downgrade del piano fallisce
-- **L'autorizzazione del metodo di pagamento fallisce**: Il metodo di pagamento non può essere autorizzato per addebiti ricorrenti
+- **Il pagamento del rinnovo non riesce**: l'addebito automatico del rinnovo non riesce a causa di fondi insufficienti, carta scaduta o rifiuto da parte della banca
+- **L'addebito per la modifica del piano non riesce**: un addebito immediato durante l'upgrade o il downgrade del piano non riesce
+- **L'autorizzazione del metodo di pagamento non riesce**: non è possibile autorizzare il metodo di pagamento per gli addebiti ricorrenti
 
 <Warning>
-Gli abbonamenti nello stato `on_hold` non si rinnoveranno automaticamente. È necessario aggiornare il metodo di pagamento per riattivare l'abbonamento.
+Le sottoscrizioni nello stato `on_hold` non si rinnoveranno automaticamente. Devi aggiornare il metodo di pagamento per riattivare la sottoscrizione.
 </Warning>
 
-#### Riattivazione degli abbonamenti in attesa
+#### Riattivazione delle sottoscrizioni sospese
 
-Per riattivare un abbonamento dallo stato `on_hold`, usa l'API di aggiornamento del metodo di pagamento. Questo automaticamente:
+Per riattivare una sottoscrizione nello stato `on_hold`, usa l'API Update Payment Method. Questa operazione automaticamente:
 
-1. Crea un addebito per i restanti debiti
+1. Crea un addebito per gli importi ancora dovuti
 2. Genera una fattura per l'addebito
 3. Elabora il pagamento utilizzando il nuovo metodo di pagamento
-4. Riattiva l'abbonamento allo stato `active` al pagamento riuscito
+4. Riattiva la sottoscrizione nello stato `active` dopo il pagamento effettuato correttamente
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Quando ricevi un webhook `subscription.on_hold`, aggiorna lo stato della tua applicazione e notifica al cliente:
+Quando ricevi un webhook `subscription.on_hold`, aggiorna lo stato dell'applicazione e informa il cliente:
 
 ```javascript
 // Webhook handler
@@ -251,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-Quando il cliente è pronto ad aggiornare il proprio metodo di pagamento, chiama l'API di aggiornamento del metodo di pagamento:
+Quando il cliente è pronto ad aggiornare il metodo di pagamento, chiama l'API Update Payment Method:
 
 <CodeGroup>
 
@@ -286,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-Puoi anche utilizzare un ID di metodo di pagamento esistente se il cliente ha metodi di pagamento salvati:
+Puoi anche usare l'ID di un metodo di pagamento esistente se il cliente ha salvato dei metodi di pagamento:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -299,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Dopo aver aggiornato il metodo di pagamento, monitorare questi eventi webhook:
+Dopo aver aggiornato il metodo di pagamento, monitora questi eventi webhook:
 
-1. **`payment.succeeded`** - Il addebito per i debiti rimanenti è riuscito
-2. **`subscription.active`** - L'abbonamento è stato riattivato
+1. **`payment.succeeded`** - L'addebito per gli importi ancora dovuti è riuscito
+2. **`subscription.active`** - La sottoscrizione è stata riattivata
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -334,91 +346,125 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Esempio di payload evento abbonamento
+### Esempio di payload di un evento Subscription
 
 ---
 
-| Proprietà | Tipo | Richiesto | Descrizione |
+| Proprietà | Tipo | Obbligatorio | Descrizione |
 |----------|------|----------|-------------|
-| `business_id` | stringa | Sì | L'identificatore univoco per l'azienda |
-| `timestamp` | stringa | Sì | Il timestamp di quando l'evento si è verificato (non necessariamente lo stesso di quando è stato consegnato) |
-| `type` | stringa | Sì | Il tipo di evento. Vedi [Tipi di eventi](#event-types) |
-| `data` | oggetto | Sì | Il payload principale dei dati. Vedi [Oggetto dati](#data-object) |
+| `business_id` | string | Sì | L'identificatore univoco dell'azienda |
+| `timestamp` | string | Sì | Il timestamp del momento in cui si è verificato l'evento (non necessariamente uguale al momento della consegna) |
+| `type` | string | Sì | Il tipo di evento. Consulta [Tipi di evento](#event-types) |
+| `data` | object | Sì | Il payload principale dei dati. Consulta [Oggetto dati](#data-object) |
 
-## Modifica dei piani di abbonamento
+## Modifica dei piani di sottoscrizione
 
-Puoi aggiornare o ridurre un piano di abbonamento utilizzando l'endpoint API di cambio piano. Questo ti consente di modificare il prodotto dell'abbonamento, la quantità e gestire la ripartizione.
+Puoi effettuare l'upgrade o il downgrade di un piano di sottoscrizione utilizzando l'endpoint API change plan. Questo consente di modificare il prodotto, la quantità e di gestire la proroga della sottoscrizione.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Per informazioni dettagliate sul cambio dei piani di abbonamento, fai riferimento alla nostra documentazione API di cambio piano.
+  Per informazioni dettagliate sulla modifica dei piani di sottoscrizione, consulta la documentazione della Change Plan API.
 </Card>
 
-### Opzioni di ripartizione
+### Opzioni di proroga
 
-Quando cambi i piani di abbonamento, hai due opzioni per gestire l'addebito immediato:
+Quando modifichi i piani di sottoscrizione, hai due opzioni per gestire l'addebito immediato:
 
 #### 1. `prorated_immediately`
-- Calcola l'importo ripartito in base al tempo rimanente nel ciclo di fatturazione attuale
-- Addebita al cliente solo la differenza tra il vecchio e il nuovo piano
-- Durante un periodo di prova, ciò passerà immediatamente l'utente al nuovo piano, addebitando subito al cliente
+- Calcola l'importo pro rata in base al tempo rimanente nel ciclo di fatturazione corrente
+- Addebita al cliente solo la differenza tra il piano precedente e quello nuovo
+- Durante un periodo di prova, passa immediatamente l'utente al nuovo piano, addebitando subito il cliente
 
 #### 2. `full_immediately`
-- Addebita al cliente l'intero importo dell'abbonamento per il nuovo piano
-- Ignora qualsiasi tempo rimanente o crediti dal piano precedente
-- Utile quando si desidera reimpostare il ciclo di fatturazione o addebitare l'intero importo indipendentemente dalla ripartizione
+- Addebita al cliente l'intero importo della sottoscrizione per il nuovo piano
+- Ignora il tempo rimanente o i crediti del piano precedente
+- È utile quando vuoi reimpostare il ciclo di fatturazione o addebitare l'intero importo indipendentemente dalla proroga
 
 #### 3. `difference_immediately`
-- Durante un upgrade, il cliente viene immediatamente addebitato la differenza tra gli importi dei due piani.
-- Ad esempio, se il piano attuale è di 30 dollari e il cliente passa a un piano di 80 dollari, vengono addebitati immediatamente 50 dollari. 
-- Durante un downgrade, l'importo non utilizzato del piano attuale viene aggiunto come credito interno e automaticamente applicato ai futuri rinnovi dell'abbonamento.
-- Ad esempio, se il piano attuale è di 50 dollari e il cliente passa a un piano di 20 dollari, i restanti 30 dollari vengono accreditati e usati per il prossimo ciclo di fatturazione.
+- In caso di upgrade, al cliente viene immediatamente addebitata la differenza tra gli importi dei due piani.
+- Ad esempio, se il piano corrente costa 30 Dollari e il cliente passa a un piano da 80 Dollari, gli vengono addebitati istantaneamente \$50. 
+- In caso di downgrade, l'importo inutilizzato del piano corrente viene aggiunto come credito interno e applicato automaticamente ai rinnovi futuri della sottoscrizione.
+- Ad esempio, se il piano corrente costa 50 Dollari e il cliente passa a un piano da 20 Dollari, i \$30 rimanenti vengono accreditati e utilizzati per il ciclo di fatturazione successivo.
+
+#### 4. `do_not_bill`
+- Applica immediatamente la modifica del piano, ma **non** effettua alcun addebito al momento della modifica.
+- Il piano aggiornato (e la quantità/gli extra) viene fatturato al **rinnovo programmato successivo** e la **data di fatturazione originale viene mantenuta**.
+
+<Warning>
+**Tutte e tre le modalità di "addebito immediato" reimpostano il ciclo di fatturazione.** `prorated_immediately`, `difference_immediately` e `full_immediately` spostano `next_billing_date` della sottoscrizione alla data della modifica. Solo `do_not_bill` mantiene la data di rinnovo originale, ma non applica alcun addebito immediato.
+</Warning>
 
 ### Comportamento
 
-- Quando invochi questa API, Dodo Payments inizia immediatamente un addebito in base alla tua opzione di ripartizione selezionata
-- Se il cambio di piano è un downgrade e usi `prorated_immediately`, i crediti saranno automaticamente calcolati e aggiunti al saldo del credito dell'abbonamento. Questi crediti sono specifici per quell'abbonamento e saranno utilizzati solo per compensare i pagamenti ricorrenti futuri dello stesso abbonamento
-- L'opzione `full_immediately` bypassa i calcoli del credito e addebita l'intero importo del nuovo piano
+- Quando richiami questa API, Dodo Payments avvia immediatamente un addebito in base all'opzione di proroga selezionata
+- Se la modifica del piano è un downgrade e utilizzi `prorated_immediately`, i crediti vengono calcolati automaticamente e aggiunti al saldo crediti della sottoscrizione. Questi crediti sono specifici di quella sottoscrizione e verranno utilizzati solo per compensare i futuri pagamenti ricorrenti della stessa sottoscrizione
+- L'opzione `full_immediately` ignora i calcoli dei crediti e addebita l'intero importo del nuovo piano
 
 <Tip>
-**Scegli con attenzione l'opzione di ripartizione**: Usa `prorated_immediately` per una fatturazione equa che tenga conto del tempo non utilizzato, o `full_immediately` quando desideri addebitare l'intero importo del nuovo piano indipendentemente dal ciclo di fatturazione corrente.
+**Scegli attentamente l'opzione di proroga**: usa `prorated_immediately` per una fatturazione equa che tenga conto del tempo inutilizzato, oppure `full_immediately` quando vuoi addebitare l'intero importo del nuovo piano indipendentemente dal ciclo di fatturazione corrente.
 </Tip>
 
 ### Elaborazione degli addebiti
 
-- L'addebito immediato avviato al cambio del piano di solito completa l'elaborazione in meno di 2 minuti
-- Se questo addebito immediato fallisce per qualsiasi motivo, l'abbonamento viene automaticamente messo in attesa fino a quando il problema non verrà risolto
+- L'addebito immediato avviato dopo la modifica del piano completa solitamente l'elaborazione in meno di 2 minuti
+- Se questo addebito immediato non riesce per qualsiasi motivo, la sottoscrizione viene automaticamente sospesa finché il problema non viene risolto
 
-## Abbonamenti on-demand
+## Sottoscrizioni on-demand
 
 <Info>
-  Gli abbonamenti on-demand ti permettono di addebitare ai clienti in modo flessibile, non solo su un programma fisso. Questa funzione è disponibile per tutti gli account.
+  Le sottoscrizioni on-demand ti consentono di addebitare i clienti in modo flessibile, non solo secondo una pianificazione fissa. Questa funzionalità è disponibile per tutti gli account.
 </Info>
 
-**Per creare un abbonamento on-demand:**
+**Per creare una sottoscrizione on-demand:**
 
-Per creare un abbonamento on-demand, utilizza l'endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e includi il campo `on_demand` nel corpo della tua richiesta. Questo ti consente di autorizzare un metodo di pagamento senza un addebito immediato o impostare un prezzo iniziale personalizzato.
+Per creare una sottoscrizione on-demand, usa l'endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e includi il campo `on_demand` nel corpo della richiesta. Questo consente di autorizzare un metodo di pagamento senza un addebito immediato oppure di impostare un prezzo iniziale personalizzato.
 
-**Per addebitare un abbonamento on-demand:**
+**Per addebitare una sottoscrizione on-demand:**
 
-Per addebiti successivi, utilizza l'endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) e specifica l'importo da addebitare al cliente per quella transazione.
+Per gli addebiti successivi, usa l'endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) e specifica l'importo da addebitare al cliente per quella transazione.
 
 <Note>
-Per una guida completa passo-passo — inclusi esempi di richiesta/risposta, politiche di riprova sicure e gestione dei webhook — vedi la <a href="/developer-resources/ondemand-subscriptions">Guida agli abbonamenti on-demand</a>.
+Per una guida completa e dettagliata (inclusi esempi di richieste/risposte, criteri di retry sicuri e gestione dei webhook), consulta la <a href="/developer-resources/ondemand-subscriptions">Guida alle sottoscrizioni on-demand</a>.
 </Note>
 
-## Riferimento API correlato
+## Aspetti fondamentali della fatturazione delle sottoscrizioni
+
+<Warning>
+**Imposta un periodo di sottoscrizione più lungo della frequenza di pagamento.** Se il periodo di sottoscrizione è uguale alla frequenza di pagamento (ad esempio, periodo = 1 mese, frequenza = 1 mese), la sottoscrizione è valida per un **singolo ciclo** e passa quindi a `expired` invece di rinnovarsi. Per un piano mensile continuativo, imposta un periodo di sottoscrizione lungo (ad esempio, 20 anni) con una frequenza di pagamento mensile.
+</Warning>
+
+<Warning>
+**La valuta viene bloccata al primo addebito riuscito.** Passa sempre `billing_currency` **e** `billing_address.country` in modo esplicito durante la creazione del checkout. Se omessi, vengono rilevati dall'IP del cliente (Adaptive Currency) e, una volta effettuato il primo addebito della sottoscrizione, la valuta viene fissata per tutta la sua durata. Se in seguito il cliente viaggia, non può cambiarla.
+</Warning>
+
+<Info>
+**I periodi di prova effettuano un'autorizzazione di \$0, non un addebito.** Quando una sottoscrizione include un periodo di prova, all'inizio della prova viene creata un'**autorizzazione del mandato di \$0** per salvare la carta; il primo addebito effettivo avviene al termine della prova. Nell'elenco dei pagamenti, una sottoscrizione in prova mostra esattamente un pagamento con `amount: 0`.
+</Info>
+
+<Info>
+**Ciclo di vita della sottoscrizione:** `on_hold` = un rinnovo non è riuscito (recuperabile: chiedi al cliente di aggiornare il metodo di pagamento; si applicano i retry di dunning). `expired` = il periodo è terminato senza rinnovo e **non può essere riattivato**. Il cliente deve effettuare nuovamente la sottoscrizione. `cancelled` = terminata dal cliente o dal merchant. La maggior parte dei rinnovi non riusciti è dovuta a **rifiuti da parte dell'emittente** (fondi insufficienti, carta rifiutata), non a un errore di Dodo.
+</Info>
+
+<Warning>
+**Le carte indiane utilizzano un e-mandate RBI.** Gli addebiti off-session (rinnovi e addebiti per la modifica del piano) possono richiedere **fino a circa 48 ore** per essere regolati e gli addebiti automatici ricorrenti **superiori a ₹15,000** richiedono una nuova autenticazione del cliente (pertanto un upgrade che superi tale limite non può utilizzare il mandato esistente). Mentre un addebito è ancora `processing`, un secondo addebito sulla stessa sottoscrizione non riesce con *"Cannot create new charge as previous payment is not successful yet."* Le carte non indiane vengono confermate quasi istantaneamente.
+</Warning>
+
+<Tip>
+**Gli addebiti delle sottoscrizioni hanno un minimo di \$1** (o l'equivalente nella valuta locale). Gli importi di `$0.01–$0.99` vengono rifiutati con `product_price: value out of range`; è consentito solo `$0`, tramite una configurazione on-demand `mandate_only`.
+</Tip>
+
+## Riferimenti API correlati
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  Riferimento API per la creazione di prodotti in abbonamento e gestione del ciclo di vita dell'abbonamento
+  Riferimento API per la creazione dei prodotti in sottoscrizione e la gestione del ciclo di vita delle sottoscrizioni
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Riferimento API per l'aggiornamento, il downgrade o il cambio dei piani di abbonamento con opzioni di ripartizione
+  Riferimento API per effettuare l'upgrade, il downgrade o modificare i piani di sottoscrizione con opzioni di proroga
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  Riferimento API per l'aggiornamento dei metodi di pagamento e la riattivazione degli abbonamenti in attesa
+  Riferimento API per l'aggiornamento dei metodi di pagamento e la riattivazione delle sottoscrizioni sospese
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  Riferimento API per l'aggiornamento dei dettagli dell'abbonamento e la configurazione
+  Riferimento API per l'aggiornamento dei dettagli e della configurazione delle sottoscrizioni
 </Card>
 </CardGroup>

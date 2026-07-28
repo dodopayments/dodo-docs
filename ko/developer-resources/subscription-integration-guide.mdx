@@ -159,56 +159,83 @@ console.log(session.checkout_url);
 
 #### 결제 시나리오
 
-**성공적인 결제 흐름**
+수신하는 웹훅과 해당 웹훅의 발생 시점은 상품에 trial이 있는지 여부에 따라 달라집니다.
 
-결제가 성공하면 다음 웹훅을 받게 됩니다:
+_즉시 청구(시험 기간 0일):_
 
-1. `subscription.active` - 구독 활성화를 나타냅니다
-2. `payment.succeeded` - 최초 결제를 확인합니다:
-    - 즉시 청구(무료 체험 0일)의 경우: 2~10분 이내에 예상됩니다
-    - 무료 체험 기간이 있는 경우: 해당 기간이 끝날 때
-3. `subscription.renewed` - 다음 주기의 결제 차감 및 갱신을 나타냅니다. (기본적으로 구독 상품에 대한 결제가 이루어질 때마다 `subscription.renewed` 웹훅과 함께 `payment.succeeded` 웹훅이 전송됩니다)
+1. `subscription.active`: mandate가 승인되고 subscription이 활성화됩니다.
+2. `payment.succeeded`: 첫 번째 청구를 확인합니다. checkout 후 **2~10분** 이내에 발생할 것으로 예상됩니다.
+
+_시험 기간이 있는 경우:_
+
+1. **시험 시작 시(checkout):** 결제 수단이 승인되면 `subscription.active`가 한 번 발생합니다. **아직 recurring charge는 청구되지 않습니다.** 첫 번째 실제 청구는 시험 기간이 종료될 때까지 연기됩니다.
+2. **시험 종료 시:** recurring amount가 청구되며, `payment.succeeded`를 `subscription.renewed`와 **함께** 수신합니다.
+
+_이후 각 renewal:_
+
+- `subscription.renewed`: 각 billing cycle에서 renewal payment가 차감될 때 발생하며, **항상** `payment.succeeded`와 함께 전송됩니다. 또한 업데이트된 `next_billing_date`도 포함합니다.
+
+<Info>
+subscription product에 대해 실제로 금액이 차감될 때마다 `subscription.renewed` **및** `payment.succeeded`를 수신합니다. 다음 cycle에 대한 access를 연장할 신호로 `payment.succeeded`만 사용하는 대신 `subscription.renewed`를 사용하세요.
+</Info>
 
 **결제 실패 시나리오**
 
-1. 구독 실패
-  - `subscription.failed` - mandate 생성 실패로 인해 구독 생성이 실패했습니다.
+1. Subscription Failure
+  - `subscription.failed` - mandate 생성 실패로 인해 subscription 생성에 실패했습니다.
   - `payment.failed` - 결제 실패를 나타냅니다.
 
-2. 구독 보류
-  - `subscription.on_hold` - 갱신 결제 또는 요금제 변경 요금 실패로 인해 구독이 보류 상태가 됩니다.
-  - 구독이 보류 상태가 되면 결제 수단이 업데이트될 때까지 자동 갱신되지 않습니다.
+2. Subscription On Hold
+  - `subscription.on_hold` - renewal payment 또는 plan change charge 실패로 인해 subscription이 보류됩니다.
+  - subscription이 보류되면 payment method가 업데이트될 때까지 자동으로 renewal되지 않습니다.
 
-<Info>**모범 사례**: 구현을 단순화하려면 구독 수명 주기를 관리할 때 주로 구독 이벤트를 추적하는 것이 좋습니다.</Info>
+<Info>**Best Practice**: 구현을 간소화하려면 subscription lifecycle을 관리할 때 subscription event를 주로 추적하는 것을 권장합니다.</Info>
 
-### 구독 보류 처리
+<Tip>
+`error_code`/`error_message`를 읽는 방법, 언제 retry할지 결정하는 방법, 고객에게 실패를 표시하는 방법에 대한 전체 안내는 [결제 실패 처리](/developer-resources/handle-payment-failures)를 참조하세요.
+</Tip>
 
-구독이 `on_hold` 상태가 되면 다시 활성화하려면 결제 수단을 업데이트해야 합니다. 이 섹션에서는 구독이 보류 상태로 전환되는 시기와 처리 방법을 설명합니다.
+#### `subscription.failed`와 `subscription.on_hold` 비교
 
-#### 구독이 보류 상태가 되는 경우
+이 두 event는 혼동하기 쉽지만, 처리 방법은 매우 다릅니다:
 
-구독이 보류 상태가 되는 경우는 다음과 같습니다:
-
-- **갱신 결제 실패**: 자동 갱신 요금이 자금 부족, 카드 만료 또는 은행 거부로 인해 실패합니다.
-- **요금 변경 실패**: 요금 업그레이드/다운그레이드 중 즉시 요금이 실패합니다.
-- **결제 방법 승인 실패**: 결제 방법이 반복 청구를 위해 승인될 수 없습니다.
+| Event | When it fires | Status | Recoverable? | What to do |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | subscription **생성** 시 **initial** mandate를 생성할 수 없음 | `failed` | **아니요(terminal)** | access를 부여하지 마세요. 고객에게 다른 payment method로 **새** subscription을 시작하도록 요청하세요. |
+| `subscription.on_hold` | 이미 활성화된 subscription에서 **renewal** payment(또는 plan-change charge)가 실패함 | `on_hold` | **예** | payment method를 업데이트하여 복구하세요. 아래의 [Handling Subscription On Hold](#handling-subscription-on-hold)를 참조하세요. |
 
 <Warning>
-`on_hold` 상태의 구독은 자동으로 갱신되지 않습니다. 구독을 다시 활성화하려면 결제 수단을 업데이트해야 합니다.
+`subscription.failed`는 terminal 상태입니다. subscription을 다시 활성화할 수 없습니다. 고객은 새 subscription을 생성해야 합니다. 이 event가 발생하면 절대 entitlements를 부여하지 마세요.
 </Warning>
 
-#### 보류 상태에서 구독 재활성화
+### 보류된 Subscription 처리
 
-`on_hold` 상태의 구독을 다시 활성화하려면 Update Payment Method API를 사용하세요. 이 API는 자동으로 다음을 수행합니다:
+subscription이 `on_hold` 상태가 되면 다시 활성화하기 위해 payment method를 업데이트해야 합니다. 이 섹션에서는 subscription이 보류되는 시점과 처리 방법을 설명합니다.
 
-1. 남은 금액에 대한 청구를 생성합니다
-2. 해당 청구에 대한 인보이스를 생성합니다
-3. 새 결제 수단으로 결제를 처리합니다
-4. 결제가 성공하면 구독을 `active` 상태로 다시 활성화합니다
+#### Subscription이 보류되는 경우
+
+다음과 같은 경우 subscription이 보류됩니다:
+
+- **Renewal payment 실패**: 잔액 부족, 만료된 카드 또는 은행 거절로 인해 자동 renewal charge가 실패함
+- **Plan change charge 실패**: plan upgrade/downgrade 중 즉시 charge가 실패함
+- **Payment method authorization 실패**: recurring charge에 대해 payment method를 승인할 수 없음
+
+<Warning>
+`on_hold` 상태의 subscription은 자동으로 renewal되지 않습니다. subscription을 다시 활성화하려면 payment method를 업데이트해야 합니다.
+</Warning>
+
+#### 보류된 Subscription 다시 활성화
+
+`on_hold` 상태의 subscription을 다시 활성화하려면 Update Payment Method API를 사용하세요. 이 API는 다음 작업을 자동으로 수행합니다:
+
+1. 미납 잔액에 대한 charge 생성
+2. 해당 charge에 대한 invoice 생성
+3. 새 payment method를 사용하여 payment 처리
+4. payment 성공 시 subscription을 `active` 상태로 재활성화
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-`subscription.on_hold` 웹훅을 수신하면 애플리케이션 상태를 업데이트하고 고객에게 알려주세요:
+`subscription.on_hold` webhook을 수신하면 application state를 업데이트하고 고객에게 알리세요:
 
 ```javascript
 // Webhook handler
@@ -235,7 +262,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-고객이 결제 수단을 업데이트할 준비가 되면 Update Payment Method API를 호출하세요:
+고객이 payment method를 업데이트할 준비가 되면 Update Payment Method API를 호출하세요:
 
 <CodeGroup>
 
@@ -270,7 +297,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-고객이 저장된 결제 수단을 보유하고 있다면 기존 결제 수단 ID를 사용할 수도 있습니다:
+고객이 저장된 payment method를 보유하고 있다면 기존 payment method ID를 사용할 수도 있습니다:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -283,10 +310,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-결제 수단을 업데이트한 후에는 다음 웹훅 이벤트를 모니터링하세요:
+payment method를 업데이트한 후 다음 webhook event를 모니터링하세요:
 
-1. **`payment.succeeded`** - 남은 금액에 대한 청구가 성공했습니다
-2. **`subscription.active`** - 구독이 다시 활성화되었습니다
+1. **`payment.succeeded`** - 미납 잔액에 대한 charge가 성공했습니다.
+2. **`subscription.active`** - subscription이 다시 활성화되었습니다.
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -318,91 +345,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### 샘플 구독 이벤트 페이로드
+### Subscription event payload 예시
 
 ---
 
-| 속성 | 유형 | 필수 여부 | 설명 |
+| Property | Type | Required | Description |
 |----------|------|----------|-------------|
-| `business_id` | string | Yes | 비즈니스를 위한 고유 식별자 |
-| `timestamp` | string | Yes | 이벤트가 발생한 시점의 타임스탬프(전달 시점과 반드시 일치하지 않을 수 있습니다) |
-| `type` | string | Yes | 이벤트 유형입니다. 자세한 내용은 [Event Types](#event-types)를 참조하세요 |
-| `data` | object | Yes | 주요 데이터 페이로드입니다. 자세한 내용은 [Data Object](#data-object)를 참조하세요 |
+| `business_id` | string | Yes | business의 고유 식별자 |
+| `timestamp` | string | Yes | event가 발생한 시점의 timestamp(전달된 시점과 반드시 동일하지는 않음) |
+| `type` | string | Yes | event 유형. [Event Types](#event-types) 참조 |
+| `data` | object | Yes | 기본 data payload. [Data Object](#data-object) 참조 |
 
-## 구독 요금 변경
+## Subscription Plan 변경
 
-구독 요금을 변경 API 엔드포인트를 사용하여 구독 요금을 업그레이드하거나 다운그레이드할 수 있습니다. 이를 통해 구독의 제품, 수량을 수정하고 비례 배분을 처리할 수 있습니다.
+change plan API endpoint를 사용하여 subscription plan을 upgrade 또는 downgrade할 수 있습니다. 이를 통해 subscription의 product와 quantity를 수정하고 proration을 처리할 수 있습니다.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-구독 요금제를 변경하는 방법에 대한 자세한 내용은 Change Plan API 문서를 참조하세요.
+  subscription plan 변경에 대한 자세한 내용은 Change Plan API documentation을 참조하세요.
 </Card>
 
-### 비례 배분 옵션
+### Proration 옵션
 
-구독 요금을 변경할 때 즉시 요금을 처리하는 두 가지 옵션이 있습니다:
+subscription plan을 변경할 때 즉시 charge를 처리하는 방법은 두 가지입니다:
 
 #### 1. `prorated_immediately`
-- 현재 청구 주기에 남은 시간을 기준으로 일할 계산액을 산정합니다
-- 이전 요금제와 새 요금제의 차액만 고객에게 청구합니다
-- 체험 기간에는 사용자를 즉시 새 요금제로 전환하고 고객에게 바로 요금을 청구합니다
+- 현재 billing cycle의 남은 시간을 기준으로 prorated amount를 계산합니다.
+- 기존 plan과 새 plan의 차액만 고객에게 청구합니다.
+- trial 기간에는 사용자를 즉시 새 plan으로 전환하고 고객에게 바로 청구합니다.
 
 #### 2. `full_immediately`
-- 새 요금제에 대해 전체 구독 요금을 청구합니다
-- 이전 요금제의 남은 시간이나 크레딧을 무시합니다
-- 청구 주기를 재설정하거나 일할 계산과 관계없이 전체 금액을 청구하려는 경우 유용합니다
+- 새 plan의 전체 subscription amount를 고객에게 청구합니다.
+- 이전 plan의 남은 시간이나 credit을 무시합니다.
+- billing cycle을 reset하거나 proration과 관계없이 전체 금액을 청구하려는 경우에 유용합니다.
 
 #### 3. `difference_immediately`
-- 업그레이드할 때 고객은 두 요금제 금액의 차액을 즉시 청구받습니다.
-- 예를 들어 현재 요금제가 30달러이고 고객이 80달러로 업그레이드하면 즉시 $50이 청구됩니다.
-- 다운그레이드할 때 현재 요금제에서 사용되지 않은 금액은 내부 크레딧으로 추가되어 향후 구독 갱신에 자동 적용됩니다.
-- 예를 들어 현재 요금제가 50달러이고 고객이 20달러 요금제로 전환하면 남은 $30이 크레딧으로 적립되어 다음 청구 주기에 사용됩니다.
+- upgrade하는 경우 두 plan 금액의 차액이 고객에게 즉시 청구됩니다.
+- 예를 들어 현재 plan이 30 Dollars이고 고객이 80 Dollars plan으로 upgrade하면 즉시 \$50가 청구됩니다. 
+- downgrade하는 경우 현재 plan의 미사용 금액이 internal credit으로 추가되고 향후 subscription renewal에 자동으로 적용됩니다.
+- 예를 들어 현재 plan이 50 Dollars이고 고객이 20 Dollars plan으로 전환하면 남은 \$30가 credit으로 적립되어 다음 billing cycle에 사용됩니다.
+
+#### 4. `do_not_bill`
+- plan 변경을 즉시 적용하지만 변경 시점에는 아무것도 **청구하지 않습니다**.
+- 업데이트된 plan(및 quantity/add-ons)은 **다음 예정된 renewal**에 청구되며, **기존 billing date가 유지됩니다**.
+
+<Warning>
+**세 가지 "charge now" mode는 모두 billing cycle을 reset합니다.** `prorated_immediately`, `difference_immediately` 및 `full_immediately`는 subscription의 `next_billing_date`를 변경일로 이동합니다. `do_not_bill`만 기존 renewal date를 유지하지만 즉시 charge는 적용하지 않습니다.
+</Warning>
 
 ### 동작
 
-- 이 API를 호출하면 Dodo Payments가 선택한 일할 계산 옵션에 따라 즉시 청구를 시작합니다
-- 요금제 변경이 다운그레이드이고 `prorated_immediately`를 사용하는 경우 크레딧이 자동으로 계산되어 구독의 크레딧 잔액에 추가됩니다. 이 크레딧은 해당 구독에만 적용되며 동일한 구독의 향후 반복 결제를 상쇄하는 용도로만 사용됩니다
-- `full_immediately` 옵션은 크레딧 계산을 건너뛰고 새로운 요금제 금액 전체를 청구합니다
+- 이 API를 호출하면 Dodo Payments가 선택한 proration 옵션에 따라 즉시 charge를 시작합니다.
+- plan 변경이 downgrade이고 `prorated_immediately`를 사용하는 경우 credit이 자동으로 계산되어 subscription의 credit balance에 추가됩니다. 이 credit은 해당 subscription에만 적용되며 동일한 subscription의 향후 recurring payment를 상쇄하는 데만 사용됩니다.
+- `full_immediately` 옵션은 credit 계산을 건너뛰고 새 plan의 전체 금액을 청구합니다.
 
 <Tip>
-**일할 계산 옵션을 신중하게 선택하세요**: 사용하지 않은 시간을 고려한 공정한 청구를 위해 `prorated_immediately`를 사용하거나 현재 청구 주기에 관계없이 전체 새 요금제를 청구하려면 `full_immediately`를 사용하세요.
+**Proration 옵션을 신중하게 선택하세요**: 사용하지 않은 시간을 반영한 공정한 billing을 원하면 `prorated_immediately`를 사용하고, 현재 billing cycle과 관계없이 새 plan의 전체 금액을 청구하려면 `full_immediately`를 사용하세요.
 </Tip>
 
-### 청구 처리
+### Charge 처리
 
-- 요금 변경 시 즉시 시작된 청구는 보통 2분 이내에 처리됩니다.
-- 이 즉시 청구가 어떤 이유로든 실패하면 구독은 문제가 해결될 때까지 자동으로 보류 상태로 전환됩니다.
+- plan 변경 시 시작된 즉시 charge는 일반적으로 2분 이내에 처리가 완료됩니다.
+- 이 즉시 charge가 어떤 이유로든 실패하면 문제가 해결될 때까지 subscription이 자동으로 보류됩니다.
 
-## 주문형 구독
-
-<Info>
-주문형 구독을 사용하면 고정 일정에 얽매이지 않고 고객에게 유연하게 요금을 청구할 수 있습니다. 이 기능은 모든 계정에서 사용할 수 있습니다.
-</Info>
-
-**주문형 구독을 생성하려면:**
-
-주문형 구독을 생성하려면 [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API 엔드포인트를 사용하고 요청 본문에 `on_demand` 필드를 포함하세요. 이렇게 하면 즉시 청구 없이 결제 수단을 승인하거나 사용자 정의 초기 가격을 설정할 수 있습니다.
-
-**주문형 구독에 요금을 청구하려면:**
-
-후속 청구의 경우 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) 엔드포인트를 사용하고 해당 거래에 대해 고객에게 청구할 금액을 지정하십시오.
-
-<Note>
-요청/응답 예시, 안전한 재시도 정책, 웹훅 처리를 포함한 단계별 전체 가이드는 <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>를 참조하세요.
-</Note>
-
-## 관련 API 참고 문서
-
-API reference for creating subscription products and managing subscription lifecycle
-
-**온디맨드 구독 요금 청구 방법:**
-
-후속 요금을 청구하려면, [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) 엔드포인트를 사용하고 해당 거래에 대해 고객에게 청구할 금액을 지정하세요.
-
-<Note>
-요청/응답 예제, 안전한 재시도 정책 및 웹훅 처리 등을 포함한 완전한 단계별 가이드는 <a href="/developer-resources/ondemand-subscriptions">온디맨드 구독 가이드</a>를 참조하세요.
-</Note>
-
-## 관련 API 참조
+## On-Demand Subscription
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -416,5 +421,60 @@ API reference for creating subscription products and managing subscription lifec
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   구독 세부정보 및 구성 업데이트에 대한 API 참조
+</Card>
+</CardGroup>
+
+**on-demand subscription을 생성하려면:**
+
+on-demand subscription을 생성하려면 [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint를 사용하고 request body에 `on_demand` field를 포함하세요. 이를 통해 즉시 charge 없이 payment method를 승인하거나 custom initial price를 설정할 수 있습니다.
+
+**on-demand subscription에 charge하려면:**
+
+이후 charge를 진행하려면 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint를 사용하고 해당 transaction에서 고객에게 청구할 amount를 지정하세요.
+
+<Note>
+request/response 예시, 안전한 retry policy 및 webhook 처리를 포함한 전체 단계별 안내는 <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>를 참조하세요.
+</Note>
+
+## Subscription Billing에 대해 알아야 할 주요 사항
+
+<Warning>
+**subscription period를 payment frequency보다 길게 설정하세요.** subscription period가 payment frequency와 같으면(예: period = 1 month, frequency = 1 month) subscription은 **단일 cycle** 동안만 유효한 후 renewal되지 않고 `expired`로 전환됩니다. 지속적인 monthly plan을 사용하려면 monthly payment frequency와 함께 긴 subscription period(예: 20 years)를 설정하세요.
+</Warning>
+
+<Warning>
+**첫 번째 성공한 charge에서 currency가 고정됩니다.** checkout을 생성할 때 항상 `billing_currency` **및** `billing_address.country`를 명시적으로 전달하세요. 생략하면 고객의 IP(Adaptive Currency)를 기준으로 감지되며, subscription이 첫 charge를 완료하면 해당 subscription의 전체 수명 동안 currency가 고정됩니다. 이후 고객이 여행하더라도 변경할 수 없습니다.
+</Warning>
+
+<Info>
+**trial은 charge가 아닌 \$0 authorization을 수행합니다.** subscription에 trial이 있으면 trial 시작 시 카드를 저장하기 위해 **\$0 mandate authorization**이 생성되며, 첫 번째 실제 charge는 trial이 종료될 때 발생합니다. payments list에서 trial 중인 subscription에는 `amount: 0`가 포함된 payment가 정확히 하나 표시됩니다.
+</Info>
+
+<Info>
+**Subscription lifecycle:** `on_hold` = renewal 실패(복구 가능: 고객에게 payment method 업데이트를 요청하며 dunning retry가 적용됨). `expired` = renewal 없이 term이 종료되었으며 **다시 활성화할 수 없음**. 고객은 다시 subscribe해야 합니다. `cancelled` = 고객 또는 merchant가 종료함. 대부분의 renewal 실패는 Dodo 오류가 아니라 **issuer 측 거절**(잔액 부족, 카드 거절)입니다.
+</Info>
+
+<Warning>
+**인도 카드는 RBI e-mandate를 사용합니다.** off-session charge(renewal 및 plan-change charge)가 정산되기까지 **최대 약 48시간**이 걸릴 수 있으며, **₹15,000 초과** recurring auto-debit에는 고객의 새로운 인증이 필요합니다(따라서 해당 한도를 초과하는 upgrade는 기존 mandate를 사용할 수 없습니다). 하나의 charge가 아직 `processing`인 동안 동일한 subscription에 대한 두 번째 charge는 *"Cannot create new charge as previous payment is not successful yet."* 오류와 함께 실패합니다. 인도 외 카드는 거의 즉시 확인됩니다.
+</Warning>
+
+<Tip>
+**subscription charge에는 \$1(또는 이에 상응하는 통화 금액)의 minimum이 있습니다.** `$0.01–$0.99` 금액은 `product_price: value out of range`와 함께 거부됩니다. on-demand `mandate_only` setup을 통해서는 `$0`만 허용됩니다.
+</Tip>
+
+## 관련 API Reference
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  subscription product 생성 및 subscription lifecycle 관리에 대한 API reference
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  proration 옵션을 사용한 subscription plan upgrade, downgrade 또는 변경에 대한 API reference
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  payment method 업데이트 및 보류된 subscription 재활성화에 대한 API reference
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  subscription 세부 정보 및 configuration 업데이트에 대한 API reference
 </Card>
 </CardGroup>

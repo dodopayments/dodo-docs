@@ -160,56 +160,83 @@ Gunakan `subscription.updated` untuk mendapatkan pemberitahuan waktu nyata tenta
 
 #### Skenario Pembayaran
 
-**Alur Pembayaran Berhasil**
+Webhook yang Anda terima dan waktunya bergantung pada apakah produk memiliki masa uji coba.
 
-Ketika pembayaran berhasil, Anda akan menerima webhook berikut:
+_Penagihan langsung (0 hari uji coba):_
 
-1. `subscription.active` - Menunjukkan aktivasi langganan
-2. `payment.succeeded` - Mengonfirmasi pembayaran awal:
-    - Untuk penagihan langsung (0 hari percobaan): Harapkan dalam 2-10 menit
-    - Untuk masa percobaan: kapan pun itu berakhir
-3. `subscription.renewed` - Menunjukkan pemotongan pembayaran dan pembaruan untuk siklus berikutnya. (Pada dasarnya, kapan pun pembayaran ditagihkan untuk produk langganan, Anda akan menerima webhook `subscription.renewed` bersamaan dengan `payment.succeeded`)
+1. `subscription.active`: mandate diotorisasi dan subscription diaktifkan.
+2. `payment.succeeded`: mengonfirmasi charge pertama. Ini biasanya terjadi dalam **2–10 menit** setelah checkout.
+
+_Dengan masa uji coba:_
+
+1. **Saat uji coba dimulai (checkout):** `subscription.active` dipicu setelah payment method diotorisasi. **Belum ada recurring charge yang diambil.** Charge pertama yang sebenarnya ditunda hingga uji coba berakhir.
+2. **Saat uji coba berakhir:** jumlah berulang ditagihkan, dan Anda menerima `payment.succeeded` **bersama dengan** `subscription.renewed`.
+
+_Setiap renewal berikutnya:_
+
+- `subscription.renewed`: dipicu pada setiap billing cycle saat pembayaran renewal dipotong, **selalu bersama** `payment.succeeded`. Event ini juga membawa `next_billing_date` yang telah diperbarui.
+
+<Info>
+Setiap kali uang benar-benar dipotong untuk produk subscription, Anda mendapatkan `subscription.renewed` **dan** `payment.succeeded`. Gunakan `subscription.renewed` (bukan hanya `payment.succeeded`) sebagai sinyal untuk memperpanjang akses ke cycle berikutnya.
+</Info>
 
 **Skenario Kegagalan Pembayaran**
 
-1. Kegagalan Langganan
-  - `subscription.failed` - Pembuatan langganan gagal karena kegagalan membuat mandat.
+1. Kegagalan Subscription
+  - `subscription.failed` - Subscription gagal dibuat karena kegagalan membuat mandate.
   - `payment.failed` - Menunjukkan pembayaran gagal.
 
-2. Langganan Ditangguhkan
-  - `subscription.on_hold` - Langganan ditangguhkan karena pembayaran pembaruan gagal atau biaya perubahan paket gagal.
-  - Saat langganan ditangguhkan, langganan tidak akan diperbarui otomatis sampai metode pembayaran diperbarui.
+2. Subscription Ditangguhkan
+  - `subscription.on_hold` - Subscription ditangguhkan karena pembayaran renewal atau charge perubahan plan gagal.
+  - Saat subscription ditangguhkan, subscription tidak akan diperbarui secara otomatis sampai payment method diperbarui.
 
-<Info>**Praktik Terbaik**: Untuk menyederhanakan implementasi, kami menyarankan agar Anda terutama melacak event langganan untuk mengelola siklus hidup langganan.</Info>
+<Info>**Praktik Terbaik**: Untuk menyederhanakan implementasi, kami menyarankan agar Anda terutama melacak event subscription untuk mengelola lifecycle subscription.</Info>
 
-### Menangani Langganan Ditangguhkan
+<Tip>
+Untuk panduan lengkap tentang cara membaca `error_code`/`error_message`, menentukan kapan harus mencoba lagi, dan menampilkan kegagalan kepada customer, lihat [Menangani Kegagalan Pembayaran](/developer-resources/handle-payment-failures).
+</Tip>
 
-Saat langganan memasuki status `on_hold`, Anda perlu memperbarui metode pembayaran untuk mengaktifkannya kembali. Bagian ini menjelaskan kapan langganan ditangguhkan dan cara menanganinya.
+#### `subscription.failed` vs. `subscription.on_hold`
 
-#### Ketika Langganan Ditangguhkan
+Kedua event ini mudah tertukar, tetapi memerlukan penanganan yang sangat berbeda:
 
-Sebuah langganan ditangguhkan ketika:
-
-- **Pembayaran pembaruan gagal**: Biaya pembaruan otomatis gagal karena dana tidak mencukupi, kartu kadaluarsa, atau penolakan bank
-- **Biaya perubahan rencana gagal**: Biaya segera selama peningkatan/penurunan rencana gagal
-- **Otorisasi metode pembayaran gagal**: Metode pembayaran tidak dapat diotorisasi untuk biaya berulang
+| Event | Saat dipicu | Status | Dapat dipulihkan? | Tindakan |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | Mandate **awal** tidak dapat dibuat saat **pembuatan** subscription | `failed` | **Tidak (terminal)** | Jangan berikan akses. Minta customer memulai subscription **baru** dengan payment method yang berbeda. |
+| `subscription.on_hold` | Pembayaran **renewal** (atau charge perubahan plan) gagal pada subscription yang sudah aktif | `on_hold` | **Ya** | Pulihkan dengan memperbarui payment method; lihat [Menangani Subscription yang Ditangguhkan](#handling-subscription-on-hold) di bawah. |
 
 <Warning>
-Langganan dalam status `on_hold` tidak akan diperbarui secara otomatis. Anda harus memperbarui metode pembayaran agar langganan aktif kembali.
+`subscription.failed` bersifat terminal. Subscription tidak dapat diaktifkan kembali. Customer harus membuat subscription baru. Jangan pernah memberikan entitlements saat event ini dipicu.
 </Warning>
 
-#### Mengaktifkan Kembali Langganan dari Ditangguhkan
+### Menangani Subscription yang Ditangguhkan
 
-Untuk mengaktifkan kembali langganan dari status `on_hold`, gunakan Update Payment Method API. Ini secara otomatis:
+Saat subscription memasuki status `on_hold`, Anda perlu memperbarui payment method untuk mengaktifkannya kembali. Bagian ini menjelaskan kapan subscription ditangguhkan dan cara menanganinya.
 
-1. Membuat biaya untuk tunggakan yang tersisa
-2. Menghasilkan faktur untuk biaya tersebut
-3. Memproses pembayaran menggunakan metode pembayaran baru
-4. Mengaktifkan kembali langganan ke status `active` setelah pembayaran berhasil
+#### Kapan Subscription Ditangguhkan
+
+Subscription ditangguhkan ketika:
+
+- **Pembayaran renewal gagal**: Charge renewal otomatis gagal karena dana tidak mencukupi, kartu kedaluwarsa, atau penolakan bank
+- **Charge perubahan plan gagal**: Charge langsung selama upgrade/downgrade plan gagal
+- **Otorisasi payment method gagal**: Payment method tidak dapat diotorisasi untuk recurring charges
+
+<Warning>
+Subscription dalam status `on_hold` tidak akan diperbarui secara otomatis. Anda harus memperbarui payment method untuk mengaktifkan kembali subscription.
+</Warning>
+
+#### Mengaktifkan Kembali Subscription yang Ditangguhkan
+
+Untuk mengaktifkan kembali subscription dari status `on_hold`, gunakan Update Payment Method API. API ini secara otomatis:
+
+1. Membuat charge untuk jumlah yang masih harus dibayar
+2. Membuat invoice untuk charge tersebut
+3. Memproses pembayaran menggunakan payment method baru
+4. Mengaktifkan kembali subscription ke status `active` setelah pembayaran berhasil
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Saat Anda menerima webhook `subscription.on_hold`, perbarui status aplikasi Anda dan beri tahu pelanggan:
+Saat menerima webhook `subscription.on_hold`, perbarui state aplikasi Anda dan beri tahu customer:
 
 ```javascript
 // Webhook handler
@@ -236,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-Saat pelanggan siap memperbarui metode pembayarannya, panggil Update Payment Method API:
+Saat customer siap memperbarui payment method, panggil Update Payment Method API:
 
 <CodeGroup>
 
@@ -271,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-Anda juga dapat menggunakan ID metode pembayaran yang sudah ada jika pelanggan telah menyimpan metode pembayaran:
+Anda juga dapat menggunakan payment method ID yang sudah ada jika customer telah menyimpan payment method:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -284,12 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Setelah memperbarui metode pembayaran, pantau event webhook berikut:
-1. **`payment.succeeded`** - Biaya untuk tunggakan berhasil
-2. **`subscription.active`** - Langganan telah diaktifkan kembali
+Setelah memperbarui payment method, pantau event webhook berikut:
 
-1. **`payment.succeeded`** - Tagihan untuk tunggakan yang tersisa berhasil
-2. **`subscription.active`** - Langganan telah diaktifkan kembali
+1. **`payment.succeeded`** - Charge untuk jumlah yang masih harus dibayar berhasil
+2. **`subscription.active`** - Subscription telah diaktifkan kembali
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -321,94 +346,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Contoh Payload Acara Langganan
+### Contoh payload event Subscription
 
 ---
 
 | Properti | Tipe | Wajib | Deskripsi |
 |----------|------|----------|-------------|
-| `business_id` | string | Yes | Pengidentifikasi unik untuk bisnis |
-| `timestamp` | string | Yes | Cap waktu saat event terjadi (tidak harus sama dengan saat dikirimkan) |
-| `type` | string | Yes | Jenis event. Lihat [Event Types](#event-types) |
-| `data` | object | Yes | Muatan data utama. Lihat [Data Object](#data-object) |
+| `business_id` | string | Ya | Pengenal unik untuk bisnis |
+| `timestamp` | string | Ya | Timestamp saat event terjadi (tidak selalu sama dengan saat event dikirim) |
+| `type` | string | Ya | Tipe event. Lihat [Tipe Event](#event-types) |
+| `data` | object | Ya | Payload data utama. Lihat [Objek Data](#data-object) |
 
-## Mengubah Rencana Langganan
+## Mengubah Plan Subscription
 
-Anda dapat meningkatkan atau menurunkan rencana langganan menggunakan endpoint API perubahan rencana. Ini memungkinkan Anda untuk memodifikasi produk langganan, kuantitas, dan menangani proration.
+Anda dapat melakukan upgrade atau downgrade plan subscription menggunakan endpoint change plan API. Ini memungkinkan Anda mengubah produk, kuantitas, dan menangani proration subscription.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Untuk informasi rinci tentang mengubah paket langganan, silakan merujuk ke dokumentasi Change Plan API kami.
+  Untuk informasi terperinci tentang perubahan plan subscription, lihat dokumentasi Change Plan API kami.
 </Card>
 
-### Opsi Prorata
+### Opsi Proration
 
-Saat mengubah rencana langganan, Anda memiliki dua opsi untuk menangani biaya segera:
+Saat mengubah plan subscription, Anda memiliki dua opsi untuk menangani charge langsung:
 
 #### 1. `prorated_immediately`
-- Menghitung jumlah prorata berdasarkan waktu yang tersisa dalam siklus penagihan saat ini
-- Menagih pelanggan hanya untuk selisih antara paket lama dan baru
-- Selama masa percobaan, ini akan langsung memindahkan pengguna ke paket baru dan menagih pelanggan segera
+- Menghitung jumlah prorata berdasarkan sisa waktu dalam billing cycle saat ini
+- Menagih customer hanya untuk selisih antara plan lama dan baru
+- Selama masa uji coba, opsi ini akan langsung memindahkan user ke plan baru dan langsung menagih customer
 
 #### 2. `full_immediately`
-- Menagih pelanggan jumlah langganan penuh untuk paket baru
-- Mengabaikan waktu tersisa atau kredit dari paket sebelumnya
-- Berguna ketika Anda ingin mereset siklus penagihan atau menagih jumlah penuh tanpa memperhatikan prorata
+- Menagih customer seluruh jumlah subscription untuk plan baru
+- Mengabaikan sisa waktu atau kredit dari plan sebelumnya
+- Berguna jika Anda ingin mengatur ulang billing cycle atau menagih jumlah penuh tanpa memperhatikan proration
 
 #### 3. `difference_immediately`
-- Saat upgrade, pelanggan langsung dikenakan selisih antara dua jumlah paket yang berbeda.
-- Misalnya, jika paket saat ini 30 Dollars dan pelanggan upgrade ke 80 Dollars, mereka langsung dikenakan $50.
-- Saat downgrade, jumlah yang tidak terpakai dari paket saat ini ditambahkan sebagai kredit internal dan otomatis diterapkan ke pembaruan langganan berikutnya.
-- Misalnya, jika paket saat ini 50 Dollars dan pelanggan beralih ke paket 20 Dollars, sisa $30 dikreditkan dan digunakan untuk siklus penagihan berikutnya.
+- Saat melakukan upgrade, customer langsung ditagih sebesar selisih antara kedua jumlah plan.
+- Misalnya, jika plan saat ini 30 Dolar dan customer melakukan upgrade ke plan 80 Dolar, mereka langsung ditagih \$50.
+- Saat melakukan downgrade, jumlah yang tidak terpakai dari plan saat ini ditambahkan sebagai kredit internal dan secara otomatis digunakan untuk renewal subscription berikutnya.
+- Misalnya, jika plan saat ini 50 Dolar dan customer beralih ke plan 20 Dolar, sisa \$30 dikreditkan dan digunakan untuk billing cycle berikutnya.
+
+#### 4. `do_not_bill`
+- Menerapkan perubahan plan secara langsung tetapi **tidak** menagih apa pun saat perubahan dilakukan.
+- Plan yang diperbarui (beserta quantity/add-ons) ditagihkan pada **renewal terjadwal berikutnya**, dan **tanggal billing asli dipertahankan**.
+
+<Warning>
+**Ketiga mode "charge now" mengatur ulang billing cycle.** `prorated_immediately`, `difference_immediately`, dan `full_immediately` memindahkan `next_billing_date` subscription ke tanggal perubahan. Hanya `do_not_bill` yang mempertahankan tanggal renewal asli, tetapi tidak menerapkan charge langsung.
+</Warning>
 
 ### Perilaku
 
-- Saat Anda memanggil API ini, Dodo Payments segera memulai biaya berdasarkan opsi prorata yang Anda pilih
-- Jika perubahan paket adalah downgrade dan Anda menggunakan `prorated_immediately`, kredit akan otomatis dihitung dan ditambahkan ke saldo kredit langganan. Kredit ini khusus untuk langganan tersebut dan hanya akan digunakan untuk mengimbangi pembayaran berulang di masa depan dari langganan yang sama
-- Opsi `full_immediately` melewati perhitungan kredit dan menagih jumlah paket baru secara penuh
+- Saat Anda memanggil API ini, Dodo Payments segera memulai charge berdasarkan opsi proration yang Anda pilih
+- Jika perubahan plan merupakan downgrade dan Anda menggunakan `prorated_immediately`, kredit akan dihitung secara otomatis dan ditambahkan ke saldo kredit subscription. Kredit ini khusus untuk subscription tersebut dan hanya akan digunakan untuk mengimbangi recurring payments mendatang dari subscription yang sama
+- Opsi `full_immediately` melewati penghitungan kredit dan menagih jumlah lengkap plan baru
 
 <Tip>
-**Pilih opsi prorata Anda dengan hati-hati**: Gunakan `prorated_immediately` untuk penagihan yang adil yang memperhitungkan waktu yang belum digunakan, atau `full_immediately` ketika Anda ingin menagih jumlah paket baru secara penuh tanpa memperhatikan siklus penagihan saat ini.
+**Pilih opsi proration dengan hati-hati**: Gunakan `prorated_immediately` untuk penagihan yang adil dan memperhitungkan waktu yang tidak terpakai, atau `full_immediately` jika Anda ingin menagih jumlah lengkap plan baru tanpa memperhatikan billing cycle saat ini.
 </Tip>
 
-### Pemrosesan Biaya
+### Pemrosesan Charge
 
-- Biaya segera yang dimulai saat perubahan rencana biasanya selesai diproses dalam waktu kurang dari 2 menit
-- Jika biaya segera ini gagal karena alasan apa pun, langganan secara otomatis ditangguhkan sampai masalah teratasi
+- Charge langsung yang dimulai setelah perubahan plan biasanya selesai diproses dalam waktu kurang dari 2 menit
+- Jika charge langsung ini gagal karena alasan apa pun, subscription secara otomatis ditangguhkan sampai masalah teratasi
 
-## Langganan Sesuai Permintaan
-
-<Info>
-  Langganan on-demand memungkinkan Anda menagih pelanggan secara fleksibel, tidak hanya berdasarkan jadwal tetap. Fitur ini tersedia untuk semua akun.
-</Info>
-
-**Untuk membuat langganan sesuai permintaan:**
-
-Untuk membuat langganan on-demand, gunakan endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) dan sertakan bidang `on_demand` dalam tubuh permintaan Anda. Ini memungkinkan Anda mengotorisasi metode pembayaran tanpa biaya langsung, atau menetapkan harga awal kustom.
-
-**Untuk mengenakan biaya langganan sesuai permintaan:**
-
-Untuk tagihan selanjutnya, gunakan endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) dan tentukan jumlah yang akan ditagihkan kepada pelanggan untuk transaksi tersebut.
-
-<Note>
-Untuk panduan lengkap langkah demi langkah—termasuk contoh permintaan/respons, kebijakan percobaan aman, dan penanganan webhook—lihat <a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>.
-</Note>
-
-## Referensi API Terkait
-
-API reference untuk membuat produk langganan dan mengelola siklus hidup langganan
-API reference untuk meningkatkan, menurunkan, atau mengubah rencana langganan dengan opsi proration
-API reference untuk memperbarui metode pembayaran dan mengaktifkan kembali langganan yang ditunda
-API reference untuk memperbarui detail dan konfigurasi langganan
-
-**Untuk mengisi langganan sesuai permintaan:**
-
-Untuk biaya berikutnya, gunakan endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) dan tentukan jumlah yang akan dibebankan kepada pelanggan untuk transaksi tersebut.
-
-<Note>
-Untuk panduan lengkap langkah demi langkah—termasuk contoh permintaan/respons, kebijakan retry aman, dan penanganan webhook—lihat <a href="/developer-resources/ondemand-subscriptions">Panduan Langganan Sesuai Permintaan</a>.
-</Note>
-
-## Referensi API Terkait
+## Subscription On-Demand
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -422,5 +422,60 @@ Untuk panduan lengkap langkah demi langkah—termasuk contoh permintaan/respons,
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   Referensi API untuk memperbarui detail dan konfigurasi langganan
+</Card>
+</CardGroup>
+
+**Untuk membuat subscription on-demand:**
+
+Untuk membuat subscription on-demand, gunakan endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) dan sertakan field `on_demand` dalam request body Anda. Ini memungkinkan Anda mengotorisasi payment method tanpa charge langsung, atau menetapkan harga awal khusus.
+
+**Untuk menagih subscription on-demand:**
+
+Untuk charge berikutnya, gunakan endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) dan tentukan jumlah yang akan ditagihkan kepada customer untuk transaksi tersebut.
+
+<Note>
+Untuk panduan lengkap langkah demi langkah (termasuk contoh request/response, kebijakan retry yang aman, dan penanganan webhook), lihat <a href="/developer-resources/ondemand-subscriptions">Panduan Subscription On-Demand</a>.
+</Note>
+
+## Hal Penting yang Perlu Diketahui tentang Penagihan Subscription
+
+<Warning>
+**Atur periode subscription lebih panjang daripada frekuensi pembayaran.** Jika periode subscription sama dengan frekuensi pembayaran (misalnya period = 1 month, frequency = 1 month), subscription berlaku selama **satu cycle** lalu berpindah ke `expired`, bukan melakukan renewal. Untuk plan bulanan yang berkelanjutan, tetapkan periode subscription yang panjang (misalnya 20 tahun) dengan frekuensi pembayaran bulanan.
+</Warning>
+
+<Warning>
+**Currency dikunci pada charge pertama yang berhasil.** Selalu kirim `billing_currency` **dan** `billing_address.country` secara eksplisit saat membuat checkout. Jika tidak disertakan, keduanya terdeteksi dari IP customer (Adaptive Currency), dan setelah subscription menerima charge pertamanya, currency ditetapkan untuk seluruh masa berlakunya. Customer yang kemudian bepergian tidak dapat mengubahnya.
+</Warning>
+
+<Info>
+**Trial menggunakan otorisasi \$0, bukan charge.** Saat subscription memiliki trial, dimulainya trial membuat **otorisasi mandate \$0** untuk menyimpan kartu; charge pertama yang sebenarnya terjadi saat trial berakhir. Dalam daftar payments, subscription yang sedang trial menampilkan tepat satu payment dengan `amount: 0`.
+</Info>
+
+<Info>
+**Lifecycle subscription:** `on_hold` = renewal gagal (dapat dipulihkan: minta customer memperbarui payment method; dunning retries berlaku). `expired` = masa berlaku berakhir tanpa renewal dan **tidak dapat diaktifkan kembali**. Customer harus berlangganan kembali. `cancelled` = diakhiri oleh customer atau merchant. Sebagian besar kegagalan renewal adalah **penolakan dari pihak issuer** (dana tidak mencukupi, kartu ditolak), bukan kesalahan Dodo.
+</Info>
+
+<Warning>
+**Kartu India menggunakan RBI e-mandate.** Charge off-session (renewal dan charge perubahan plan) dapat memerlukan waktu **hingga sekitar 48 jam** untuk diselesaikan, dan auto-debit berulang **di atas ₹15.000** memerlukan autentikasi customer baru (sehingga upgrade yang melewati batas tersebut tidak dapat menggunakan mandate yang ada). Saat satu charge masih berstatus `processing`, charge kedua pada subscription yang sama gagal dengan *"Cannot create new charge as previous payment is not successful yet."* Kartu non-India dikonfirmasi hampir seketika.
+</Warning>
+
+<Tip>
+**Charge subscription memiliki minimum \$1** (atau ekuivalen dalam currency). Jumlah `$0.01–$0.99` ditolak dengan `product_price: value out of range`; hanya `$0` yang diizinkan, melalui setup `mandate_only` on-demand.
+</Tip>
+
+## Referensi API Terkait
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  Referensi API untuk membuat produk subscription dan mengelola lifecycle subscription
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  Referensi API untuk melakukan upgrade, downgrade, atau mengubah plan subscription dengan opsi proration
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  Referensi API untuk memperbarui payment method dan mengaktifkan kembali subscription yang ditangguhkan
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  Referensi API untuk memperbarui detail dan konfigurasi subscription
 </Card>
 </CardGroup>

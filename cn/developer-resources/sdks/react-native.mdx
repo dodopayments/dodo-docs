@@ -1,0 +1,269 @@
+---
+title: React Native
+sidebarTitle: React Native
+tag: NEW
+description: 从 React Native 应用的系统浏览器标签页中打开 Dodo Payments 托管的结账页面，并通过一次调用获取类型化结果。
+icon: react
+keywords:
+  - Dodo Payments
+  - React Native SDK
+  - Expo
+  - 移动端结账 SDK
+  - Turbo Module
+---
+
+<Info>
+这是官方的 Dodo Payments React Native 结账 SDK，`@dodopayments/react-native-checkout`。它会在原生浏览器视图中打开 Dodo 的托管结账页面，并返回类型化结果。注意：还有一个名为 `dodopayments-react-native-sdk`（未使用 scope）的旧版无关 package，其 API 完全不同。本页面仅介绍当前官方的 scoped package。
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  从您的 backend 创建此 SDK 要打开的 checkout_url。
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  了解它如何融入完整的移动支付流程。
+</Card>
+</CardGroup>
+
+React Native SDK 是对相同原生 Swift 和 Kotlin 核心的轻量级 Turbo Module 封装。它会在 iOS 上打开 `SFSafariViewController`，在 Android 上打开 Chrome Custom Tab，不持有 API key，也不会直接调用 Dodo API。所有结账逻辑都在浏览器中运行；SDK 只负责管理视图生命周期并捕获 return URL。
+
+<Warning>
+此 SDK 仅要求使用 **New Architecture**、React Native 0.76+、iOS 16+ 以及 Android `minSdk` 24。
+</Warning>
+
+## 安装
+
+<Steps>
+<Step title="Install the Package">
+<Tabs>
+<Tab title="Android">
+package 会自动链接，并从 Maven 拉取 `com.dodopayments.api:checkout-android`。
+
+```sh
+npm i @dodopayments/react-native-checkout
+```
+
+无需其他设置；原生依赖会自动解析。
+</Tab>
+<Tab title="iOS">
+
+```sh
+npm i @dodopayments/react-native-checkout
+cd ios && pod install
+```
+
+Swift 核心包含在 package 中，并通过 CocoaPods 安装。
+</Tab>
+<Tab title="Expo">
+仅适用于开发构建（不适用于 Expo Go）。
+
+```sh
+npm i @dodopayments/react-native-checkout
+npx expo install expo-build-properties
+```
+
+然后配置您的 `app.json`（请参阅下方的“注册回调 URL Scheme”）。
+</Tab>
+</Tabs>
+</Step>
+<Step title="Register a Callback URL Scheme">
+您的应用必须注册 URL scheme，才能接收结账页面返回的 return URL。
+
+<Tabs>
+<Tab title="Android (Gradle)">
+在 `android/app/build.gradle` 中：
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+将 `"myapp"` 替换为您应用的 scheme。
+</Tab>
+<Tab title="iOS (Info.plist)">
+在 `ios/YourApp/Info.plist` 中：
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+您也可以通过 Xcode 的 **Info → URL Types** UI 添加此配置。
+</Tab>
+<Tab title="Expo (both platforms)">
+在 `app.json` 中：
+
+```json app.json
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "manifestPlaceholders": {
+              "dodoCallbackScheme": "myapp"
+            }
+          }
+        }
+      ]
+    ],
+    "ios": {
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": ["myapp"]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+<Warning>
+package 还附带一个 `@dodopayments/react-native-checkout` Expo config
+plugin，但目前不会写入 URL scheme 或 manifest placeholder。
+仅添加它**不会**注册您的 callback scheme —— 请使用上面的
+`expo-build-properties` 和 `infoPlist` 配置。
+</Warning>
+
+<Note>
+编辑 `app.json` 后，重新构建原生项目：
+
+```sh
+npx expo prebuild --clean
+```
+
+这仅适用于开发构建，不适用于 Expo Go。
+</Note>
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## 使用
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+// Required for iOS's return-URL handling.
+Linking.addEventListener('url', ({ url }) => DodoCheckout.handleOpenURL(url));
+
+const result = await DodoCheckout.start({
+  checkoutUrl,                          // from your backend's checkout session
+  returnUrl: 'myapp://checkout/return', // scheme must be registered (see Installation)
+  onEvent: (e) => console.log(e.type),  // logging only
+});
+
+switch (result.status) {
+  case 'succeeded': showSuccess(result.paymentId); break;
+  case 'failed':    showFailure(); break;
+  case 'cancelled': dismiss(); break;
+  case 'pending':   showPending(); break;
+  case 'expired':   showExpired(); break;
+}
+```
+
+## 转发 Return URL
+
+`Linking` listener 是 iOS 处理 return URL 所必需的。在 Android 上，`handleOpenURL` 是一个 no-op，会解析 `false`，因为 Android 核心会原生处理其 redirect。在两个平台上无条件注册该 listener 都是安全的。
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+Linking.addEventListener('url', ({ url }) => {
+  DodoCheckout.handleOpenURL(url);
+});
+```
+
+## 结果含义
+
+<Warning>
+`result.status` 是 UI 提示，而不是支付成功的证明。请始终通过 `payment.succeeded` / `subscription.active` webhook 从您的 backend 确认每笔支付。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+以下值之一：`succeeded`、`failed`、`cancelled`、`pending`、`expired`。
+</ParamField>
+
+<ParamField body="paymentId" type="string">
+当 return URL 中包含该值时设置。将其显示在 UI 中，但不要用它授予访问权限。请参阅下方的“验证支付”。
+</ParamField>
+
+<ParamField body="subscriptionId" type="string">
+用于订阅结账时设置。
+</ParamField>
+
+<ParamField body="licenseKeys" type="string[]">
+结账包含 license key 产品时设置。
+</ParamField>
+
+<ParamField body="customerEmail" type="string">
+结账捕获 email 时设置。
+</ParamField>
+
+<ParamField body="raw" type="Record<string, string>">
+return URL 中的每个 query parameter，均按原样返回。
+</ParamField>
+
+## 验证支付
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  支付成功或订阅激活时，Dodo Payments 会调用您的 backend。
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  使用您的 secret key 查询 `paymentId`，直接检查其状态。
+</Card>
+</CardGroup>
+
+只有这些方式之一确认支付后，才授予访问权限，绝不要仅凭 `result.status` 授予访问权限。
+
+## 错误
+
+只有在误用或平台故障时，`start` 才会以 `CheckoutError` 拒绝。已取消或被拒绝的支付始终作为结果返回，而不是抛出 exception。
+
+- `INVALID_CHECKOUT_URL`：不是 `checkout.dodopayments.com` session URL。
+- `INVALID_RETURN_URL`：不是有效的绝对 URL。
+- `ALREADY_IN_PROGRESS`：已有结账正在运行。
+- `PLATFORM_ERROR`：意外的平台故障。
+
+## 已放弃的会话
+
+如果应用或 JS bundle 在结账过程中被终止，promise 会丢失，但原生层会保留 session。请在下次 mount 时恢复该 session，并与您的 backend 对账。
+
+```typescript
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+const abandoned = await DodoCheckout.getAbandonedSession();
+if (abandoned) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.clearAbandonedSession();
+}
+```
+
+## 相关内容
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  适用于 Android、iOS 和 Flutter 的相同契约。
+</Card>
+<Card title="Expo Boilerplate" icon="layer-group" href="/developer-resources/expo-boilerplate">
+  包含结账集成的完整 Expo 示例。
+</Card>
+</CardGroup>

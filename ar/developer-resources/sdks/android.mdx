@@ -1,0 +1,213 @@
+---
+title: Android
+sidebarTitle: Android
+tag: NEW
+description: افتح صفحة الدفع المستضافة من Dodo Payments من تطبيق Android داخل
+  Chrome Custom Tab واحصل على نتيجة مكتوبة النوع باستدعاء واحد.
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - mobile checkout SDK
+  - Custom Tabs
+---
+
+<Info>
+هذا هو Android checkout SDK الرسمي (`com.dodopayments.api:checkout-android`)،
+المخصص لفتح صفحة الدفع المستضافة من Dodo. وهو يختلف عن
+[backend Kotlin SDK](/developer-resources/sdks/kotlin)، الذي يستدعي
+Payments API من Dodo من خادمك.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    أنشئ `checkout_url` الذي يفتحه هذا SDK
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    أفضل الممارسات لتدفقات الدفع عبر الأجهزة المحمولة
+  </Card>
+</CardGroup>
+
+يفتح Android SDK صفحة الدفع المستضافة من Dodo في Chrome Custom Tab باستخدام `androidx.browser.customtabs`. ولا يتضمن أي شيفرة للشبكات ولا يحتفظ بأي API key. تمرر `checkoutUrl` من جلسة الدفع على خادمك، ويعيد SDK قيمة `CheckoutResult` مكتوبة النوع عند إكمال المستخدم للتدفق أو مغادرته.
+
+**المتطلبات:** `minSdk` 23، Kotlin، Java 17.
+
+## التثبيت
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+عيّن مخطط callback كعنصر نائب في بيان Gradle. يعلن البيان الخاص بالمكتبة مسبقًا عن عامل intent filter لنشاط إعادة التوجيه باستخدام الرمز `${dodoCallbackScheme}`، لذا فإن هذه الخاصية الواحدة تمثل كامل إعداد التكامل — ولا تحتاج إلى إضافة أي XML للبيان:
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+يجب أن تتطابق القيمة مع المخطط في `CheckoutParams.returnUrl` (مثلًا `myapp://checkout/return`).
+
+<Note>
+إذا حذفت العنصر النائب بالكامل، يفشل البناء فورًا بسبب خطأ عنصر نائب غير محلول، بدلًا من الفشل بصمت وقت الدفع. وإذا عيّنته لكنه لا يتطابق مع مخطط `returnUrl`، فإن `DodoCheckout.start` يرمي `PLATFORM_ERROR` قبل عرض أي شيء.
+</Note>
+</Step>
+</Steps>
+
+## الاستخدام
+
+يدعم SDK أسلوبي استدعاء.
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+سجّل العقد باستخدام `registerForActivityResult`، ثم شغّله:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+فضّل هذا الأسلوب. تُسلَّم النتيجة من خلال `ActivityResultRegistry` المُدار بواسطة نظام تشغيل Android، لذا فهي تظل متاحة بعد توقف العملية.
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+استدعِ `DodoCheckout.start` من نطاق coroutine:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+يحل هذا الأسلوب `CompletableDeferred` في الذاكرة، لذا فهو **لا** يظل متاحًا بعد توقف العملية. يتوفر `onEvent` هنا فقط، وليس في العقد.
+</Warning>
+</Tab>
+</Tabs>
+
+## ما تعنيه النتيجة
+
+<Warning>
+حقل `status` هو تلميح لواجهة المستخدم، وليس دليلًا على الدفع. تحقّق دائمًا من الدفع على خادمك الخلفي باستخدام webhooks أو نقطة النهاية Get Payment Detail قبل منح المستخدم صلاحية الوصول.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+واحد من `SUCCEEDED` أو `FAILED` أو `CANCELLED` أو `PENDING` أو `EXPIRED`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+يُعيَّن عند تضمين عنوان URL للإرجاع. اعرضه في واجهة المستخدم، ولا تستخدمه لمنح صلاحية الوصول. راجع قسم التحقّق من الدفع أدناه.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+يُعيَّن لعمليات الدفع الخاصة بالاشتراكات.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+يُعيَّن عندما تتضمن عملية الدفع منتجات بمفاتيح ترخيص.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+يُعيَّن عندما تجمع عملية الدفع بريدًا إلكترونيًا.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+كل query parameter من عنوان URL للإرجاع، حرفيًا.
+</ParamField>
+
+## التحقّق من الدفع
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    استمع إلى أحداث الدفع في الوقت الفعلي
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    استعلم عن حالة الدفع عند الطلب
+  </Card>
+</CardGroup>
+
+لا تمنح المستخدم صلاحية الوصول إلا بعد أن يؤكد أحد هذين الخيارين الدفع. لا تعتمد على `CheckoutResult.status` وحده.
+
+## الأخطاء
+
+يرمي `DodoCheckout.start` القيمة `CheckoutError` فقط عند إساءة الاستخدام أو حدوث عطل في المنصة. اقرأ الرمز من `CheckoutError.code`:
+
+- `INVALID_CHECKOUT_URL`: ليس عنوان URL لجلسة `checkout.dodopayments.com` صالحًا.
+- `INVALID_RETURN_URL`: ليس عنوان URL مطلقًا صالحًا.
+- `ALREADY_IN_PROGRESS`: عملية دفع قيد التشغيل بالفعل.
+- `PLATFORM_ERROR`: عطل غير متوقع في المنصة، بما في ذلك `returnUrl` الذي لا يتطابق مخططه مع العنصر النائب `dodoCallbackScheme`.
+
+يكون إلغاء المستخدم أو رفض الدفع دائمًا نتيجة (`CANCELLED` أو `FAILED`)، وليس خطأً مُلقى. باستخدام أسلوب المشغّل، تُلقى أخطاء التحقّق من `launcher.launch(...)`.
+
+## الجلسات المتروكة
+
+إذا أُغلِق التطبيق أو أوقفه المستخدم قسرًا أثناء الدفع، يحفظ SDK الجلسة محليًا. عند تشغيل التطبيق في المرة التالية، تحقّق من وجود جلسة متروكة وسوِّ حالتها مع خادمك الخلفي:
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+إن `abandoned.createdAt` هو طابع زمني للعصر بوحدة المللي ثانية.
+
+## ذو صلة
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    أفضل الممارسات لتدفقات الدفع عبر الأجهزة المحمولة
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    Backend SDK للعمليات من جانب الخادم
+  </Card>
+</CardGroup>
