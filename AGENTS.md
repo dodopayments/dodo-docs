@@ -109,9 +109,18 @@ Translation is automated via **lingo.dev** (`i18n.json` config, `i18n.lock` chec
 
 `seo.js` injects global Organization + WebSite JSON-LD on all pages and a FAQPage schema parsed from the accordions on `/miscellaneous/faq`. `docs.json` holds the `redirects` array — add a redirect there whenever you rename or move a page (many existing `/guides/*` → new-path redirects show the pattern).
 
+## Prose linting (Vale)
+
+Mintlify runs Vale as a CI check on every PR. Config lives at `.vale.ini` (root) with the vocabulary at `styles/config/vocabularies/Mintlify/accept.txt`.
+
+- `accept.txt` is the allowlist. When a build flags `Did you really mean 'X'?` for a legitimate product name, API field, or vendor, add `X` there (case-sensitive — add each variant you use, e.g. `Addon` and `addon`) rather than reword the docs. Keep it sorted case-insensitively.
+- Because the repo has its own `.vale.ini`, Mintlify's built-in vocabulary is **not** loaded; `accept.txt` already carries a copy of it. Don't remove those entries.
+- The 13 translated locale folders are excluded from linting — they're machine-generated, never hand-edited, and not English. Fix prose in the English source; the next sync propagates it.
+- Run it locally with `vale .` (needs Vale ≥ 3.10 for MDX).
+
 ## Workflow
 
-- Always test with `mintlify dev` before committing; run `mint validate` / `mintlify broken-links` for link/MDX checks.
+- Always test with `mintlify dev` before committing; run `mint validate` / `mintlify broken-links` for link/MDX checks, and `vale .` for prose.
 - Commits follow conventional commits: `docs(...)`, `fix(...)`, `feat(...)`, `style(...)`, `refactor(...)`.
 - Deployment is automatic on push to `main` (Mintlify). No build step to run locally.
 - `AGENTS.md`, `.github/`, `node_modules/` are listed in `.mintignore` (excluded from the docs build).
