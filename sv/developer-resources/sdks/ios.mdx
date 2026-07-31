@@ -1,0 +1,199 @@
+---
+title: iOS
+sidebarTitle: iOS
+tag: "NEW"
+description: Öppna Dodo Payments' hosted checkout från en iOS-app i
+  SFSafariViewController och få tillbaka ett typat resultat i ett enda anrop.
+icon: apple
+keywords:
+  - Dodo Payments
+  - iOS SDK
+  - Swift
+  - mobile checkout SDK
+  - SFSafariViewController
+---
+
+<Info>
+Detta är det officiella iOS checkout SDK:t från Dodo Payments för Swift. Det öppnar Dodos hosted checkout i en inbyggd webbläsarvy och returnerar ett typat resultat.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Skapa checkout_url som detta SDK öppnar från din backend.
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Se hur detta passar in i det fullständiga mobila betalningsflödet.
+</Card>
+</CardGroup>
+
+iOS SDK:t öppnar Dodos hosted checkout i `SFSafariViewController`, lagrar ingen API key och anropar aldrig Dodo API direkt. All checkout-logik körs i webbläsaren; SDK:t hanterar endast vylivscykeln och fångar upp return URL.
+
+Kräver iOS 16+, Swift 6.
+
+## Installation
+
+<Steps>
+<Step title="Add the Package">
+I Xcode går du till **File → Add Package Dependencies** och anger:
+
+```
+https://github.com/dodopayments/dodopayments-mobile-sdk-ios
+```
+
+Välj version 1.0.0 eller senare.
+
+Alternativt kan du lägga till detta i din `Package.swift`:
+
+```swift Package.swift
+.package(url: "https://github.com/dodopayments/dodopayments-mobile-sdk-ios", from: "1.0.0")
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+Din app måste registrera ett URL scheme för att ta emot return URL från checkout. Lägg till detta i din `Info.plist`:
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+Du kan också lägga till detta via Xcodes **Info → URL Types**-gränssnitt.
+</Step>
+</Steps>
+
+## Användning
+
+```swift
+import DodoCheckout
+
+let result = try await DodoCheckout.start(
+    checkoutUrl: checkoutUrl,   // from your backend's checkout session
+    returnUrl: URL(string: "myapp://checkout/return")!,
+    onEvent: { event in print(event.name) }  // logging only
+)
+
+switch result.status {
+case .succeeded: showSuccess(result.paymentId)
+case .failed:    showFailure()
+case .cancelled: dismiss()
+case .pending:   showPending()
+case .expired:   showExpired()
+}
+```
+
+## Vidarebefordra Return URL
+
+`SFSafariViewController` har inget sätt i processen att fånga upp sin egen return URL. Din app måste vidarebefordra inkommande URL:er till SDK:t.
+
+<Tabs>
+<Tab title="SwiftUI">
+
+```swift
+.onOpenURL { url in
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+<Tab title="SceneDelegate">
+
+```swift SceneDelegate.swift
+func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    guard let url = URLContexts.first?.url else { return }
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Det är säkert att vidarebefordra varje URL här. `handleOpenURL` agerar endast på URL:er som matchar ditt registrerade `returnUrl` och returnerar `false` för allt annat.
+</Note>
+
+## Vad resultatet betyder
+
+<Warning>
+`result.status` är en UI-hint, inte ett bevis på betalning. Bekräfta varje betalning från din backend via webhooken `payment.succeeded` / `subscription.active`.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+En av `succeeded`, `failed`, `cancelled`, `pending`, `expired`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Anges när return URL innehöll en sådan. Visa den i gränssnittet, men använd den inte för att ge åtkomst. Se Verifiera betalningen nedan.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Anges för subscription-checkouts.
+</ParamField>
+
+<ParamField body="licenseKeys" type="[String]?">
+Anges när checkout inkluderar license key-produkter.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Anges när checkout samlar in en e-postadress.
+</ParamField>
+
+<ParamField body="raw" type="[String: String]">
+Alla query-parametrar från return URL, ordagrant.
+</ParamField>
+
+## Verifiera betalningen
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  Dodo Payments anropar din backend när en betalning lyckas eller en subscription aktiveras.
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  Slå upp `paymentId` med din secret key för att kontrollera dess status direkt.
+</Card>
+</CardGroup>
+
+Ge åtkomst efter att en av dessa bekräftar betalningen, aldrig enbart från `result.status`.
+
+## Fel
+
+`start` kastar `CheckoutError` endast vid felaktig användning eller ett plattformsfel. En avbruten eller nekad betalning är alltid ett resultat, aldrig ett undantag.
+
+- `invalidCheckoutUrl` (`INVALID_CHECKOUT_URL`): inte en session-URL för `checkout.dodopayments.com`.
+- `invalidReturnUrl` (`INVALID_RETURN_URL`): inte en giltig absolut URL.
+- `alreadyInProgress` (`ALREADY_IN_PROGRESS`): en checkout körs redan.
+- `platformError` (`PLATFORM_ERROR`): oväntat plattformsfel.
+
+## Övergivna sessioner
+
+<Info>
+Om appen avslutas mitt under checkout återställer du sessionen vid nästa start och stämmer av den mot din backend.
+</Info>
+
+```swift
+import DodoCheckout
+
+if let abandoned = DodoCheckout.getAbandonedSession() {
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession()
+}
+```
+
+## Relaterat
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Samma kontrakt för Android, React Native och Flutter.
+</Card>
+<Card title="React Native SDK" icon="react" href="/developer-resources/sdks/react-native">
+  Wrappat runt samma Swift-kärna på iOS.
+</Card>
+</CardGroup>

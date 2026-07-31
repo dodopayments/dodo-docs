@@ -1,0 +1,211 @@
+---
+title: Flutter
+sidebarTitle: Flutter
+tag: NEW
+description: Ouvrez le checkout hébergé de Dodo Payments depuis Flutter dans un
+  onglet de navigateur système et récupérez un résultat typé en un seul appel.
+icon: layer-group
+keywords:
+  - Dodo Payments
+  - Flutter SDK
+  - Dart
+  - mobile checkout SDK
+  - pub.dev
+---
+
+<Info>
+Il s’agit du package Flutter officiel de Dodo Payments (`dodopayments_checkout`
+sur pub.dev). Un package distinct développé par la communauté existe également, consultez
+[Projets communautaires](/community/projects).
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Créez la checkout_url que ce SDK ouvre depuis votre backend.
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Découvrez comment cela s’intègre au flux de paiement mobile complet.
+</Card>
+</CardGroup>
+
+`dodopayments_checkout` ouvre le checkout hébergé de Dodo dans
+`SFSafariViewController` sur iOS et dans un Chrome Custom Tab sur Android — les mêmes
+cœurs natifs que ceux utilisés par les SDK autonomes [iOS](/developer-resources/sdks/ios) et
+[Android](/developer-resources/sdks/android). Toute la logique du checkout réside dans
+ces cœurs natifs ; la couche Dart transmet l’appel via un canal typé
+[Pigeon](https://pub.dev/packages/pigeon). Elle ne contient aucune clé API et
+n’appelle jamais l’API Dodo Payments.
+
+Nécessite Flutter 3.44+ / Dart 3.12+, iOS 16+ et Android `minSdk` 23.
+
+## Installation
+
+<Steps>
+<Step title="Add the Dependency">
+
+```yaml pubspec.yaml
+dependencies:
+  dodopayments_checkout: ^1.0.0
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+<Tabs>
+<Tab title="iOS">
+Ajoutez un type d’URL pour votre schéma dans `ios/Runner/Info.plist` :
+
+```xml ios/Runner/Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+Transmettez ensuite les URL entrantes (par exemple via
+[`app_links`](https://pub.dev/packages/app_links)) au SDK, car
+`SFSafariViewController` ne peut pas intercepter sa propre URL de retour :
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+DodoCheckout.instance.handleOpenURL(url);
+```
+
+<Note>
+Vous pouvez transmettre toutes les URL ici sans risque. `handleOpenURL` agit uniquement sur les URL
+correspondant à votre `returnUrl` enregistré et résout `false` pour toute autre URL.
+</Note>
+</Tab>
+<Tab title="Android">
+Définissez votre schéma de callback comme placeholder de manifeste Gradle :
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+<Warning>
+Si `MainActivity` définit `android:taskAffinity=""` (la valeur par défaut de `flutter
+create`), supprimez-le ou attribuez la même affinité aux activités du SDK. Sinon, certaines versions Android de fabricants peuvent perdre le
+checkout en cours et renvoyer `PLATFORM_ERROR`.
+</Warning>
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## Utilisation
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final result = await DodoCheckout.instance.start(
+  CheckoutParams(
+    checkoutUrl: Uri.parse(checkoutUrl), // from your backend's checkout session
+    returnUrl: Uri.parse('myapp://checkout/return'), // scheme must be registered (see Setup)
+    onEvent: (event) => print(event.type), // logging only
+  ),
+);
+
+switch (result.status) {
+  case CheckoutStatus.succeeded: showSuccess(result.paymentId);
+  case CheckoutStatus.failed:    showFailure();
+  case CheckoutStatus.cancelled: dismiss();
+  case CheckoutStatus.pending:   showPending();
+  case CheckoutStatus.expired:   showExpired();
+}
+```
+
+## Signification du résultat
+
+<Warning>
+`result.status` est un indice d’interface, pas une preuve de paiement. Confirmez chaque paiement
+depuis votre backend, via le webhook `payment.succeeded` / `subscription.active`.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+L’un des éléments suivants : `succeeded`, `failed`, `cancelled`, `pending`, `expired`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Défini lorsque l’URL de retour en contient un. Affichez-le dans l’interface, mais ne l’utilisez pas
+pour accorder l’accès. Consultez la section Vérifier le paiement ci-dessous.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Défini pour les checkouts d’abonnement.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+Défini lorsque le checkout inclut des produits avec clé de licence.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Défini lorsque le checkout collecte une adresse e-mail.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+Chaque paramètre de requête de l’URL de retour, mot pour mot.
+</ParamField>
+
+## Vérifier le paiement
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  Dodo Payments appelle votre backend lorsqu’un paiement est réussi ou qu’un abonnement est activé.
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  Recherchez `paymentId` avec votre clé secrète pour vérifier directement son statut.
+</Card>
+</CardGroup>
+
+Accordez l’accès après confirmation du paiement par l’un de ces moyens, jamais à partir de
+`result.status` seul.
+
+## Erreurs
+
+`start` lève `CheckoutException` uniquement en cas de mauvaise utilisation ou de défaillance de la plateforme.
+Un paiement annulé ou refusé est toujours un résultat, jamais une exception.
+
+- `invalidCheckoutUrl` (`INVALID_CHECKOUT_URL`) : URL de session `checkout.dodopayments.com` non valide.
+- `invalidReturnUrl` (`INVALID_RETURN_URL`) : URL absolue non valide.
+- `alreadyInProgress` (`ALREADY_IN_PROGRESS`) : un checkout est déjà en cours.
+- `platformError` (`PLATFORM_ERROR`) : défaillance inattendue de la plateforme.
+
+## Sessions abandonnées
+
+<Info>
+Si l’application est arrêtée en plein checkout, récupérez la session au prochain lancement et
+réconciliez-la avec votre backend.
+</Info>
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final abandoned = await DodoCheckout.instance.getAbandonedSession();
+if (abandoned != null) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.instance.clearAbandonedSession();
+}
+```
+
+## Articles associés
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Le même contrat pour Android, iOS et React Native.
+</Card>
+<Card title="Community Projects" icon="users" href="/community/projects">
+  Un package Flutter distinct développé par la communauté existe également.
+</Card>
+</CardGroup>

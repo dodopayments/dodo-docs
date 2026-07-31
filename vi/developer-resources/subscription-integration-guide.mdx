@@ -160,71 +160,83 @@ Sử dụng `subscription.updated` để nhận thông báo theo thời gian th�
 
 **Luồng Thanh Toán Thành Công**
 
-Khi một khoản thanh toán thành công, bạn sẽ nhận được các webhooks sau:
+Các webhook bạn nhận được và thời điểm nhận phụ thuộc vào việc sản phẩm có thời gian dùng thử hay không.
 
-1. `subscription.active` - Chỉ định kích hoạt thuê bao
-2. `payment.succeeded` - Xác nhận thanh toán ban đầu:
-    - Đối với thanh toán tức thì (không có ngày dùng thử): Mong đợi trong vòng 2-10 phút
-    - Đối với thử nghiệm: bất cứ khi nào kết thúc
-3. `subscription.renewed` - Chỉ định khấu trừ thanh toán và gia hạn cho chu kỳ tiếp theo. (Về cơ bản, bất cứ khi nào thanh toán được khấu trừ cho các sản phẩm thuê bao, bạn sẽ nhận được webhook `subscription.renewed` cùng với `payment.succeeded`)
+_Thanh toán ngay (0 ngày dùng thử):_
 
-**Kịch Bản Thất Bại Thanh Toán**
+1. `subscription.active`: mandate được ủy quyền và gói đăng ký được kích hoạt.
+2. `payment.succeeded`: xác nhận khoản phí đầu tiên. Dự kiến nhận được sự kiện này trong vòng **2–10 phút** sau khi thanh toán.
 
-1. Thất Bại Thuê Bao
-  - `subscription.failed` - Tạo thuê bao thất bại do không thể tạo ủy quyền.
-  - `payment.failed` - Chỉ ra thanh toán thất bại.
+_Có thời gian dùng thử:_
 
-2. Thuê Bao Bị Tạm Dừng
-  - `subscription.on_hold` - Thuê bao bị tạm giữ do gia hạn thất bại hoặc thay đổi kế hoạch thất bại.
-  - Khi một thuê bao bị tạm dừng, nó sẽ không tự động gia hạn cho đến khi phương thức thanh toán được cập nhật.
+1. **Khi bắt đầu dùng thử (thanh toán):** `subscription.active` được kích hoạt sau khi phương thức thanh toán được ủy quyền. **Chưa thu khoản phí định kỳ nào.** Khoản phí thực tế đầu tiên được trì hoãn cho đến khi thời gian dùng thử kết thúc.
+2. **Khi thời gian dùng thử kết thúc:** số tiền định kỳ được thu và bạn nhận được `payment.succeeded` **cùng với** `subscription.renewed`.
 
-<Info>**Thực Hành Tốt Nhất**: Để đơn giản hóa việc triển khai, chúng tôi khuyến nghị chủ yếu theo dõi các sự kiện thuê bao để quản lý vòng đời thuê bao.</Info>
+_Mỗi lần gia hạn tiếp theo:_
+
+- `subscription.renewed`: được kích hoạt trong mỗi chu kỳ thanh toán khi khoản phí gia hạn được khấu trừ, **luôn cùng với** `payment.succeeded`. Sự kiện này cũng chứa `next_billing_date` đã được cập nhật.
+
+<Info>
+Bất cứ khi nào tiền thực sự được khấu trừ cho một sản phẩm gói đăng ký, bạn sẽ nhận được `subscription.renewed` **và** `payment.succeeded`. Hãy sử dụng `subscription.renewed` (thay vì chỉ sử dụng `payment.succeeded`) làm tín hiệu để gia hạn quyền truy cập cho chu kỳ tiếp theo.
+</Info>
+
+**Các kịch bản thanh toán thất bại**
+
+1. Gói đăng ký thất bại
+  - `subscription.failed` - Không thể tạo gói đăng ký do không thể tạo mandate.
+  - `payment.failed` - Cho biết thanh toán thất bại.
+
+2. Gói đăng ký bị tạm giữ
+  - `subscription.on_hold` - Gói đăng ký bị tạm giữ do khoản thanh toán gia hạn hoặc khoản phí thay đổi gói thất bại.
+  - Khi gói đăng ký bị tạm giữ, gói sẽ không tự động gia hạn cho đến khi phương thức thanh toán được cập nhật.
+
+<Info>**Thực hành tốt nhất**: Để đơn giản hóa việc triển khai, chúng tôi khuyến nghị chủ yếu theo dõi các sự kiện gói đăng ký để quản lý vòng đời gói đăng ký.</Info>
 
 <Tip>
-Để xem xét đầy đủ việc đọc `error_code`/`error_message`, quyết định khi nào nên thử lại và hiển thị sự thất bại cho khách hàng, xem [Xử Lý Thanh Toán Thất Bại](/developer-resources/handle-payment-failures).
+Để xem hướng dẫn đầy đủ về cách đọc `error_code`/`error_message`, quyết định thời điểm thử lại và hiển thị lỗi cho khách hàng, hãy xem [Xử lý lỗi thanh toán](/developer-resources/handle-payment-failures).
 </Tip>
 
-#### `subscription.failed` vs. `subscription.on_hold`
+#### `subscription.failed` và `subscription.on_hold`
 
-Hai sự kiện này dễ gây nhầm lẫn, nhưng chúng yêu cầu xử lý rất khác nhau:
+Hai sự kiện này rất dễ bị nhầm lẫn, nhưng cần được xử lý theo những cách hoàn toàn khác nhau:
 
-| Sự kiện | Khi nào nó kích hoạt | Trạng thái | Có thể phục hồi? | Phải làm gì |
+| Sự kiện | Thời điểm kích hoạt | Trạng thái | Có thể khôi phục? | Cần làm gì |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | ủy quyền **ban đầu** không thể được tạo khi tạo **thuê bao** | `failed` | **Không — kết thúc** | Không cấp quyền truy cập. Yêu cầu khách hàng bắt đầu một thuê bao **mới** với phương thức thanh toán khác. |
-| `subscription.on_hold` | Thanh toán **gia hạn** (hoặc phí thay đổi kế hoạch) thất bại đối với một thuê bao đã hoạt động | `on_hold` | **Có** | Phục hồi bằng cách cập nhật phương thức thanh toán; xem [Xử Lý Thuê Bao Bị Tạm Dừng](#handling-subscription-on-hold) dưới đây. |
+| `subscription.failed` | Không thể tạo mandate **ban đầu** khi **tạo** gói đăng ký | `failed` | **Không (kết thúc)** | Không cấp quyền truy cập. Yêu cầu khách hàng bắt đầu một gói đăng ký **mới** bằng phương thức thanh toán khác. |
+| `subscription.on_hold` | Khoản thanh toán **gia hạn** (hoặc khoản phí thay đổi gói) thất bại trên một gói đăng ký đã hoạt động | `on_hold` | **Có** | Khôi phục bằng cách cập nhật phương thức thanh toán; xem [Xử lý gói đăng ký bị tạm giữ](#handling-subscription-on-hold) bên dưới. |
 
 <Warning>
-`subscription.failed` là kết thúc — thuê bao không thể được kích hoạt lại. Khách hàng phải tạo một thuê bao mới. Không bao giờ cấp quyền khi sự kiện này kích hoạt.
+`subscription.failed` là trạng thái kết thúc. Không thể kích hoạt lại gói đăng ký. Khách hàng phải tạo một gói đăng ký mới. Không bao giờ cấp quyền lợi khi sự kiện này được kích hoạt.
 </Warning>
 
-### Xử Lý Thuê Bao Bị Tạm Dừng
+### Xử lý gói đăng ký bị tạm giữ
 
-Khi thuê bao vào trạng thái `on_hold`, bạn cần cập nhật phương thức thanh toán để kích hoạt lại. Phần này giải thích khi nào thuê bao bị tạm dừng và cách xử lý chúng.
+Khi gói đăng ký chuyển sang trạng thái `on_hold`, bạn cần cập nhật phương thức thanh toán để kích hoạt lại gói. Phần này giải thích thời điểm gói đăng ký bị tạm giữ và cách xử lý.
 
-#### Khi Nào Thuê Bao Bị Tạm Dừng
+#### Khi gói đăng ký bị tạm giữ
 
-Thuê bao bị tạm dừng khi:
+Gói đăng ký bị tạm giữ khi:
 
-- **Gia hạn thanh toán thất bại**: Thanh toán tự động thất bại do thiếu tiền, thẻ hết hạn, hoặc bị ngân hàng từ chối
-- **Thay đổi kế hoạch thất bại**: Thanh toán tức thì trong quá trình nâng cấp/giảm cấp kế hoạch thất bại
+- **Thanh toán gia hạn thất bại**: Khoản phí gia hạn tự động thất bại do không đủ tiền, thẻ hết hạn hoặc ngân hàng từ chối
+- **Khoản phí thay đổi gói thất bại**: Khoản phí phát sinh ngay lập tức trong quá trình nâng cấp/hạ cấp gói thất bại
 - **Ủy quyền phương thức thanh toán thất bại**: Không thể ủy quyền phương thức thanh toán cho các khoản phí định kỳ
 
 <Warning>
-Các thuê bao trong trạng thái `on_hold` sẽ không tự động gia hạn. Bạn phải cập nhật phương thức thanh toán để kích hoạt lại thuê bao.
+Các gói đăng ký ở trạng thái `on_hold` sẽ không tự động gia hạn. Bạn phải cập nhật phương thức thanh toán để kích hoạt lại gói đăng ký.
 </Warning>
 
-#### Kích Hoạt Lại Thuê Bao Từ Trạng Thái Tạm Dừng
+#### Kích hoạt lại gói đăng ký đang bị tạm giữ
 
-Để kích hoạt lại thuê bao từ trạng thái `on_hold`, sử dụng API Cập Nhật Phương Thức Thanh Toán. Điều này tự động:
+Để kích hoạt lại gói đăng ký từ trạng thái `on_hold`, hãy sử dụng Update Payment Method API. API này sẽ tự động:
 
-1. Tạo một phí cho các khoản ủng hộ còn lại
+1. Tạo khoản phí cho các khoản còn nợ
 2. Tạo hóa đơn cho khoản phí
 3. Xử lý thanh toán bằng phương thức thanh toán mới
-4. Kích hoạt lại thuê bao về trạng thái `active` khi thanh toán thành công
+4. Kích hoạt lại gói đăng ký về trạng thái `active` sau khi thanh toán thành công
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Khi bạn nhận được webhook `subscription.on_hold`, cập nhật trạng thái ứng dụng của bạn và thông báo cho khách hàng:
+Khi nhận được webhook `subscription.on_hold`, hãy cập nhật trạng thái ứng dụng và thông báo cho khách hàng:
 
 ```javascript
 // Webhook handler
@@ -251,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-Khi khách hàng sẵn sàng cập nhật phương thức thanh toán của họ, hãy gọi API Cập Nhật Phương Thức Thanh Toán:
+Khi khách hàng sẵn sàng cập nhật phương thức thanh toán, hãy gọi Update Payment Method API:
 
 <CodeGroup>
 
@@ -286,13 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-Bạn cũng có thể sử dụng ID phương thức thanh toán hiện có nếu khách hàng đã lưu phương thức thanh toán:
-```javascript
-await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'existing',
-  payment_method_id: 'pm_abc123'
-});
-```
+Bạn cũng có thể sử dụng ID phương thức thanh toán hiện có nếu khách hàng đã lưu các phương thức thanh toán:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -305,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Sau khi cập nhật phương thức thanh toán, giám sát các sự kiện webhook này:
+Sau khi cập nhật phương thức thanh toán, hãy theo dõi các sự kiện webhook sau:
 
-1. **`payment.succeeded`** - Phí cho các khoản ủng hộ còn lại đã thành công
-2. **`subscription.active`** - Thuê bao đã được kích hoạt lại
+1. **`payment.succeeded`** - Khoản phí cho các khoản còn nợ đã thành công
+2. **`subscription.active`** - Gói đăng ký đã được kích hoạt lại
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -340,79 +346,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Mẫu Payload sự kiện Thuê Bao
+### Payload sự kiện gói đăng ký mẫu
 
 ---
 
-| Thuộc tính | Loại | Bắt buộc | Mô tả |
+| Thuộc tính | Kiểu | Bắt buộc | Mô tả |
 |----------|------|----------|-------------|
-| `business_id` | string | Có | Mã định danh duy nhất cho doanh nghiệp |
-| `timestamp` | string | Có | Dấu thời gian của khi sự kiện xảy ra (không nhất thiết giống khi được gửi) |
-| `type` | string | Có | Loại sự kiện. Xem [Loại Sự Kiện](#event-types) |
-| `data` | object | Có | Payload dữ liệu chính. Xem [Đối Tượng Dữ Liệu](#data-object) |
+| `business_id` | string | Có | Mã định danh duy nhất của doanh nghiệp |
+| `timestamp` | string | Có | Dấu thời gian khi sự kiện xảy ra (không nhất thiết trùng với thời điểm sự kiện được gửi) |
+| `type` | string | Có | Loại sự kiện. Xem [Các loại sự kiện](#event-types) |
+| `data` | object | Có | Payload dữ liệu chính. Xem [Đối tượng dữ liệu](#data-object) |
 
-## Thay Đổi Kế Hoạch Thuê Bao
+## Thay đổi gói đăng ký
 
-Bạn có thể nâng cấp hoặc hạ cấp kế hoạch thuê bao sử dụng endpoint API thay đổi kế hoạch. Điều này cho phép bạn thay đổi sản phẩm thuê bao, số lượng, và xử lý phân bổ chi phí.
+Bạn có thể nâng cấp hoặc hạ cấp gói đăng ký bằng endpoint change plan API. API này cho phép bạn sửa đổi sản phẩm, số lượng của gói đăng ký và xử lý proration.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Để biết thông tin chi tiết về thay đổi kế hoạch thuê bao, vui lòng tham khảo tài liệu API Thay Đổi Kế Hoạch của chúng tôi.
+  Để biết thông tin chi tiết về việc thay đổi gói đăng ký, vui lòng tham khảo tài liệu Change Plan API của chúng tôi.
 </Card>
 
-### Tùy Chọn Phân Bổ Chi Phí
+### Tùy chọn proration
 
-Khi thay đổi kế hoạch thuê bao, bạn có hai tùy chọn để xử lý phí tức thì:
+Khi thay đổi gói đăng ký, bạn có hai tùy chọn để xử lý khoản phí phát sinh ngay lập tức:
 
 #### 1. `prorated_immediately`
-- Tính toán số tiền phân bổ dựa trên thời gian còn lại trong chu kỳ thanh toán hiện tại
-- Tính phí khách hàng chỉ cho sự khác biệt giữa kế hoạch cũ và mới
-- Trong thời gian thử nghiệm, điều này sẽ chuyển người dùng ngay lập tức sang kế hoạch mới, tính phí khách hàng ngay lập tức
+- Tính số tiền được phân bổ theo tỷ lệ dựa trên thời gian còn lại trong chu kỳ thanh toán hiện tại
+- Chỉ tính phí khách hàng cho phần chênh lệch giữa gói cũ và gói mới
+- Trong thời gian dùng thử, tùy chọn này sẽ chuyển người dùng sang gói mới ngay lập tức và tính phí khách hàng ngay
 
 #### 2. `full_immediately`
-- Tính phí khách hàng toàn bộ số tiền thuê bao cho kế hoạch mới
-- Bỏ qua thời gian còn lại hoặc các khoản tín dụng từ kế hoạch trước đó
-- Hữu ích khi bạn muốn đặt lại chu kỳ thanh toán hoặc tính phí toàn bộ số lượng bất kể phân bổ
+- Tính phí khách hàng toàn bộ số tiền gói đăng ký của gói mới
+- Bỏ qua thời gian còn lại hoặc khoản tín dụng từ gói trước đó
+- Hữu ích khi bạn muốn đặt lại chu kỳ thanh toán hoặc tính toàn bộ số tiền bất kể proration
 
 #### 3. `difference_immediately`
-- Khi nâng cấp, khách hàng ngay lập tức bị tính phí số tiền chênh lệch giữa hai kế hoạch.
-- Ví dụ, nếu kế hoạch hiện tại là 30 Đô la và khách hàng nâng cấp lên 80 Đô la, họ sẽ bị tính phí 50 đô la ngay lập tức.
-- Khi hạ cấp, số tiền còn lại không sử dụng từ kế hoạch hiện tại được thêm vào dưới dạng tín dụng nội bộ và tự động áp dụng cho các lần gia hạn thuê bao trong tương lai.
-- Ví dụ, nếu kế hoạch hiện tại là 50 Đô la và khách hàng chuyển sang kế hoạch 20 Đô la, số còn lại 30 đô la sẽ được ghi nhận và sử dụng cho chu kỳ thanh toán tiếp theo.
+- Khi nâng cấp, khách hàng sẽ bị tính ngay phần chênh lệch giữa số tiền của hai gói.
+- Ví dụ, nếu gói hiện tại là 30 Dollars và khách hàng nâng cấp lên gói 80 Dollars, họ sẽ bị tính phí \$50 ngay lập tức. 
+- Khi hạ cấp, số tiền chưa sử dụng của gói hiện tại được thêm vào dưới dạng tín dụng nội bộ và tự động áp dụng cho các lần gia hạn gói đăng ký trong tương lai.
+- Ví dụ, nếu gói hiện tại là 50 Dollars và khách hàng chuyển sang gói 20 Dollars, khoản \$30 còn lại được ghi có và dùng cho chu kỳ thanh toán tiếp theo.
 
-### Hành Vi
+#### 4. `do_not_bill`
+- Áp dụng thay đổi gói ngay lập tức nhưng **không** tính phí tại thời điểm thay đổi.
+- Gói đã cập nhật (cùng số lượng/add-on) được tính phí vào **lần gia hạn theo lịch tiếp theo**, và **ngày thanh toán ban đầu được giữ nguyên**.
 
-- Khi bạn gọi API này, Dodo Payments sẽ ngay lập tức khởi tạo một khoản phí dựa trên tùy chọn phân bổ mà bạn đã chọn
-- Nếu thay đổi kế hoạch là hạ cấp và bạn sử dụng `prorated_immediately`, các khoản tín dụng sẽ được tự động tính toán và thêm vào số dư tín dụng của thuê bao. Các khoản tín dụng này sẽ chỉ được sử dụng để giảm các khoản thanh toán định kỳ trong tương lai của cùng một thuê bao
-- Tùy chọn `full_immediately` sẽ bỏ qua các tính toán tín dụng và tính phí toàn bộ số lượng kế hoạch mới
+<Warning>
+**Cả ba chế độ "charge now" đều đặt lại chu kỳ thanh toán.** `prorated_immediately`, `difference_immediately` và `full_immediately` chuyển `next_billing_date` của gói đăng ký sang ngày thay đổi. Chỉ `do_not_bill` giữ nguyên ngày gia hạn ban đầu, nhưng không áp dụng khoản phí ngay lập tức.
+</Warning>
+
+### Hành vi
+
+- Khi gọi API này, Dodo Payments ngay lập tức bắt đầu tính phí dựa trên tùy chọn proration đã chọn
+- Nếu thay đổi gói là hạ cấp và bạn sử dụng `prorated_immediately`, các khoản tín dụng sẽ được tự động tính toán và thêm vào số dư tín dụng của gói đăng ký. Các khoản tín dụng này chỉ thuộc về gói đăng ký đó và chỉ được dùng để bù trừ cho các khoản thanh toán định kỳ trong tương lai của cùng gói đăng ký
+- Tùy chọn `full_immediately` bỏ qua việc tính tín dụng và tính toàn bộ số tiền của gói mới
 
 <Tip>
-**Chọn tùy chọn phân bổ của bạn một cách cẩn thận**: Sử dụng `prorated_immediately` để tính toán công bằng, tính phí thời gian chưa sử dụng, hoặc `full_immediately` khi bạn muốn tính toàn bộ số lượng kế hoạch mới bất kể chu kỳ thanh toán hiện tại.
+**Hãy cẩn thận khi chọn tùy chọn proration**: Sử dụng `prorated_immediately` để tính phí công bằng, có xét đến thời gian chưa sử dụng, hoặc `full_immediately` khi bạn muốn tính toàn bộ số tiền của gói mới bất kể chu kỳ thanh toán hiện tại.
 </Tip>
 
-### Xử Lý Thanh Toán
+### Xử lý khoản phí
 
-- Phí tức thì khởi tạo khi thay đổi kế hoạch thường sẽ hoàn tất xử lý trong vòng chưa đến 2 phút
-- Nếu phí tức thì này thất bại vì bất kỳ lý do nào, thuê bao sẽ tự động bị tạm dừng cho đến khi vấn đề được giải quyết
+- Khoản phí ngay lập tức được bắt đầu khi thay đổi gói thường hoàn tất xử lý trong chưa đến 2 phút
+- Nếu khoản phí ngay lập tức này thất bại vì bất kỳ lý do nào, gói đăng ký sẽ tự động bị tạm giữ cho đến khi vấn đề được giải quyết
 
-## Thuê Bao Theo Nhu Cầu
-
-<Info>
-  Thuê bao theo nhu cầu cho phép bạn tính phí khách hàng một cách linh hoạt, không chỉ theo lịch cố định. Tính năng này có sẵn cho tất cả các tài khoản.
-</Info>
-
-**Để tạo thuê bao theo nhu cầu:**
-
-Để tạo thuê bao theo nhu cầu, sử dụng endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) và bao gồm trường `on_demand` trong yêu cầu của bạn. Điều này cho phép bạn ủy quyền một phương thức thanh toán mà không cần tính phí ngay lập tức hoặc đặt giá ban đầu tùy chỉnh.
-
-**Để tính phí thuê bao theo nhu cầu:**
-
-Đối với các khoản phí tiếp theo, sử dụng endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) và chỉ định số tiền để tính phí cho khách hàng cho giao dịch đó.
-
-<Note>
-Để có hướng dẫn từng bước hoàn chỉnh—bao gồm ví dụ yêu cầu/phản hồi, chính sách thử lại an toàn, và xử lý webhook—hãy xem <a href="/developer-resources/ondemand-subscriptions">Hướng Dẫn Thuê Bao Theo Nhu Cầu</a>.
-</Note>
-
-## Tham Khảo API Liên Quan
+## Gói đăng ký theo yêu cầu
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -426,5 +422,60 @@ Khi thay đổi kế hoạch thuê bao, bạn có hai tùy chọn để xử lý
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   Tham khảo API cập nhật chi tiết và cấu hình thuê bao
+</Card>
+</CardGroup>
+
+**Để tạo gói đăng ký theo yêu cầu:**
+
+Để tạo gói đăng ký theo yêu cầu, hãy sử dụng endpoint API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) và bao gồm trường `on_demand` trong request body. Điều này cho phép bạn ủy quyền một phương thức thanh toán mà không tính phí ngay lập tức hoặc đặt mức giá ban đầu tùy chỉnh.
+
+**Để tính phí gói đăng ký theo yêu cầu:**
+
+Đối với các khoản phí tiếp theo, hãy sử dụng endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) và chỉ định số tiền cần tính cho khách hàng trong giao dịch đó.
+
+<Note>
+Để xem hướng dẫn đầy đủ từng bước (bao gồm các ví dụ request/response, chính sách thử lại an toàn và cách xử lý webhook), hãy xem <a href="/developer-resources/ondemand-subscriptions">Hướng dẫn gói đăng ký theo yêu cầu</a>.
+</Note>
+
+## Những điều quan trọng cần biết về thanh toán gói đăng ký
+
+<Warning>
+**Đặt thời hạn gói đăng ký dài hơn tần suất thanh toán.** Nếu thời hạn gói đăng ký bằng tần suất thanh toán (ví dụ: period = 1 month, frequency = 1 month), gói đăng ký chỉ có hiệu lực trong **một chu kỳ** rồi chuyển sang `expired` thay vì gia hạn. Đối với gói hàng tháng liên tục, hãy đặt thời hạn gói đăng ký dài (ví dụ: 20 years) với tần suất thanh toán hàng tháng.
+</Warning>
+
+<Warning>
+**Tiền tệ được cố định sau khoản phí thành công đầu tiên.** Luôn truyền rõ ràng `billing_currency` **và** `billing_address.country` khi tạo checkout. Nếu bỏ qua, tiền tệ sẽ được phát hiện từ IP của khách hàng (Adaptive Currency), và một khi gói đăng ký phát sinh khoản phí đầu tiên, tiền tệ sẽ được cố định trong suốt thời gian tồn tại của gói. Khách hàng không thể chuyển đổi tiền tệ khi đi du lịch sau đó.
+</Warning>
+
+<Info>
+**Thời gian dùng thử thực hiện ủy quyền \$0, không phải tính phí.** Khi gói đăng ký có thời gian dùng thử, thời điểm bắt đầu dùng thử sẽ tạo **ủy quyền mandate \$0** để lưu thẻ; khoản phí thực tế đầu tiên được thực hiện khi thời gian dùng thử kết thúc. Trong danh sách thanh toán, gói đăng ký đang dùng thử hiển thị chính xác một khoản thanh toán với `amount: 0`.
+</Info>
+
+<Info>
+**Vòng đời gói đăng ký:** `on_hold` = lần gia hạn thất bại (có thể khôi phục: yêu cầu khách hàng cập nhật phương thức thanh toán; áp dụng các lần thử lại dunning). `expired` = thời hạn kết thúc mà không gia hạn và **không thể kích hoạt lại**. Khách hàng phải đăng ký lại. `cancelled` = bị khách hàng hoặc merchant kết thúc. Hầu hết các lỗi gia hạn là do bên issuer từ chối (không đủ tiền, thẻ bị từ chối), không phải lỗi của Dodo.
+</Info>
+
+<Warning>
+**Thẻ Ấn Độ hoạt động trên RBI e-mandate.** Các khoản phí off-session (gia hạn và phí thay đổi gói) có thể mất **tối đa khoảng 48 giờ** để hoàn tất, và các khoản tự động trích nợ định kỳ **trên ₹15,000** yêu cầu khách hàng xác thực lại (do đó, việc nâng cấp vượt quá giới hạn này không thể sử dụng mandate hiện có). Khi một khoản phí vẫn đang ở trạng thái `processing`, khoản phí thứ hai trên cùng gói đăng ký sẽ thất bại với thông báo *"Cannot create new charge as previous payment is not successful yet."* Thẻ ngoài Ấn Độ được xác nhận gần như ngay lập tức.
+</Warning>
+
+<Tip>
+**Khoản phí gói đăng ký có mức tối thiểu là \$1** (hoặc giá trị tương đương theo tiền tệ). Các số tiền `$0.01–$0.99` bị từ chối với `product_price: value out of range`; chỉ cho phép `$0` thông qua quy trình thiết lập `mandate_only` theo yêu cầu.
+</Tip>
+
+## Tài liệu tham khảo API liên quan
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  Tài liệu tham khảo API để tạo sản phẩm gói đăng ký và quản lý vòng đời gói đăng ký
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  Tài liệu tham khảo API để nâng cấp, hạ cấp hoặc thay đổi gói đăng ký với các tùy chọn proration
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  Tài liệu tham khảo API để cập nhật phương thức thanh toán và kích hoạt lại các gói đăng ký bị tạm giữ
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  Tài liệu tham khảo API để cập nhật thông tin chi tiết và cấu hình gói đăng ký
 </Card>
 </CardGroup>

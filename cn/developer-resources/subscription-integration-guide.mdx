@@ -160,71 +160,83 @@ The following is an example of the response:
 
 **成功支付流程**
 
-当支付成功时，您将收到以下 webhooks：
+您收到的 webhooks 及其时间安排取决于产品是否包含试用期。
 
-1. `subscription.active` - 表示订阅激活
-2. `payment.succeeded` - 确认初始付款：
-    - 对于即时计费（0 试用天数）：预计在 2-10 分钟内
-    - 对于试用期：试用结束时
-3. `subscription.renewed` - 表示付款扣除并续订下一个周期。（基本上，每当订阅产品付款被扣除时，您将获得 `subscription.renewed` webhook 以及 `payment.succeeded`）
+_立即计费（0 个试用天数）：_
 
-**支付失败场景**
+1. `subscription.active`：mandate 已获授权，订阅已激活。
+2. `payment.succeeded`：确认首次扣款。预计在结账后的 **2–10 分钟**内收到。
+
+_包含试用期：_
+
+1. **试用期开始时（结账）：** payment method 获得授权后，`subscription.active` 触发。**此时不会收取 recurring charge。** 首次实际扣款会推迟到试用期结束。
+2. **试用期结束时：** 系统会收取 recurring amount，您会同时收到 `payment.succeeded` **和** `subscription.renewed`。
+
+_每次后续续订：_
+
+- `subscription.renewed`：每个 billing cycle 在扣除续订款项时触发，**始终与** `payment.succeeded` **同时**触发。它还会携带更新后的 `next_billing_date`。
+
+<Info>
+每当 subscription product 实际扣款时，您都会收到 `subscription.renewed` **和** `payment.succeeded`。请使用 `subscription.renewed`（而不是单独使用 `payment.succeeded`）作为延长下一周期访问权限的信号。
+</Info>
+
+**付款失败场景**
 
 1. 订阅失败
-  - `subscription.failed` - 由于创建授权失败导致订阅创建失败。
+  - `subscription.failed` - 由于创建 mandate 失败，订阅创建失败。
   - `payment.failed` - 表示付款失败。
 
 2. 订阅暂停
-  - `subscription.on_hold` - 由于续订支付失败或计划更改收费失败导致订阅被暂停。
-  - 当订阅被暂停时，它将不会自动续订，直到更新支付方式。
+  - `subscription.on_hold` - 由于续订付款失败或计划变更扣款失败，订阅被暂停。
+  - 订阅暂停后，在 payment method 更新之前不会自动续订。
 
-<Info>**最佳实践**：为简化实施，我们建议主要跟踪订阅事件以管理订阅生命周期。</Info>
+<Info>**最佳实践**：为简化实现，我们建议主要跟踪 subscription events，以管理订阅生命周期。</Info>
 
 <Tip>
-要完全了解如何读取 `error_code`/`error_message`，决定何时重试，并向客户显示失败，参见[处理支付失败](/developer-resources/handle-payment-failures)。
+如需完整了解如何读取 `error_code`/`error_message`、决定何时重试以及向客户展示失败信息，请参阅[处理付款失败](/developer-resources/handle-payment-failures)。
 </Tip>
 
 #### `subscription.failed` 与 `subscription.on_hold`
 
-这两个事件容易混淆，但它们需要非常不同的处理：
+这两个事件很容易混淆，但处理方式完全不同：
 
-| 事件 | 触发时间 | 状态 | 可恢复？ | 如何处理 |
+| 事件 | 触发时机 | 状态 | 是否可恢复？ | 操作 |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | **初始**授权无法在订阅**创建**时创建 | `failed` | **不可恢复 - 终端** | 不要授予访问权限。要求客户使用不同的支付方式开始**新**的订阅。 |
-| `subscription.on_hold` | 已激活订阅的**续订**付款（或计划更改收费）失败时 | `on_hold` | **是** | 通过更新支付方式恢复；参见下文[处理订阅暂停](#handling-subscription-on-hold)。 |
+| `subscription.failed` | 订阅**创建**时无法创建**初始** mandate | `failed` | **否（终止状态）** | 不要授予访问权限。要求客户使用其他 payment method 创建一个**新**订阅。 |
+| `subscription.on_hold` | 已激活订阅的**续订**付款（或计划变更扣款）失败 | `on_hold` | **是** | 通过更新 payment method 进行恢复；请参阅下方的[处理暂停的订阅](#handling-subscription-on-hold)。 |
 
 <Warning>
-`subscription.failed` 是终端——订阅不能重新激活。客户必须创建新的订阅。此事件触发时绝不授予权限。
+`subscription.failed` 是终止状态。订阅无法重新激活。客户必须创建新订阅。该事件触发时，切勿授予 entitlements。
 </Warning>
 
-### 处理订阅暂停
+### 处理暂停的订阅
 
-当订阅进入 `on_hold` 状态时，您需要更新支付方式以重新激活。此部分解释订阅何时会暂停以及如何处理。
+当订阅进入 `on_hold` 状态时，您需要更新 payment method 才能重新激活订阅。本节介绍订阅何时会暂停以及如何处理。
 
-#### 订阅何时暂停
+#### 订阅暂停的情况
 
-当发生以下情况时，订阅被暂停：
+在以下情况下，订阅会被暂停：
 
-- **续订付款失败**：由于资金不足、卡片过期或银行拒绝导致的自动续订收费失败
-- **计划更改费用失败**：在计划升级/降级期间的即时收费失败
-- **支付方式授权失败**：支付方式无法授权用于定期收费
+- **续订付款失败**：由于余额不足、卡片过期或银行拒绝，自动续订扣款失败
+- **计划变更扣款失败**：升级或降级计划期间的即时扣款失败
+- **payment method 授权失败**：payment method 无法获得 recurring charges 的授权
 
 <Warning>
-在 `on_hold` 状态下的订阅将不会自动续订。您必须更新支付方式以重新激活订阅。
+处于 `on_hold` 状态的订阅不会自动续订。您必须更新 payment method 才能重新激活订阅。
 </Warning>
 
 #### 从暂停状态重新激活订阅
 
-要从 `on_hold` 状态重新激活订阅，请使用更新支付方式 API。这会自动：
+要将处于 `on_hold` 状态的订阅重新激活，请使用 Update Payment Method API。该 API 会自动：
 
-1. 为剩余款项创建收费
-2. 为费用生成发票
-3. 使用新支付方式处理付款
-4. 付款成功后将订阅重新激活为 `active` 状态
+1. 为剩余应付款创建扣款
+2. 为该扣款生成 invoice
+3. 使用新的 payment method 处理付款
+4. 付款成功后，将订阅重新激活为 `active` 状态
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-当您收到 `subscription.on_hold` webhook 时，更新您的应用程序状态并通知客户：
+收到 `subscription.on_hold` webhook 后，请更新应用状态并通知客户：
 
 ```javascript
 // Webhook handler
@@ -251,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-当客户准备好更新他们的支付方式时，请调用更新支付方式 API：
+客户准备好更新 payment method 后，请调用 Update Payment Method API：
 
 <CodeGroup>
 
@@ -286,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-如果客户已保存支付方式，您还可以使用现有支付方式 ID：
+如果客户已保存 payment methods，您也可以使用现有的 payment method ID：
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -299,9 +311,9 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-更新支付方式后，监控这些 webhook 事件：
+更新 payment method 后，请监控以下 webhook events：
 
-1. **`payment.succeeded`** - 剩余款项的收费成功
+1. **`payment.succeeded`** - 剩余应付款的扣款成功
 2. **`subscription.active`** - 订阅已重新激活
 
 ```javascript
@@ -334,91 +346,125 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### 示例订阅事件负载
+### Subscription event payload 示例
 
 ---
 
-| 属性 | 类型 | 必需 | 描述 |
+| 属性 | 类型 | 必填 | 描述 |
 |----------|------|----------|-------------|
-| `business_id` | string | Yes | 业务的唯一标识符 |
-| `timestamp` | string | Yes | 事件发生的时间戳（不一定与交付时间相同） |
-| `type` | string | Yes | 事件类型。参见[事件类型](#event-types) |
-| `data` | object | Yes | 主要数据负载。参见[数据对象](#data-object) |
+| `business_id` | string | 是 | business 的唯一标识符 |
+| `timestamp` | string | 是 | 事件发生的时间戳（不一定与事件交付时间相同） |
+| `type` | string | 是 | 事件类型。请参阅 [Event Types](#event-types) |
+| `data` | object | 是 | 主要数据 payload。请参阅 [Data Object](#data-object) |
 
 ## 更改订阅计划
 
-您可以使用变更计划 API 端点升级或降级订阅计划。这允许您修改订阅的产品、数量，并处理分摊。
+您可以使用 change plan API endpoint 升级或降级订阅计划。这允许您修改订阅的 product、quantity，并处理 proration。
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  有关更改订阅计划的详细信息，请参阅我们的变更计划 API 文档。
+  有关更改订阅计划的详细信息，请参阅我们的 Change Plan API 文档。
 </Card>
 
-### 分摊选项
+### Proration 选项
 
-更改订阅计划时，您有两种方式处理即时收费：
+更改订阅计划时，您可以选择以下两种方式处理即时扣款：
 
 #### 1. `prorated_immediately`
-- 根据当前计费周期的剩余时间计算分摊金额
+- 根据当前 billing cycle 的剩余时间计算按比例分摊的金额
 - 仅向客户收取新旧计划之间的差额
-- 在试用期间，这将立即将用户切换到新计划，并立即向客户收费
+- 在试用期内，这会立即将用户切换到新计划，并立即向客户收费
 
 #### 2. `full_immediately`
-- 向客户收取新计划的全部订阅金额
-- 忽略以前计划的任何剩余时间或积分
-- 在您想要重置计费周期或无论分摊如何都要收取全部金额时使用
+- 向客户收取新计划的完整 subscription amount
+- 忽略之前计划的剩余时间或 credits
+- 适用于您希望重置 billing cycle，或无论 proration 如何都收取完整金额的情况
 
 #### 3. `difference_immediately`
-- 升级时，客户会立即被收取两个计划金额之间的差额。
-- 例如，如果当前计划为 30 美元，客户升级到 80 美元，则立即收取 50 美元。
-- 降级时，当前计划的未使用金额将被添加为内部积分，并自动应用于未来的订阅续订。
-- 例如，如果当前计划为 50 美元，客户转换到 20 美元计划，剩余的 30 美元将被记入并用于下一个计费周期。
+- 升级时，立即向客户收取两个计划金额之间的差额。
+- 例如，如果当前计划为 30 Dollars，客户升级到 80 Dollars，则会立即收取 \$50。
+- 降级时，当前计划的未使用金额会添加为 internal credit，并自动用于抵扣未来的订阅续订费用。
+- 例如，如果当前计划为 50 Dollars，客户切换到 20 Dollars 的计划，则剩余的 \$30 会记为 credit，并用于下一个 billing cycle。
+
+#### 4. `do_not_bill`
+- 立即应用计划变更，但在变更时**不会**收取任何费用。
+- 更新后的计划（以及 quantity/add-ons）会在**下一次计划续订**时计费，并且会**保留原 billing date**。
+
+<Warning>
+**所有三种“立即扣款”模式都会重置 billing cycle。** `prorated_immediately`、`difference_immediately` 和 `full_immediately` 会将订阅的 `next_billing_date` 移至变更日期。只有 `do_not_bill` 会保留原续订日期，但不会立即扣款。
+</Warning>
 
 ### 行为
 
-- 当您调用此 API 时，Dodo Payments 会立即根据您的分摊选项发起收费
-- 如果计划更改是降级并且您使用 `prorated_immediately`，将自动计算积分并添加到订阅的积分余额中。这些积分是特定于该订阅的，只会用于抵消同一订阅的未来定期付款
-- `full_immediately` 选项绕过积分计算并收取完整的新计划金额
+- 调用此 API 时，Dodo Payments 会根据您选择的 proration 选项立即发起扣款
+- 如果计划变更为降级，并且您使用 `prorated_immediately`，系统会自动计算 credits 并将其添加到订阅的 credit balance 中。这些 credits 专属于该订阅，只会用于抵扣同一订阅未来的 recurring payments
+- `full_immediately` 选项会跳过 credit calculations，并收取新计划的完整金额
 
 <Tip>
-**谨慎选择分摊选项**：使用 `prorated_immediately` 进行公平计费，以考虑未使用时间，或在您想要无视当前计费周期收取完整新计划金额时使用 `full_immediately`。
+**请谨慎选择 proration 选项**：如果需要根据未使用时间进行公平计费，请使用 `prorated_immediately`；如果无论当前 billing cycle 如何都要收取新计划的完整金额，请使用 `full_immediately`。
 </Tip>
 
-### 收费处理
+### 扣款处理
 
-- 计划更改时发起的即时收费通常在不到 2 分钟内完成处理
-- 如果此即时收费因任何原因失败，则订阅将自动暂停，直到问题解决
+- 计划变更时发起的即时扣款通常会在 2 分钟内完成处理
+- 如果即时扣款因任何原因失败，订阅会自动进入暂停状态，直到问题得到解决
 
 ## 按需订阅
 
 <Info>
-  按需订阅允许您灵活地向客户收费，而不仅仅是根据固定计划。此功能适用于所有账户。
+  按需订阅允许您灵活地向客户收费，而不局限于固定时间表。所有账户均可使用此功能。
 </Info>
 
 **创建按需订阅：**
 
-要创建按需订阅，请使用 [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API 端点，并在请求正文中包含 `on_demand` 字段。这允许您授权支付方式而不进行即时收费，或设置自定义初始价格。
+要创建按需订阅，请使用 [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint，并在 request body 中包含 `on_demand` 字段。这样可以在不立即扣款的情况下授权 payment method，或设置自定义初始价格。
 
-**对按需订阅收费：**
+**向按需订阅收费：**
 
-对于后续收费，请使用 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) 端点并指定该交易要向客户收取的金额。
+对于后续扣款，请使用 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint，并指定要针对该交易向客户收取的金额。
 
 <Note>
-有关完整的分步指南，包括请求/响应示例、安全重试策略和 webhook 处理，请参见<a href="/developer-resources/ondemand-subscriptions">按需订阅指南</a>。
+如需完整的分步指南（包括 request/response 示例、安全的重试策略和 webhook 处理），请参阅 <a href="/developer-resources/ondemand-subscriptions">按需订阅指南</a>。
 </Note>
+
+## 关于订阅计费的关键事项
+
+<Warning>
+**将订阅周期设置得长于付款频率。** 如果 subscription period 等于 payment frequency（例如 period = 1 month、frequency = 1 month），订阅只对**一个周期**有效，随后会进入 `expired`，而不是续订。对于持续的月度计划，请设置较长的 subscription period（例如 20 年），并使用月度 payment frequency。
+</Warning>
+
+<Warning>
+**货币会在首次成功扣款时锁定。** 创建 checkout 时，请始终明确传递 `billing_currency` **和** `billing_address.country`。如果省略，系统会根据客户的 IP 检测货币（Adaptive Currency）；订阅首次扣款后，货币将在其生命周期内固定不变。客户之后旅行也无法切换货币。
+</Warning>
+
+<Info>
+**试用期执行的是 \$0 授权，而不是扣款。** 当订阅包含试用期时，试用期开始会创建一次 **\$0 mandate authorization** 以保存卡片；首次实际扣款会在试用期结束时发生。在 payments list 中，处于试用期的订阅会显示一笔且仅一笔包含 `amount: 0` 的 payment。
+</Info>
+
+<Info>
+**订阅生命周期：** `on_hold` = 续订失败（可恢复：提示客户更新 payment method；dunning retries 适用）。`expired` = 期限结束且未续订，**无法重新激活**。客户必须重新订阅。`cancelled` = 由客户或 merchant 结束。大多数续订失败是**发卡方拒绝**（余额不足、卡片被拒绝），而不是 Dodo 错误。
+</Info>
+
+<Warning>
+**印度卡片使用 RBI e-mandate。** Off-session charges（续订和计划变更扣款）最多可能需要 **约 48 小时**才能结算，并且 **超过 ₹15,000** 的 recurring auto-debits 需要客户重新进行身份验证（因此，超过该限额的升级无法使用现有 mandate）。当一笔扣款仍处于 `processing` 状态时，同一订阅的第二笔扣款会失败，并显示 *"Cannot create new charge as previous payment is not successful yet."* 非印度卡片通常会即时确认。
+</Warning>
+
+<Tip>
+**Subscription charges 的最低金额为 \$1**（或等值货币）。金额为 `$0.01–$0.99` 的扣款会被 `product_price: value out of range` 拒绝；只有通过按需 `mandate_only` setup 才允许使用 `$0`。
+</Tip>
 
 ## 相关 API 参考
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  创建订阅产品和管理订阅生命周期的 API 参考
+  用于创建 subscription products 和管理订阅生命周期的 API 参考
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  升级、降级或更改带有分摊选项的订阅计划的 API 参考
+  用于通过 proration 选项升级、降级或更改订阅计划的 API 参考
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  更新支付方式和重新激活暂停订阅的 API 参考
+  用于更新 payment methods 和重新激活暂停订阅的 API 参考
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  更新订阅详细信息和配置的 API 参考
+  用于更新订阅详细信息和配置的 API 参考
 </Card>
 </CardGroup>

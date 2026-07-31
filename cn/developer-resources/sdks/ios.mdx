@@ -1,0 +1,198 @@
+---
+title: iOS
+sidebarTitle: iOS
+tag: "NEW"
+description: 在 iOS 应用中通过 SFSafariViewController 打开 Dodo Payments 托管的结账页面，并通过一次调用获取类型化结果。
+icon: apple
+keywords:
+  - Dodo Payments
+  - iOS SDK
+  - Swift
+  - 移动端结账 SDK
+  - SFSafariViewController
+---
+
+<Info>
+这是官方的 Dodo Payments Swift iOS 结账 SDK。它会在原生浏览器视图中打开 Dodo 托管的结账页面，并返回类型化结果。
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  从你的 backend 创建此 SDK 打开的 checkout_url。
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  了解它如何融入完整的移动端支付流程。
+</Card>
+</CardGroup>
+
+iOS SDK 会在 `SFSafariViewController` 中打开 Dodo 托管的结账页面，不持有 API key，也不会直接调用 Dodo API。所有结账逻辑都在浏览器中运行；SDK 只负责管理视图生命周期并捕获返回 URL。
+
+需要 iOS 16+ 和 Swift 6。
+
+## 安装
+
+<Steps>
+<Step title="Add the Package">
+在 Xcode 中，前往 **File → Add Package Dependencies** 并输入：
+
+```
+https://github.com/dodopayments/dodopayments-mobile-sdk-ios
+```
+
+选择 1.0.0 或更高版本。
+
+或者，将其添加到你的 `Package.swift`：
+
+```swift Package.swift
+.package(url: "https://github.com/dodopayments/dodopayments-mobile-sdk-ios", from: "1.0.0")
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+你的应用必须注册 URL scheme，以接收结账页面返回的 URL。将以下内容添加到你的 `Info.plist`：
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+你也可以通过 Xcode 的 **Info → URL Types** UI 添加此配置。
+</Step>
+</Steps>
+
+## 使用
+
+```swift
+import DodoCheckout
+
+let result = try await DodoCheckout.start(
+    checkoutUrl: checkoutUrl,   // from your backend's checkout session
+    returnUrl: URL(string: "myapp://checkout/return")!,
+    onEvent: { event in print(event.name) }  // logging only
+)
+
+switch result.status {
+case .succeeded: showSuccess(result.paymentId)
+case .failed:    showFailure()
+case .cancelled: dismiss()
+case .pending:   showPending()
+case .expired:   showExpired()
+}
+```
+
+## 转发返回 URL
+
+`SFSafariViewController` 没有在进程内捕获自身返回 URL 的方式。你的应用必须将传入的 URL 转发到 SDK。
+
+<Tabs>
+<Tab title="SwiftUI">
+
+```swift
+.onOpenURL { url in
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+<Tab title="SceneDelegate">
+
+```swift SceneDelegate.swift
+func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    guard let url = URLContexts.first?.url else { return }
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+在此处转发每个 URL 都是安全的。`handleOpenURL` 只会处理与已注册 `returnUrl` 匹配的 URL，对于其他 URL 则返回 `false`。
+</Note>
+
+## 结果含义
+
+<Warning>
+`result.status` 是 UI 提示，而不是付款证明。必须通过 `payment.succeeded` / `subscription.active` webhook 从你的 backend 确认每笔付款。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+以下值之一：`succeeded`、`failed`、`cancelled`、`pending`、`expired`。
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+当返回 URL 中包含该值时设置。将其显示在 UI 中，不要使用它来授予访问权限。请参阅下方的“验证付款”。
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+适用于订阅结账。
+</ParamField>
+
+<ParamField body="licenseKeys" type="[String]?">
+当结账包含许可证密钥产品时设置。
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+当结账收集电子邮件时设置。
+</ParamField>
+
+<ParamField body="raw" type="[String: String]">
+返回 URL 中的每个 query parameter，逐字保留。
+</ParamField>
+
+## 验证付款
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  付款成功或订阅激活时，Dodo Payments 会调用你的 backend。
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  使用你的 secret key 查询 `paymentId`，直接检查其状态。
+</Card>
+</CardGroup>
+
+只有在这些方式之一确认付款后才能授予访问权限，绝不能仅凭 `result.status` 授予权限。
+
+## 错误
+
+`start` 仅会在使用错误或平台故障时抛出 `CheckoutError`。已取消或被拒绝的付款始终作为结果返回，而不是异常。
+
+- `invalidCheckoutUrl`（`INVALID_CHECKOUT_URL`）：不是 `checkout.dodopayments.com` session URL。
+- `invalidReturnUrl`（`INVALID_RETURN_URL`）：不是有效的绝对 URL。
+- `alreadyInProgress`（`ALREADY_IN_PROGRESS`）：结账已在运行。
+- `platformError`（`PLATFORM_ERROR`）：意外的平台故障。
+
+## 已放弃的会话
+
+<Info>
+如果应用在结账过程中被终止，请在下次启动时恢复该 session，并将其与 backend 对账。
+</Info>
+
+```swift
+import DodoCheckout
+
+if let abandoned = DodoCheckout.getAbandonedSession() {
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession()
+}
+```
+
+## 相关内容
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Android、React Native 和 Flutter 使用相同的契约。
+</Card>
+<Card title="React Native SDK" icon="react" href="/developer-resources/sdks/react-native">
+  在 iOS 上封装相同的 Swift 核心。
+</Card>
+</CardGroup>

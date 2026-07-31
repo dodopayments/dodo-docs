@@ -160,71 +160,83 @@ Use `subscription.updated` para receber notificações em tempo real sobre qualq
 
 **Fluxo de Pagamento Bem-Sucedido**
 
-Quando um pagamento tem sucesso, você receberá os seguintes webhooks:
+Os webhooks que você recebe e o momento em que são enviados dependem de o produto ter um período de teste.
 
-1. `subscription.active` - Indica ativação da assinatura
-2. `payment.succeeded` - Confirma o pagamento inicial:
-    - Para cobrança imediata (0 dias de teste): Esperado dentro de 2-10 minutos
-    - Para dias de teste: sempre que isso terminar
-3. `subscription.renewed` - Indica dedução de pagamento e renovação para o próximo ciclo. (Basicamente, sempre que o pagamento for deduzido para produtos de assinatura, você receberá o webhook `subscription.renewed` junto com `payment.succeeded`)
+_Cobrança imediata (0 dias de teste):_
 
-**Cenários de Falha de Pagamento**
+1. `subscription.active`: o mandato é autorizado e a assinatura é ativada.
+2. `payment.succeeded`: confirma a primeira cobrança. Espere recebê-lo em **2 a 10 minutos** após o checkout.
 
-1. Falha na Assinatura
-  - `subscription.failed` - Falha na criação da assinatura devido a falha na criação do mandato.
-  - `payment.failed` - Indica falha no pagamento.
+_Com um período de teste:_
 
-2. Assinatura em Suspenso
-  - `subscription.on_hold` - Assinatura suspensa devido a falha no pagamento de renovação ou falha na cobrança de alteração de plano.
-  - Quando uma assinatura é suspensa, ela não se renovará automaticamente até que o método de pagamento seja atualizado.
+1. **No início do teste (checkout):** `subscription.active` é disparado assim que o método de pagamento é autorizado. **Nenhuma cobrança recorrente é realizada ainda.** A primeira cobrança real é adiada até o término do teste.
+2. **No término do teste:** o valor recorrente é cobrado, e você recebe `payment.succeeded` **junto com** `subscription.renewed`.
 
-<Info>**Melhor Prática**: Para simplificar a implementação, recomendamos acompanhar principalmente os eventos de assinatura para gerenciar o ciclo de vida da assinatura.</Info>
+_A cada renovação subsequente:_
+
+- `subscription.renewed`: é disparado em cada ciclo de cobrança quando o pagamento da renovação é debitado, **sempre junto com** `payment.succeeded`. Ele também inclui o `next_billing_date` atualizado.
+
+<Info>
+Sempre que um valor é realmente debitado para um produto de assinatura, você recebe `subscription.renewed` **e** `payment.succeeded`. Use `subscription.renewed` (em vez de usar apenas `payment.succeeded`) como sinal para estender o acesso para o próximo ciclo.
+</Info>
+
+**Cenários de falha de pagamento**
+
+1. Falha na assinatura
+  - `subscription.failed` - A criação da assinatura falhou porque não foi possível criar um mandato.
+  - `payment.failed` - Indica um pagamento malsucedido.
+
+2. Assinatura suspensa
+  - `subscription.on_hold` - A assinatura é suspensa devido a uma falha no pagamento da renovação ou na cobrança da alteração do plano.
+  - Quando uma assinatura é suspensa, ela não será renovada automaticamente até que o método de pagamento seja atualizado.
+
+<Info>**Boa prática**: para simplificar a implementação, recomendamos acompanhar principalmente os eventos da assinatura para gerenciar o ciclo de vida da assinatura.</Info>
 
 <Tip>
-Para um guia completo sobre como ler `error_code`/`error_message`, decidir quando tentar novamente e apresentar falhas aos clientes, veja [Gerenciar Falhas de Pagamento](/developer-resources/handle-payment-failures).
+Para obter um passo a passo completo sobre como ler `error_code`/`error_message`, decidir quando tentar novamente e apresentar as falhas aos clientes, consulte [Como lidar com falhas de pagamento](/developer-resources/handle-payment-failures).
 </Tip>
 
 #### `subscription.failed` vs. `subscription.on_hold`
 
-Esses dois eventos são fáceis de confundir, mas requerem manuseio muito diferente:
+É fácil confundir esses dois eventos, mas eles exigem tratamentos muito diferentes:
 
-| Evento | Quando é acionado | Status | Recuperável? | O que fazer |
+| Evento | Quando é disparado | Status | Pode ser recuperado? | O que fazer |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | O **mandato inicial** não pôde ser criado na **criação** da assinatura | `failed` | **Não — terminal** | Não conceda acesso. Peça ao cliente para iniciar uma **nova** assinatura com um método de pagamento diferente. |
-| `subscription.on_hold` | Um pagamento de **renovação** (ou cobrança de alteração de plano) falhou em uma assinatura já ativa | `on_hold` | **Sim** | Recupere atualizando o método de pagamento; veja [Gerenciando Assinatura em Suspenso](#handling-subscription-on-hold) abaixo. |
+| `subscription.failed` | O mandato **inicial** não pôde ser criado durante a **criação** da assinatura | `failed` | **Não (terminal)** | Não conceda acesso. Peça ao cliente para iniciar uma **nova** assinatura com um método de pagamento diferente. |
+| `subscription.on_hold` | Um pagamento de **renovação** (ou uma cobrança de alteração de plano) falhou em uma assinatura já ativa | `on_hold` | **Sim** | Recupere atualizando o método de pagamento; consulte [Como lidar com uma assinatura suspensa](#handling-subscription-on-hold) abaixo. |
 
 <Warning>
-`subscription.failed` é terminal — a assinatura não pode ser reativada. O cliente deve criar uma nova assinatura. Nunca conceda direitos quando este evento for acionado.
+`subscription.failed` é terminal. A assinatura não pode ser reativada. O cliente deve criar uma nova assinatura. Nunca conceda direitos quando esse evento for disparado.
 </Warning>
 
-### Gerenciando Assinatura em Suspenso
+### Como lidar com uma assinatura suspensa
 
-Quando uma assinatura entra no estado `on_hold`, você precisa atualizar o método de pagamento para reativá-la. Esta seção explica quando assinaturas entram em suspenso e como gerenciá-las.
+Quando uma assinatura entra no estado `on_hold`, você precisa atualizar o método de pagamento para reativá-la. Esta seção explica quando as assinaturas são suspensas e como lidar com elas.
 
-#### Quando Assinaturas Entram em Suspenso
+#### Quando as assinaturas são suspensas
 
-Uma assinatura é colocada em suspenso quando:
+Uma assinatura é suspensa quando:
 
-- **Falha no pagamento de renovação**: A cobrança automática de renovação falha devido a fundos insuficientes, cartão expirado ou recusa do banco
-- **Falha na cobrança de alteração de plano**: Uma cobrança imediata durante uma atualização/rebaixamento de plano falha
-- **Falha na autorização do método de pagamento**: O método de pagamento não pode ser autorizado para cobranças recorrentes
+- **O pagamento da renovação falha**: a cobrança automática da renovação falha devido a fundos insuficientes, cartão expirado ou recusa do banco
+- **A cobrança da alteração do plano falha**: uma cobrança imediata durante o upgrade ou downgrade do plano falha
+- **A autorização do método de pagamento falha**: não é possível autorizar o método de pagamento para cobranças recorrentes
 
 <Warning>
-Assinaturas no estado `on_hold` não se renovarão automaticamente. Você deve atualizar o método de pagamento para reativar a assinatura.
+Assinaturas no estado `on_hold` não serão renovadas automaticamente. Você deve atualizar o método de pagamento para reativar a assinatura.
 </Warning>
 
-#### Reativando Assinaturas em Suspenso
+#### Reativando assinaturas suspensas
 
-Para reativar uma assinatura do estado `on_hold`, use a API de Atualizar Método de Pagamento. Isso automaticamente:
+Para reativar uma assinatura no estado `on_hold`, use a API Update Payment Method. Isso automaticamente:
 
-1. Cria uma cobrança para dívidas restantes
+1. Cria uma cobrança pelos valores pendentes
 2. Gera uma fatura para a cobrança
 3. Processa o pagamento usando o novo método de pagamento
-4. Reativa a assinatura para o estado `active` após pagamento bem-sucedido
+4. Reativa a assinatura para o estado `active` após o pagamento bem-sucedido
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Quando você recebe um webhook `subscription.on_hold`, atualize o estado de seu aplicativo e notifique o cliente:
+Ao receber um webhook `subscription.on_hold`, atualize o estado da sua aplicação e notifique o cliente:
 
 ```javascript
 // Webhook handler
@@ -251,7 +263,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-Quando o cliente estiver pronto para atualizar o método de pagamento, chame a API de Atualizar Método de Pagamento:
+Quando o cliente estiver pronto para atualizar o método de pagamento, chame a API Update Payment Method:
 
 <CodeGroup>
 
@@ -301,7 +313,7 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 <Step title="Monitor webhook events">
 Após atualizar o método de pagamento, monitore estes eventos de webhook:
 
-1. **`payment.succeeded`** - A cobrança para dívidas restantes foi bem-sucedida
+1. **`payment.succeeded`** - A cobrança pelos valores pendentes foi bem-sucedida
 2. **`subscription.active`** - A assinatura foi reativada
 
 ```javascript
@@ -334,91 +346,125 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Exemplo de Payload de Evento de Assinatura
+### Exemplo de payload de evento de assinatura
 
 ---
 
 | Propriedade | Tipo | Obrigatório | Descrição |
 |----------|------|----------|-------------|
-| `business_id` | string | Sim | O identificador único para o negócio |
-| `timestamp` | string | Sim | O timestamp de quando o evento ocorreu (não necessariamente o mesmo de quando foi entregue) |
-| `type` | string | Sim | O tipo de evento. Veja [Tipos de Evento](#event-types) |
-| `data` | objeto | Sim | O payload de dados principal. Veja [Objeto de Dados](#data-object) |
+| `business_id` | string | Sim | O identificador exclusivo da empresa |
+| `timestamp` | string | Sim | O timestamp de quando o evento ocorreu (não necessariamente o mesmo momento em que foi entregue) |
+| `type` | string | Sim | O tipo de evento. Consulte [Tipos de evento](#event-types) |
+| `data` | object | Sim | O payload principal de dados. Consulte [Objeto de dados](#data-object) |
 
-## Mudança nos Planos de Assinatura
+## Alterando planos de assinatura
 
-Você pode fazer upgrade ou downgrade de um plano de assinatura usando o endpoint da API de mudança de plano. Isso permite que você modifique o produto da assinatura, quantidade e manipule prorratações.
+Você pode fazer upgrade ou downgrade de um plano de assinatura usando o endpoint da API de alteração de plano. Isso permite modificar o produto, a quantidade e tratar o rateio proporcional da assinatura.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Para informações detalhadas sobre mudança de planos de assinatura, por favor, consulte nossa documentação da API de Mudança de Plano.
+  Para obter informações detalhadas sobre como alterar planos de assinatura, consulte nossa documentação da API Change Plan.
 </Card>
 
-### Opções de Prorratação
+### Opções de rateio proporcional
 
-Ao mudar de planos de assinatura, você tem duas opções para lidar com a cobrança imediata:
+Ao alterar planos de assinatura, você tem duas opções para tratar a cobrança imediata:
 
 #### 1. `prorated_immediately`
-- Calcula o valor prorrateado com base no tempo restante no ciclo de cobrança atual
+- Calcula o valor proporcional com base no tempo restante do ciclo de cobrança atual
 - Cobra do cliente apenas a diferença entre o plano antigo e o novo
-- Durante um período de teste, isso mudará imediatamente o usuário para o novo plano, cobrando imediatamente do cliente
+- Durante um período de teste, isso muda imediatamente o usuário para o novo plano, cobrando o cliente na hora
 
 #### 2. `full_immediately`
-- Cobra do cliente o valor total da assinatura para o novo plano
-- Ignora qualquer tempo restante ou créditos do plano anterior
-- Útil quando você deseja reiniciar o ciclo de cobrança ou cobrar o valor total, independentemente da prorratação
+- Cobra do cliente o valor integral da assinatura do novo plano
+- Ignora qualquer tempo ou crédito restante do plano anterior
+- Útil quando você deseja redefinir o ciclo de cobrança ou cobrar o valor integral independentemente do rateio proporcional
 
 #### 3. `difference_immediately`
-- Ao fazer upgrade, o cliente é imediatamente cobrado pela diferença entre os valores dos dois planos.
-- Por exemplo, se o plano atual for 30 Dólares e o cliente fizer um upgrade para 80 Dólares, ele será cobrado $50 instantaneamente.
-- Ao fazer downgrade, o valor não utilizado do plano atual é adicionado como crédito interno e aplicado automaticamente às renovações futuras da assinatura.
-- Por exemplo, se o plano atual for 50 Dólares e o cliente mudar para um plano de 20 Dólares, os $30 restantes são creditados e usados no próximo ciclo de cobrança.
+- Ao fazer upgrade, o cliente é cobrado imediatamente pela diferença entre os valores dos dois planos.
+- Por exemplo, se o plano atual custa 30 dólares e o cliente fizer upgrade para um plano de 80 dólares, serão cobrados \$50 instantaneamente. 
+- Ao fazer downgrade, o valor não utilizado do plano atual é adicionado como crédito interno e aplicado automaticamente às futuras renovações da assinatura.
+- Por exemplo, se o plano atual custa 50 dólares e o cliente mudar para um plano de 20 dólares, os \$30 restantes serão creditados e usados no próximo ciclo de cobrança.
+
+#### 4. `do_not_bill`
+- Aplica a alteração do plano imediatamente, mas **não** cobra nada no momento da alteração.
+- O plano atualizado (e a quantidade/add-ons) será cobrado na **próxima renovação programada**, e a **data de cobrança original será preservada**.
+
+<Warning>
+**Todos os três modos de "cobrar agora" redefinem o ciclo de cobrança.** `prorated_immediately`, `difference_immediately` e `full_immediately` movem o `next_billing_date` da assinatura para a data da alteração. Somente `do_not_bill` mantém a data de renovação original, mas não aplica nenhuma cobrança imediata.
+</Warning>
 
 ### Comportamento
 
-- Ao invocar esta API, o Dodo Payments inicia imediatamente uma cobrança com base na opção de prorratação selecionada
-- Se a mudança de plano for um downgrade e você usar `prorated_immediately`, os créditos serão calculados automaticamente e adicionados ao saldo de créditos da assinatura. Estes créditos são específicos para essa assinatura e serão usados apenas para compensar pagamentos recorrentes futuros da mesma assinatura
-- A opção `full_immediately` ignora cálculos de créditos e cobra o valor total do novo plano
+- Quando você chama esta API, Dodo Payments inicia imediatamente uma cobrança com base na opção de rateio proporcional selecionada
+- Se a alteração do plano for um downgrade e você usar `prorated_immediately`, os créditos serão calculados e adicionados automaticamente ao saldo de créditos da assinatura. Esses créditos são específicos dessa assinatura e serão usados somente para compensar pagamentos recorrentes futuros da mesma assinatura
+- A opção `full_immediately` ignora os cálculos de crédito e cobra o valor integral do novo plano
 
 <Tip>
-**Escolha sua opção de prorratação com cuidado**: Use `prorated_immediately` para cobranças justas que consideram o tempo não utilizado, ou `full_immediately` quando você deseja cobrar o valor total do novo plano, independentemente do ciclo de cobrança atual.
+**Escolha cuidadosamente a opção de rateio proporcional**: use `prorated_immediately` para uma cobrança justa que considere o tempo não utilizado ou `full_immediately` quando quiser cobrar o valor integral do novo plano independentemente do ciclo de cobrança atual.
 </Tip>
 
-### Processamento de Cobrança
+### Processamento da cobrança
 
-- A cobrança imediata iniciada após a mudança de plano geralmente completa o processamento em menos de 2 minutos
-- Se essa cobrança imediata falhar por qualquer motivo, a assinatura é automaticamente colocada em suspenso até que o problema seja resolvido
+- A cobrança imediata iniciada após a alteração do plano geralmente termina de ser processada em menos de 2 minutos
+- Se essa cobrança imediata falhar por qualquer motivo, a assinatura será automaticamente suspensa até que o problema seja resolvido
 
-## Assinaturas Sob Demanda
+## Assinaturas sob demanda
 
 <Info>
-  Assinaturas sob demanda permitem que você cobre clientes de forma flexível, não apenas em um cronograma fixo. Este recurso está disponível para todas as contas.
+  As assinaturas sob demanda permitem cobrar dos clientes com flexibilidade, e não apenas em uma programação fixa. Esse recurso está disponível para todas as contas.
 </Info>
 
 **Para criar uma assinatura sob demanda:**
 
-Para criar uma assinatura sob demanda, use o endpoint da API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e inclua o campo `on_demand` no corpo da sua solicitação. Isso permite autorizar um método de pagamento sem uma cobrança imediata ou definir um preço inicial personalizado.
+Para criar uma assinatura sob demanda, use o endpoint da API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e inclua o campo `on_demand` no corpo da solicitação. Isso permite autorizar um método de pagamento sem uma cobrança imediata ou definir um preço inicial personalizado.
 
 **Para cobrar uma assinatura sob demanda:**
 
-Para cobranças subsequentes, use o endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) e especifique o valor a ser cobrado do cliente para essa transação.
+Para cobranças subsequentes, use o endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) e especifique o valor a ser cobrado do cliente nessa transação.
 
 <Note>
-Para um guia completo, passo a passo — incluindo exemplos de solicitações/respostas, políticas de nova tentativa seguras e manuseio de webhooks — veja o <a href="/developer-resources/ondemand-subscriptions">Guia de Assinaturas Sob Demanda</a>.
+Para obter um guia completo e passo a passo (incluindo exemplos de solicitação/resposta, políticas de nova tentativa seguras e tratamento de webhooks), consulte o <a href="/developer-resources/ondemand-subscriptions">Guia de assinaturas sob demanda</a>.
 </Note>
 
-## Referência de API Relacionada
+## Principais informações sobre a cobrança de assinaturas
+
+<Warning>
+**Defina o período da assinatura como maior que a frequência de pagamento.** Se o período da assinatura for igual à frequência de pagamento (por exemplo, período = 1 mês, frequência = 1 mês), a assinatura será válida por um **único ciclo** e passará para `expired` em vez de ser renovada. Para um plano mensal contínuo, defina um período de assinatura longo (por exemplo, 20 anos) com uma frequência de pagamento mensal.
+</Warning>
+
+<Warning>
+**A moeda é definida na primeira cobrança bem-sucedida.** Sempre informe `billing_currency` **e** `billing_address.country` explicitamente ao criar o checkout. Se omitidos, eles serão detectados a partir do IP do cliente (Adaptive Currency); depois que a assinatura receber sua primeira cobrança, a moeda será fixada durante toda a sua vigência. Um cliente que viajar posteriormente não poderá alterá-la.
+</Warning>
+
+<Info>
+**Os períodos de teste fazem uma autorização de \$0, não uma cobrança.** Quando uma assinatura tem um período de teste, o início do teste cria uma **autorização de mandato de \$0** para salvar o cartão; a primeira cobrança real ocorre quando o teste termina. Na lista de pagamentos, uma assinatura em período de teste exibe exatamente um pagamento com `amount: 0`.
+</Info>
+
+<Info>
+**Ciclo de vida da assinatura:** `on_hold` = uma renovação falhou (recuperável: solicite ao cliente que atualize o método de pagamento; novas tentativas de cobrança são aplicadas). `expired` = o período terminou sem renovação e **não pode ser reativado**. O cliente deve assinar novamente. `cancelled` = encerrada pelo cliente ou pelo merchant. A maioria das falhas de renovação são **recusas do emissor** (fundos insuficientes, cartão recusado), não um erro da Dodo.
+</Info>
+
+<Warning>
+**Cartões indianos usam um e-mandato do RBI.** Cobranças off-session (renovações e cobranças de alteração de plano) podem levar **até aproximadamente 48 horas** para serem liquidadas, e débitos automáticos recorrentes **acima de ₹15.000** exigem uma nova autenticação do cliente (portanto, um upgrade que ultrapasse esse limite não pode usar o mandato existente). Enquanto uma cobrança ainda estiver `processing`, uma segunda cobrança na mesma assinatura falhará com *"Cannot create new charge as previous payment is not successful yet."* Cartões de fora da Índia são confirmados quase instantaneamente.
+</Warning>
+
+<Tip>
+**As cobranças de assinatura têm um mínimo de \$1** (ou o equivalente na moeda). Valores de `$0.01–$0.99` são rejeitados com `product_price: value out of range`; somente `$0` é permitido, por meio de uma configuração sob demanda `mandate_only`.
+</Tip>
+
+## Referência de API relacionada
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  Referência de API para criar produtos de assinatura e gerenciar o ciclo de vida de assinatura
+  Referência da API para criar produtos de assinatura e gerenciar o ciclo de vida das assinaturas
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Referência de API para fazer upgrade, downgrade ou mudar planos de assinatura com opções de prorratação
+  Referência da API para fazer upgrade, downgrade ou alterar planos de assinatura com opções de rateio proporcional
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  Referência de API para atualizar métodos de pagamento e reativar assinaturas em suspenso
+  Referência da API para atualizar métodos de pagamento e reativar assinaturas suspensas
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  Referência de API para atualizar detalhes e configuração de assinaturas
+  Referência da API para atualizar detalhes e configurações de assinaturas
 </Card>
 </CardGroup>
