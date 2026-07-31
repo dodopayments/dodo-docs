@@ -5,7 +5,7 @@ info:
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
-  version: 1.110.1
+  version: 1.111.2
 servers:
   - url: https://test.dodopayments.com/
     description: Test Mode Server Host
@@ -16874,7 +16874,9 @@ paths:
           style: form
         - name: page_number
           in: query
-          description: Page number default is 0
+          description: |-
+            Page number default is 0. Capped to bound OFFSET-based deep pagination,
+            which forces Postgres to scan and discard every preceding row.
           required: false
           schema:
             type: integer
@@ -32751,19 +32753,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CustomerCreditEntitlementItem"
-    CustomerCta:
-      type: string
-      description: |-
-        The single primary call-to-action shown to the customer, driven by the
-        decline framing per the PRD (§5.2 / §6).
-      enum:
-        - edit_and_retry
-        - use_another_method
-        - try_again
-        - try_later
-        - retry_and_verify
-        - restart
-        - update_method
     CustomerEligibility:
       type: string
       description: |-
@@ -32995,30 +32984,6 @@ components:
           type:
             - string
             - "null"
-    CustomerTemplateId:
-      type: string
-      description: One of the ~20 reusable customer message templates (PRD §6).
-      enum:
-        - C1
-        - C2
-        - C3
-        - C4
-        - C5
-        - C6
-        - C7
-        - C8
-        - C9
-        - C10
-        - C11
-        - C12
-        - C13
-        - C14
-        - C15
-        - C16
-        - C17
-        - C18
-        - C19
-        - C20
     CustomerWalletResponse:
       type: object
       required:
@@ -33120,12 +33085,6 @@ components:
           type: string
         license_key_instance_id:
           type: string
-    DeclineType:
-      type: string
-      description: Whether retrying the same payment method is worthwhile.
-      enum:
-        - soft
-        - hard
     DigitalProductDelivery:
       type: object
       title: Digital Product Delivery
@@ -33822,7 +33781,7 @@ components:
         - subscription.updated
         - subscription.update_payment_method
         - license_key.created
-        - payout.not_initiated
+        - payout.created
         - payout.on_hold
         - payout.in_progress
         - payout.failed
@@ -33854,43 +33813,6 @@ components:
           type: string
         event_id:
           type: string
-    FailureMessaging:
-      type: object
-      description: |-
-        Resolved, audience-ready messaging for a failed payment, suitable for embedding in
-        API responses and the `payment.failed` webhook.
-      required:
-        - code
-        - decline_type
-        - customer_fixable
-        - merchant_message
-        - customer_template
-        - customer_message
-        - customer_cta
-      properties:
-        code:
-          type: string
-          description: The unified error code (echoes `error_code`).
-        customer_cta:
-          $ref: "#/components/schemas/CustomerCta"
-          description: The primary CTA to show the customer.
-        customer_fixable:
-          type: boolean
-          description: Whether the customer can resolve this themselves (e.g. fix CVC).
-        customer_message:
-          type: string
-          description: The customer-facing string. Always generic (`C11`) for the fraud-4.
-        customer_template:
-          $ref: "#/components/schemas/CustomerTemplateId"
-          description: The customer message template identifier (C1..C20).
-        decline_type:
-          $ref: "#/components/schemas/DeclineType"
-          description: Soft or hard decline.
-        merchant_message:
-          type: string
-          description: |-
-            Merchant-facing headline + recommended action (Payment Details). For the fraud-4
-            this includes the operator "do not reveal" warning.
     Feature:
       type: object
       description: Capability conferred by a `feature_flag` grant.
@@ -36089,6 +36011,19 @@ components:
                   x-stainless-const: true
           title: License Key
         - allOf:
+            - $ref: "#/components/schemas/PayoutsResponse"
+            - type: object
+              title: PayoutWebhookPayload
+              required:
+                - payload_type
+              properties:
+                payload_type:
+                  type: string
+                  enum:
+                    - Payout
+                  x-stainless-const: true
+          title: Payout
+        - allOf:
             - $ref: "#/components/schemas/CreditLedgerEntryResponse"
             - type: object
               title: Credit Ledger EntryWebhookPayload
@@ -37177,17 +37112,10 @@ components:
           type:
             - string
             - "null"
-          description: An error message if the payment failed
-        failure_details:
-          oneOf:
-            - type: "null"
-            - $ref: "#/components/schemas/FailureMessaging"
-              description: |-
-                Purpose-built failure messaging for the merchant and the customer, derived
-                from `error_code`. Present whenever `error_code` is set, regardless of payment
-                status; unrecognised codes still resolve via a generic fallback rather than
-                being omitted. The customer copy is always generic for fraud-sensitive
-                declines (lost/stolen/pickup/fraudulent) so the true reason is never leaked.
+          description: |-
+            An error message if the payment failed. When `error_code` is a recognised
+            unified code, this is the merchant-facing headline + recommended action
+            (Payment Details copy) rather than the raw connector text.
         invoice_id:
           type:
             - string
@@ -40768,15 +40696,7 @@ webhooks:
                 discounts: null
                 disputes: []
                 error_code: PROCESSING_ERROR
-                error_message: An error occurred while processing your card. Try again in a little bit.
-                failure_details:
-                  code: PROCESSING_ERROR
-                  customer_cta: try_again
-                  customer_fixable: false
-                  customer_message: Something went wrong while processing your payment. Please try again in a few moments.
-                  customer_template: C16
-                  decline_type: soft
-                  merchant_message: An error occurred while processing. Transient — retry; if it persists, ask the customer to contact their bank.
+                error_message: An error occurred while processing. Transient — retry; if it persists, ask the customer to contact their bank.
                 invoice_id: inv_2IsUnWGtRKFLxk7xAQeyt
                 invoice_url: https://api.dodopayments.com/invoices/payments/pay_2IjeQm4hqU6RA4Z4kwDee
                 is_update_payment_method: false
@@ -40874,15 +40794,7 @@ webhooks:
                 discounts: null
                 disputes: []
                 error_code: PROCESSING_ERROR
-                error_message: An error occurred while processing your card. Try again in a little bit.
-                failure_details:
-                  code: PROCESSING_ERROR
-                  customer_cta: try_again
-                  customer_fixable: false
-                  customer_message: Something went wrong while processing your payment. Please try again in a few moments.
-                  customer_template: C16
-                  decline_type: soft
-                  merchant_message: An error occurred while processing. Transient — retry; if it persists, ask the customer to contact their bank.
+                error_message: An error occurred while processing. Transient — retry; if it persists, ask the customer to contact their bank.
                 invoice_id: inv_2IsUnWGtRKFLxk7xAQeyt
                 invoice_url: https://api.dodopayments.com/invoices/payments/pay_2IjeQm4hqU6RA4Z4kwDee
                 is_update_payment_method: false
@@ -40981,7 +40893,6 @@ webhooks:
                 disputes: []
                 error_code: null
                 error_message: null
-                failure_details: null
                 invoice_id: inv_2IsUnWGtRKFLxk7xAQeyt
                 invoice_url: https://api.dodopayments.com/invoices/payments/pay_2IjeQm4hqU6RA4Z4kwDee
                 is_update_payment_method: false
@@ -41080,7 +40991,6 @@ webhooks:
                 disputes: []
                 error_code: null
                 error_message: null
-                failure_details: null
                 invoice_id: inv_2IsUnWGtRKFLxk7xAQeyt
                 invoice_url: https://api.dodopayments.com/invoices/payments/pay_2IjeQm4hqU6RA4Z4kwDee
                 is_update_payment_method: false
@@ -41141,6 +41051,311 @@ webhooks:
         "401":
           description: Invalid webhook signature
       summary: Payment succeeded webhook
+  payout.created:
+    post:
+      description: Sent when a payout is created and queued for processing
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                additional_docs: []
+                amount: 102345
+                business_id: bus_H4ekzPSlcg
+                chargebacks: 0
+                created_at: 2025-08-04T05:30:00Z
+                currency: USD
+                fee: 500
+                name: null
+                payload_type: Payout
+                payment_method: bank_transfer
+                payout_document_url: https://app.dodopayments.com/invoices/payouts/pyt_zFTrrn4sk3x3y2vjDBW3T
+                payout_id: pyt_zFTrrn4sk3x3y2vjDBW3T
+                refunds: 0
+                remarks: null
+                status: not_initiated
+                tax: 0
+                updated_at: 2025-08-04T05:30:00Z
+              timestamp: 2025-08-04T05:30:00.000000Z
+              type: payout.created
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/PayoutsResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - payout.created
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: PayoutCreatedPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Payout created webhook
+  payout.failed:
+    post:
+      description: Sent when a payout attempt fails and the funds are credited back to the wallet
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                additional_docs: []
+                amount: 102345
+                business_id: bus_H4ekzPSlcg
+                chargebacks: 0
+                created_at: 2025-08-04T05:30:00Z
+                currency: USD
+                fee: 500
+                name: null
+                payload_type: Payout
+                payment_method: bank_transfer
+                payout_document_url: https://app.dodopayments.com/invoices/payouts/pyt_zFTrrn4sk3x3y2vjDBW3T
+                payout_id: pyt_zFTrrn4sk3x3y2vjDBW3T
+                refunds: 0
+                remarks: null
+                status: failed
+                tax: 0
+                updated_at: 2025-08-04T05:30:00Z
+              timestamp: 2025-08-04T05:30:00.000000Z
+              type: payout.failed
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/PayoutsResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - payout.failed
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: PayoutFailedPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Payout failed webhook
+  payout.in_progress:
+    post:
+      description: Sent when a payout is handed to the banking rails
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                additional_docs: []
+                amount: 102345
+                business_id: bus_H4ekzPSlcg
+                chargebacks: 0
+                created_at: 2025-08-04T05:30:00Z
+                currency: USD
+                fee: 500
+                name: null
+                payload_type: Payout
+                payment_method: bank_transfer
+                payout_document_url: https://app.dodopayments.com/invoices/payouts/pyt_zFTrrn4sk3x3y2vjDBW3T
+                payout_id: pyt_zFTrrn4sk3x3y2vjDBW3T
+                refunds: 0
+                remarks: null
+                status: in_progress
+                tax: 0
+                updated_at: 2025-08-04T05:30:00Z
+              timestamp: 2025-08-04T05:30:00.000000Z
+              type: payout.in_progress
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/PayoutsResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - payout.in_progress
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: PayoutInProgressPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Payout in progress webhook
+  payout.on_hold:
+    post:
+      description: Sent when a payout is put on hold
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                additional_docs: []
+                amount: 102345
+                business_id: bus_H4ekzPSlcg
+                chargebacks: 0
+                created_at: 2025-08-04T05:30:00Z
+                currency: USD
+                fee: 500
+                name: null
+                payload_type: Payout
+                payment_method: bank_transfer
+                payout_document_url: https://app.dodopayments.com/invoices/payouts/pyt_zFTrrn4sk3x3y2vjDBW3T
+                payout_id: pyt_zFTrrn4sk3x3y2vjDBW3T
+                refunds: 0
+                remarks: null
+                status: on_hold
+                tax: 0
+                updated_at: 2025-08-04T05:30:00Z
+              timestamp: 2025-08-04T05:30:00.000000Z
+              type: payout.on_hold
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/PayoutsResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - payout.on_hold
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: PayoutOnHoldPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Payout on hold webhook
+  payout.success:
+    post:
+      description: Sent when a payout is paid out to the merchant's account
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                additional_docs: []
+                amount: 102345
+                business_id: bus_H4ekzPSlcg
+                chargebacks: 0
+                created_at: 2025-08-04T05:30:00Z
+                currency: USD
+                fee: 500
+                name: null
+                payload_type: Payout
+                payment_method: bank_transfer
+                payout_document_url: https://app.dodopayments.com/invoices/payouts/pyt_zFTrrn4sk3x3y2vjDBW3T
+                payout_id: pyt_zFTrrn4sk3x3y2vjDBW3T
+                refunds: 0
+                remarks: null
+                status: success
+                tax: 0
+                updated_at: 2025-08-04T05:30:00Z
+              timestamp: 2025-08-04T05:30:00.000000Z
+              type: payout.success
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/PayoutsResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - payout.success
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: PayoutSuccessPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Payout success webhook
   refund.failed:
     post:
       description: Sent when a refund fails to process
