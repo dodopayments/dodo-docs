@@ -1,0 +1,214 @@
+---
+title: Android
+sidebarTitle: Android
+tag: "NEW"
+description: Ouvrez le checkout hébergé de Dodo Payments depuis une application
+  Android dans un Chrome Custom Tab et récupérez un résultat typé en un seul
+  appel.
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - SDK de checkout mobile
+  - Custom Tabs
+---
+
+<Info>
+Il s'agit du SDK officiel de checkout Android (`com.dodopayments.api:checkout-android`),
+pour ouvrir le checkout hébergé de Dodo. Il est distinct du
+[SDK Kotlin backend](/developer-resources/sdks/kotlin), qui appelle l'API Dodo
+Payments depuis votre serveur.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    Créez le `checkout_url` que ce SDK ouvre
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Bonnes pratiques pour les parcours de checkout mobile
+  </Card>
+</CardGroup>
+
+Le SDK Android ouvre le checkout hébergé de Dodo dans un Chrome Custom Tab à l'aide de `androidx.browser.customtabs`. Il ne contient aucun code réseau et ne stocke aucune clé API. Vous transmettez un `checkoutUrl` provenant de la session de checkout de votre backend, et le SDK renvoie un `CheckoutResult` typé lorsque l'utilisateur termine ou abandonne le parcours.
+
+**Prérequis :** `minSdk` 23, Kotlin, Java 17.
+
+## Installation
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+Définissez votre schéma de callback comme placeholder de manifeste Gradle. Le manifeste propre à la bibliothèque déclare déjà le filtre d'intention de l'activité de redirection à l'aide du token `${dodoCallbackScheme}`. Cette propriété constitue donc toute la configuration nécessaire : vous n'ajoutez aucun fichier XML au manifeste :
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+La valeur doit correspondre au schéma dans `CheckoutParams.returnUrl` (par exemple `myapp://checkout/return`).
+
+<Note>
+Si vous omettez complètement le placeholder, le build échoue immédiatement avec une erreur de placeholder non résolu, au lieu d'échouer silencieusement au moment du checkout. Si vous le définissez, mais qu'il ne correspond pas au schéma de `returnUrl`, `DodoCheckout.start` lève `PLATFORM_ERROR` avant d'afficher quoi que ce soit.
+</Note>
+</Step>
+</Steps>
+
+## Utilisation
+
+Le SDK prend en charge deux styles d'appel.
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+Enregistrez le contrat avec `registerForActivityResult`, puis lancez-le :
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+Préférez ce style. Le résultat est transmis via le `ActivityResultRegistry` géré par le système d'exploitation Android, ce qui lui permet de survivre à la mort du processus.
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+Appelez `DodoCheckout.start` depuis un scope de coroutine :
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+Ce style résout un `CompletableDeferred` en mémoire et ne survit donc **pas** à la mort du processus. `onEvent` est disponible uniquement ici, et non sur le contrat.
+</Warning>
+</Tab>
+</Tabs>
+
+## Signification du résultat
+
+<Warning>
+Le champ `status` est un indice pour l'interface utilisateur, et non une preuve de paiement. Vérifiez toujours le paiement sur votre backend à l'aide de webhooks ou du endpoint Get Payment Detail avant d'accorder l'accès.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+L'un des éléments suivants : `SUCCEEDED`, `FAILED`, `CANCELLED`, `PENDING`, `EXPIRED`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Défini lorsque l'URL de retour en contient un. Affichez-le dans l'interface utilisateur, mais ne l'utilisez pas pour accorder l'accès. Consultez la section Vérifier le paiement ci-dessous.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Défini pour les checkouts d'abonnement.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+Défini lorsque le checkout inclut des produits avec des clés de licence.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Défini lorsque le checkout recueille une adresse e-mail.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+Chaque paramètre de requête de l'URL de retour, mot pour mot.
+</ParamField>
+
+## Vérifier le paiement
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    Écoutez les événements de paiement en temps réel
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    Interrogez le statut du paiement à la demande
+  </Card>
+</CardGroup>
+
+N'accordez l'accès à l'utilisateur qu'après confirmation du paiement par l'un de ces mécanismes. Ne vous fiez pas uniquement à `CheckoutResult.status`.
+
+## Erreurs
+
+`DodoCheckout.start` lève `CheckoutError` uniquement en cas de mauvaise utilisation ou de défaillance de la plateforme. Lisez le code depuis `CheckoutError.code` :
+
+- `INVALID_CHECKOUT_URL` : session URL qui n'est pas une `checkout.dodopayments.com` valide.
+- `INVALID_RETURN_URL` : URL absolue non valide.
+- `ALREADY_IN_PROGRESS` : un checkout est déjà en cours.
+- `PLATFORM_ERROR` : défaillance inattendue de la plateforme, notamment lorsque le schéma de `returnUrl` ne correspond pas à votre placeholder `dodoCallbackScheme`.
+
+L'annulation par l'utilisateur ou le refus d'un paiement produit toujours un résultat (`CANCELLED` ou `FAILED`), et ne lève jamais d'erreur. Avec le style launcher, les erreurs de validation sont propagées depuis `launcher.launch(...)`.
+
+## Sessions abandonnées
+
+Si l'application est arrêtée ou si l'utilisateur l'arrête de force pendant le checkout, le SDK stocke la session localement. Au prochain lancement de l'application, recherchez une session abandonnée et réconciliez-la avec votre backend :
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+Le `abandoned.createdAt` est un timestamp epoch exprimé en millisecondes.
+
+## Voir aussi
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Bonnes pratiques pour les parcours de checkout mobile
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    SDK backend pour les opérations côté serveur
+  </Card>
+</CardGroup>

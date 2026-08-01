@@ -1,0 +1,219 @@
+---
+title: Android
+sidebarTitle: Android
+tag: NEW
+description: 在 Android 应用中通过 Chrome Custom Tab 打开 Dodo Payments 的托管结账页面，并通过一次调用获取类型化结果。
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - 移动端结账 SDK
+  - Custom Tabs
+---
+
+<Info>
+这是官方的 Android 结账 SDK（`com.dodopayments.api:checkout-android`），
+用于打开 Dodo 的托管结账页面。它与
+[backend Kotlin SDK](/developer-resources/sdks/kotlin) 不同，后者从你的服务器调用 Dodo
+Payments API。
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    创建此 SDK 打开的 `checkout_url`
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    移动端结账流程的最佳实践
+  </Card>
+</CardGroup>
+
+Android SDK 使用 `androidx.browser.customtabs` 在 Chrome Custom Tab 中打开 Dodo 的托管结账页面。它不包含任何网络代码，也不持有 API key。你需要传入后端结账会话中的 `checkoutUrl`，SDK 会在用户完成或放弃流程时返回类型化的 `CheckoutResult`。
+
+**要求：** `minSdk` 23、Kotlin、Java 17。
+
+## 安装
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+将回调 scheme 设置为 Gradle manifest placeholder。该库自己的
+manifest 已使用 `${dodoCallbackScheme}` token 声明了重定向 activity 的 intent filter，因此这一项属性就是全部配置成本——
+你无需添加 manifest XML：
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+该值必须与 `CheckoutParams.returnUrl` 中的 scheme 匹配（例如
+`myapp://checkout/return`）。
+
+<Note>
+如果完全省略该 placeholder，构建会立即因 placeholder 未解析而失败，而不是在结账时静默失败。如果设置了该值但它与 `returnUrl` 的 scheme 不匹配，`DodoCheckout.start` 会在显示任何内容前抛出 `PLATFORM_ERROR`。
+</Note>
+</Step>
+</Steps>
+
+## 使用
+
+SDK 支持两种调用方式。
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+使用 `registerForActivityResult` 注册 contract，然后启动它：
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+推荐使用此方式。结果通过 Android 的操作系统管理的
+`ActivityResultRegistry` 传递，因此即使进程终止也能保留。
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+从 coroutine scope 调用 `DodoCheckout.start`：
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+此方式会解析内存中的 `CompletableDeferred`，因此**无法**在进程终止后保留。`onEvent` 仅在此处可用，在 contract 上不可用。
+</Warning>
+</Tab>
+</Tabs>
+
+## 结果含义
+
+<Warning>
+`status` 字段是 UI 提示，而不是付款成功的证明。在授予访问权限前，始终使用 webhooks 或 Get Payment Detail endpoint 在后端验证付款。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+`SUCCEEDED`、`FAILED`、`CANCELLED`、`PENDING`、`EXPIRED` 中的一个。
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+当 return URL 包含该值时设置。将其显示在 UI 中，但不要使用它来授予访问权限。请参阅下方的 Verify the Payment。
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+用于订阅结账时设置。
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+当结账包含 license key 产品时设置。
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+当结账捕获 email 时设置。
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+return URL 中的每个 query parameter，保持原样。
+</ParamField>
+
+## 验证付款
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    实时监听付款事件
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    按需查询付款状态
+  </Card>
+</CardGroup>
+
+只有在其中一种方式确认付款后，才向用户授予访问权限。不要仅依赖 `CheckoutResult.status`。
+
+## 错误
+
+`DodoCheckout.start` 仅在误用或平台
+故障时抛出 `CheckoutError`。请从 `CheckoutError.code` 读取代码：
+
+- `INVALID_CHECKOUT_URL`：不是 `checkout.dodopayments.com` session URL。
+- `INVALID_RETURN_URL`：不是有效的绝对 URL。
+- `ALREADY_IN_PROGRESS`：结账已在运行。
+- `PLATFORM_ERROR`：意外的平台故障，包括 `returnUrl` 的
+  scheme 与你的 `dodoCallbackScheme` placeholder 不匹配。
+
+用户取消或付款被拒绝始终会作为结果返回（`CANCELLED` 或
+`FAILED`），而不会抛出错误。使用 launcher 方式时，验证错误会从 `launcher.launch(...)` 中抛出。
+
+## 已放弃的会话
+
+如果应用在结账期间被终止，或用户强制停止应用，SDK 会在本地存储该会话。下次启动应用时，检查是否存在已放弃的会话，并将其与后端进行对账：
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+`abandoned.createdAt` 是以毫秒为单位的 epoch 时间戳。
+
+## 相关内容
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    移动端结账流程的最佳实践
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    用于服务端操作的后端 SDK
+  </Card>
+</CardGroup>

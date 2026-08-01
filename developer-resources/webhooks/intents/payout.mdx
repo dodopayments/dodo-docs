@@ -1,0 +1,97 @@
+---
+openapi-schema: PayoutsResponse
+title: Payout
+description: The payload sent to your webhook endpoint when a payout is created or changes status, and how to reconcile each payout lifecycle event.
+icon: "money-bill-transfer"
+keywords: ["Dodo Payments", "payout webhook", "payout events", "webhook integration", "payout", "payout.success"]
+---
+
+<Info>
+Payout webhooks tell you when your own funds move from Dodo Payments to your bank account. Use them to reconcile payouts in your accounting systems without polling the [List Payouts](/api-reference/payouts/get-payouts) endpoint.
+</Info>
+
+## Payout Webhook Events
+
+A payout emits an event at each stage of its lifecycle. The stages match the [payout statuses](/features/payouts/payout-structure) shown in your dashboard.
+
+| Event | Fires when | What it usually means |
+|-------|-----------|-----------------------|
+| `payout.created` | A payout is created, by the automatic payout cycle or off-cycle | The payout exists but has not started moving yet |
+| `payout.in_progress` | The payout due date arrives and processing starts | Funds are on their way to your bank account |
+| `payout.on_hold` | The payout is paused or placed under review | You may need to supply additional information |
+| `payout.success` | The payout to your bank account settles | Funds should be available in your account |
+| `payout.failed` | The payout fails | The amount and fees are credited back to your wallet |
+
+<Note>
+`payout.created` was previously emitted as `payout.not_initiated`. If an existing endpoint filters on `payout.not_initiated`, update the filter to `payout.created` so it keeps matching. The `status` field on the payload still reports `not_initiated` at this stage.
+</Note>
+
+## Handling Payout Events
+
+Payouts are about your own money rather than a customer's, so these events usually feed bookkeeping and internal alerting rather than customer-facing flows.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Always verify the webhook signature before processing — see the [Webhooks guide](/developer-resources/webhooks) for setup. The handler above omits verification for brevity.
+</Tip>
+
+<Warning>
+Payout events are neither terminal nor strictly ordered. `payout.failed` can arrive after `payout.success` when a bank returns the transfer, and `payout.success` can arrive after `payout.failed` when a failed payout is later recovered. Treat the `status` field on the payload as the current state rather than assuming the last event you received is final.
+</Warning>
+
+## Payout Status
+
+The payout object reports its progress through a single field:
+
+| Field | Values |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks`, and `tax` on the payload are deprecated. Use the [payout breakup endpoints](/api-reference/payouts/retrieve-breakup) for a detailed breakdown instead.
+</Note>
+
+## Related
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+How payouts are scheduled and calculated, and what each payout status means.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Track wallet balances and the ledger behind each payout.
+</Card>
+</CardGroup>
+
+## Webhook Payload Schema

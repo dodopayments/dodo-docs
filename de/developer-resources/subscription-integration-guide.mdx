@@ -160,71 +160,83 @@ Verwenden Sie `subscription.updated`, um Echtzeitbenachrichtigungen über Abonne
 
 **Erfolgreicher Zahlungsablauf**
 
-Wenn eine Zahlung erfolgreich ist, erhalten Sie die folgenden Webhooks:
+Die Webhooks, die Sie empfangen, und deren Zeitpunkt hängen davon ab, ob das Produkt eine Testphase hat.
 
-1. `subscription.active` - Zeigt die Aktivierung des Abonnements an
-2. `payment.succeeded` - Bestätigt die Erstzahlung:
-   - Bei sofortiger Abrechnung (0 Testtage): Erwartet innerhalb von 2-10 Minuten
-   - Bei Testtagen: immer wenn diese enden
-3. `subscription.renewed` - Zeigt den Zahlungsabzug und die Erneuerung für den nächsten Zyklus an. (Grundsätzlich erhalten Sie immer, wenn eine Zahlung für Abonnementprodukte abgezogen wird, den `subscription.renewed` Webhook zusammen mit `payment.succeeded`)
+_Sofortige Abrechnung (0 Testtage):_
 
-**Zahlungsausfall-Szenarien**
+1. `subscription.active`: Das Mandat wird autorisiert und das Abonnement aktiviert.
+2. `payment.succeeded`: Bestätigt die erste Abbuchung. Dies wird innerhalb von **2–10 Minuten** nach dem Checkout erwartet.
 
-1. Abonnementausfall
-  - `subscription.failed` - Abonnementerstellung fehlgeschlagen aufgrund eines fehlgeschlagenen Mandats.
-  - `payment.failed` - Zeigt fehlgeschlagene Zahlung an.
+_Mit einer Testphase:_
+
+1. **Zu Beginn der Testphase (Checkout):** `subscription.active` wird ausgelöst, sobald die Zahlungsmethode autorisiert wurde. **Es wird noch keine wiederkehrende Abbuchung vorgenommen.** Die erste tatsächliche Abbuchung erfolgt erst nach Ende der Testphase.
+2. **Am Ende der Testphase:** Der wiederkehrende Betrag wird abgebucht, und Sie erhalten `payment.succeeded` **zusammen mit** `subscription.renewed`.
+
+_Jede darauffolgende Verlängerung:_
+
+- `subscription.renewed`: Wird bei jedem Abrechnungszyklus ausgelöst, wenn die Zahlung für die Verlängerung abgebucht wird, **immer zusammen mit** `payment.succeeded`. Enthält außerdem den aktualisierten Wert `next_billing_date`.
+
+<Info>
+Immer wenn Geld für ein Abonnementprodukt tatsächlich abgebucht wird, erhalten Sie `subscription.renewed` **und** `payment.succeeded`. Verwenden Sie `subscription.renewed` (statt allein `payment.succeeded`) als Signal, um den Zugriff für den nächsten Zyklus zu verlängern.
+</Info>
+
+**Szenarien bei fehlgeschlagenen Zahlungen**
+
+1. Fehler beim Abonnement
+  - `subscription.failed` – Die Erstellung des Abonnements ist fehlgeschlagen, weil kein Mandat erstellt werden konnte.
+  - `payment.failed` – Zeigt eine fehlgeschlagene Zahlung an.
 
 2. Abonnement pausiert
-  - `subscription.on_hold` - Abonnement wird aufgrund einer fehlgeschlagenen Verlängerungszahlung oder einer fehlgeschlagenen Planänderungsgebühr pausiert.
-  - Wenn ein Abonnement pausiert, wird es nicht automatisch erneuert, bis die Zahlungsmethode aktualisiert wird.
+  - `subscription.on_hold` – Das Abonnement wird aufgrund einer fehlgeschlagenen Zahlung für die Verlängerung oder einer fehlgeschlagenen Abbuchung bei einer Planänderung pausiert.
+  - Wenn ein Abonnement pausiert wird, verlängert es sich nicht automatisch, bis die Zahlungsmethode aktualisiert wurde.
 
-<Info>**Best Practice**: Um die Implementierung zu vereinfachen, empfehlen wir vor allem, Abonnementereignisse zur Verwaltung des Abonnement-Lebenszyklus zu verfolgen.</Info>
+<Info>**Best Practice**: Um die Implementierung zu vereinfachen, empfehlen wir, hauptsächlich Abonnementereignisse zur Verwaltung des Abonnementlebenszyklus zu verfolgen.</Info>
 
 <Tip>
-Für eine vollständige Anleitung zum Lesen von `error_code`/`error_message`, zur Entscheidung, wann ein erneuter Versuch stattfinden soll, und zum Anzeigen von Fehlern für Kunden, siehe [Zahlungsausfälle behandeln](/developer-resources/handle-payment-failures).
+Eine vollständige Anleitung zum Lesen von `error_code`/`error_message`, zur Entscheidung, wann ein erneuter Versuch unternommen werden sollte, und zur Anzeige von Fehlern für Kunden finden Sie unter [Fehler bei Zahlungen behandeln](/developer-resources/handle-payment-failures).
 </Tip>
 
 #### `subscription.failed` vs. `subscription.on_hold`
 
-Diese beiden Ereignisse sind leicht zu verwechseln, erfordern jedoch eine sehr unterschiedliche Handhabung:
+Diese beiden Ereignisse werden leicht verwechselt, erfordern jedoch eine sehr unterschiedliche Behandlung:
 
-| Ereignis | Wann es ausgelöst wird | Status | Wiederherstellbar? | Was zu tun ist |
+| Ereignis | Auslösungszeitpunkt | Status | Wiederherstellbar? | Vorgehensweise |
 |-------|---------------|--------|--------------|------------|
-| `subscription.failed` | Das **erste** Mandat konnte bei der Abonnement**erstellung** nicht erstellt werden | `failed` | **Nein — terminal** | Keinen Zugriff gewähren. Bitten Sie den Kunden, ein **neues** Abonnement mit einer anderen Zahlungsmethode zu starten. |
-| `subscription.on_hold` | Eine **Verlängerungs**zahlung (oder Planänderungsgebühr) schlägt bei einem bereits aktiven Abonnement fehl | `on_hold` | **Ja** | Wiederherstellen durch Aktualisierung der Zahlungsmethode; siehe [Abonnement auf Pausiert behandeln](#handling-subscription-on-hold) unten. |
+| `subscription.failed` | Das **initiale** Mandat konnte bei der **Erstellung** des Abonnements nicht erstellt werden | `failed` | **Nein (endgültig)** | Gewähren Sie keinen Zugriff. Bitten Sie den Kunden, mit einer anderen Zahlungsmethode ein **neues** Abonnement zu starten. |
+| `subscription.on_hold` | Eine Zahlung für die **Verlängerung** (oder eine Abbuchung bei einer Planänderung) ist bei einem bereits aktiven Abonnement fehlgeschlagen | `on_hold` | **Ja** | Stellen Sie die Zahlungsmethode wieder her; siehe unten [Umgang mit pausierten Abonnements](#handling-subscription-on-hold). |
 
 <Warning>
-`subscription.failed` ist endgültig — das Abonnement kann nicht reaktiviert werden. Der Kunde muss ein neues Abonnement erstellen. Gewähren Sie niemals Ansprüche, wenn dieses Ereignis ausgelöst wird.
+`subscription.failed` ist endgültig. Das Abonnement kann nicht reaktiviert werden. Der Kunde muss ein neues Abonnement erstellen. Gewähren Sie niemals Berechtigungen, wenn dieses Ereignis ausgelöst wird.
 </Warning>
 
-### Abonnement auf Pausiert behandeln
+### Umgang mit pausierten Abonnements
 
-Wenn ein Abonnement in den `on_hold` Zustand wechselt, müssen Sie die Zahlungsmethode aktualisieren, um es zu reaktivieren. Dieser Abschnitt erklärt, wann Abonnements auf Pausiert gestellt werden und wie man sie behandelt.
+Wenn ein Abonnement in den Status `on_hold` wechselt, müssen Sie die Zahlungsmethode aktualisieren, um es zu reaktivieren. Dieser Abschnitt erklärt, wann Abonnements pausiert werden und wie Sie damit umgehen.
 
-#### Wann Abonnements auf Pausiert gestellt werden
+#### Wann Abonnements pausiert werden
 
 Ein Abonnement wird pausiert, wenn:
 
-- **Verlängerungszahlung fehlschlägt**: Die automatische Verlängerungsgebühr schlägt aufgrund unzureichender Mittel, abgelaufener Karte oder Bankablehnung fehl
-- **Planänderungsgebühr fehlschlägt**: Eine sofortige Gebühr während eines Plan-Upgrades/Downgrades schlägt fehl
-- **Zahlungsmethode-Autorisierung fehlschlägt**: Die Zahlungsmethode kann nicht für wiederkehrende Gebühren autorisiert werden
+- **Die Zahlung für die Verlängerung fehlschlägt**: Die automatische Abbuchung für die Verlängerung schlägt aufgrund unzureichender Deckung, einer abgelaufenen Karte oder einer Ablehnung durch die Bank fehl
+- **Die Abbuchung bei einer Planänderung fehlschlägt**: Eine sofortige Abbuchung während eines Upgrades oder Downgrades des Plans schlägt fehl
+- **Die Autorisierung der Zahlungsmethode fehlschlägt**: Die Zahlungsmethode kann für wiederkehrende Abbuchungen nicht autorisiert werden
 
 <Warning>
-Abonnements im `on_hold` Zustand werden nicht automatisch erneuert. Sie müssen die Zahlungsmethode aktualisieren, um das Abonnement zu reaktivieren.
+Abonnements im Status `on_hold` werden nicht automatisch verlängert. Sie müssen die Zahlungsmethode aktualisieren, um das Abonnement zu reaktivieren.
 </Warning>
 
-#### Reaktivierung von Abonnements von Pausiert
+#### Abonnements aus dem pausierten Status reaktivieren
 
-Um ein Abonnement aus dem `on_hold` Zustand zu reaktivieren, verwenden Sie die Update Payment Method API. Dies bewirkt automatisch:
+Um ein Abonnement aus dem Status `on_hold` zu reaktivieren, verwenden Sie die Update Payment Method API. Dadurch werden automatisch folgende Schritte ausgeführt:
 
-1. Erstellung einer Gebühr für ausstehende Beträge
-2. Erstellung einer Rechnung für die Gebühr
-3. Verarbeitung der Zahlung mit der neuen Zahlungsmethode
-4. Reaktivierung des Abonnements in den `active` Zustand nach erfolgreicher Zahlung
+1. Eine Abbuchung für ausstehende Beträge erstellen
+2. Eine Rechnung für die Abbuchung generieren
+3. Die Zahlung mit der neuen Zahlungsmethode verarbeiten
+4. Das Abonnement nach erfolgreicher Zahlung in den Status `active` reaktivieren
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-Wenn Sie einen `subscription.on_hold` Webhook erhalten, aktualisieren Sie den Zustand Ihrer Anwendung und benachrichtigen Sie den Kunden:
+Wenn Sie einen `subscription.on_hold`-Webhook erhalten, aktualisieren Sie den Status Ihrer Anwendung und benachrichtigen Sie den Kunden:
 
 ```javascript
 // Webhook handler
@@ -286,7 +298,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-Sie können auch eine bestehende Zahlungsmethoden-ID verwenden, wenn der Kunde Zahlungsinformationen gespeichert hat:
+Sie können auch die ID einer vorhandenen Zahlungsmethode verwenden, wenn der Kunde Zahlungsmethoden gespeichert hat:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -299,10 +311,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-Nach der Aktualisierung der Zahlungsmethode sollten Sie auf diese Webhook-Ereignisse achten:
+Überwachen Sie nach der Aktualisierung der Zahlungsmethode die folgenden Webhook-Ereignisse:
 
-1. **`payment.succeeded`** - Die Gebühr für ausstehende Beträge war erfolgreich
-2. **`subscription.active`** - Das Abonnement wurde reaktiviert
+1. **`payment.succeeded`** – Die Abbuchung für ausstehende Beträge war erfolgreich
+2. **`subscription.active`** – Das Abonnement wurde reaktiviert
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -334,91 +346,125 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### Beispieldaten für Abonnementereignisse
+### Beispiel für eine Abonnementereignisnutzlast
 
 ---
 
 | Eigenschaft | Typ | Erforderlich | Beschreibung |
 |----------|------|----------|-------------|
-| `business_id` | string | Ja | Der eindeutige Bezeichner für das Unternehmen |
-| `timestamp` | string | Ja | Der Zeitstempel, wann das Ereignis eintrat (nicht unbedingt dasselbe wie die Zustellung) |
+| `business_id` | string | Ja | Die eindeutige Kennung des Unternehmens |
+| `timestamp` | string | Ja | Der Zeitstempel des Zeitpunkts, zu dem das Ereignis aufgetreten ist (nicht unbedingt identisch mit dem Zeitpunkt der Zustellung) |
 | `type` | string | Ja | Der Ereignistyp. Siehe [Ereignistypen](#event-types) |
-| `data` | object | Ja | Die Hauptdatennutzlast. Siehe [Datenobjekt](#data-object) |
+| `data` | object | Ja | Die zentrale Datennutzlast. Siehe [Datenobjekt](#data-object) |
 
 ## Abonnementpläne ändern
 
-Sie können einen Abonnementplan mit dem API-Endpunkt zum Planwechsel upgraden oder downgraden. Dies ermöglicht Ihnen die Änderung des Produkts des Abonnements, die Menge und die Handhabung der anteiligen Abrechnung.
+Sie können einen Abonnementplan über den API-Endpunkt zum Ändern des Plans upgraden oder downgraden. Damit können Sie das Produkt, die Menge und die anteilige Abrechnung des Abonnements ändern.
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Für detaillierte Informationen über den Wechsel von Abonnementplänen konsultieren Sie bitte unsere Change Plan API-Dokumentation.
+  Ausführliche Informationen zum Ändern von Abonnementplänen finden Sie in unserer Dokumentation zur Change Plan API.
 </Card>
 
-### Optionen für anteilige Abrechnung
+### Optionen für die anteilige Abrechnung
 
-Beim Wechsel von Abonnementplänen haben Sie zwei Optionen zur Handhabung der sofortigen Gebühr:
+Beim Ändern von Abonnementplänen haben Sie zwei Optionen für den Umgang mit der sofortigen Abbuchung:
 
 #### 1. `prorated_immediately`
 - Berechnet den anteiligen Betrag basierend auf der verbleibenden Zeit im aktuellen Abrechnungszyklus
-- Belastet den Kunden nur für die Differenz zwischen dem alten und dem neuen Plan
-- Während einer Testphase wird der Benutzer sofort auf den neuen Plan umgestellt, der Kunde wird sofort belastet
+- Belastet den Kunden nur mit der Differenz zwischen dem alten und dem neuen Plan
+- Während einer Testphase wird der Benutzer sofort auf den neuen Plan umgestellt und der Kunde umgehend belastet
 
 #### 2. `full_immediately`
-- Belastet den Kunden den vollen Abonnementbetrag für den neuen Plan
-- Ignoriert verbleibende Zeit oder Guthaben vom vorherigen Plan
-- Nützlich, wenn Sie den Abrechnungszyklus zurücksetzen oder den vollen Betrag unabhängig von der anteiligen Abrechnung verlangen möchten
+- Belastet den Kunden mit dem vollständigen Abonnementbetrag des neuen Plans
+- Ignoriert die verbleibende Zeit und Gutschriften des vorherigen Plans
+- Nützlich, wenn Sie den Abrechnungszyklus zurücksetzen oder unabhängig von der anteiligen Abrechnung den vollständigen Betrag berechnen möchten
 
 #### 3. `difference_immediately`
-- Beim Upgrade wird der Kunde sofort mit dem Unterschied zwischen den beiden Planbeträgen belastet.
-- Beispielsweise, wenn der aktuelle Plan 30 Dollar kostet und der Kunde auf 80 Dollar wechselt, werden ihm sofort 50 Dollar berechnet.
-- Bei einem Downgrade wird der ungenutzte Betrag des aktuellen Plans als internes Guthaben hinzugefügt und automatisch auf zukünftige Abonnementverlängerungen angerechnet.
-- Beispielsweise, wenn der aktuelle Plan 50 Dollar beträgt und der Kunde auf einen 20 Dollar-Plan wechselt, werden die verbleibenden 30 Dollar gutgeschrieben und für den nächsten Abrechnungszyklus verwendet.
+- Beim Upgrade wird dem Kunden sofort die Differenz zwischen den beiden Planbeträgen berechnet.
+- Wenn der aktuelle Plan beispielsweise 30 Dollar kostet und der Kunde auf einen Plan für 80 Dollar upgradet, werden ihm sofort \$50 berechnet. 
+- Beim Downgrade wird der nicht genutzte Betrag des aktuellen Plans als internes Guthaben hinzugefügt und automatisch auf zukünftige Verlängerungen des Abonnements angerechnet.
+- Wenn der aktuelle Plan beispielsweise 50 Dollar kostet und der Kunde zu einem Plan für 20 Dollar wechselt, werden die verbleibenden \$30 gutgeschrieben und auf den nächsten Abrechnungszyklus angerechnet.
+
+#### 4. `do_not_bill`
+- Wendet die Planänderung sofort an, **ohne** zum Zeitpunkt der Änderung eine Abbuchung vorzunehmen.
+- Der aktualisierte Plan (einschließlich Menge/Add-ons) wird bei der **nächsten planmäßigen Verlängerung** abgerechnet, und das **ursprüngliche Abrechnungsdatum bleibt erhalten**.
+
+<Warning>
+**Alle drei Modi „jetzt abbuchen“ setzen den Abrechnungszyklus zurück.** `prorated_immediately`, `difference_immediately` und `full_immediately` verschieben `next_billing_date` des Abonnements auf das Änderungsdatum. Nur `do_not_bill` behält das ursprüngliche Verlängerungsdatum bei, nimmt jedoch keine sofortige Abbuchung vor.
+</Warning>
 
 ### Verhalten
 
-- Wenn Sie diese API aufrufen, initiiert Dodo Payments sofort eine Gebühr basierend auf der von Ihnen gewählten Option für anteilige Abrechnung
-- Wenn die Planänderung ein Downgrade ist und Sie `prorated_immediately` verwenden, werden Guthaben automatisch berechnet und dem Guthaben des Abonnements hinzugefügt. Diese Guthaben sind spezifisch für dieses Abonnement und werden nur zur Verrechnung zukünftiger wiederkehrender Zahlungen desselben Abonnements verwendet
-- Die `full_immediately` Option umgeht die Guthabenberechnung und belastet den vollen Betrag des neuen Plans
+- Wenn Sie diese API aufrufen, leitet Dodo Payments sofort eine Abbuchung basierend auf der von Ihnen gewählten Option für die anteilige Abrechnung ein
+- Wenn die Planänderung ein Downgrade ist und Sie `prorated_immediately` verwenden, werden Gutschriften automatisch berechnet und dem Guthaben des Abonnements hinzugefügt. Diese Gutschriften gelten nur für dieses Abonnement und werden ausschließlich zum Ausgleich zukünftiger wiederkehrender Zahlungen desselben Abonnements verwendet
+- Die Option `full_immediately` umgeht die Gutschriftenberechnung und berechnet den vollständigen Betrag des neuen Plans
 
 <Tip>
-**Wählen Sie Ihre Abrechnungsoption sorgfältig**: Verwenden Sie `prorated_immediately` für faire Abrechnung, die ungenutzte Zeit berücksichtigt, oder `full_immediately`, wenn Sie den vollen Betrag des neuen Plans unabhängig von den aktuellen Abrechnungszyklen verlangen möchten.
+**Wählen Sie die Option für die anteilige Abrechnung sorgfältig aus**: Verwenden Sie `prorated_immediately` für eine faire Abrechnung, die ungenutzte Zeit berücksichtigt, oder `full_immediately`, wenn Sie unabhängig vom aktuellen Abrechnungszyklus den vollständigen Betrag des neuen Plans berechnen möchten.
 </Tip>
 
-### Gebührenverarbeitung
+### Verarbeitung der Abbuchung
 
-- Die sofortige Gebühr, die bei der Planänderung initiiert wird, wird normalerweise in weniger als 2 Minuten abgeschlossen
-- Wenn diese sofortige Gebühr aus irgendeinem Grund fehlschlägt, wird das Abonnement automatisch pausiert, bis das Problem behoben ist
+- Die bei der Planänderung eingeleitete sofortige Abbuchung wird normalerweise in weniger als 2 Minuten verarbeitet
+- Wenn diese sofortige Abbuchung aus irgendeinem Grund fehlschlägt, wird das Abonnement automatisch pausiert, bis das Problem behoben ist
 
 ## On-Demand-Abonnements
 
 <Info>
-  On-Demand-Abonnements erlauben es Ihnen, Kunden flexibel zu belasten, nicht nur nach einem festen Zeitplan. Diese Funktion ist für alle Konten verfügbar.
+  Mit On-Demand-Abonnements können Sie Kunden flexibel belasten, nicht nur nach einem festen Zeitplan. Diese Funktion ist für alle Konten verfügbar.
 </Info>
 
-**Um ein On-Demand-Abonnement zu erstellen:**
+**So erstellen Sie ein On-Demand-Abonnement:**
 
-Um ein On-Demand-Abonnement zu erstellen, verwenden Sie den [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API-Endpunkt und fügen Sie das `on_demand` Feld in Ihren Anfragekörper ein. Dies ermöglicht es Ihnen, eine Zahlungsmethode ohne sofortige Belastung zu autorisieren oder einen benutzerdefinierten Anfangspreis festzulegen.
+Um ein On-Demand-Abonnement zu erstellen, verwenden Sie den API-Endpunkt [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) und fügen Sie das Feld `on_demand` in den Request-Body ein. Damit können Sie eine Zahlungsmethode ohne sofortige Abbuchung autorisieren oder einen benutzerdefinierten Anfangspreis festlegen.
 
-**Um ein On-Demand-Abonnement zu belasten:**
+**So belasten Sie ein On-Demand-Abonnement:**
 
-Für nachfolgende Gebühren verwenden Sie den [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) Endpunkt und geben Sie den Betrag an, den Sie dem Kunden für diese Transaktion berechnen möchten.
+Verwenden Sie für nachfolgende Abbuchungen den Endpunkt [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) und geben Sie den Betrag an, den Sie dem Kunden für diese Transaktion berechnen möchten.
 
 <Note>
-Für eine vollständige, schrittweise Anleitung — einschließlich Anfrage-/Antwortbeispielen, sicheren Wiederholungsrichtlinien und Webhook-Bearbeitung — siehe den <a href="/developer-resources/ondemand-subscriptions">On-Demand-Abonnements-Leitfaden</a>.
+Eine vollständige Schritt-für-Schritt-Anleitung (einschließlich Request-/Response-Beispielen, sicheren Richtlinien für erneute Versuche und der Verarbeitung von Webhooks) finden Sie im <a href="/developer-resources/ondemand-subscriptions">Leitfaden zu On-Demand-Abonnements</a>.
 </Note>
 
-## Verwandte API-Referenz
+## Wichtige Informationen zur Abonnementabrechnung
+
+<Warning>
+**Legen Sie den Abonnementzeitraum länger als die Zahlungshäufigkeit fest.** Wenn der Abonnementzeitraum der Zahlungshäufigkeit entspricht (z. B. Zeitraum = 1 Monat, Häufigkeit = 1 Monat), ist das Abonnement für **einen einzigen Zyklus** gültig und wechselt anschließend zu `expired`, statt verlängert zu werden. Für einen fortlaufenden Monatsplan legen Sie einen langen Abonnementzeitraum (z. B. 20 Jahre) mit monatlicher Zahlungshäufigkeit fest.
+</Warning>
+
+<Warning>
+**Die Währung wird bei der ersten erfolgreichen Abbuchung festgelegt.** Übergeben Sie beim Erstellen des Checkouts `billing_currency` **und** `billing_address.country` immer explizit. Wenn sie weggelassen werden, werden sie anhand der IP-Adresse des Kunden erkannt (Adaptive Currency). Sobald die erste Abbuchung des Abonnements erfolgt, ist die Währung für dessen gesamte Laufzeit festgelegt. Ein Kunde kann sie später nicht ändern, wenn er verreist.
+</Warning>
+
+<Info>
+**Testphasen lösen eine Autorisierung über \$0 aus, keine Abbuchung.** Wenn ein Abonnement eine Testphase hat, wird zu deren Beginn eine **Mandatsautorisierung über \$0** erstellt, um die Karte zu speichern; die erste tatsächliche Abbuchung erfolgt nach Ende der Testphase. In der Zahlungsliste wird ein Abonnement in der Testphase mit genau einer Zahlung mit `amount: 0` angezeigt.
+</Info>
+
+<Info>
+**Lebenszyklus des Abonnements:** `on_hold` = eine Verlängerung ist fehlgeschlagen (wiederherstellbar: Fordern Sie den Kunden auf, seine Zahlungsmethode zu aktualisieren; Dunning-Wiederholungen werden angewendet). `expired` = die Laufzeit ist ohne Verlängerung abgelaufen und **kann nicht reaktiviert werden**. Der Kunde muss sich erneut anmelden. `cancelled` = vom Kunden oder Händler beendet. Die meisten Fehler bei Verlängerungen sind **Ablehnungen auf Seiten des Kartenherausgebers** (unzureichende Deckung, abgelehnte Karte) und kein Dodo-Fehler.
+</Info>
+
+<Warning>
+**Indische Karten verwenden ein RBI-E-Mandat.** Off-Session-Abbuchungen (Verlängerungen und Abbuchungen bei Planänderungen) können **bis zu etwa 48 Stunden** für die Abwicklung benötigen, und wiederkehrende automatische Abbuchungen **über ₹15.000** erfordern eine erneute Kundenauthentifizierung (daher kann ein Upgrade, das diese Grenze überschreitet, nicht über das bestehende Mandat abgewickelt werden). Solange eine Abbuchung noch den Status `processing` hat, schlägt eine zweite Abbuchung für dasselbe Abonnement mit *"Cannot create new charge as previous payment is not successful yet."* fehl. Nicht-indische Karten werden nahezu sofort bestätigt.
+</Warning>
+
+<Tip>
+**Für Abonnementabbuchungen gilt ein Mindestbetrag von \$1** (oder der entsprechende Betrag in der jeweiligen Währung). Beträge von `$0.01–$0.99` werden mit `product_price: value out of range` abgelehnt; nur `$0` ist über eine On-Demand-Einrichtung mit `mandate_only` zulässig.
+</Tip>
+
+## Zugehörige API-Referenz
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  API-Referenz zur Erstellung von Abonnementprodukten und Verwaltung des Abonnement-Lebenszyklus
+  API-Referenz zum Erstellen von Abonnementprodukten und Verwalten des Abonnementlebenszyklus
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  API-Referenz zum Upgrade, Downgrade oder Wechsel von Abonnementplänen mit Optionen für anteilige Abrechnung
+  API-Referenz zum Upgraden, Downgraden oder Ändern von Abonnementplänen mit Optionen für die anteilige Abrechnung
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  API-Referenz zur Aktualisierung von Zahlungsmethoden und Reaktivierung pausierter Abonnements
+  API-Referenz zum Aktualisieren von Zahlungsmethoden und Reaktivieren pausierter Abonnements
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
-  API-Referenz zur Aktualisierung von Abonnementdetails und Konfiguration
+  API-Referenz zum Aktualisieren von Abonnementdetails und Konfiguration
 </Card>
 </CardGroup>

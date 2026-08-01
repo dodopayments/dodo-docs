@@ -1,0 +1,213 @@
+---
+title: Android
+sidebarTitle: Android
+tag: "NEW"
+description: Apri il checkout ospitato di Dodo Payments da un'app Android in una
+  Chrome Custom Tab e ottieni un risultato tipizzato con una sola chiamata.
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - mobile checkout SDK
+  - Custom Tabs
+---
+
+<Info>
+Questo è l'SDK ufficiale per il checkout Android (`com.dodopayments.api:checkout-android`),
+per aprire il checkout ospitato di Dodo. È distinto dall'[SDK Kotlin per il backend](/developer-resources/sdks/kotlin), che chiama l'API di Dodo
+Payments dal tuo server.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    Crea `checkout_url` che questo SDK apre
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Best practice per i flussi di checkout mobile
+  </Card>
+</CardGroup>
+
+L'SDK Android apre il checkout ospitato di Dodo in una Chrome Custom Tab usando `androidx.browser.customtabs`. Non contiene codice di networking e non conserva alcuna API key. Passi un `checkoutUrl` dalla sessione di checkout del tuo backend e l'SDK restituisce un `CheckoutResult` tipizzato quando l'utente completa o abbandona il flusso.
+
+**Requisiti:** `minSdk` 23, Kotlin, Java 17.
+
+## Installazione
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+Imposta lo schema di callback come placeholder del manifest Gradle. Il manifest della libreria dichiara già l'intent filter dell'attività di redirect usando il token `${dodoCallbackScheme}`, quindi questa proprietà è tutto ciò che serve per la configurazione: non devi aggiungere XML al manifest:
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+Il valore deve corrispondere allo schema in `CheckoutParams.returnUrl` (ad es.
+`myapp://checkout/return`).
+
+<Note>
+Se ometti completamente il placeholder, la build fallisce immediatamente con un errore di placeholder non risolto, invece di fallire silenziosamente al momento del checkout. Se lo imposti ma non corrisponde allo schema di `returnUrl`, `DodoCheckout.start` genera `PLATFORM_ERROR` prima di visualizzare qualsiasi elemento.
+</Note>
+</Step>
+</Steps>
+
+## Utilizzo
+
+L'SDK supporta due modalità di invocazione.
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+Registra il contratto con `registerForActivityResult`, quindi avvialo:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+Preferisci questa modalità. Il risultato viene fornito tramite `ActivityResultRegistry` gestito dal sistema operativo Android, quindi sopravvive alla terminazione del processo.
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+Chiama `DodoCheckout.start` da un coroutine scope:
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+Questa modalità risolve un `CompletableDeferred` in memoria, quindi **non** sopravvive alla terminazione del processo. `onEvent` è disponibile solo qui, non sul contratto.
+</Warning>
+</Tab>
+</Tabs>
+
+## Significato del risultato
+
+<Warning>
+Il campo `status` è un suggerimento per l'interfaccia utente, non una prova del pagamento. Verifica sempre il pagamento sul tuo backend usando i webhook o l'endpoint Get Payment Detail prima di concedere l'accesso.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+Uno tra `SUCCEEDED`, `FAILED`, `CANCELLED`, `PENDING`, `EXPIRED`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Impostato quando l'URL di ritorno ne includeva uno. Visualizzalo nell'interfaccia utente, ma non usarlo per concedere l'accesso. Consulta la sezione Verifica il pagamento qui sotto.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Impostato per i checkout con abbonamento.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+Impostato quando il checkout include prodotti con license key.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Impostato quando il checkout acquisisce un indirizzo email.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+Ogni parametro di query dell'URL di ritorno, riportato senza modifiche.
+</ParamField>
+
+## Verifica il pagamento
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    Ascolta gli eventi di pagamento in tempo reale
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    Interroga lo stato del pagamento su richiesta
+  </Card>
+</CardGroup>
+
+Concedi l'accesso all'utente solo dopo che uno di questi metodi ha confermato il pagamento. Non fare affidamento esclusivamente su `CheckoutResult.status`.
+
+## Errori
+
+`DodoCheckout.start` genera `CheckoutError` solo in caso di utilizzo improprio o di un errore della piattaforma. Leggi il codice da `CheckoutError.code`:
+
+- `INVALID_CHECKOUT_URL`: non è un URL di sessione `checkout.dodopayments.com`.
+- `INVALID_RETURN_URL`: non è un URL assoluto valido.
+- `ALREADY_IN_PROGRESS`: è già in esecuzione un checkout.
+- `PLATFORM_ERROR`: errore imprevisto della piattaforma, incluso un `returnUrl` il cui schema non corrisponde al placeholder `dodoCallbackScheme`.
+
+L'annullamento da parte dell'utente o un pagamento rifiutato restituiscono sempre un risultato (`CANCELLED` o `FAILED`), non un errore generato. Con la modalità launcher, gli errori di convalida vengono generati all'esterno di `launcher.launch(...)`.
+
+## Sessioni abbandonate
+
+Se l'app viene terminata o l'utente ne forza l'arresto durante il checkout, l'SDK memorizza la sessione localmente. Al successivo avvio dell'app, verifica la presenza di una sessione abbandonata e riconciliala con il tuo backend:
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+`abandoned.createdAt` è un timestamp epoch espresso in millisecondi.
+
+## Correlati
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    Best practice per i flussi di checkout mobile
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    SDK backend per le operazioni lato server
+  </Card>
+</CardGroup>

@@ -1,0 +1,249 @@
+---
+title: "React Native"
+sidebarTitle: "React Native"
+tag: "NEW"
+description: "Open Dodo Payments' hosted checkout from a React Native app in a system browser tab and get a typed result back in one call."
+icon: "react"
+keywords: ["Dodo Payments", "React Native SDK", "Expo", "mobile checkout SDK", "Turbo Module"]
+---
+
+<Info>
+This is the official Dodo Payments React Native checkout SDK, `@dodopayments/react-native-checkout`. It opens Dodo's hosted checkout in a native browser view and returns a typed result. Note: an older, unrelated package named `dodopayments-react-native-sdk` (unscoped) exists with a completely different API. This page documents the current official scoped package only.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Create the checkout_url this SDK opens, from your backend.
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  See how this fits into the full mobile payment flow.
+</Card>
+</CardGroup>
+
+The React Native SDK is a thin Turbo Module wrapper over the same native Swift and Kotlin cores. It opens `SFSafariViewController` on iOS and a Chrome Custom Tab on Android, holds no API key, and never calls the Dodo API directly. All checkout logic runs in the browser; the SDK simply manages the view lifecycle and captures the return URL.
+
+<Warning>
+This SDK requires **New Architecture only**, React Native 0.76+, iOS 16+, and Android `minSdk` 24.
+</Warning>
+
+## Installation
+
+<Steps>
+<Step title="Install the Package">
+<Tabs>
+<Tab title="Android">
+The package is autolinked and pulls `com.dodopayments.api:checkout-android` from Maven.
+
+```sh
+npm i @dodopayments/react-native-checkout
+```
+
+No additional setup needed; the native dependency is resolved automatically.
+</Tab>
+<Tab title="iOS">
+```sh
+npm i @dodopayments/react-native-checkout
+cd ios && pod install
+```
+
+The Swift core is bundled in the package and installed via CocoaPods.
+</Tab>
+<Tab title="Expo">
+Development builds only (not Expo Go).
+
+```sh
+npm i @dodopayments/react-native-checkout
+```
+
+Then configure your `app.json` (see Register a Callback URL Scheme below).
+</Tab>
+</Tabs>
+</Step>
+<Step title="Register a Callback URL Scheme">
+Your app must register a URL scheme to receive the return URL from the checkout.
+
+<Tabs>
+<Tab title="Android (Gradle)">
+In `android/app/build.gradle`:
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+Replace `"myapp"` with your app's scheme.
+</Tab>
+<Tab title="iOS (Info.plist)">
+In `ios/YourApp/Info.plist`:
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+You can also add this via Xcode's **Info → URL Types** UI.
+</Tab>
+<Tab title="Expo (both platforms)">
+The package's own config plugin registers the scheme for both platforms at
+`prebuild`. Pass it a `scheme` option in `app.json`:
+
+```json app.json
+{
+  "expo": {
+    "scheme": "myapp",
+    "plugins": [
+      [
+        "@dodopayments/react-native-checkout",
+        { "scheme": "myappcheckout" }
+      ]
+    ]
+  }
+}
+```
+
+`scheme` must match what you pass as `returnUrl` (e.g.
+`myappcheckout://return`), and must differ from `expo.scheme`. Expo already
+registers that one on `MainActivity`, and reusing it can route the checkout
+return to the wrong screen.
+
+Rebuild the native project after editing `app.json`:
+
+```sh
+npx expo prebuild --clean
+```
+
+This works with development builds only, not Expo Go.
+
+If `android/app/build.gradle` is hand-maintained and has no standard
+`defaultConfig { }` block for the plugin to find, add the placeholder
+yourself instead. See the Android tab above.
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## Usage
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+// Required for iOS's return-URL handling.
+Linking.addEventListener('url', ({ url }) => DodoCheckout.handleOpenURL(url));
+
+const result = await DodoCheckout.start({
+  checkoutUrl,                          // from your backend's checkout session
+  returnUrl: 'myapp://checkout/return', // scheme must be registered (see Installation)
+  onEvent: (e) => console.log(e.type),  // logging only
+});
+
+switch (result.status) {
+  case 'succeeded': showSuccess(result.paymentId); break;
+  case 'failed':    showFailure(); break;
+  case 'cancelled': dismiss(); break;
+  case 'pending':   showPending(); break;
+  case 'expired':   showExpired(); break;
+}
+```
+
+## Forwarding the Return URL
+
+The `Linking` listener is required for iOS's return-URL handling. On Android, `handleOpenURL` is a no-op that resolves `false` because the Android core handles its redirect natively. It's safe to register the listener unconditionally on both platforms.
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+Linking.addEventListener('url', ({ url }) => {
+  DodoCheckout.handleOpenURL(url);
+});
+```
+
+## What the Result Means
+
+<Warning>
+`result.status` is a UI hint, not proof of payment. Confirm every payment from your backend, via the `payment.succeeded` / `subscription.active` webhook.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+One of `succeeded`, `failed`, `cancelled`, `pending`, `expired`.
+</ParamField>
+
+<ParamField body="paymentId" type="string">
+Set when the return URL included one. Display it in the UI, don't use it to grant access. See Verify the Payment below.
+</ParamField>
+
+<ParamField body="subscriptionId" type="string">
+Set for subscription checkouts.
+</ParamField>
+
+<ParamField body="licenseKeys" type="string[]">
+Set when the checkout includes license key products.
+</ParamField>
+
+<ParamField body="customerEmail" type="string">
+Set when the checkout captures an email.
+</ParamField>
+
+<ParamField body="raw" type="Record<string, string>">
+Every query parameter from the return URL, verbatim.
+</ParamField>
+
+## Verify the Payment
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  Dodo Payments calls your backend when a payment succeeds or a subscription activates.
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  Look up `paymentId` with your secret key to check its status directly.
+</Card>
+</CardGroup>
+
+Grant access after one of these confirms the payment, never from `result.status` alone.
+
+## Errors
+
+`start` rejects with a `CheckoutError` only for misuse or a platform failure. A cancelled or declined payment is always a result, never an exception.
+
+- `INVALID_CHECKOUT_URL`: not a `checkout.dodopayments.com` session URL.
+- `INVALID_RETURN_URL`: not a valid absolute URL.
+- `ALREADY_IN_PROGRESS`: a checkout is already running.
+- `PLATFORM_ERROR`: unexpected platform failure.
+
+## Abandoned Sessions
+
+If the app or the JS bundle is killed mid-checkout, the promise is lost but the native layer keeps the session. Recover it on next mount and reconcile it with your backend.
+
+```typescript
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+const abandoned = await DodoCheckout.getAbandonedSession();
+if (abandoned) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.clearAbandonedSession();
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  The same contract for Android, iOS, and Flutter.
+</Card>
+<Card title="Expo Boilerplate" icon="layer-group" href="/developer-resources/expo-boilerplate">
+  A complete Expo example with checkout integration.
+</Card>
+</CardGroup>

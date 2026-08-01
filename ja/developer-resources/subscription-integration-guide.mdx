@@ -159,56 +159,83 @@ Webhookエンドポイントを設定するには、[詳細な統合ガイド](/
 
 #### 支払いシナリオ
 
-**成功した支払いフロー**
+受信する webhook とそのタイミングは、商品に trial があるかどうかによって異なります。
 
-支払いが成功した場合、次のWebhookを受信します：
+_即時請求（trial 日数 0 日）:_
 
-1. `subscription.active` - サブスクリプションの有効化を示します
-2. `payment.succeeded` - 初回支払いを確認します:
-    - 即時請求（トライアル0日）の場合：2〜10分以内に発生します
-    - トライアル期間がある場合：その終了時に発生します
-3. `subscription.renewed` - 支払いが差し引かれて次の請求サイクルに更新されたことを示します（基本的に、サブスクリプション商品で支払いが差し引かれるたびに `subscription.renewed` のウェブフックが `payment.succeeded` と共に届きます）。
+1. `subscription.active`: mandate が承認され、subscription が有効化されます。
+2. `payment.succeeded`: 初回 charge を確認します。checkout から **2〜10 分以内** に発生します。
 
-**支払い失敗シナリオ**
+_trial 期間がある場合:_
 
-1. サブスクリプション失敗
-  - `subscription.failed` - マンダート作成に失敗したためサブスクリプションの作成が失敗しました。
-  - `payment.failed` - 支払いが失敗したことを示します。
+1. **trial 開始時（checkout）:** 支払い方法が承認されると `subscription.active` が 1 回発生します。**この時点では定期 charge は発生しません。** 初回の実際の charge は trial 終了まで延期されます。
+2. **trial 終了時:** 定期金額が charge され、`payment.succeeded` **と同時に** `subscription.renewed` を受信します。
 
-2. サブスクリプション保留
-  - `subscription.on_hold` - 更新支払いまたはプラン変更時の課金失敗によりサブスクリプションが保留されます。
-  - サブスクリプションが保留になると、支払い方法が更新されるまで自動更新されません。
+_その後の更新ごと:_
 
-<Info>**ベストプラクティス**: 実装を簡素化するため、サブスクリプションのライフサイクル管理には主にサブスクリプションイベントの追跡を推奨します。</Info>
+- `subscription.renewed`: 更新 payment が引き落とされる各 billing cycle で発生し、**常に** `payment.succeeded` **と同時に**送信されます。更新された `next_billing_date` も含まれます。
 
-### サブスクリプションが保留中の処理
+<Info>
+subscription product に対して実際に金額が引き落とされるたびに、`subscription.renewed` **と** `payment.succeeded` を受信します。次の cycle の access を延長するシグナルとして、`payment.succeeded` 単独ではなく `subscription.renewed` を使用してください。
+</Info>
 
-サブスクリプションが `on_hold` 状態になると、再有効化するために支払い方法を更新する必要があります。このセクションでは、サブスクリプションが保留になるタイミングと対処方法を説明します。
+**Payment Failure Scenarios**
 
-#### サブスクリプションが保留中になるとき
+1. Subscription Failure
+  - `subscription.failed` - mandate の作成に失敗したため、subscription の作成に失敗しました。
+  - `payment.failed` - payment の失敗を示します。
 
-サブスクリプションは次の理由で保留中になります：
+2. Subscription On Hold
+  - `subscription.on_hold` - renewal payment または plan change charge の失敗により、subscription が on hold になります。
+  - subscription が on hold になると、payment method が更新されるまで自動的には更新されません。
 
-- **更新支払いが失敗した場合**：自動更新の請求が資金不足、カードの期限切れ、または銀行の拒否により失敗します
-- **プラン変更の請求が失敗した場合**：プランのアップグレード/ダウングレード中の即時請求が失敗します
-- **支払い方法の承認が失敗した場合**：支払い方法が定期的な請求に対して承認できません
+<Info>**Best Practice**: 実装を簡素化するため、subscription の lifecycle 管理では主に subscription event を追跡することをおすすめします。</Info>
+
+<Tip>
+`error_code`/`error_message` の読み取り方、retry のタイミング、customer への failure の提示方法について詳しくは、[Handle Payment Failures](/developer-resources/handle-payment-failures) を参照してください。
+</Tip>
+
+#### `subscription.failed` と `subscription.on_hold` の違い
+
+これら 2 つの event は混同しやすいものの、必要な対応は大きく異なります。
+
+| Event | 発生するタイミング | Status | 復旧可能か | 対応 |
+|-------|---------------|--------|--------------|------------|
+| `subscription.failed` | subscription の **作成**時に、**初回** mandate を作成できなかった | `failed` | **いいえ（終端）** | access を付与しないでください。別の payment method で**新しい** subscription を開始するよう customer に依頼してください。 |
+| `subscription.on_hold` | すでに有効な subscription の **renewal** payment（または plan-change charge）に失敗した | `on_hold` | **はい** | payment method を更新して復旧します。詳しくは以下の [Handling Subscription On Hold](#handling-subscription-on-hold) を参照してください。 |
 
 <Warning>
-`on_hold` 状態のサブスクリプションは自動的に更新されません。再有効化するには支払い方法を更新してください。
+`subscription.failed` は終端状態です。subscription を再有効化することはできません。customer は新しい subscription を作成する必要があります。この event が発生した場合は、entitlement を決して付与しないでください。
 </Warning>
 
-#### 保留中のサブスクリプションの再アクティブ化
+### Subscription On Hold の処理
 
-`on_hold` 状態のサブスクリプションを再有効化するには Update Payment Method API を使用します。これにより自動的に以下が行われます:
+subscription が `on_hold` state になると、再有効化するために payment method を更新する必要があります。このセクションでは、subscription が on hold になるタイミングとその処理方法を説明します。
 
-1. 残額分の請求を作成
-2. その請求に対して請求書を生成
-3. 新しい支払い方法で支払いを処理
-4. 支払いが成功すると、サブスクリプションを `active` 状態に再有効化
+#### Subscription が On Hold になる場合
+
+subscription は次の場合に on hold になります。
+
+- **Renewal payment の失敗**: 残高不足、カードの有効期限切れ、または bank decline により、自動 renewal charge に失敗した場合
+- **Plan change charge の失敗**: plan の upgrade/downgrade 中に発生する即時 charge に失敗した場合
+- **Payment method の承認失敗**: recurring charge に対して payment method を承認できない場合
+
+<Warning>
+`on_hold` state の subscription は自動的には更新されません。subscription を再有効化するには payment method を更新する必要があります。
+</Warning>
+
+#### On Hold の Subscription を再有効化する
+
+`on_hold` state の subscription を再有効化するには、Update Payment Method API を使用します。これにより自動的に次の処理が行われます。
+
+1. 未払い残額に対する charge を作成
+2. charge の invoice を生成
+3. 新しい payment method を使用して payment を処理
+4. payment が成功すると、subscription を `active` state に再有効化
 
 <Steps>
 <Step title="Handle subscription.on_hold webhook">
-`subscription.on_hold` ウェブフックを受け取ったら、アプリケーションの状態を更新し、顧客に通知します:
+`subscription.on_hold` webhook を受信したら、application state を更新し、customer に通知してください。
 
 ```javascript
 // Webhook handler
@@ -235,7 +262,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 </Step>
 
 <Step title="Update payment method">
-顧客が支払い方法を更新する準備ができたら、Update Payment Method API を呼び出します:
+customer が payment method を更新する準備ができたら、Update Payment Method API を呼び出します。
 
 <CodeGroup>
 
@@ -270,7 +297,7 @@ if response.payment_id:
 </CodeGroup>
 
 <Info>
-顧客が保存済みの支払い方法を持っている場合は、既存の支払い方法IDを使用することもできます:
+customer が payment method を保存している場合は、既存の payment method ID も使用できます。
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
@@ -283,10 +310,10 @@ await client.subscriptions.updatePaymentMethod(subscriptionId, {
 </Step>
 
 <Step title="Monitor webhook events">
-支払い方法を更新したら、次のウェブフックイベントを監視してください:
+payment method を更新した後、次の webhook event を監視してください。
 
-1. **`payment.succeeded`** - 残額請求が成功しました
-2. **`subscription.active`** - サブスクリプションが再有効化されました
+1. **`payment.succeeded`** - 未払い残額に対する charge が成功した
+2. **`subscription.active`** - subscription が再有効化された
 
 ```javascript
 if (event.type === 'payment.succeeded') {
@@ -318,94 +345,69 @@ if (event.type === 'subscription.active') {
 </Step>
 </Steps>
 
-### サンプルサブスクリプションイベントペイロード
+### Subscription event payload の例
 
 ---
 
-| プロパティ | タイプ | 必須 | 説明 |
+| Property | Type | Required | Description |
 |----------|------|----------|-------------|
-| `business_id` | string | はい | 事業の一意の識別子 |
-| `timestamp` | string | はい | イベントが発生したタイムスタンプ（配信時刻とは異なる場合があります） |
-| `type` | string | はい | イベントの種類。 [Event Types](#event-types) を参照 |
-| `data` | object | はい | メインのデータペイロード。 [Data Object](#data-object) を参照 |
+| `business_id` | string | Yes | business の一意の identifier |
+| `timestamp` | string | Yes | event が発生した時刻（delivery の時刻と必ずしも同じではありません） |
+| `type` | string | Yes | event の type。[Event Types](#event-types) を参照 |
+| `data` | object | Yes | メインの data payload。[Data Object](#data-object) を参照 |
 
-## サブスクリプションプランの変更
+## Subscription Plan の変更
 
-プラン変更APIエンドポイントを使用して、サブスクリプションプランをアップグレードまたはダウングレードできます。これにより、サブスクリプションの製品、数量を変更し、按分を処理できます。
+change plan API endpoint を使用して、subscription plan を upgrade または downgrade できます。これにより subscription の product、quantity、および proration を変更できます。
 
 <Card title="Change Plan API Reference" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-サブスクリプションプランの変更に関する詳細は、Change Plan API ドキュメントをご参照ください。
+  subscription plan の変更について詳しくは、Change Plan API documentation を参照してください。
 </Card>
 
-### 按分オプション
+### Proration Options
 
-サブスクリプションプランを変更する際、即時請求の処理方法について2つのオプションがあります：
+subscription plan を変更する際、即時 charge の処理方法として 2 つの option があります。
 
 #### 1. `prorated_immediately`
-- 現在の請求サイクルの残り時間に基づいて按分金額を計算します
-- 旧プランと新プランの差額のみを顧客に請求します
-- トライアル期間中でも即座に新プランへ切り替え、すぐに顧客に課金します
+- 現在の billing cycle の残り時間に基づいて prorated amount を計算
+- old plan と new plan の差額のみを customer に charge
+- trial 期間中は user を直ちに new plan に切り替え、customer に即時 charge
 
 #### 2. `full_immediately`
-- 新プランのサブスクリプション料金を全額請求します
-- 前のプランの残り時間やクレジットを無視します
-- 請求サイクルをリセットしたい場合や、按分に関係なく全額を請求したい場合に便利です
+- new plan の subscription amount 全額を customer に charge
+- previous plan の残り時間や credit を無視
+- billing cycle を reset したい場合や、proration に関係なく全額を charge したい場合に便利
 
 #### 3. `difference_immediately`
-- アップグレード時には、顧客に対して2つのプラン金額の差額が即時課金されます。
-- 例えば、現在のプランが30ドルで顧客が80ドルにアップグレードした場合、$50が即時に課金されます。
-- ダウングレード時には、現在のプランの未使用分が内部クレジットとして加算され、今後のサブスクリプション更新に自動的に適用されます。
-- 例えば、現在のプランが50ドルで顧客が20ドルプランに切り替えた場合、残りの$30がクレジットとして加算され、次回請求サイクルに使用されます。
+- upgrade すると、2 つの plan amount の差額が customer に即時 charge されます。
+- たとえば、current plan が 30 Dollars で customer が 80 Dollars の plan に upgrade すると、\$50 が即時に charge されます。
+- downgrade すると、current plan の未使用 amount が internal credit として追加され、今後の subscription renewal に自動的に適用されます。
+- たとえば、current plan が 50 Dollars で customer が 20 Dollars の plan に切り替えると、残りの \$30 が credit として付与され、次の billing cycle に使用されます。
 
-### 挙動
+#### 4. `do_not_bill`
+- plan change を即時に適用しますが、変更時には **何も charge しません**。
+- 更新後の plan（および quantity/add-ons）は**次回予定されている renewal**で請求され、**元の billing date は維持されます**。
 
-- このAPIを呼び出すと、Dodo Paymentsは選択した按分オプションに基づいて即座に課金を開始します
-- プラン変更がダウングレードで `prorated_immediately` を使用した場合、クレジットが自動的に計算され、サブスクリプションのクレジット残高に追加されます。このクレジットは当該サブスクリプション専用で、同じサブスクリプションの今後の定期支払いに対してのみ差し引かれます。
-- `full_immediately` オプションはクレジット計算をスキップし、新しいプランの金額を全額請求します
+<Warning>
+**3 つの「今すぐ charge」mode はすべて billing cycle を reset します。** `prorated_immediately`、`difference_immediately`、`full_immediately` は subscription の `next_billing_date` を変更日に移動します。元の renewal date を維持するのは `do_not_bill` のみですが、即時 charge は発生しません。
+</Warning>
+
+### Behavior
+
+- この API を呼び出すと、Dodo Payments は選択した proration option に基づいて直ちに charge を開始します
+- plan change が downgrade で、`prorated_immediately` を使用した場合、credit が自動的に計算され、subscription の credit balance に追加されます。これらの credit はその subscription 専用であり、同じ subscription の今後の recurring payment の offset にのみ使用されます
+- `full_immediately` option は credit の計算を bypass し、新しい plan の金額全額を charge します
 
 <Tip>
-**按分オプションは慎重に選択してください**: 未使用時間を考慮した公平な請求には `prorated_immediately` を使用し、現在の請求サイクルに関係なく新しいプラン金額を全額請求したい場合は `full_immediately` を使用してください。
+**proration option は慎重に選択してください**: 未使用時間を考慮した公平な billing には `prorated_immediately` を使用し、current billing cycle に関係なく new plan の金額全額を charge したい場合は `full_immediately` を使用してください。
 </Tip>
 
-### 請求処理
+### Charge Processing
 
-- プラン変更時に開始される即時請求は通常、2分以内に処理が完了します
-- この即時請求が何らかの理由で失敗した場合、サブスクリプションは問題が解決されるまで自動的に保留中になります
+- plan change 時に開始される即時 charge は、通常 2 分未満で処理が完了します
+- この即時 charge が何らかの理由で失敗すると、問題が解決するまで subscription は自動的に on hold になります
 
-## オンデマンドサブスクリプション
-
-<Info>
-オンデマンドサブスクリプションでは、固定スケジュールだけでなく柔軟に顧客に課金できます。この機能はすべてのアカウントで利用可能です。
-</Info>
-
-**オンデマンドサブスクリプションを作成するには：**
-
-オンデマンドサブスクリプションを作成するには、[POST /subscriptions](/api-reference/subscriptions/post-subscriptions) APIエンドポイントを使用し、リクエストボディに `on_demand` フィールドを含めてください。これにより即時課金なしで支払い方法を認可したり、カスタムの初期価格を設定したりできます。
-
-**オンデマンドサブスクリプションに請求するには：**
-
-その後の請求については、[POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) エンドポイントを使用し、その取引で顧客に請求する金額を指定します。
-
-<Note>
-リクエスト/レスポンス例、安全なリトライポリシー、ウェブフックの処理などを含む完全なステップバイステップガイドについては、<a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a>を参照してください。
-</Note>
-
-## 関連APIリファレンス
-
-API reference for creating subscription products and managing subscription lifecycle
-API reference for upgrading, downgrading, or changing subscription plans with proration options
-API reference for updating payment methods and reactivating on-hold subscriptions
-API reference for updating subscription details and configuration
-
-**オンデマンドサブスクリプションを請求するには：**
-
-その後の請求については、[POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) エンドポイントを使用し、その取引の顧客に請求する金額を指定します。
-
-<Note>
-要求/応答の例、安全な再試行ポリシー、Webhook ハンドリングを含む完全な段階的なガイドについては、<a href="/developer-resources/ondemand-subscriptions">オンデマンドサブスクリプションガイド</a>を参照してください。
-</Note>
-
-## 関連する API リファレンス
+## On-Demand Subscriptions
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
@@ -419,5 +421,60 @@ API reference for updating subscription details and configuration
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   サブスクリプション詳細および設定の更新に関する API リファレンス
+</Card>
+</CardGroup>
+
+**on-demand subscription を作成するには:**
+
+on-demand subscription を作成するには、[POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint を使用し、request body に `on_demand` field を含めます。これにより、即時 charge なしで payment method を承認するか、custom initial price を設定できます。
+
+**on-demand subscription に charge するには:**
+
+後続の charge には、[POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint を使用し、その transaction で customer に charge する amount を指定します。
+
+<Note>
+request/response の例、安全な retry policy、webhook handling を含む完全な step-by-step guide については、<a href="/developer-resources/ondemand-subscriptions">On-Demand Subscriptions Guide</a> を参照してください。
+</Note>
+
+## Subscription Billing について知っておくべき重要事項
+
+<Warning>
+**subscription period は payment frequency より長く設定してください。** subscription period が payment frequency と同じ場合（例: period = 1 month、frequency = 1 month）、subscription は**単一の cycle**のみ有効となり、その後 renewal されず `expired` に移行します。継続的な monthly plan には、monthly payment frequency と長い subscription period（例: 20 years）を設定してください。
+</Warning>
+
+<Warning>
+**Currency は初回の成功した charge 時に固定されます。** checkout 作成時には、`billing_currency` **と** `billing_address.country` を必ず明示的に渡してください。省略すると customer の IP（Adaptive Currency）から検出され、subscription が初回 charge を受けると currency は lifetime にわたって固定されます。customer が後から旅行しても変更できません。
+</Warning>
+
+<Info>
+**trial では charge ではなく \$0 authorization が行われます。** subscription に trial がある場合、trial 開始時にカードを保存するための **\$0 mandate authorization** が作成され、初回の実際の charge は trial 終了時に発生します。payments list では、trial 中の subscription に `amount: 0` を含む payment が正確に 1 件表示されます。
+</Info>
+
+<Info>
+**Subscription lifecycle:** `on_hold` = renewal が失敗した状態（復旧可能: customer に payment method の更新を促します。dunning retry が適用されます）。`expired` = renewal されずに term が終了した状態で、**再有効化できません**。customer は再 subscription する必要があります。`cancelled` = customer または merchant によって終了された状態です。renewal failure の大半は Dodo の error ではなく、**issuer-side decline**（残高不足、カード declined）です。
+</Info>
+
+<Warning>
+**Indian card は RBI e-mandate に基づいて処理されます。** off-session charge（renewal および plan-change charge）の settlement には **最大約 48 時間**かかる場合があり、**₹15,000**を超える recurring auto-debit には customer による再 authentication が必要です（そのため、この上限を超える upgrade では既存の mandate を使用できません）。1 件の charge がまだ `processing` の間に、同じ subscription で 2 件目の charge を行うと、*"Cannot create new charge as previous payment is not successful yet."* という error で失敗します。Non-Indian card はほぼ即時に確認されます。
+</Warning>
+
+<Tip>
+**Subscription charge には \$1（または相当する currency）の minimum があります。** `$0.01–$0.99` の amount は `product_price: value out of range` で reject されます。許可されるのは、on-demand `mandate_only` setup 経由の `$0` のみです。
+</Tip>
+
+## Related API Reference
+
+<CardGroup cols={2}>
+<Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
+  subscription product の作成と subscription lifecycle の管理に関する API reference
+</Card>
+<Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
+  proration option を使用した subscription plan の upgrade、downgrade、変更に関する API reference
+</Card>
+<Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
+  payment method の更新と on-hold subscription の再有効化に関する API reference
+</Card>
+<Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
+  subscription details と configuration の更新に関する API reference
 </Card>
 </CardGroup>

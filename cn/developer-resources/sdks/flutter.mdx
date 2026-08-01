@@ -1,0 +1,211 @@
+---
+title: Flutter
+sidebarTitle: Flutter
+tag: NEW
+description: 从 Flutter 的系统浏览器标签页打开 Dodo Payments 托管的结账页面，并通过一次调用获取类型化结果。
+icon: layer-group
+keywords:
+  - Dodo Payments
+  - Flutter SDK
+  - Dart
+  - 移动端结账 SDK
+  - pub.dev
+---
+
+<Info>
+这是官方的 Dodo Payments Flutter package（`dodopayments_checkout`
+在 pub.dev 上）。此外还有一个由社区构建的独立 package，参见
+[社区项目](/community/projects)。
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  从你的 backend 创建此 SDK 要打开的 checkout_url。
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  了解它如何融入完整的移动支付流程。
+</Card>
+</CardGroup>
+
+`dodopayments_checkout` 会在 iOS 上的
+`SFSafariViewController` 和 Android 上的 Chrome Custom Tab 中打开 Dodo 的托管结账页面——使用的
+是与独立的 [iOS](/developer-resources/sdks/ios) 和
+[Android](/developer-resources/sdks/android) SDK 相同的原生核心。所有结账逻辑都位于
+这些原生核心中；Dart 层通过类型化的
+[Pigeon](https://pub.dev/packages/pigeon) channel 传递调用。它不持有 API key，
+也不会调用 Dodo Payments API。
+
+需要 Flutter 3.44+ / Dart 3.12+、iOS 16+，以及 Android `minSdk` 23。
+
+## 安装
+
+<Steps>
+<Step title="Add the Dependency">
+
+```yaml pubspec.yaml
+dependencies:
+  dodopayments_checkout: ^1.0.0
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+<Tabs>
+<Tab title="iOS">
+在 `ios/Runner/Info.plist` 中添加一个用于 scheme 的 URL type：
+
+```xml ios/Runner/Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+然后将收到的 URL（例如通过
+[`app_links`](https://pub.dev/packages/app_links)）转发到 SDK，因为
+`SFSafariViewController` 无法捕获自己的返回 URL：
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+DodoCheckout.instance.handleOpenURL(url);
+```
+
+<Note>
+在这里转发每个 URL 都是安全的。`handleOpenURL` 只会处理
+与已注册的 `returnUrl` 匹配的 URL，并会为其他 URL
+解析 `false`。
+</Note>
+</Tab>
+<Tab title="Android">
+将 callback scheme 设置为 Gradle manifest placeholder：
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+<Warning>
+如果 `MainActivity` 设置了 `android:taskAffinity=""`（标准的 `flutter
+create` 默认值），请移除该设置，或为 SDK 的 activities 设置相同的
+affinity。否则，某些 OEM Android 构建可能会丢失进行中的
+结账流程，并返回 `PLATFORM_ERROR`。
+</Warning>
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## 使用
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final result = await DodoCheckout.instance.start(
+  CheckoutParams(
+    checkoutUrl: Uri.parse(checkoutUrl), // from your backend's checkout session
+    returnUrl: Uri.parse('myapp://checkout/return'), // scheme must be registered (see Setup)
+    onEvent: (event) => print(event.type), // logging only
+  ),
+);
+
+switch (result.status) {
+  case CheckoutStatus.succeeded: showSuccess(result.paymentId);
+  case CheckoutStatus.failed:    showFailure();
+  case CheckoutStatus.cancelled: dismiss();
+  case CheckoutStatus.pending:   showPending();
+  case CheckoutStatus.expired:   showExpired();
+}
+```
+
+## 结果含义
+
+<Warning>
+`result.status` 是 UI 提示，而不是付款凭证。请始终通过 `payment.succeeded` / `subscription.active`
+webhook 从 backend 确认每笔付款。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+以下值之一：`succeeded`、`failed`、`cancelled`、`pending`、`expired`。
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+当返回 URL 包含该值时设置。将其显示在 UI 中，但不要使用它来授予访问权限。请参见下方的“验证付款”。
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+用于订阅结账时设置。
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+当结账包含 license key 产品时设置。
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+当结账捕获 email 时设置。
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+返回 URL 中的每个 query parameter，均按原样保留。
+</ParamField>
+
+## 验证付款
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  付款成功或订阅激活时，Dodo Payments 会调用你的 backend。
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  使用你的 secret key 查询 `paymentId`，直接检查其状态。
+</Card>
+</CardGroup>
+
+只有在以下任一方式确认付款后，才能授予访问权限，绝不能仅依据
+`result.status`。
+
+## 错误
+
+`start` 仅会在误用或平台故障时抛出 `CheckoutException`。
+付款已取消或被拒绝时始终返回结果，而不是抛出异常。
+
+- `invalidCheckoutUrl`（`INVALID_CHECKOUT_URL`）：不是 `checkout.dodopayments.com` session URL。
+- `invalidReturnUrl`（`INVALID_RETURN_URL`）：不是有效的绝对 URL。
+- `alreadyInProgress`（`ALREADY_IN_PROGRESS`）：已有结账流程正在运行。
+- `platformError`（`PLATFORM_ERROR`）：意外的平台故障。
+
+## 已放弃的会话
+
+<Info>
+如果应用在结账过程中被终止，请在下次启动时恢复该 session，并
+与 backend 进行对账。
+</Info>
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final abandoned = await DodoCheckout.instance.getAbandonedSession();
+if (abandoned != null) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.instance.clearAbandonedSession();
+}
+```
+
+## 相关内容
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  适用于 Android、iOS 和 React Native 的相同契约。
+</Card>
+<Card title="Community Projects" icon="users" href="/community/projects">
+  此外还有一个由社区构建的独立 Flutter package。
+</Card>
+</CardGroup>

@@ -1,0 +1,199 @@
+---
+title: iOS
+sidebarTitle: iOS
+tag: "NEW"
+description: Abra o checkout hospedado do Dodo Payments a partir de um app iOS
+  no SFSafariViewController e obtenha um resultado tipado em uma única chamada.
+icon: apple
+keywords:
+  - Dodo Payments
+  - iOS SDK
+  - Swift
+  - mobile checkout SDK
+  - SFSafariViewController
+---
+
+<Info>
+Este é o SDK oficial de checkout do Dodo Payments para iOS em Swift. Ele abre o checkout hospedado do Dodo em uma visualização de navegador nativa e retorna um resultado tipado.
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Crie o checkout_url que este SDK abre a partir do seu backend.
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Veja como isso se encaixa no fluxo completo de pagamentos móveis.
+</Card>
+</CardGroup>
+
+O SDK para iOS abre o checkout hospedado do Dodo em `SFSafariViewController`, não armazena nenhuma API key e nunca chama a API do Dodo diretamente. Toda a lógica do checkout é executada no navegador; o SDK simplesmente gerencia o ciclo de vida da visualização e captura a URL de retorno.
+
+Requer iOS 16 ou posterior e Swift 6.
+
+## Instalação
+
+<Steps>
+<Step title="Add the Package">
+No Xcode, acesse **File → Add Package Dependencies** e insira:
+
+```
+https://github.com/dodopayments/dodopayments-mobile-sdk-ios
+```
+
+Selecione a versão 1.0.0 ou posterior.
+
+Como alternativa, adicione ao seu `Package.swift`:
+
+```swift Package.swift
+.package(url: "https://github.com/dodopayments/dodopayments-mobile-sdk-ios", from: "1.0.0")
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+Seu app deve registrar um esquema de URL para receber a URL de retorno do checkout. Adicione isto ao seu `Info.plist`:
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+Você também pode adicionar isso pela interface **Info → URL Types** do Xcode.
+</Step>
+</Steps>
+
+## Uso
+
+```swift
+import DodoCheckout
+
+let result = try await DodoCheckout.start(
+    checkoutUrl: checkoutUrl,   // from your backend's checkout session
+    returnUrl: URL(string: "myapp://checkout/return")!,
+    onEvent: { event in print(event.name) }  // logging only
+)
+
+switch result.status {
+case .succeeded: showSuccess(result.paymentId)
+case .failed:    showFailure()
+case .cancelled: dismiss()
+case .pending:   showPending()
+case .expired:   showExpired()
+}
+```
+
+## Encaminhando a URL de retorno
+
+`SFSafariViewController` não tem uma forma em processo de capturar sua própria URL de retorno. Seu app deve encaminhar as URLs recebidas para o SDK.
+
+<Tabs>
+<Tab title="SwiftUI">
+
+```swift
+.onOpenURL { url in
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+<Tab title="SceneDelegate">
+
+```swift SceneDelegate.swift
+func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    guard let url = URLContexts.first?.url else { return }
+    DodoCheckout.handleOpenURL(url)
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+É seguro encaminhar todas as URLs aqui. `handleOpenURL` só atua em URLs que correspondem ao seu `returnUrl` registrado e retorna `false` para qualquer outra URL.
+</Note>
+
+## O que o resultado significa
+
+<Warning>
+`result.status` é uma indicação da interface, não uma prova de pagamento. Confirme todos os pagamentos a partir do seu backend, por meio do webhook `payment.succeeded` / `subscription.active`.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+Um dos seguintes: `succeeded`, `failed`, `cancelled`, `pending`, `expired`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Definido quando a URL de retorno incluiu um. Exiba-o na interface; não o use para conceder acesso. Consulte Verificar o pagamento abaixo.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Definido para checkouts de assinatura.
+</ParamField>
+
+<ParamField body="licenseKeys" type="[String]?">
+Definido quando o checkout inclui produtos com chaves de licença.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Definido quando o checkout captura um e-mail.
+</ParamField>
+
+<ParamField body="raw" type="[String: String]">
+Todos os parâmetros de consulta da URL de retorno, literalmente.
+</ParamField>
+
+## Verificar o pagamento
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  O Dodo Payments chama seu backend quando um pagamento é concluído com sucesso ou uma assinatura é ativada.
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  Consulte `paymentId` com sua secret key para verificar o status diretamente.
+</Card>
+</CardGroup>
+
+Conceda acesso depois que um desses mecanismos confirmar o pagamento, nunca apenas com base em `result.status`.
+
+## Erros
+
+`start` gera `CheckoutError` somente em caso de uso incorreto ou falha da plataforma. Um pagamento cancelado ou recusado sempre é um resultado, nunca uma exceção.
+
+- `invalidCheckoutUrl` (`INVALID_CHECKOUT_URL`): não é uma URL de sessão `checkout.dodopayments.com`.
+- `invalidReturnUrl` (`INVALID_RETURN_URL`): não é uma URL absoluta válida.
+- `alreadyInProgress` (`ALREADY_IN_PROGRESS`): já há um checkout em execução.
+- `platformError` (`PLATFORM_ERROR`): falha inesperada da plataforma.
+
+## Sessões abandonadas
+
+<Info>
+Se o app for encerrado durante o checkout, recupere a sessão na próxima inicialização e reconcilie-a com seu backend.
+</Info>
+
+```swift
+import DodoCheckout
+
+if let abandoned = DodoCheckout.getAbandonedSession() {
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession()
+}
+```
+
+## Relacionado
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  O mesmo contrato para Android, React Native e Flutter.
+</Card>
+<Card title="React Native SDK" icon="react" href="/developer-resources/sdks/react-native">
+  Encapsula este mesmo núcleo em Swift no iOS.
+</Card>
+</CardGroup>

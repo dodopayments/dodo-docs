@@ -1,0 +1,206 @@
+---
+title: "Flutter"
+sidebarTitle: "Flutter"
+tag: "NEW"
+description: "Open Dodo Payments' hosted checkout from Flutter in a system browser tab and get a typed result back in one call."
+icon: "layer-group"
+keywords: ["Dodo Payments", "Flutter SDK", "Dart", "mobile checkout SDK", "pub.dev"]
+---
+
+<Info>
+This is the official Dodo Payments Flutter package (`dodopayments_checkout`
+on pub.dev). A separate, community-built package also exists, see
+[Community Projects](/community/projects).
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  Create the checkout_url this SDK opens, from your backend.
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  See how this fits into the full mobile payment flow.
+</Card>
+</CardGroup>
+
+`dodopayments_checkout` opens Dodo's hosted checkout in
+`SFSafariViewController` on iOS and a Chrome Custom Tab on Android — the same
+native cores used by the standalone [iOS](/developer-resources/sdks/ios) and
+[Android](/developer-resources/sdks/android) SDKs. All checkout logic lives in
+those native cores; the Dart layer passes the call through a typed
+[Pigeon](https://pub.dev/packages/pigeon) channel. It holds no API key and
+never calls the Dodo Payments API.
+
+Requires Flutter 3.44+ / Dart 3.12+, iOS 16+, and Android `minSdk` 23.
+
+## Installation
+
+<Steps>
+<Step title="Add the Dependency">
+```yaml pubspec.yaml
+dependencies:
+  dodopayments_checkout: ^1.0.0
+```
+</Step>
+<Step title="Register a Callback URL Scheme">
+<Tabs>
+<Tab title="iOS">
+Add a URL type for your scheme in `ios/Runner/Info.plist`:
+
+```xml ios/Runner/Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+Then forward incoming URLs (e.g. via
+[`app_links`](https://pub.dev/packages/app_links)) into the SDK, because
+`SFSafariViewController` cannot catch its own return URL:
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+DodoCheckout.instance.handleOpenURL(url);
+```
+
+<Note>
+It's safe to forward every URL here. `handleOpenURL` only acts on URLs
+matching your registered `returnUrl` and resolves `false` for anything
+else.
+</Note>
+</Tab>
+<Tab title="Android">
+Set your callback scheme as a Gradle manifest placeholder:
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+<Warning>
+If `MainActivity` sets `android:taskAffinity=""` (the stock `flutter
+create` default), remove it or give the SDK's activities the same
+affinity. Otherwise some OEM Android builds can lose the in-flight
+checkout and return `PLATFORM_ERROR`.
+</Warning>
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## Usage
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final result = await DodoCheckout.instance.start(
+  CheckoutParams(
+    checkoutUrl: Uri.parse(checkoutUrl), // from your backend's checkout session
+    returnUrl: Uri.parse('myapp://checkout/return'), // scheme must be registered (see Setup)
+    onEvent: (event) => print(event.type), // logging only
+  ),
+);
+
+switch (result.status) {
+  case CheckoutStatus.succeeded: showSuccess(result.paymentId);
+  case CheckoutStatus.failed:    showFailure();
+  case CheckoutStatus.cancelled: dismiss();
+  case CheckoutStatus.pending:   showPending();
+  case CheckoutStatus.expired:   showExpired();
+}
+```
+
+## What the Result Means
+
+<Warning>
+`result.status` is a UI hint, not proof of payment. Confirm every payment
+from your backend, via the `payment.succeeded` / `subscription.active`
+webhook.
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+One of `succeeded`, `failed`, `cancelled`, `pending`, `expired`.
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+Set when the return URL included one. Display it in the UI, don't use it
+to grant access. See Verify the Payment below.
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+Set for subscription checkouts.
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+Set when the checkout includes license key products.
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+Set when the checkout captures an email.
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+Every query parameter from the return URL, verbatim.
+</ParamField>
+
+## Verify the Payment
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  Dodo Payments calls your backend when a payment succeeds or a subscription activates.
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  Look up `paymentId` with your secret key to check its status directly.
+</Card>
+</CardGroup>
+
+Grant access after one of these confirms the payment, never from
+`result.status` alone.
+
+## Errors
+
+`start` throws `CheckoutException` only for misuse or a platform failure.
+A cancelled or declined payment is always a result, never an exception.
+
+- `invalidCheckoutUrl` (`INVALID_CHECKOUT_URL`): not a `checkout.dodopayments.com` session URL.
+- `invalidReturnUrl` (`INVALID_RETURN_URL`): not a valid absolute URL.
+- `alreadyInProgress` (`ALREADY_IN_PROGRESS`): a checkout is already running.
+- `platformError` (`PLATFORM_ERROR`): unexpected platform failure.
+
+## Abandoned Sessions
+
+<Info>
+If the app is killed mid-checkout, recover the session on next launch and
+reconcile it with your backend.
+</Info>
+
+```dart
+import 'package:dodopayments_checkout/dodopayments_checkout.dart';
+
+final abandoned = await DodoCheckout.instance.getAbandonedSession();
+if (abandoned != null) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.instance.clearAbandonedSession();
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  The same contract for Android, iOS, and React Native.
+</Card>
+<Card title="Community Projects" icon="users" href="/community/projects">
+  A separate, community-built Flutter package also exists.
+</Card>
+</CardGroup>

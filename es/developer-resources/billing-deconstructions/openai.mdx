@@ -157,7 +157,17 @@ Puedes replicar el modelo de facturación de OpenAI usando Dodo Payments. Usarem
     }
     ```
 
-    ### Manejo de webhooks de saldo bajo
+    ```typescript
+    async function checkCreditsBeforeRequest(customerId: string) {
+      const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+        credit_entitlement_id: 'credit_entitlement_id',
+      });
+
+      if (Number(balance.balance) <= 0) {
+        throw new Error('Insufficient credits. Please top up your account.');
+      }
+    }
+    ```
 
     No esperes hasta que el usuario llegue a \$0 para notificarle. Usa webhooks para activar un correo electrónico o notificación en la aplicación cuando su saldo caiga por debajo de cierto umbral.
 
@@ -378,7 +388,65 @@ export async function handleApiRequest(req, res) {
 }
 ```
 
-## Manejo de casos extremos
+```typescript
+import DodoPayments from 'dodopayments';
+import OpenAI from 'openai';
+
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+export async function handleApiRequest(req, res) {
+  const { customerId, prompt, model } = req.body;
+
+  try {
+    // 1. Check credit balance
+    const balance = await client.creditEntitlements.balances.retrieve(customerId, {
+      credit_entitlement_id: 'credit_entitlement_id',
+    });
+
+    if (Number(balance.balance) <= 0) {
+      return res.status(402).json({ error: 'Insufficient credits. Please top up.' });
+    }
+
+    // 2. Call OpenAI
+    const completion = await openai.chat.completions.create({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const { prompt_tokens, completion_tokens } = completion.usage;
+
+    // 3. Ingest usage events to Dodo
+    await client.usageEvents.ingest({
+      events: [
+        {
+          event_id: `req_${completion.id}_in`,
+          customer_id: customerId,
+          event_name: 'llm.input_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: prompt_tokens }
+        },
+        {
+          event_id: `req_${completion.id}_out`,
+          customer_id: customerId,
+          event_name: 'llm.output_tokens',
+          timestamp: new Date().toISOString(),
+          metadata: { model, tokens: completion_tokens }
+        }
+      ]
+    });
+
+    // 4. Return response to user
+    res.json(completion);
+
+  } catch (error) {
+    console.error('API Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+```
 
 Al construir un sistema de facturación tan complejo como el de OpenAI, te encontrarás con varios casos extremos que requieren una atención cuidadosa.
 

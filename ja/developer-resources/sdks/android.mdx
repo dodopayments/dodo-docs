@@ -1,0 +1,216 @@
+---
+title: Android
+sidebarTitle: Android
+tag: NEW
+description: AndroidアプリからChrome Custom TabでDodo
+  Paymentsのホスト型チェックアウトを開き、1回の呼び出しで型付きの結果を受け取ります。
+icon: android
+keywords:
+  - Dodo Payments
+  - Android SDK
+  - Kotlin
+  - モバイルチェックアウトSDK
+  - Custom Tabs
+---
+
+<Info>
+これは、Dodoのホスト型チェックアウトを開くための公式AndroidチェックアウトSDK（`com.dodopayments.api:checkout-android`）です。
+サーバーからDodo
+Payments APIを呼び出す[backend Kotlin SDK](/developer-resources/sdks/kotlin)とは異なります。
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+    このSDKが開く`checkout_url`を作成する
+  </Card>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    モバイルチェックアウトフローのベストプラクティス
+  </Card>
+</CardGroup>
+
+Android SDKは、`androidx.browser.customtabs`を使用して、Dodoのホスト型チェックアウトをChrome Custom Tabで開きます。ネットワークコードは一切含まず、API keyも保持しません。バックエンドのcheckout sessionから`checkoutUrl`を渡すと、ユーザーがフローを完了または中止したときに、SDKは型付きの`CheckoutResult`を返します。
+
+**要件:** `minSdk` 23、Kotlin、Java 17。
+
+## インストール
+
+<Steps>
+<Step title="Add the Dependency">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.dodopayments.api:checkout-android:1.0.0")
+}
+```
+
+</Step>
+<Step title="Register a Callback URL Scheme">
+コールバックスキームをGradle manifest placeholderとして設定します。ライブラリ独自の
+manifestでは、すでにリダイレクトアクティビティのintent filterが
+`${dodoCallbackScheme}`トークンを使って宣言されています。そのため、この1つのプロパティだけで設定は完了します。
+manifest XMLを追加する必要はありません。
+
+```kotlin build.gradle.kts
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+値は`CheckoutParams.returnUrl`内のスキーム（例: `myapp://checkout/return`）と一致する必要があります。
+
+<Note>
+placeholderを完全に省略すると、チェックアウト時に何も起こらず失敗するのではなく、
+unresolved-placeholderエラーですぐにビルドが失敗します。設定した値が`returnUrl`のスキームと一致しない場合、`DodoCheckout.start`は何も表示する前に`PLATFORM_ERROR`をスローします。
+</Note>
+</Step>
+</Steps>
+
+## 使用方法
+
+SDKは2種類の呼び出し方法に対応しています。
+
+<Tabs>
+<Tab title="Launcher (Recommended)">
+`registerForActivityResult`にコントラクトを登録してから、起動します。
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+private val checkoutLauncher =
+    registerForActivityResult(DodoCheckout.contract()) { result ->
+        when (result.status) {
+            CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+            CheckoutStatus.FAILED -> showFailure()
+            CheckoutStatus.CANCELLED -> dismiss()
+            CheckoutStatus.PENDING -> showPending()
+            CheckoutStatus.EXPIRED -> showExpired()
+        }
+    }
+
+checkoutLauncher.launch(
+    CheckoutParams(
+        checkoutUrl = checkoutUrl, // from your backend's checkout session
+        returnUrl = "myapp://checkout/return"
+    )
+)
+```
+
+<Tip>
+この方法を推奨します。結果はAndroidのOSが管理する`ActivityResultRegistry`を通じて渡されるため、プロセスが終了しても保持されます。
+</Tip>
+</Tab>
+<Tab title="Suspend Function">
+コルーチンスコープから`DodoCheckout.start`を呼び出します。
+
+```kotlin
+import com.dodopayments.checkout.CheckoutParams
+import com.dodopayments.checkout.CheckoutStatus
+import com.dodopayments.checkout.DodoCheckout
+
+lifecycleScope.launch {
+    val result = DodoCheckout.start(
+        activity = this@MyActivity,
+        params = CheckoutParams(
+            checkoutUrl = checkoutUrl, // from your backend's checkout session
+            returnUrl = "myapp://checkout/return"
+        ),
+        onEvent = { event -> println(event.name) } // logging only
+    )
+
+    when (result.status) {
+        CheckoutStatus.SUCCEEDED -> showSuccess(result.paymentId)
+        CheckoutStatus.FAILED -> showFailure()
+        CheckoutStatus.CANCELLED -> dismiss()
+        CheckoutStatus.PENDING -> showPending()
+        CheckoutStatus.EXPIRED -> showExpired()
+    }
+}
+```
+
+<Warning>
+この方法ではメモリ上の`CompletableDeferred`を解決するため、プロセスが終了しても保持されません。`onEvent`はこの方法でのみ利用でき、コントラクトでは利用できません。
+</Warning>
+</Tab>
+</Tabs>
+
+## 結果の意味
+
+<Warning>
+`status`フィールドはUI上のヒントであり、支払いの証明ではありません。アクセスを許可する前に、必ずwebhooksまたはGet Payment Detail endpointを使用してバックエンドで支払いを検証してください。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+`SUCCEEDED`、`FAILED`、`CANCELLED`、`PENDING`、`EXPIRED`のいずれか1つ。
+</ParamField>
+
+<ParamField body="paymentId" type="String?">
+return URLに含まれている場合に設定されます。UIに表示しますが、アクセスの許可には使用しないでください。下記の「支払いの検証」を参照してください。
+</ParamField>
+
+<ParamField body="subscriptionId" type="String?">
+subscription checkoutの場合に設定されます。
+</ParamField>
+
+<ParamField body="licenseKeys" type="List<String>?">
+チェックアウトにlicense key productsが含まれている場合に設定されます。
+</ParamField>
+
+<ParamField body="customerEmail" type="String?">
+チェックアウトでemailを取得した場合に設定されます。
+</ParamField>
+
+<ParamField body="raw" type="Map<String, String>">
+return URLのすべてのquery parameterを、そのまま保持します。
+</ParamField>
+
+## 支払いの検証
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+    支払いイベントをリアルタイムでリッスンする
+  </Card>
+  <Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+    必要に応じて支払いステータスをクエリする
+  </Card>
+</CardGroup>
+
+これらのいずれかによって支払いが確認された後にのみ、ユーザーにアクセスを許可してください。`CheckoutResult.status`だけに依存しないでください。
+
+## エラー
+
+`DodoCheckout.start`が`CheckoutError`をスローするのは、誤った使用またはプラットフォーム障害の場合のみです。コードは`CheckoutError.code`から読み取ります。
+
+- `INVALID_CHECKOUT_URL`: `checkout.dodopayments.com` session URLではありません。
+- `INVALID_RETURN_URL`: 有効なabsolute URLではありません。
+- `ALREADY_IN_PROGRESS`: checkoutがすでに実行中です。
+- `PLATFORM_ERROR`: `dodoCallbackScheme` placeholderとスキームが一致しない`returnUrl`を含む、予期しないプラットフォーム障害。
+
+ユーザーによるキャンセルや支払いの拒否は、常に結果（`CANCELLED`または`FAILED`）として返され、スローされるエラーにはなりません。launcher styleでは、検証エラーは`launcher.launch(...)`の外部にスローされます。
+
+## 放棄されたセッション
+
+チェックアウト中にアプリが終了したり、ユーザーがアプリを強制停止したりすると、SDKはセッションをローカルに保存します。次回アプリを起動したときに、放棄されたセッションがないか確認し、バックエンドと照合してください。
+
+```kotlin
+DodoCheckout.getAbandonedSession(context)?.let { abandoned ->
+    // reconcile abandoned.sessionId with your backend, then:
+    DodoCheckout.clearAbandonedSession(context)
+}
+```
+
+`abandoned.createdAt`は、ミリ秒単位のepoch timestampです。
+
+## 関連情報
+
+<CardGroup cols={2}>
+  <Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+    モバイルチェックアウトフローのベストプラクティス
+  </Card>
+  <Card title="Kotlin SDK" icon="code" href="/developer-resources/sdks/kotlin">
+    サーバーサイド操作用のBackend SDK
+  </Card>
+</CardGroup>

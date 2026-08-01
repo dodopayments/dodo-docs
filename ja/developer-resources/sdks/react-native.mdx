@@ -1,0 +1,268 @@
+---
+title: React Native
+sidebarTitle: React Native
+tag: NEW
+description: React NativeアプリからシステムブラウザータブでDodo Paymentsのホスト型チェックアウトを開き、1回の呼び出しで型付きの結果を取得します。
+icon: react
+keywords:
+  - Dodo Payments
+  - React Native SDK
+  - Expo
+  - モバイルチェックアウト SDK
+  - Turbo Module
+---
+
+<Info>
+これは公式のDodo Payments React NativeチェックアウトSDKで、`@dodopayments/react-native-checkout`です。Dodoのホスト型チェックアウトをネイティブブラウザビューで開き、型付きの結果を返します。注: `dodopayments-react-native-sdk`（スコープなし）という、APIがまったく異なる古い無関係なパッケージが存在します。このページでは、現在の公式スコープ付きパッケージのみを説明します。
+</Info>
+
+<CardGroup cols={2}>
+<Card title="Checkout Sessions API" icon="cart-shopping" href="/developer-resources/checkout-session">
+  バックエンドから、このSDKが開くcheckout_urlを作成します。
+</Card>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  モバイル決済フロー全体の中での位置付けを確認します。
+</Card>
+</CardGroup>
+
+React Native SDKは、同じネイティブSwiftおよびKotlinコア上に構築された薄いTurbo Moduleラッパーです。iOSでは`SFSafariViewController`を、AndroidではChrome Custom Tabを開き、API keyを保持せず、Dodo APIを直接呼び出すこともありません。すべてのチェックアウトロジックはブラウザー内で実行され、SDKはビューのライフサイクルを管理し、戻りURLを取得するだけです。
+
+<Warning>
+このSDKには**New Architectureのみ**、React Native 0.76以降、iOS 16以降、およびAndroid `minSdk` 24が必要です。
+</Warning>
+
+## インストール
+
+<Steps>
+<Step title="Install the Package">
+<Tabs>
+<Tab title="Android">
+パッケージは自動リンクされ、Mavenから`com.dodopayments.api:checkout-android`を取得します。
+
+```sh
+npm i @dodopayments/react-native-checkout
+```
+
+追加の設定は不要です。ネイティブ依存関係は自動的に解決されます。
+</Tab>
+<Tab title="iOS">
+
+```sh
+npm i @dodopayments/react-native-checkout
+cd ios && pod install
+```
+
+Swiftコアはパッケージに含まれており、CocoaPodsを介してインストールされます。
+</Tab>
+<Tab title="Expo">
+開発ビルドのみ（Expo Goは対象外）。
+
+```sh
+npm i @dodopayments/react-native-checkout
+npx expo install expo-build-properties
+```
+
+次に`app.json`を設定します（下記の「コールバックURLスキームの登録」を参照してください）。
+</Tab>
+</Tabs>
+</Step>
+<Step title="Register a Callback URL Scheme">
+アプリでチェックアウトからの戻りURLを受け取るには、URLスキームを登録する必要があります。
+
+<Tabs>
+<Tab title="Android (Gradle)">
+`android/app/build.gradle`で:
+
+```kotlin android/app/build.gradle
+android {
+    defaultConfig {
+        manifestPlaceholders["dodoCallbackScheme"] = "myapp"
+    }
+}
+```
+
+`"myapp"`をアプリのスキームに置き換えます。
+</Tab>
+<Tab title="iOS (Info.plist)">
+`ios/YourApp/Info.plist`で:
+
+```xml Info.plist
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>myapp</string>
+    <key>CFBundleURLSchemes</key>
+    <array>
+      <string>myapp</string>
+    </array>
+  </dict>
+</array>
+```
+
+Xcodeの**Info → URL Types** UIから追加することもできます。
+</Tab>
+<Tab title="Expo (both platforms)">
+`app.json`で:
+
+```json app.json
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "manifestPlaceholders": {
+              "dodoCallbackScheme": "myapp"
+            }
+          }
+        }
+      ]
+    ],
+    "ios": {
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": ["myapp"]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+<Warning>
+パッケージには`@dodopayments/react-native-checkout` Expo config
+pluginも含まれていますが、現在はURLスキームもmanifest placeholderも書き込みません。
+これを追加するだけではコールバックスキームは**登録されません**。上記の`expo-build-properties`および`infoPlist`の設定を使用してください。
+</Warning>
+
+<Note>
+`app.json`を編集した後、ネイティブプロジェクトを再ビルドします。
+
+```sh
+npx expo prebuild --clean
+```
+
+これは開発ビルドでのみ動作し、Expo Goでは動作しません。
+</Note>
+</Tab>
+</Tabs>
+</Step>
+</Steps>
+
+## 使用方法
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+// Required for iOS's return-URL handling.
+Linking.addEventListener('url', ({ url }) => DodoCheckout.handleOpenURL(url));
+
+const result = await DodoCheckout.start({
+  checkoutUrl,                          // from your backend's checkout session
+  returnUrl: 'myapp://checkout/return', // scheme must be registered (see Installation)
+  onEvent: (e) => console.log(e.type),  // logging only
+});
+
+switch (result.status) {
+  case 'succeeded': showSuccess(result.paymentId); break;
+  case 'failed':    showFailure(); break;
+  case 'cancelled': dismiss(); break;
+  case 'pending':   showPending(); break;
+  case 'expired':   showExpired(); break;
+}
+```
+
+## 戻りURLの転送
+
+`Linking`リスナーは、iOSでの戻りURL処理に必要です。Androidでは、`handleOpenURL`は`false`を解決するだけのno-opです。Androidコアがリダイレクトをネイティブに処理するためです。両プラットフォームでリスナーを無条件に登録しても安全です。
+
+```typescript
+import { Linking } from 'react-native';
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+Linking.addEventListener('url', ({ url }) => {
+  DodoCheckout.handleOpenURL(url);
+});
+```
+
+## 結果の意味
+
+<Warning>
+`result.status`はUI上のヒントであり、支払いの証明ではありません。`payment.succeeded` / `subscription.active` webhookを使用して、すべての支払いをバックエンドから確認してください。
+</Warning>
+
+<ParamField body="status" type="CheckoutStatus" required>
+`succeeded`、`failed`、`cancelled`、`pending`、`expired`のいずれか。
+</ParamField>
+
+<ParamField body="paymentId" type="string">
+戻りURLにその値が含まれていた場合に設定されます。UIに表示しますが、アクセス許可には使用しないでください。下記の「支払いの検証」を参照してください。
+</ParamField>
+
+<ParamField body="subscriptionId" type="string">
+サブスクリプションのチェックアウトで設定されます。
+</ParamField>
+
+<ParamField body="licenseKeys" type="string[]">
+チェックアウトにlicense key商品が含まれている場合に設定されます。
+</ParamField>
+
+<ParamField body="customerEmail" type="string">
+チェックアウトでメールアドレスを取得した場合に設定されます。
+</ParamField>
+
+<ParamField body="raw" type="Record<string, string>">
+戻りURLに含まれるすべてのquery parameterを、そのまま保持します。
+</ParamField>
+
+## 支払いの検証
+
+<CardGroup cols={2}>
+<Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
+  支払いが成功したとき、またはサブスクリプションが有効化されたとき、Dodo Paymentsはバックエンドを呼び出します。
+</Card>
+<Card title="Get Payment Detail" icon="magnifying-glass" href="/api-reference/payments/get-payments-1">
+  secret keyを使用して`paymentId`を検索し、ステータスを直接確認します。
+</Card>
+</CardGroup>
+
+これらのいずれかによって支払いが確認された後にアクセスを許可し、`result.status`だけを根拠にしてはいけません。
+
+## エラー
+
+`start`は、誤用またはプラットフォーム障害の場合にのみ`CheckoutError`でrejectします。キャンセルまたはdeclinedとなった支払いは常に結果として返され、例外にはなりません。
+
+- `INVALID_CHECKOUT_URL`: `checkout.dodopayments.com`のsession URLではありません。
+- `INVALID_RETURN_URL`: 有効なabsolute URLではありません。
+- `ALREADY_IN_PROGRESS`: チェックアウトはすでに実行中です。
+- `PLATFORM_ERROR`: 予期しないプラットフォーム障害です。
+
+## 放棄されたセッション
+
+チェックアウトの途中でアプリまたはJS bundleが終了すると、promiseは失われますが、ネイティブ層はセッションを保持します。次回のmount時に復元し、バックエンドと照合してください。
+
+```typescript
+import { DodoCheckout } from '@dodopayments/react-native-checkout';
+
+const abandoned = await DodoCheckout.getAbandonedSession();
+if (abandoned) {
+  // reconcile abandoned.sessionId with your backend, then:
+  await DodoCheckout.clearAbandonedSession();
+}
+```
+
+## 関連情報
+
+<CardGroup cols={2}>
+<Card title="Mobile Integration Guide" icon="mobile" href="/developer-resources/mobile-integration">
+  Android、iOS、Flutterで共通のコントラクトです。
+</Card>
+<Card title="Expo Boilerplate" icon="layer-group" href="/developer-resources/expo-boilerplate">
+  チェックアウト統合を含む完全なExpoの例です。
+</Card>
+</CardGroup>

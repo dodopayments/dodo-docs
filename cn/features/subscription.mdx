@@ -73,13 +73,14 @@ Pick the most accurate tax category to ensure correct tax collection per region.
 
 #### Pricing
 
-- **定价类型**: 选择 <b>订阅</b>（本指南适用）。替代选项为单次付款和基于使用的计费。
-- **价格**（必填）: 基本重复价格及货币。价格必须至少为 **$1**（或您选择货币的等值金额）。低于此最低值的金额不支持，订阅将无法工作。
-- **适用折扣 (%)**: 可选，针对基本价格应用的百分比折扣；在结账和发票中体现。
-- **每隔多久重复付款**（必填）: 续订的间隔，例如，每1个月。选择频率（月或年）和数量。
-- **订阅期限**（必填）: 订阅保持活跃的总期限（例如，10年）。在该期限结束后，将停止续订，除非延长。
-- **试用期天数**（必填）: 设置试用长度（以天为单位）。使用0以禁用试用期。试用结束时，首次收费自动发生。
-- **选择附加服务**: 附加最多10个附加服务，客户可以在基本计划的同时购买这些服务。
+- **Pricing Type**：选择 <b>Subscription</b>（本指南）。可选项包括 Single Payment 和 Usage Based Billing。
+- **Price**（必填）：带货币的基础 recurring price。价格必须至少为 **$1**（或所选货币的等值金额）。不支持低于此最低金额的价格，且订阅将无法正常工作。
+- **Discount Applicable (%)**：可选的百分比折扣，应用于基础价格；会反映在结账和发票中。
+- **Repeat payment every**（必填）：续订间隔，例如每 1 Month。选择周期（months 或 years）和数量。
+- **Subscription Period**（必填）：订阅保持有效的总期限（例如 10 Years）。期限结束后，除非延长，否则将停止续订。
+- **Trial Period Days**（必填）：以天为单位设置试用时长。使用 0 可禁用试用。试用结束时会自动进行首次扣款。
+- **Trial Amount**：付费试用的可选预付费用。免费试用请留空。请参阅 [Paid Trials](#paid-trials)。
+- **Select add‑on**：最多附加 10 个 add‑ons，供客户与基础计划一同购买。
 
 <Warning>
 Changing pricing on an active product affects new purchases. Existing subscriptions follow your plan‑change and proration settings.
@@ -102,7 +103,7 @@ Use metadata to store identifiers from your system (e.g., accountId) so you can 
 
 ## Subscription Trials
 
-Trials let customers access subscriptions without immediate payment. The first charge occurs automatically when the trial ends.
+试用期让客户可以在支付完整 recurring price 之前评估订阅。试用可以是 **free**，即试用结束前不会收取任何费用；也可以是 **paid**，即预先收取一笔折扣后的金额。在这两种情况下，完整价格都会在试用结束后的首次续订时开始收取。
 
 ### Configuring Trials
 
@@ -127,13 +128,71 @@ const session = await client.checkoutSessions.create({
 The `trial_period_days` value must be between 0 and 10,000 days.
 </Warning>
 
+### Paid Trials
+
+试用不一定必须免费。在订阅产品的 recurring price 上设置 **Trial Amount**，即可为试用期收取一笔折扣后的预付费用。随后，完整 recurring price 会在首次续订时开始收取。
+
+<Frame>
+<img src="/images/subscriptions/paid-trials.png" alt="带有试用时长和可选试用金额的付费试用订阅定价表单" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+付费试用是在产品的 price 上配置的，而不是针对每个 subscription 或 checkout session 配置：
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trial_amount` | integer | 今天针对试用收取的金额，以 price currency 的最小单位表示（例如，`500` 表示 $5.00）。需要 `trial_period_days > 0`。省略或设置为 `null` 表示免费试用。 |
+| `trial_apply_discounts` | boolean | checkout discount codes 是否会减少试用费用。默认为 `false`，因此即使 recurring price 应用了折扣，试用金额仍会全额收取。 |
+
+```typescript
+const product = await client.products.create({
+  name: 'Pro Plan',
+  tax_category: 'saas',
+  price: {
+    type: 'recurring_price',
+    price: 2900,                      // $29.00 per month after the trial
+    currency: 'USD',
+    payment_frequency_count: 1,
+    payment_frequency_interval: 'Month',
+    subscription_period_count: 1,
+    subscription_period_interval: 'Year',
+    trial_period_days: 14,            // A paid trial requires a positive trial period
+    trial_amount: 500,                // $5.00 charged today
+    trial_apply_discounts: false      // Discounts apply to the recurring price only
+  }
+});
+```
+
+付费试用同样会经过 checkout。试用金额会计税，并显示在 checkout session 的计算结果和 payment link 定价中；Adaptive Currency markup 会按货币应用。[preview endpoint](/developer-resources/checkout-session) 会返回 `trial_amount` 和 `trial_period_days`，以便你在创建订阅前显示今天应付的金额。
+
+<Info>
+免费试用行为不变。将 **Trial Amount** 留空会保留现有行为：首次扣款为 `0`，并在试用结束时收取完整价格。
+</Info>
+
+### Preventing Trial Misuse
+
+**Prevent Trial Misuse** 可防止客户为同一企业反复领取试用。启用后，已经兑换过试用的客户会自动降级为 **paid, no-trial purchase**，而不会获得新的试用期。
+
+<Frame>
+<img src="/images/subscriptions/prevent-trial-misuse.png" alt="Subscriptions 设置选项卡中的 Prevent Trial Misuse 开关" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+在 **Settings** 的 **Subscriptions** 选项卡中启用。启用后：
+
+- 客户会按 **normalized email** 匹配，并移除加号别名，因此 `user+trial@example.com` 和 `user@example.com` 会被视为同一人。
+- 兑换记录会在 **trial activation** 时保存，因此当天取消的客户仍然算作已使用试用。
+- 现有客户会根据其历史试用记录按 email 回填，因此过去使用过试用的客户会立即被识别。
+
+<Info>
+此设置**默认关闭**。完整的企业级订阅控制项列表请参阅 [Subscription Settings](/features/product-collections#subscription-settings)。
+</Info>
+
 ### Detecting Trial Status
 
 <Warning>
-Currently, there is no direct field to detect trial status. The following is a workaround that requires querying payments, which is inefficient. We are working on a more efficient solution.
+目前没有可直接用于检测试用状态的字段。以下是一种需要查询 payments 的变通方法，但效率较低。我们正在开发更高效的解决方案。
 </Warning>
 
-To determine if a subscription is in trial, retrieve the list of payments for the subscription. If there is exactly one payment with amount 0, the subscription is in trial period:
+要确定 **free trial** subscription 是否处于试用期，请获取该 subscription 的 payments 列表。如果恰好有一笔金额为 0 的 payment，则该 subscription 处于试用期：
 
 ```typescript
 const subscription = await client.subscriptions.retrieve('sub_123');
@@ -146,9 +205,13 @@ const isInTrial = payments.items.length === 1 &&
                   payments.items[0].total_amount === 0;
 ```
 
+<Warning>
+此金额为零的检查方式仅适用于免费试用。对于 [paid trial](#paid-trials)，第一笔 payment 等于试用金额，而不是 `0`。请将第一笔 payment 与 subscription 的 `trial_amount` 比较，或检查 `next_billing_date` 是否仍在试用期内。
+</Warning>
+
 ### Updating Trial Period
 
-Extend the trial by updating `next_billing_date`:
+通过更新 `next_billing_date` 延长试用期：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -157,19 +220,19 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Warning>
-You cannot set `next_billing_date` to a past time. The date must be in the future.
+不能将 `next_billing_date` 设置为过去的时间。日期必须在未来。
 </Warning>
 
 ## Subscription Plan Changes
 
-Plan changes let you upgrade or downgrade subscriptions, adjust quantities, or migrate to different products. Depending on the proration mode you select, a change may trigger an immediate charge, create credit, or apply no billing adjustment.
+计划变更可用于升级或降级 subscriptions、调整数量，或迁移到不同的 products。根据所选的 proration mode，变更可能触发即时扣款、产生 credit，或不进行任何 billing adjustment。
 
 <Tip>
-You can change subscription plans and update the next billing date directly from the Dodo Payments dashboard. This provides a quick way to adjust subscriptions for customer support requests, promotional upgrades, or plan migrations without making API calls.
+你可以直接从 Dodo Payments dashboard 更改 subscription plans 并更新 next billing date。这样无需进行 API calls，即可快速响应 customer support requests、promotional upgrades 或 plan migrations。
 </Tip>
 
 <Tip>
-**Enable self-service plan changes:** Want customers to upgrade or downgrade their own subscriptions via the Customer Portal? Add your subscription products to a Product Collection and enable "Allow Subscription Updates" in your Subscription Settings.
+**Enable self-service plan changes：**希望客户通过 Customer Portal 自行升级或降级 subscriptions？将 subscription products 添加到 Product Collection，并在 Subscription Settings 中启用 "Allow Subscription Updates"。
 </Tip>
 
 ```mermaid
@@ -190,26 +253,26 @@ sequenceDiagram
 ```
 
 <Card title="Product Collections" icon="layer-group" href="/features/product-collections">
-  Group related products into collections to enable seamless upgrade/downgrade paths in the Customer Portal.
+  将相关 products 分组到 collections 中，以便在 Customer Portal 中启用顺畅的升级/降级路径。
 </Card>
 
 ### Proration Modes
 
-Choose how customers are billed when changing plans:
+选择客户变更计划时的计费方式：
 
 <Info>
-**Quick comparison of the four proration modes:**
+**四种 proration modes 快速对比：**
 
 | | `prorated_immediately` | `difference_immediately` | `full_immediately` | `do_not_bill` |
 |---|---|---|---|---|
-| **升级** | 剩余天数的按比例收费 | 收取价格差额的全额 | 收取全新计划的全额 | 无需收费 — 立即切换 |
-| **降级** | 剩余天数的按比例信用 | 全额价格差作为信用 | 无信用，全额收费 | 无信用 — 立即切换 |
-| **计费周期** | 重置为今天 | 重置为今天 | 重置为今天 | 保持不变 |
-| **最佳用途** | 公平的基于时间的计费 | 简单的阶梯更改 | 计费周期重置 | 免费迁移或礼节性切换 |
+| **Upgrade** | 按剩余天数计算的 proration charge | 收取完整价格差额 | 收取新计划的完整价格 | 不收费 — 立即切换 |
+| **Downgrade** | 按剩余天数计算的 proration credit | 将完整价格差额作为 credit | 无 credit，收取完整费用 | 无 credit — 立即切换 |
+| **Billing cycle** | 重置为今天 | 重置为今天 | 重置为今天 | 保持不变 |
+| **Best for** | 公平的按时间计费 | 简单的 tier 变更 | 重置 billing cycle | 免费迁移或礼遇切换 |
 </Info>
 
 #### `prorated_immediately`
-Charges prorated amount based on remaining time in the current billing cycle. Best for fair billing that accounts for unused time.
+根据当前 billing cycle 的剩余时间收取按比例计算的金额。适合考虑未使用时间的公平计费。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -220,7 +283,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 #### `difference_immediately`
-Charges the price difference immediately (upgrade) or adds credit for future renewals (downgrade). Best for simple upgrade/downgrade scenarios.
+立即收取价格差额（升级），或为未来续订增加 credit（降级）。适合简单的升级/降级场景。
 
 ```typescript
 // Upgrade: charges $50 (difference between $30 and $80)
@@ -233,10 +296,10 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Credits from downgrades using `difference_immediately` are subscription-scoped and auto-applied to future renewals. They're distinct from <a href="/features/credit-based-billing">Credit-Based Billing</a> entitlements.
+使用 `difference_immediately` 进行降级产生的 credits 以 subscription 为作用域，并会自动应用于未来续订。它们不同于 <a href="/features/credit-based-billing">Credit-Based Billing</a> entitlements。
 </Info>
 
-When a customer downgrades with `difference_immediately`, the unused value becomes a subscription-scoped credit that automatically offsets future renewals:
+客户使用 `difference_immediately` 降级时，未使用的价值会变成 subscription-scoped credit，并自动抵扣未来续订：
 
 ```mermaid
 flowchart LR
@@ -250,7 +313,7 @@ flowchart LR
 ```
 
 #### `full_immediately`
-Charges full new plan amount immediately, ignoring remaining time. Best for resetting billing cycles.
+立即收取新计划的完整金额，不考虑剩余时间。适合重置 billing cycle。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -261,7 +324,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 #### `do_not_bill`
-Switches to the new plan without any billing adjustment. No proration charges, no credits — the customer simply moves to the new plan. Best for courtesy migrations, free plan switches, or scenarios where you want to absorb the cost difference.
+切换到新计划，但不进行任何 billing adjustment。不收取 proration charges，也不产生 credits — 客户直接转入新计划。适合礼遇迁移、免费计划切换，或你希望承担价格差额的场景。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -274,7 +337,7 @@ await client.subscriptions.changePlan('sub_123', {
 <AccordionGroup>
 <Accordion title="Example: Prorated upgrade calculation">
 
-**Scenario**: Customer on Basic ($30/month) upgrades to Pro ($80/month) on day 16 of a 30-day cycle using `prorated_immediately`.
+**Scenario**：使用 `prorated_immediately` 时，Basic（$30/month）客户在 30 天 billing cycle 的第 16 天升级到 Pro（$80/month）。
 
 ```
 Unused credit from Basic = $30 × (15 remaining / 30 total) = $15.00
@@ -283,29 +346,29 @@ Prorated cost of Pro     = $80 × (15 remaining / 30 total) = $40.00
 Immediate charge         = $40.00 − $15.00 = $25.00
 ```
 
-下一次续订日期为**2月15日**（1月16日 + 30天）：**$80.00/月**。
+下一次续订日期为 **February 15**（January 16 + 30 days）：**$80.00/month**。
 
 <Tip>
-For more detailed calculation examples and edge cases, see our full [Upgrade & Downgrade Guide](/developer-resources/subscription-upgrade-downgrade).
+如需更详细的计算示例和边界情况，请参阅完整的 [Upgrade & Downgrade Guide](/developer-resources/subscription-upgrade-downgrade)。
 </Tip>
 
 </Accordion>
 <Accordion title="Example: Downgrade credit calculation">
 
-**Scenario**: Customer on Pro ($80/month) downgrades to Starter ($20/month) using `difference_immediately`.
+**Scenario**：Pro（$80/month）客户使用 `difference_immediately` 降级到 Starter（$20/month）。
 
 ```
 Credit = Old plan − New plan = $80 − $20 = $60.00
 ```
 
-The $60 credit auto-applies to future renewals:
-- Renewal 1: $20 − $20 (credit) = **$0.00** ($40 credit remaining)
-- Renewal 2: $20 − $20 (credit) = **$0.00** ($20 credit remaining)  
-- Renewal 3: $20 − $20 (credit) = **$0.00** (credit exhausted)
-- Renewal 4: **$20.00** (full price)
+$60 credit 会自动应用于未来续订：
+- Renewal 1：$20 − $20（credit）= **$0.00**（剩余 $40 credit）
+- Renewal 2：$20 − $20（credit）= **$0.00**（剩余 $20 credit）  
+- Renewal 3：$20 − $20（credit）= **$0.00**（credit 用尽）
+- Renewal 4：**$20.00**（完整价格）
 
 <Info>
-Learn more about how credits are managed in the [Upgrade & Downgrade Guide](/developer-resources/subscription-upgrade-downgrade).
+如需了解 credits 的管理方式，请参阅 [Upgrade & Downgrade Guide](/developer-resources/subscription-upgrade-downgrade)。
 </Info>
 
 </Accordion>
@@ -313,7 +376,7 @@ Learn more about how credits are managed in the [Upgrade & Downgrade Guide](/dev
 
 ### Changing Plans with Add-ons
 
-Modify add-ons when changing plans. Add-ons are included in proration calculations:
+更改计划时可以修改 add-ons。Add-ons 会计入 proration calculations：
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -326,12 +389,12 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-Plan changes trigger immediate charges. Failed charges may move the subscription to `on_hold` status. Track changes via `subscription.plan_changed` webhook events.
+计划变更会触发即时扣款。扣款失败可能会使 subscription 进入 `on_hold` status。通过 `subscription.plan_changed` webhook events 跟踪变更。
 </Info>
 
 ### Previewing Plan Changes
 
-Before committing to a plan change, preview the exact charge and resulting subscription:
+在提交计划变更前，预览确切的扣款金额和变更后的 subscription：
 
 ```typescript
 const preview = await client.subscriptions.previewChangePlan('sub_123', {
@@ -345,27 +408,27 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 ```
 
 <Card title="Preview Change Plan API" icon="eye" href="/api-reference/subscriptions/preview-change-plan">
-  Preview plan changes before committing to them.
+  在提交计划变更前进行预览。
 </Card>
 
 ## Subscription States
 
-订阅在其生命周期中会经历一组定义的状态。本表提供每个状态的参考，其原因，以及您可以如何（或是否）恢复它。
+Subscription 在其生命周期中会经过一组定义明确的 statuses。此表列出每个 status、其触发原因，以及如何（或是否可以）恢复。
 
-| 状态 | 含义 | 可恢复？ | 恢复路径 / 下一步 |
+| Status | What it means | Recoverable? | Recovery path / next step |
 |--------|---------------|--------------|---------------------------|
-| `pending` | 订阅正在创建或处理 | — | 等待 `subscription.active`（或 `subscription.failed`）|
-| `active` | 订阅处于活动状态并会自动续订 | — | 无需操作 |
-| `on_hold` | 续订付款（或计划更改费用）失败；订阅已暂停 | **是** | 更新支付方式以重新激活 - 自动通过[支付重试](/features/recovery/payment-retries)和[扣款](/features/recovery/subscription-dunning)，或手动通过[更新支付方式API](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | 订阅已取消且不会续订 | 仅可重新购买 | 客户需开始新订阅；[扣款](/features/recovery/subscription-dunning)可以提示重新购买 |
-| `failed` | 订阅**创建**失败（初始授权或付款未成功） | **否 — 终态** | 客户需使用有效的支付方式创建新订阅 |
-| `expired` | 订阅已到期 | — | 如果需要，客户需启动新订阅 |
+| `pending` | subscription 正在创建或处理 | — | 等待 `subscription.active`（或 `subscription.failed`） |
+| `active` | subscription 处于 active 状态，并会自动续订 | — | 无需操作 |
+| `on_hold` | renewal payment（或 plan-change charge）失败；subscription 已暂停 | **Yes** | 更新 payment method 以重新激活 — 可通过 [Payment Retries](/features/recovery/payment-retries) 和 [Dunning](/features/recovery/subscription-dunning) 自动完成，或通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 手动完成 |
+| `cancelled` | subscription 已取消，不会续订 | 仅可重新购买 | 客户必须开始新的 subscription；[Dunning](/features/recovery/subscription-dunning) 可以提示重新购买 |
+| `failed` | subscription **creation** 失败（初始 mandate 或 payment 未成功） | **No — terminal** | 客户必须使用有效的 payment method 创建新的 subscription |
+| `expired` | subscription 已达到其期限末尾 | — | 如有需要，客户必须开始新的 subscription |
 
 <Warning>
-`on_hold` 和 `failed` 经常被混淆。`on_hold` 是一个**可恢复**的状态，针对的是已激活的订阅，其续订失败。`failed` 是一个**终态**，仅发生在**初始**订阅创建失败时，无法重新激活。
+`on_hold` 和 `failed` 经常被混淆。对于已经 active 但续订失败的 subscription，`on_hold` 是**可恢复**状态。`failed` 是**终止**状态，仅在 subscription **初始**创建失败时发生，无法重新激活。
 </Warning>
 
-### 状态机
+### State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -382,26 +445,26 @@ stateDiagram-v2
     expired --> [*]
 ```
 
-### 暂停状态
+### On Hold State
 
-订阅进入 `on_hold` 状态时：
+Subscription 在以下情况下会进入 `on_hold` state：
 
-- 续订付款失败（资金不足、卡片过期等）
-- 计划更改费用失败
-- 支付方式授权失败
+- renewal payment 失败（余额不足、卡片过期等）
+- plan change charge 失败
+- payment method authorization 失败
 
 <Warning>
-订阅处于 `on_hold` 状态时，不会自动续订。您必须更新支付方式以重新激活订阅。
+当 subscription 处于 `on_hold` state 时，不会自动续订。你必须更新 payment method 以重新激活 subscription。
 </Warning>
 
-### 从暂停状态重新激活
+### Reactivating from On Hold
 
-要从 `on_hold` 状态重新激活订阅，更新支付方式。这会自动：
+要从 `on_hold` state 重新激活 subscription，请更新 payment method。系统会自动：
 
-1. 为未付金额创建扣款
-2. 生成发票
-3. 使用新支付方式处理付款
-4. 成功付款后将订阅重新激活到 `active` 状态
+1. 为剩余应付款创建 charge
+2. 生成 invoice
+3. 使用新的 payment method 处理 payment
+4. payment 成功后，将 subscription 重新激活为 `active` state
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -421,101 +484,101 @@ if (response.payment_id) {
 ```
 
 <Info>
-成功更新 `on_hold` 状态订阅的支付方式后，您将收到 `payment.succeeded` 随后是 `subscription.active` 的 Webhook 事件。
+成功更新 `on_hold` subscription 的 payment method 后，你会收到 `payment.succeeded`，随后会收到 `subscription.active` webhook events。
 </Info>
 
-### 按转换发送的 Webhook 事件
+### Webhook Events by Transition
 
-每次转换都会发出一个 Webhook，因此您可以在无需轮询的情况下驱动授权逻辑：
+每次状态转换都会发出 webhook，因此你可以在无需轮询的情况下驱动 entitlement logic：
 
-| 转换 | 事件 |
+| Transition | Event |
 |------------|-------|
-| 订阅激活 | `subscription.active` |
-| 续订成功 | `subscription.renewed` |
-| 续订失败 → 暂停 | `subscription.on_hold` |
-| 创建失败 | `subscription.failed` |
-| 计划升级/降级 | `subscription.plan_changed` |
-| 已取消 | `subscription.cancelled` |
-| 期限结束 | `subscription.expired` |
-| 任一字段更改 | `subscription.updated` |
+| Subscription activated | `subscription.active` |
+| Renewal succeeds | `subscription.renewed` |
+| Renewal fails → paused | `subscription.on_hold` |
+| Creation fails | `subscription.failed` |
+| Plan upgraded/downgraded | `subscription.plan_changed` |
+| Cancelled | `subscription.cancelled` |
+| Term ended | `subscription.expired` |
+| Any field changes | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-查看订阅生命周期事件的完整负载架构。
+查看 subscription lifecycle events 的完整 payload schema。
 </Card>
 
-## API 管理
+## API Management
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-使用 `POST /subscriptions` 从产品中以编程方式创建订阅，带有可选的试用期和附加组件。
+使用 `POST /subscriptions` 根据 products 以编程方式创建 subscriptions，并可选用 trials 和 add‑ons。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-查看创建订阅的 API。
+查看 create subscription API。
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-使用 `PATCH /subscriptions/{id}` 更新数量、在下一个计费日期取消或修改元数据。
+使用 `PATCH /subscriptions/{id}` 更新数量、在 next billing date 取消，或修改 metadata。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-了解如何更新订阅详细信息。
+了解如何更新 subscription details。
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-使用比例分配控制更改活动产品和数量。
+通过 proration controls 更改 active product 和数量。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-查看计划更改选项。
+查看 plan change options。
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-对于按需订阅，按需收取特定金额。
+对于 on‑demand subscriptions，按需收取特定金额。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-收取按需订阅费用。
+收取 on‑demand subscription 的费用。
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-使用 `GET /subscriptions` 列出所有订阅，使用 `GET /subscriptions/{id}` 检索一个订阅。
+使用 `GET /subscriptions` 列出所有 subscriptions，并使用 `GET /subscriptions/{id}` 获取单个 subscription。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-浏览列表和检索 API。
+浏览 listing 和 retrieval APIs。
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-获取按量计费或混合定价模型的记录使用情况。
+获取 metered 或 hybrid pricing models 的已记录 usage。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-查看使用历史 API。
+查看 usage history API。
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-更新订阅的支付方式。对于活动订阅，这会更新未来续订的支付方式。对于处于 `on_hold` 状态的订阅，这会通过为剩余金额创建扣款来重新激活订阅。
+更新 subscription 的 payment method。对于 active subscriptions，这会更新未来续订使用的 payment method。对于处于 `on_hold` state 的 subscriptions，这会通过为剩余应付款创建 charge 来重新激活 subscription。
 
-当生成新的支付方式链接（`New` 请求类型）时，您可以传递 `allowed_payment_method_types` 来限制客户在该页面上看到的支付方式。客户永远不会看到列表中没有的方法，虽然包括一种方法并不保证它会出现（可用性仍然取决于客户位置和您的业务设置等因素）。
+生成新的 payment-method link（`New` request type）时，可以传入 `allowed_payment_method_types`，以限制客户在该页面上看到的 payment methods。客户永远不会看到列表中未包含的方法，但包含某种方法并不保证它一定会显示（可用性仍取决于客户所在地和企业设置等因素）。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-了解如何更新支付方式并重新激活订阅。
+了解如何更新 payment methods 和重新激活 subscriptions。
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## 常见使用案例
+## Common Use Cases
 
-- **SaaS 和 API**：提供分级访问及增加席位或用量的附加组件
-- **内容和媒体**：每月访问，带有入门试用
-- **B2B 支持计划**：年度合同，带有高级支持附加组件
-- **工具和插件**：许可证密钥和版本发布
+- **SaaS and APIs**：通过 add‑ons 为 seats 或 usage 提供分级访问
+- **Content and media**：提供每月访问权限和 introductory trials
+- **B2B support plans**：提供包含 premium support add‑ons 的年度合同
+- **Tools and plugins**：提供 license keys 和 versioned releases
 
-## 集成示例
+## Integration Examples
 
-### 结帐会话（订阅）
-创建结帐会话时，请包含您的订阅产品和可选的附加组件：
+### Checkout Sessions (subscriptions)
+创建 checkout sessions 时，加入 subscription product 和可选的 add‑ons：
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -528,8 +591,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### 具有比例分配的计划更改
-升级或降级订阅并控制比例分配行为：
+### Plan changes with proration
+升级或降级 subscription，并控制 proration behavior：
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -539,8 +602,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### 在下一个计费日期取消
-安排在当前计费周期结束时生效的取消：
+### Cancel at next billing date
+安排在当前 billing period 结束时生效的取消操作：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -548,8 +611,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### 延长订阅期限
-通过传递新的 `subscription_period_count` 和 `subscription_period_interval` 到 `PATCH /subscriptions/{id}` 来延长订阅的运行时间。订阅的到期时间将根据新的计数和间隔重新计算——例如，给予客户当前计划的额外时间：
+### Extend the subscription period
+通过向 `PATCH /subscriptions/{id}` 传入新的 `subscription_period_count` 和 `subscription_period_interval`，延长 subscription 的运行时间。系统会根据新的 count 和 interval 重新计算 subscription 的 expiry — 例如，为客户当前计划增加额外时间：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -559,11 +622,11 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-订阅的期限只能**增加**，不能缩短。
+Subscription 的 period 只能**延长**，不能缩短。
 </Note>
 
-### 按需订阅
-创建按需订阅，并在需要时收费：
+### On‑demand subscriptions
+创建 on‑demand subscription，并在需要时稍后收取费用：
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -572,15 +635,15 @@ const onDemand = await client.subscriptions.create({
   on_demand: { mandate_only: true }
 });
 
-await client.subscriptions.charge(onDemand.id, {
+await client.subscriptions.charge(onDemand.subscription_id, {
   product_price: 4900,
   product_currency: 'USD',
   product_description: 'Extra usage for September'
 });
 ```
 
-### 更新活动订阅的付款方式
-更新活动订阅的付款方式：
+### Update payment method for active subscription
+更新 active subscription 的 payment method：
 
 ```typescript
 // Update with new payment method
@@ -600,8 +663,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### 从 on_hold 中重新激活订阅
-重新激活因付款失败而暂停的订阅：
+### Reactivate subscription from on_hold
+重新激活因 payment 失败而进入 on hold 的 subscription：
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -619,70 +682,70 @@ if (response.payment_id) {
 }
 ```
 
-## 符合 RBI 规定的订阅
+## Subscriptions with RBI-Compliant Mandates
 
-  UPI 和印度卡订阅在符合印度储备银行 (RBI) 的法规下运行，并具有特定的授权要求：
+  UPI 和 Indian card subscriptions 受 RBI（Reserve Bank of India）法规约束，并有特定的 mandate 要求：
 
-  ### 授权限制
+  ### Mandate Limits
 
-  授权类型和金额取决于您的订阅的周期性费用：
+  mandate type 和 amount 取决于 subscription 的 recurring charge：
 
-  - **低于授权底限（默认为 ₹15,000）的费用：** 我们为底限金额创建一个按需授权。根据您的订阅频率定期收取订阅金额，直至达到授权限额。
-  - **费用等于或超过授权底限：** 我们为确切的订阅金额创建一个订阅授权（或按需授权）。
+  - **Charges below the mandate floor (default ₹15,000)：** 我们会创建金额为 mandate floor 的 on-demand mandate。系统会根据 subscription frequency 定期收取 subscription amount，最高不超过 mandate limit。
+  - **Charges at or above the mandate floor：** 我们会为确切的 subscription amount 创建 subscription mandate（或 on-demand mandate）。
 
-  授权底限可按商家或请求通过 `mandate_min_amount_inr_paise` （以印度卢比派士为单位）配置。向银行注册的金额为 `max(mandate_floor, billing_amount)` ——因此当账单更低时，底限实际上成为客户可见的授权上限。
+  mandate floor 可按 merchant 配置，也可通过 `mandate_min_amount_inr_paise`（INR paise）按 request 配置。向银行注册的金额为 `max(mandate_floor, billing_amount)` — 因此，当 billing 金额较低时，floor 实际上会成为面向客户的授权上限。
 
-有关符合 RBI 规定的授权和印度支付方式的可配置授权底限的详细信息，请参阅 <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> 页面。
+有关 RBI-compliant mandates 以及 Indian payment methods 可配置 mandate floor 的详细信息，请参阅 <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> 页面。
 
-  ### 升级和降级注意事项
+  ### Upgrade and Downgrade Considerations
 
-  **重要：** 在升级或降级订阅时，请仔细考虑授权限额：
+  **Important：**升级或降级 subscriptions 时，请仔细考虑 mandate limits：
 
-  - 如果升级/降级导致收费金额超过 ₹15,000 并超过现有的按需付款限额，则交易费用可能会失败。
-  - 在这种情况下，客户可能需要更新其付款方式或再次更改订阅，以建立具有正确限额的新授权。
+  - 如果升级/降级导致 charge amount 超过 Rs 15,000，并超出已有的 on-demand payment limit，则 transaction charge 可能会失败。
+  - 在这种情况下，客户可能需要更新 payment method，或再次更改 subscription，以使用正确的 limit 建立新的 mandate。
 
-  ### 高额费用的授权
+  ### Authorization for High-Value Charges
 
-  对于 ₹15,000 或更多的订阅费用：
+  对于金额为 Rs 15,000 或以上的 subscription charges：
 
-  - 客户将被其银行提示授权交易。
-  - 如果客户未能授权交易，交易将失败，订阅将被暂停。
+  - 客户的银行会提示其授权该 transaction。
+  - 如果客户未能授权该 transaction，transaction 将失败，subscription 会被 put on hold。
 
-  ### 48 小时处理延迟
+  ### 48-Hour Processing Delay
 
-  **处理时间线：** 印度卡和 UPI 订阅的周期性费用遵循独特的处理模式：
+  **Processing Timeline：**Indian cards 和 UPI subscriptions 的 recurring charges 遵循独特的处理模式：
 
-  - 根据您的订阅频率在计划日期**启动**费用。
-  - 从付款启动后 **48 小时** 起才从客户账户中实际**扣除**。
-  - 此 48 小时窗口可能会根据银行的 API 响应延长 **2-3 小时**。
+  - charges 会根据 subscription frequency 在计划日期**发起**。
+  - 客户账户的实际**扣款**仅会在 payment initiation 后 **48 hours** 发生。
+  - 根据 bank API responses，该 48-hour window 可能额外延长 **2-3 additional hours**。
 
-  ### 授权取消窗口
+  ### Mandate Cancellation Window
 
-  在 48 小时的处理窗口内：
+  在 48-hour processing window 期间：
 
-  - 客户可以通过其银行应用取消授权。
-  - 如果客户在此期间取消授权，订阅将保持**活动**（这是印度卡和 UPI AutoPay 订阅特有的极端情况）。
-  - 但是，实际扣款可能会失败，在这种情况下，我们将把订阅设置为**暂停**。
+  - 客户可以通过 banking apps 取消 mandate。
+  - 如果客户在此期间取消 mandate，subscription 仍会保持 **active**（这是 Indian card 和 UPI AutoPay subscriptions 特有的边界情况）。
+  - 但是，实际扣款可能会失败；在这种情况下，我们会将 subscription **on hold**。
 
-  **极端情况处理：** 如果您在费用启动后立即为客户提供福利、积分或订阅使用权限，您需要在应用中适当处理这个 48 小时窗口。考虑以下做法：
+  **Edge Case Handling：**如果你在 charge initiation 后立即向客户提供 benefits、credits 或 subscription usage，就需要在应用中妥善处理此 48-hour window。请考虑：
 
-  - 延迟福利激活直到付款确认
-  - 实施宽限期或临时访问
-  - 监控订阅状态以防授权取消
-  - 在您的应用逻辑中处理订阅暂停状态
+  - 延迟 benefit activation，直到 payment confirmation
+  - 实现 grace periods 或 temporary access
+  - 监控 subscription status，以检测 mandate cancellations
+  - 在应用逻辑中处理 subscription hold states
 
   <Tip>
-  监控订阅 webhook 以跟踪付款状态的变化，并处理授权在 48 小时窗口内取消的极端情况。
+  监控 subscription webhooks，以跟踪 payment status changes，并处理 mandate 在 48-hour window 期间被取消的边界情况。
   </Tip>
 
-## 最佳实践
+## Best Practices
 
-- **从清晰的层级开始**：2-3 个计划，区别明显
-- **沟通价格**：显示总额、按比例分摊和下次续订时间
-- **谨慎使用试用期**：通过入门转换用户，而不仅仅是时间
-- **利用附加功能**：保持基础计划简单，向上销售额外功能
-- **测试更改**：在测试模式下验证计划更改和按比例分摊
+- **从清晰的 tiers 开始**：设置 2–3 个差异明显的 plans
+- **清晰传达定价**：显示 totals、proration 和 next renewal
+- **合理使用 trials**：通过 onboarding 转化，而不只是依靠时间
+- **充分利用 add‑ons**：保持基础 plans 简洁，并追加销售额外功能
+- **测试变更**：在 test mode 中验证 plan changes 和 proration
 
 <Info>
-订阅是产生经常性收入的灵活基础。简化开始，充分测试，然后根据采纳率、流失率和扩展指标进行迭代。
+Subscriptions 是 recurring revenue 的灵活基础。先从简单方案开始，进行充分测试，并根据 adoption、churn 和 expansion metrics 迭代。
 </Info>
