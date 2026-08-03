@@ -1,0 +1,253 @@
+---
+title: "GoHighLevel"
+description: "Integrate Dodo Payments with GoHighLevel (GHL) using no-code payment links, overlay checkout, or inline checkout, and automate fulfillment with webhooks."
+icon: "link"
+keywords: ["Dodo Payments", "GoHighLevel", "GHL", "payment links", "overlay checkout", "inline checkout", "no-code", "funnels", "CRM", "webhooks", "integration"]
+---
+
+## Introduction
+
+[GoHighLevel](https://www.gohighlevel.com/) (GHL) is an all-in-one CRM and marketing platform covering funnels, websites, email/SMS, and automation ("Workflows"). GHL does not list Dodo Payments as a built-in processor, so you connect the two in one of three ways, depending on how embedded you want checkout to feel and how much you can code.
+
+In every approach, fulfillment is handled the same way. Dodo sends [webhook events](/developer-resources/webhooks) into a GHL **Inbound Webhook Workflow** that tags the contact, grants access, and sends confirmations.
+
+## Choose your approach
+
+| Approach | Code needed | Checkout experience | Best for |
+| --- | --- | --- | --- |
+| **A. Payment Links** | None (no-code) | Customer is redirected to Dodo's hosted checkout | Most GHL users, fastest to launch |
+| **B. Overlay Checkout** | Custom code plus a backend | A modal opens over your GHL page | Teams who want on-page checkout without leaving the funnel |
+| **C. Inline Checkout** | Custom code plus a backend | Checkout form embedded inside the page | Fully embedded, branded UX |
+
+<Info>
+New to this? Start with **Approach A (Payment Links)**. It is no-code, works for every GHL user, and takes minutes. Approaches B and C need a backend to create [checkout sessions](/api-reference/checkout-sessions/create) and are for teams comfortable with code.
+</Info>
+
+## Prerequisites
+
+- A Dodo Payments account with at least one **product** created.
+- A GoHighLevel account with a funnel, website, or workflow.
+- Access to **Settings → Webhooks** (and **Settings → Developer** for an API key) in your Dodo dashboard.
+- For Approaches B and C: a small **backend or serverless endpoint** to create checkout sessions.
+
+<Note>
+GHL requires a **connected domain** to *publish* a funnel. While building, use the funnel's **Preview** to test. Note that custom JavaScript (Approaches B and C) generally runs only on the **published page on a real domain**, not in Preview.
+</Note>
+
+## Fulfillment with webhooks (all approaches)
+
+This is the automation layer. Set it up once and it works regardless of which checkout approach you choose.
+
+<Steps>
+<Step title="Create the workflow">
+In your GHL **sub-account**, open **Automation** in the left menu (this lands on the **Workflows** tab). Click **Create workflow**, then choose **Start from Scratch**.
+</Step>
+<Step title="Add the Inbound Webhook trigger">
+In the builder, click **Add new trigger**. In the **Add trigger** panel, search **webhook** and select **Inbound webhook** (listed under **Triggers → Events**). Copy the **Webhook URL** it generates.
+</Step>
+<Step title="Register the webhook in Dodo">
+In the Dodo dashboard, go to **Settings → Webhooks**, add a new endpoint, and paste the GHL Inbound Webhook URL. Make a test purchase so GHL captures a sample payload and you can map fields (customer email, product, amount, status).
+</Step>
+<Step title="Add fulfillment actions">
+Back in the GHL workflow, add actions based on the event, such as **find/create contact by email**, **add a tag**, **grant course/membership access**, and **send a confirmation email**. Then **Publish** the workflow.
+</Step>
+</Steps>
+
+<Warning>
+Payments are processed on Dodo, so they will **not** appear in GHL's Payments tab. Reconcile them into GHL using the webhook workflow above, and treat the **webhook as the source of truth** for granting access, not the browser redirect, since a customer can close the tab before returning.
+</Warning>
+
+## Approach A: Payment Links (no-code)
+
+Attach a Dodo payment link to any GHL button, funnel CTA, order-page button, email, or SMS.
+
+<Steps>
+<Step title="Create a product and copy its payment link">
+In the Dodo dashboard, go to **Products → Add Product**, set the **name** and **price**, choose **one-time** or **subscription**, and **Save**. Open the product and copy its **Payment Link** (format: `https://checkout.dodopayments.com/buy/{product_id}`).
+</Step>
+<Step title="Add the link to your GHL button">
+Edit your funnel or website page, select the **Buy / Checkout button**, set its action to **Open URL / Website**, and paste your Dodo payment link.
+</Step>
+<Step title="Set a success page (optional)">
+Set the product's **return URL** in Dodo to a GHL thank-you page so customers land back in your funnel after paying.
+</Step>
+</Steps>
+
+<Tip>
+You can prefill and lock customer details, or add tracking, using [payment-link query parameters](/features/checkout). This is useful for passing a funnel or offer ID as metadata you can read back from the webhook.
+</Tip>
+
+## Approach B: Overlay Checkout (custom code)
+
+Opens Dodo checkout as a **modal overlay** on your GHL page using the [Checkout SDK](/developer-resources/overlay-checkout) via CDN. Requires a backend to create a [checkout session](/api-reference/checkout-sessions/create) and return its `checkoutUrl`.
+
+<Steps>
+<Step title="Create a backend endpoint that calls the Checkout Sessions API">
+This step is **not optional**. The SDK needs a live `checkoutUrl`, and creating one requires your **secret API key**. GHL only hosts static pages, it cannot run this server-side call for you, and you must never call the [Create Checkout Session API](/api-reference/checkout-sessions/create) directly from the browser, since that would expose your secret key in the page's source. So overlay and inline checkout **cannot work with GHL alone**: you need a backend you control that creates the session and hands back just the URL.
+
+Any small backend works: a serverless function (Cloudflare Workers, Vercel Functions, AWS Lambda, Supabase Edge Functions, and similar), or an endpoint on a server you already run. The logic is the same everywhere: receive the request, call Dodo's API with your secret key, return the `checkout_url`.
+
+Example handler logic (adapt to your platform of choice):
+
+```js
+async function createCheckout(env) {
+  const res = await fetch("https://test.dodopayments.com/checkouts", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.DODO_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      product_cart: [{ product_id: "pdt_your_product_id", quantity: 1 }],
+    }),
+  });
+
+  const data = await res.json();
+  return { checkoutUrl: data.checkout_url };
+}
+```
+
+Store your Dodo API key as a secret on whichever platform you deploy to (never commit it to code), allow requests from your GHL domain (CORS), and route the endpoint under a domain you control, e.g. `https://api.example.com/create-checkout`. Switch to `https://live.dodopayments.com/checkouts` once you move to live mode.
+</Step>
+<Step title="Add a Custom Code element in the GHL page builder">
+Open your funnel step or website page in the GHL page builder, then:
+
+1. Click the **+** icon at the top-left of the builder to open **Quick Add**.
+2. Select **Elements** from the left category list.
+3. Find **Custom Code** (also shown as HTML) and drag it onto the page.
+4. Paste the code below into the element's code editor, then save it.
+
+```html
+<!-- Load the Dodo Checkout SDK -->
+<script src="https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js"></script>
+<script>
+  DodoPaymentsCheckout.DodoPayments.Initialize({
+    mode: "test", // change to "live" in production
+    displayType: "overlay",
+    onEvent: (event) => console.log("Checkout event:", event),
+  });
+
+  async function openDodoCheckout() {
+    // calls the backend endpoint from the previous step, creating a fresh session per click
+    const res = await fetch("https://api.example.com/create-checkout", { method: "POST" });
+    const { checkoutUrl } = await res.json();
+
+    DodoPaymentsCheckout.DodoPayments.Checkout.open({ checkoutUrl });
+  }
+</script>
+
+<button onclick="openDodoCheckout()">Pay Now</button>
+```
+</Step>
+<Step title="Publish and test on your domain">
+Custom JS runs on the **published** page (connected domain), not always in Preview. Publish, then click **Pay Now** to confirm the overlay opens.
+</Step>
+</Steps>
+
+## Approach C: Inline (embedded) Checkout
+
+Embeds the checkout form **inside** your GHL page (no redirect, no popup) using the same SDK with a mount container. Like Approach B, it needs a backend to create the session.
+
+<Steps>
+<Step title="Create a backend endpoint that calls the Checkout Sessions API">
+Same requirement as overlay, and equally **not optional**: creating a session needs your secret API key, so it must happen server-side. GHL cannot do this on its own. Reuse the same backend endpoint described in the **Overlay Checkout** section above (any small serverless function or server you control) that calls the [Create Checkout Session API](/api-reference/checkout-sessions/create) and returns `{ checkoutUrl }`.
+</Step>
+<Step title="Add a container and SDK via Custom Code">
+In the GHL page builder:
+
+1. Click the **+** icon at the top-left of the builder to open **Quick Add**.
+2. Select **Elements** from the left category list.
+3. Find **Custom Code** (also shown as HTML) and drag it onto the page where you want the checkout form to appear.
+4. Paste the code below into the element's code editor, then save it.
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js"></script>
+
+<div id="dodo-inline-checkout"></div>
+
+<script>
+  DodoPaymentsCheckout.DodoPayments.Initialize({
+    mode: "test",
+    displayType: "inline",
+    onEvent: (event) => console.log("Checkout event:", event),
+  });
+
+  async function mountDodoCheckout() {
+    // calls the backend endpoint from the previous step
+    const res = await fetch("https://api.example.com/create-checkout", { method: "POST" });
+    const { checkoutUrl } = await res.json();
+
+    DodoPaymentsCheckout.DodoPayments.Checkout.open({
+      checkoutUrl,
+      elementId: "dodo-inline-checkout",
+    });
+  }
+
+  mountDodoCheckout();
+</script>
+```
+</Step>
+<Step title="Verify your domain for wallets (Apple Pay)">
+For Apple Pay on inline checkout, [verify your domain](/features/payment-methods/digital-wallets#apple-pay). Host the association file and register the domain in the dashboard.
+</Step>
+</Steps>
+
+<Warning>
+Inline is the most involved option in GHL. It needs custom code, a backend, a published page on a real domain, and (for Apple Pay) domain verification. If you do not need a fully embedded form, prefer Approach A or B.
+</Warning>
+
+## Events to Handle
+
+| Dodo event | When it fires | Suggested GHL action |
+| --- | --- | --- |
+| `payment.succeeded` | A payment is captured | Tag the contact as paid, grant access, send confirmation |
+| `subscription.active` | A subscription is activated | Grant membership, start onboarding workflow |
+| `subscription.renewed` | A renewal payment is taken | Extend access for the next cycle |
+| `subscription.on_hold` | A renewal failed | Trigger a dunning or reminder workflow |
+| `subscription.cancelled` / `subscription.expired` | Subscription ends | Remove access, tag as churned |
+
+Every webhook includes the **customer email**. Use GHL's **find/create contact by email** action to tie the payment to the right contact. For a full list, see the [Webhook Event Guide](/developer-resources/webhooks/intents/webhook-events-guide).
+
+## Testing & Going Live
+
+<Steps>
+<Step title="Test in test mode">
+Keep Dodo in **Test Mode**, use the test card `4242 4242 4242 4242` (any future expiry and any CVC), complete a purchase, and confirm the GHL workflow fires and applies the tag or access.
+</Step>
+<Step title="Go live">
+Switch Dodo to **Live Mode** and update the live-mode webhook endpoint. What else changes depends on your approach:
+
+- **Payment Links (A):** swap in the product's **live** payment link.
+- **Overlay checkout (B):** point your backend at `https://live.dodopayments.com/checkouts` with your **live** API key, and set the SDK's `mode` to `"live"` in the `Initialize` call.
+- **Inline checkout (C):** same as overlay, since it uses the same backend endpoint and SDK initialization.
+
+Then run one real end-to-end purchase to confirm.
+</Step>
+</Steps>
+
+## Tips
+
+<Tip>
+Treat the **webhook as the source of truth** for granting access. Act on `payment.succeeded` / `subscription.active`, not on the browser redirect.
+</Tip>
+
+<Tip>
+Verify webhook authenticity using the `webhook-signature` header ([Standard Webhooks](/developer-resources/webhooks)), so only genuine Dodo events trigger fulfillment in GHL.
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="Payment succeeded but nothing happened in GHL">
+Check that the Dodo webhook endpoint points to the correct GHL Inbound Webhook URL, the workflow is **published**, and the trigger captured a sample payload so the field mapping exists.
+</Accordion>
+<Accordion title="Overlay or inline button does nothing">
+Custom JS usually runs only on the **published page (real domain)**, not in Preview. Confirm the page is published, the SDK `<script>` loaded, and `checkoutUrl` is a valid session URL from your backend.
+</Accordion>
+<Accordion title="Contact not created or not matched">
+Ensure your workflow uses **find/create contact by email** and the email field is mapped from the webhook payload.
+</Accordion>
+<Accordion title="Payment isn't showing in GHL's Payments tab">
+This is expected. Payments are processed on Dodo, so reconcile them into GHL using the webhook workflow.
+</Accordion>
+</AccordionGroup>
