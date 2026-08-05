@@ -252,8 +252,12 @@ Key request fields (body):
       If true, includes adaptive currency fees within <code>product_price</code>. If false, fees are added on top.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Tentukan bagaimana saldo wallet pelanggan digunakan untuk menyelesaikan charge ini.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Additional metadata for the payment. If omitted, the subscription metadata is used.
+      Metadata tambahan untuk payment. Jika dihilangkan, metadata subscription akan digunakan.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -335,94 +339,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
+Charge subscription yang bukan on-demand mungkin gagal. Pastikan subscription memiliki `on_demand: true` dalam detailnya sebelum melakukan charge.
 </Warning>
 
-## Handling failed charges
+## Menangani charge yang gagal
 
-When a charge against an on-demand subscription fails, you decide what happens next. Unlike scheduled subscriptions — where a failed renewal stops further automatic billing — **on-demand subscriptions remain chargeable after a failure**. You can call the charge endpoint again as part of your own retry logic.
+Saat charge terhadap subscription on-demand gagal, Anda menentukan tindakan berikutnya. Tidak seperti subscription terjadwal — ketika renewal yang gagal menghentikan billing otomatis berikutnya — **subscription on-demand tetap dapat di-charge setelah kegagalan**. Anda dapat memanggil endpoint charge lagi sebagai bagian dari logika retry Anda sendiri.
 
-### What happens on failure
+### Apa yang terjadi saat terjadi kegagalan
 
 <Steps>
 <Step title="Charge attempt fails">
-The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook with the decline reason.
+Request `POST /subscriptions/{subscription_id}/charge` akan mengembalikan error response atau selesai secara asynchronous dan mengirimkan webhook `payment.failed` dengan alasan penolakan.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-The subscription may move to the `on_hold` state and emit a `subscription.on_hold` webhook (see [Subscription States → On Hold](/features/subscription#on-hold-state)). This is a signal — not a lock. For on-demand subscriptions, `on_hold` does **not** prevent you from charging again.
+Subscription dapat berpindah ke state `on_hold` dan mengirimkan webhook `subscription.on_hold` (lihat [Subscription States → On Hold](/features/subscription#on-hold-state)). Ini adalah sinyal — bukan kunci. Untuk subscription on-demand, `on_hold` **tidak** mencegah Anda melakukan charge lagi.
 </Step>
 
 <Step title="Retry the charge (your call)">
-For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscriptions/{subscription_id}/charge` again at any time to retry. Apply the [safe retry policy](#payment-retries) below — use exponential backoff, skip hard declines, and avoid burst patterns — so retries are not flagged by our fraud and risk systems.
+Untuk flow on-demand, Dodo **tidak** melakukan auto-retry. Anda dapat memanggil `POST /subscriptions/{subscription_id}/charge` lagi kapan saja untuk retry. Terapkan [safe retry policy](#payment-retries) di bawah — gunakan exponential backoff, lewati hard decline, dan hindari pola burst — agar retry tidak ditandai oleh sistem fraud dan risk kami.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-If retries keep failing because the payment method itself is broken (expired card, closed account, etc.), use [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) to collect a new one from the customer. On success, the subscription returns to `active` and `payment.succeeded` followed by `subscription.active` webhooks are emitted.
+Jika retry terus gagal karena payment method itu sendiri bermasalah (kartu kedaluwarsa, akun ditutup, dan sebagainya), gunakan [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) untuk mengumpulkan payment method baru dari pelanggan. Setelah berhasil, subscription kembali ke `active` dan webhook `payment.succeeded` diikuti oleh `subscription.active` akan dikirimkan.
 </Step>
 </Steps>
 
 <Info>
-**On-demand vs scheduled**: For scheduled subscriptions, Dodo runs its own renewal retries and dunning. For on-demand subscriptions, you own the retry policy because only you know when the next charge should occur (it's driven by your usage events, not a calendar).
+**On-demand vs terjadwal**: Untuk subscription terjadwal, Dodo menjalankan retry renewal dan dunning-nya sendiri. Untuk subscription on-demand, Anda bertanggung jawab atas retry policy karena hanya Anda yang mengetahui kapan charge berikutnya harus dilakukan (hal ini didorong oleh event penggunaan Anda, bukan kalender).
 </Info>
 
-### Webhook sequence on a failed on-demand charge
+### Urutan webhook untuk charge on-demand yang gagal
 
-| Order | Event | Meaning |
+| Urutan | Event | Arti |
 |-------|-------|---------|
-| 1 | `payment.failed` | The on-demand charge attempt did not succeed (includes the decline reason) |
-| 2 | `subscription.on_hold` | The subscription was placed on hold (informational; does not block further charges) |
-| 3* | `payment.succeeded` | A subsequent charge — either your retry or after a payment method update — succeeded |
-| 4* | `subscription.active` | The subscription returned to `active` after a successful charge |
+| 1 | `payment.failed` | Upaya charge on-demand tidak berhasil (termasuk alasan penolakan) |
+| 2 | `subscription.on_hold` | Subscription ditempatkan pada hold (bersifat informasional; tidak memblokir charge berikutnya) |
+| 3* | `payment.succeeded` | Charge berikutnya — baik retry Anda maupun setelah payment method diperbarui — berhasil |
+| 4* | `subscription.active` | Subscription kembali ke `active` setelah charge berhasil |
 
 <Info>
-Events 3 and 4 only fire after a follow-up charge succeeds.
+Event 3 dan 4 hanya dipicu setelah charge lanjutan berhasil.
 </Info>
 
-### Retry responsibility
+### Tanggung jawab retry
 
 <Warning>
-Dodo Payments **does not auto-retry failed on-demand charges**. You own the retry policy. Follow the safe retry guidelines below to avoid being flagged by our fraud detection systems as card testing.
+Dodo Payments **tidak melakukan auto-retry terhadap charge on-demand yang gagal**. Anda bertanggung jawab atas retry policy. Ikuti panduan safe retry di bawah ini agar tidak ditandai oleh sistem deteksi fraud kami sebagai card testing.
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) when you decide the payment method needs to be updated.
+[Subscription Dunning](/features/recovery/subscription-dunning) — rangkaian recovery melalui email bawaan — ditujukan untuk payment *renewal* yang gagal pada subscription terjadwal dan pembatalan yang dilakukan pelanggan. Fitur ini tidak dirancang untuk kegagalan charge on-demand. Berkomunikasilah langsung dengan pelanggan (misalnya melalui email transaksional atau prompt dalam aplikasi) saat Anda memutuskan bahwa payment method perlu diperbarui.
 
-## Payment retries
+## Retry payment
 
-Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
+Sistem deteksi fraud kami dapat memblokir pola retry yang agresif (dan menandainya sebagai kemungkinan card testing). Ikuti safe retry policy.
 
 <Warning>
-Burst retry patterns can be flagged as fraudulent or suspected card testing by our risk systems and processors. Avoid clustered retries; follow the backoff schedule and time alignment guidance below.
+Pola retry burst dapat ditandai sebagai fraud atau dugaan card testing oleh sistem risk dan processor kami. Hindari retry yang berkelompok; ikuti jadwal backoff dan panduan penyelarasan waktu di bawah ini.
 </Warning>
 
-### Principles for safe retry policies
+### Prinsip safe retry policy
 
-- **Backoff mechanism**: Use exponential backoff between retries.
-- **Retry limits**: Cap total retries (3–4 attempts max).
-- **Intelligent filtering**: Retry only on retryable failures (e.g., network/issuer errors, insufficient funds); never retry hard declines.
-- **Card testing prevention**: Do not retry failures like `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Vary metadata (optional)**: If you maintain your own retry system, differentiate retries via metadata (e.g., `retry_attempt`).
+- **Mekanisme backoff**: Gunakan exponential backoff di antara retry.
+- **Batas retry**: Batasi jumlah retry (maksimal 3–4 upaya).
+- **Pemfilteran cerdas**: Lakukan retry hanya pada kegagalan yang dapat di-retry (misalnya error network/issuer, saldo tidak mencukupi); jangan pernah melakukan retry pada hard decline.
+- **Pencegahan card testing**: Jangan melakukan retry pada kegagalan seperti `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Variasikan metadata (opsional)**: Jika Anda memelihara sistem retry sendiri, bedakan retry melalui metadata (misalnya `retry_attempt`).
 
-### Suggested retry schedule (subscriptions)
+### Jadwal retry yang disarankan (subscription)
 
-- **1st attempt**: Immediate when you create the charge
-- **2nd attempt**: After 3 days
-- **3rd attempt**: After 7 more days (10 days total)
-- **4th attempt (final)**: After another 7 days (17 days total)
+- **Upaya ke-1**: Segera saat Anda membuat charge
+- **Upaya ke-2**: Setelah 3 hari
+- **Upaya ke-3**: Setelah 7 hari berikutnya (total 10 hari)
+- **Upaya ke-4 (terakhir)**: Setelah 7 hari berikutnya (total 17 hari)
 
-Final step: if still unpaid, mark the subscription as unpaid or cancel it, based on your policy. Notify the customer during the window to update their payment method.
+Langkah terakhir: jika masih belum dibayar, tandai subscription sebagai belum dibayar atau batalkan, sesuai policy Anda. Beri tahu pelanggan selama periode tersebut agar memperbarui payment method mereka.
 
-### Avoid burst retries; align to authorization time
+### Hindari retry burst; selaraskan dengan waktu authorization
 
-- Anchor retries to the original authorization timestamp to avoid "burst" behavior across your portfolio.
-- Example: If the customer starts a trial or mandate at 1:10 pm today, schedule follow-up retries at 1:10 pm on subsequent days per your backoff (e.g., +3 days → 1:10 pm, +7 days → 1:10 pm).
-- Alternatively, if you store the last successful payment time `T`, schedule the next attempt at `T + X days` to preserve time-of-day alignment.
+- Jadikan timestamp authorization awal sebagai acuan retry untuk menghindari perilaku "burst" di seluruh portofolio Anda.
+- Contoh: Jika pelanggan memulai trial atau mandate pada pukul 13.10 hari ini, jadwalkan retry lanjutan pada pukul 13.10 di hari-hari berikutnya sesuai backoff Anda (misalnya, +3 hari → 13.10, +7 hari → 13.10).
+- Atau, jika Anda menyimpan waktu payment berhasil terakhir `T`, jadwalkan upaya berikutnya pada `T + X days` untuk mempertahankan penyelarasan waktu dalam sehari.
 
 <Note>
-Time-zone and DST: use a consistent time standard for scheduling and convert for display only to maintain intervals.
+Time zone dan DST: gunakan standar waktu yang konsisten untuk penjadwalan dan lakukan konversi hanya untuk tampilan agar interval tetap terjaga.
 </Note>
 
-### Decline codes you should not retry
+### Kode penolakan yang tidak boleh di-retry
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -432,52 +436,52 @@ Time-zone and DST: use a consistent time standard for scheduling and convert for
 - `LOST_CARD`
 
 <Note>
-For a comprehensive list of decline reasons and whether they are user-correctable, see the
-[Transaction Failures](/api-reference/transaction-failures) documentation.
+Untuk daftar lengkap alasan penolakan dan apakah alasan tersebut dapat diperbaiki oleh pengguna, lihat dokumentasi
+[Transaction Failures](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Only retry on soft/temporary issues (e.g., `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeouts). If the same decline repeats, pause further retries.
+Lakukan retry hanya pada masalah soft/sementara (misalnya `insufficient_funds`, `issuer_unavailable`, `processing_error`, timeout network). Jika penolakan yang sama berulang, hentikan retry berikutnya sementara.
 </Tip>
 
-### Implementation guidelines (no code)
+### Panduan implementasi (tanpa kode)
 
-- Use a scheduler/queue that persists precise timestamps; compute next attempt at the exact time-of-day offset (e.g., `T + 3 days` at the same HH:MM).
-- Maintain and reference the last successful payment timestamp `T` to compute the next attempt; do not bunch multiple subscriptions at the same instant.
-- Always evaluate the last decline reason; stop retries for hard declines in the skip list above.
-- Cap concurrent retries per customer and per account to prevent accidental surges.
-- Communicate proactively: email/SMS the customer to update their payment method before the next scheduled attempt.
-- Use metadata only for observability (e.g., `retry_attempt`); never try to "evade" fraud/risk systems by rotating inconsequential fields.
+- Gunakan scheduler/queue yang menyimpan timestamp secara presisi; hitung upaya berikutnya pada offset waktu yang sama persis (misalnya `T + 3 days` pada HH:MM yang sama).
+- Simpan dan gunakan timestamp payment berhasil terakhir `T` untuk menghitung upaya berikutnya; jangan mengelompokkan beberapa subscription pada waktu yang sama persis.
+- Selalu evaluasi alasan penolakan terakhir; hentikan retry untuk hard decline dalam daftar pengecualian di atas.
+- Batasi retry bersamaan per pelanggan dan per akun untuk mencegah lonjakan yang tidak disengaja.
+- Berkomunikasilah secara proaktif: kirim email/SMS kepada pelanggan agar memperbarui payment method mereka sebelum upaya terjadwal berikutnya.
+- Gunakan metadata hanya untuk observability (misalnya `retry_attempt`); jangan pernah mencoba "menghindari" sistem fraud/risk dengan memutar field yang tidak penting.
 
-## Cancellation
+## Pembatalan
 
-On-demand subscriptions follow a different cancellation flow from scheduled subscriptions because there is no fixed billing cycle to anchor an immediate end date.
+Subscription on-demand mengikuti flow pembatalan yang berbeda dari subscription terjadwal karena tidak ada siklus billing tetap yang dapat menjadi acuan tanggal berakhir segera.
 
-### Customer portal behavior
+### Perilaku Customer Portal
 
-When a customer cancels an on-demand subscription from the [Customer Portal](/features/customer-portal), the cancellation is **scheduled for the next billing date** by default. The **Cancel Now** option is intentionally not shown for on-demand subscriptions.
+Saat pelanggan membatalkan subscription on-demand dari [Customer Portal](/features/customer-portal), pembatalan secara default **dijadwalkan untuk tanggal billing berikutnya**. Opsi **Cancel Now** sengaja tidak ditampilkan untuk subscription on-demand.
 
-The reason: on-demand subscriptions do not have predictable recurring renewal dates — the next charge time is driven entirely by your usage events. Scheduling cancellation at the next billing date keeps the mandate active until the period boundary so any in-flight usage can still be charged, then ends the subscription cleanly.
+Alasannya: subscription on-demand tidak memiliki tanggal renewal berulang yang dapat diprediksi — waktu charge berikutnya sepenuhnya ditentukan oleh event penggunaan Anda. Menjadwalkan pembatalan pada tanggal billing berikutnya membuat mandate tetap aktif hingga batas periode sehingga penggunaan yang sedang berjalan tetap dapat di-charge, lalu mengakhiri subscription dengan benar.
 
-After the customer confirms cancellation:
-- The subscription stays `active` and remains chargeable via `POST /subscriptions/{id}/charge` until the scheduled cancellation date.
-- `cancel_at_next_billing_date` is set to `true` on the subscription.
-- A `subscription.cancelled` webhook is emitted when the cancellation takes effect.
+Setelah pelanggan mengonfirmasi pembatalan:
+- Subscription tetap dalam state `active` dan tetap dapat di-charge melalui `POST /subscriptions/{id}/charge` hingga tanggal pembatalan terjadwal.
+- `cancel_at_next_billing_date` diatur ke `true` pada subscription.
+- Webhook `subscription.cancelled` dikirimkan saat pembatalan mulai berlaku.
 
 <Info>
-If you need to end the subscription immediately (for example, in response to a refund or a support request), cancel it programmatically via the API instead of relying on the customer portal flow.
+Jika Anda perlu mengakhiri subscription segera (misalnya sebagai respons terhadap refund atau permintaan dukungan), batalkan secara programmatic melalui API, bukan dengan mengandalkan flow Customer Portal.
 </Info>
 
-### Cancel programmatically
+### Membatalkan secara programmatic
 
-You can cancel an on-demand subscription via the API at any time. You control whether the cancellation is immediate or scheduled.
+Anda dapat membatalkan subscription on-demand melalui API kapan saja. Anda mengontrol apakah pembatalan dilakukan segera atau dijadwalkan.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Set the subscription `status` to `cancelled` to end it right away. The mandate is revoked and no further charges can be created.
+Atur `status` subscription ke `cancelled` untuk segera mengakhirinya. Mandate dicabut dan tidak ada charge berikutnya yang dapat dibuat.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -499,7 +503,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Mirror the customer portal behavior — keep the subscription active until the scheduled cancellation date, then end it.
+Cerminkan perilaku Customer Portal — pertahankan subscription tetap aktif hingga tanggal pembatalan terjadwal, lalu akhiri.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -521,48 +525,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhooks on cancellation
+### Webhook saat pembatalan
 
-| Event | When it fires |
+| Event | Kapan dipicu |
 |-------|---------------|
-| `subscription.cancelled` | Subscription is fully cancelled and no longer chargeable |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` was toggled (scheduled cancellation set or undone) |
+| `subscription.cancelled` | Subscription sepenuhnya dibatalkan dan tidak lagi dapat di-charge |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` diubah (pembatalan terjadwal ditetapkan atau dibatalkan) |
 
 <Tip>
-To distinguish on-demand cancellations from scheduled-subscription cancellations in your handler, check the subscription's `on_demand` flag when processing the webhook.
+Untuk membedakan pembatalan on-demand dari pembatalan subscription terjadwal dalam handler Anda, periksa flag `on_demand` milik subscription saat memproses webhook.
 </Tip>
 
-## Track outcomes with webhooks
+## Melacak hasil dengan webhook
 
-Implement webhook handling to track the customer journey. See [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Implementasikan penanganan webhook untuk melacak perjalanan pelanggan. Lihat [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Mandate authorized and subscription activated
-- **subscription.failed**: Creation failed (e.g., mandate failure)
-- **subscription.on_hold**: Subscription placed on hold (e.g., unpaid state)
-- **subscription.cancelled**: Subscription fully cancelled (see [Cancellation](#cancellation))
-- **payment.succeeded**: Charge succeeded
-- **payment.failed**: Charge failed
+- **subscription.active**: Mandate diotorisasi dan subscription diaktifkan
+- **subscription.failed**: Pembuatan gagal (misalnya kegagalan mandate)
+- **subscription.on_hold**: Subscription ditempatkan pada hold (misalnya state belum dibayar)
+- **subscription.cancelled**: Subscription sepenuhnya dibatalkan (lihat [Pembatalan](#cancellation))
+- **payment.succeeded**: Charge berhasil
+- **payment.failed**: Charge gagal
 
 <Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
+Untuk flow on-demand, fokus pada `payment.succeeded` dan `payment.failed` untuk merekonsiliasi charge berbasis penggunaan. Saat `payment.failed` diikuti oleh `subscription.on_hold`, lihat [Menangani charge yang gagal](#handling-failed-charges) untuk memulihkan subscription.
 </Tip>
 
-## Testing and next steps
+## Pengujian dan langkah berikutnya
 
 <Steps>
 <Step title="Create in test mode">
-Gunakan kunci API percobaan Anda untuk membuat langganan, kemudian buka `checkout_url` yang dikembalikan dan selesaikan mandat.
+Gunakan test API key Anda untuk membuat subscription, lalu buka `checkout_url` yang dikembalikan dan selesaikan mandate.
 </Step>
 <Step title="Trigger a charge">
-Panggil endpoint charge dengan `product_price` kecil (misalnya, `100`) dan verifikasi Anda menerima `payment.succeeded`.
+Panggil endpoint charge dengan `product_price` kecil (misalnya `100`) dan verifikasi bahwa Anda menerima `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Beralih ke kunci API live Anda setelah Anda memvalidasi peristiwa dan pembaruan status internal.
+Beralih ke live API key Anda setelah memvalidasi event dan pembaruan state internal.
 </Step>
 </Steps>
 
-## Troubleshooting
+## Pemecahan masalah
 
-- **422 Invalid Request**: Ensure `on_demand.mandate_only` is provided on creation and `product_price` is provided for charges.
-- **Currency errors**: If you override `product_currency`, confirm it's supported for your account and customer.
-- **No webhooks received**: Verify your webhook URL and signature secret configuration.
+- **422 Invalid Request**: Pastikan `on_demand.mandate_only` disediakan saat pembuatan dan `product_price` disediakan untuk charge.
+- **Error currency**: Jika Anda mengganti `product_currency`, pastikan currency tersebut didukung untuk akun dan pelanggan Anda.
+- **Tidak menerima webhook**: Verifikasi konfigurasi URL webhook dan secret signature Anda.

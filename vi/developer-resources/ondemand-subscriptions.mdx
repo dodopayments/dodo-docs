@@ -252,8 +252,12 @@ Key request fields (body):
       If true, includes adaptive currency fees within <code>product_price</code>. If false, fees are added on top.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Chỉ định cách số dư ví của khách hàng được sử dụng để thanh toán khoản phí này.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Additional metadata for the payment. If omitted, the subscription metadata is used.
+      Metadata bổ sung cho payment. Nếu bị bỏ qua, metadata của subscription sẽ được sử dụng.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -335,94 +339,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
+Việc tính phí cho một subscription không phải on-demand có thể không thành công. Hãy đảm bảo subscription có `on_demand: true` trong thông tin chi tiết trước khi tính phí.
 </Warning>
 
-## Handling failed charges
+## Xử lý các khoản phí không thành công
 
-When a charge against an on-demand subscription fails, you decide what happens next. Unlike scheduled subscriptions — where a failed renewal stops further automatic billing — **on-demand subscriptions remain chargeable after a failure**. You can call the charge endpoint again as part of your own retry logic.
+Khi khoản phí đối với một subscription on-demand không thành công, bạn quyết định bước tiếp theo. Không giống các subscription theo lịch — trong đó một lần gia hạn không thành công sẽ dừng việc tính phí tự động tiếp theo — **subscription on-demand vẫn có thể được tính phí sau khi không thành công**. Bạn có thể gọi lại charge endpoint trong logic retry của riêng mình.
 
-### What happens on failure
+### Điều gì xảy ra khi không thành công
 
 <Steps>
 <Step title="Charge attempt fails">
-The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook with the decline reason.
+Request `POST /subscriptions/{subscription_id}/charge` sẽ trả về error response hoặc hoàn tất bất đồng bộ và phát ra webhook `payment.failed` kèm lý do bị từ chối.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-The subscription may move to the `on_hold` state and emit a `subscription.on_hold` webhook (see [Subscription States → On Hold](/features/subscription#on-hold-state)). This is a signal — not a lock. For on-demand subscriptions, `on_hold` does **not** prevent you from charging again.
+Subscription có thể chuyển sang trạng thái `on_hold` và phát ra webhook `subscription.on_hold` (xem [Subscription States → On Hold](/features/subscription#on-hold-state)). Đây là một tín hiệu — không phải khóa. Đối với subscription on-demand, `on_hold` **không** ngăn bạn tính phí lại.
 </Step>
 
 <Step title="Retry the charge (your call)">
-For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscriptions/{subscription_id}/charge` again at any time to retry. Apply the [safe retry policy](#payment-retries) below — use exponential backoff, skip hard declines, and avoid burst patterns — so retries are not flagged by our fraud and risk systems.
+Đối với các flow on-demand, Dodo **không tự động retry**. Bạn có thể gọi lại `POST /subscriptions/{subscription_id}/charge` bất cứ lúc nào để retry. Hãy áp dụng [safe retry policy](#payment-retries) bên dưới — sử dụng exponential backoff, bỏ qua hard decline và tránh các pattern theo đợt — để các lần retry không bị hệ thống fraud và risk của chúng tôi đánh dấu.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-Nếu các lần thử lại không thành công vì phương thức thanh toán bị lỗi (thẻ hết hạn, tài khoản đóng, v.v.), sử dụng [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) để thu thập phương thức mới từ khách hàng. Khi thành công, đăng ký sẽ trở về `active` và `payment.succeeded` tiếp theo sẽ gửi các webhook `subscription.active`.
+Nếu các lần retry liên tục không thành công vì chính payment method gặp vấn đề (thẻ hết hạn, tài khoản bị đóng, v.v.), hãy sử dụng [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) để thu thập payment method mới từ khách hàng. Khi thành công, subscription sẽ trở về `active` và các webhook `payment.succeeded`, sau đó là `subscription.active`, sẽ được phát ra.
 </Step>
 </Steps>
 
 <Info>
-**On-demand vs scheduled**: For scheduled subscriptions, Dodo runs its own renewal retries and dunning. For on-demand subscriptions, you own the retry policy because only you know when the next charge should occur (it's driven by your usage events, not a calendar).
+**On-demand và theo lịch**: Đối với subscription theo lịch, Dodo thực hiện retry gia hạn và dunning của riêng mình. Đối với subscription on-demand, bạn chịu trách nhiệm về retry policy vì chỉ bạn biết khi nào khoản phí tiếp theo nên được thực hiện (khoản phí này phụ thuộc vào các usage event của bạn, không phải lịch).
 </Info>
 
-### Webhook sequence on a failed on-demand charge
+### Trình tự webhook khi khoản phí on-demand không thành công
 
-| Order | Event | Meaning |
+| Thứ tự | Event | Ý nghĩa |
 |-------|-------|---------|
-| 1 | `payment.failed` | The on-demand charge attempt did not succeed (includes the decline reason) |
-| 2 | `subscription.on_hold` | The subscription was placed on hold (informational; does not block further charges) |
-| 3* | `payment.succeeded` | A subsequent charge — either your retry or after a payment method update — succeeded |
-| 4* | `subscription.active` | The subscription returned to `active` after a successful charge |
+| 1 | `payment.failed` | Lần thử tính phí on-demand không thành công (bao gồm lý do bị từ chối) |
+| 2 | `subscription.on_hold` | Subscription được đặt ở trạng thái on hold (chỉ mang tính thông tin; không chặn các khoản phí tiếp theo) |
+| 3* | `payment.succeeded` | Một khoản phí tiếp theo — do bạn retry hoặc sau khi cập nhật payment method — đã thành công |
+| 4* | `subscription.active` | Subscription trở về `active` sau khi khoản phí thành công |
 
 <Info>
-Events 3 and 4 only fire after a follow-up charge succeeds.
+Event 3 và 4 chỉ được phát ra sau khi một khoản phí tiếp theo thành công.
 </Info>
 
-### Retry responsibility
+### Trách nhiệm retry
 
 <Warning>
-Dodo Payments **does not auto-retry failed on-demand charges**. You own the retry policy. Follow the safe retry guidelines below to avoid being flagged by our fraud detection systems as card testing.
+Dodo Payments **không tự động retry các khoản phí on-demand không thành công**. Bạn chịu trách nhiệm về retry policy. Hãy làm theo hướng dẫn retry an toàn bên dưới để tránh bị hệ thống phát hiện gian lận của chúng tôi đánh dấu là card testing.
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) when you decide the payment method needs to be updated.
+[Subscription Dunning](/features/recovery/subscription-dunning) — chuỗi email khôi phục tích hợp sẵn — chỉ áp dụng cho các payment gia hạn không thành công trên subscription theo lịch và các trường hợp hủy do khách hàng khởi tạo. Tính năng này không được thiết kế cho các khoản phí on-demand không thành công. Hãy trao đổi trực tiếp với khách hàng (ví dụ: qua transactional email hoặc lời nhắc trong ứng dụng) khi bạn xác định payment method cần được cập nhật.
 
-## Payment retries
+## Retry payment
 
-Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
+Hệ thống phát hiện gian lận của chúng tôi có thể chặn các pattern retry quá mức (và có thể đánh dấu chúng là hành vi card testing tiềm ẩn). Hãy tuân theo retry policy an toàn.
 
 <Warning>
-Burst retry patterns can be flagged as fraudulent or suspected card testing by our risk systems and processors. Avoid clustered retries; follow the backoff schedule and time alignment guidance below.
+Các pattern retry theo đợt có thể bị hệ thống risk và processor của chúng tôi đánh dấu là gian lận hoặc nghi ngờ card testing. Tránh các lần retry tập trung; hãy tuân theo lịch backoff và hướng dẫn căn chỉnh thời gian bên dưới.
 </Warning>
 
-### Principles for safe retry policies
+### Nguyên tắc cho retry policy an toàn
 
-- **Backoff mechanism**: Use exponential backoff between retries.
-- **Retry limits**: Cap total retries (3–4 attempts max).
-- **Intelligent filtering**: Retry only on retryable failures (e.g., network/issuer errors, insufficient funds); never retry hard declines.
-- **Card testing prevention**: Do not retry failures like `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Vary metadata (optional)**: If you maintain your own retry system, differentiate retries via metadata (e.g., `retry_attempt`).
+- **Cơ chế backoff**: Sử dụng exponential backoff giữa các lần retry.
+- **Giới hạn retry**: Giới hạn tổng số lần retry (tối đa 3–4 lần thử).
+- **Lọc thông minh**: Chỉ retry đối với các lỗi có thể retry (ví dụ: lỗi network/issuer, không đủ tiền); không bao giờ retry hard decline.
+- **Ngăn chặn card testing**: Không retry các lỗi như `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Thay đổi metadata (tùy chọn)**: Nếu duy trì hệ thống retry riêng, hãy phân biệt các lần retry bằng metadata (ví dụ: `retry_attempt`).
 
-### Suggested retry schedule (subscriptions)
+### Lịch retry đề xuất (subscription)
 
-- **1st attempt**: Immediate when you create the charge
-- **2nd attempt**: After 3 days
-- **3rd attempt**: After 7 more days (10 days total)
-- **4th attempt (final)**: After another 7 days (17 days total)
+- **Lần thử thứ 1**: Ngay lập tức khi bạn tạo khoản phí
+- **Lần thử thứ 2**: Sau 3 ngày
+- **Lần thử thứ 3**: Sau thêm 7 ngày (tổng cộng 10 ngày)
+- **Lần thử thứ 4 (cuối cùng)**: Sau thêm 7 ngày nữa (tổng cộng 17 ngày)
 
-Final step: if still unpaid, mark the subscription as unpaid or cancel it, based on your policy. Notify the customer during the window to update their payment method.
+Bước cuối: nếu vẫn chưa được thanh toán, hãy đánh dấu subscription là chưa thanh toán hoặc hủy subscription, tùy theo policy của bạn. Thông báo cho khách hàng trong khoảng thời gian này để họ cập nhật payment method.
 
-### Avoid burst retries; align to authorization time
+### Tránh retry theo đợt; căn chỉnh theo thời điểm authorization
 
-- Anchor retries to the original authorization timestamp to avoid "burst" behavior across your portfolio.
-- Example: If the customer starts a trial or mandate at 1:10 pm today, schedule follow-up retries at 1:10 pm on subsequent days per your backoff (e.g., +3 days → 1:10 pm, +7 days → 1:10 pm).
-- Alternatively, if you store the last successful payment time `T`, schedule the next attempt at `T + X days` to preserve time-of-day alignment.
+- Neo các lần retry theo timestamp authorization ban đầu để tránh hành vi "retry theo đợt" trên toàn bộ danh mục của bạn.
+- Ví dụ: Nếu khách hàng bắt đầu trial hoặc mandate lúc 1:10 chiều hôm nay, hãy lên lịch các lần retry tiếp theo lúc 1:10 chiều vào những ngày sau theo backoff của bạn (ví dụ: +3 ngày → 1:10 chiều, +7 ngày → 1:10 chiều).
+- Ngoài ra, nếu bạn lưu thời điểm payment thành công gần nhất `T`, hãy lên lịch lần thử tiếp theo vào `T + X days` để duy trì căn chỉnh theo thời gian trong ngày.
 
 <Note>
-Time-zone and DST: use a consistent time standard for scheduling and convert for display only to maintain intervals.
+Múi giờ và DST: sử dụng một chuẩn thời gian nhất quán để lên lịch, và chỉ chuyển đổi khi hiển thị nhằm duy trì các khoảng thời gian.
 </Note>
 
-### Decline codes you should not retry
+### Mã từ chối không nên retry
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -432,65 +436,52 @@ Time-zone and DST: use a consistent time standard for scheduling and convert for
 - `LOST_CARD`
 
 <Note>
-For a comprehensive list of decline reasons and whether they are user-correctable, see the
-[Transaction Failures](/api-reference/transaction-failures) documentation.
+Để xem danh sách đầy đủ các lý do bị từ chối và biết lý do nào có thể được người dùng khắc phục, hãy xem tài liệu
+[Transaction Failures](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Only retry on soft/temporary issues (e.g., `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeouts). If the same decline repeats, pause further retries.
+Chỉ retry đối với các vấn đề tạm thời/mềm (ví dụ: `insufficient_funds`, `issuer_unavailable`, `processing_error`, timeout network). Nếu cùng một lý do từ chối lặp lại, hãy tạm dừng các lần retry tiếp theo.
 </Tip>
 
-### Implementation guidelines (no code)
+### Hướng dẫn triển khai (không có code)
 
-- Use a scheduler/queue that persists precise timestamps; compute next attempt at the exact time-of-day offset (e.g., `T + 3 days` at the same HH:MM).
-- Maintain and reference the last successful payment timestamp `T` to compute the next attempt; do not bunch multiple subscriptions at the same instant.
-- Always evaluate the last decline reason; stop retries for hard declines in the skip list above.
-- Cap concurrent retries per customer and per account to prevent accidental surges.
-- Communicate proactively: email/SMS the customer to update their payment method before the next scheduled attempt.
-- Use metadata only for observability (e.g., `retry_attempt`); never try to "evade" fraud/risk systems by rotating inconsequential fields.
+- Sử dụng scheduler/queue có khả năng lưu timestamp chính xác; tính thời điểm thử tiếp theo theo đúng độ lệch thời gian trong ngày (ví dụ: `T + 3 days` vào cùng HH:MM).
+- Duy trì và tham chiếu timestamp payment thành công gần nhất `T` để tính lần thử tiếp theo; không dồn nhiều subscription vào cùng một thời điểm.
+- Luôn đánh giá lý do từ chối gần nhất; dừng retry đối với hard decline trong danh sách bỏ qua ở trên.
+- Giới hạn số lần retry đồng thời trên mỗi khách hàng và mỗi account để ngăn các đợt tăng đột biến ngoài ý muốn.
+- Chủ động trao đổi: gửi email/SMS cho khách hàng để cập nhật payment method trước lần thử tiếp theo theo lịch.
+- Chỉ sử dụng metadata cho mục đích observability (ví dụ: `retry_attempt`); không bao giờ cố gắng "né tránh" hệ thống fraud/risk bằng cách xoay vòng các field không quan trọng.
 
-## Track outcomes with webhooks
+## Hủy
 
-Implement webhook handling to track the customer journey. See [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Subscription on-demand có flow hủy khác với subscription theo lịch vì không có chu kỳ tính phí cố định làm mốc cho ngày kết thúc ngay lập tức.
 
-- **subscription.active**: Mandate authorized and subscription activated
-- **subscription.failed**: Creation failed (e.g., mandate failure)
-- **subscription.on_hold**: Subscription placed on hold (e.g., unpaid state)
-- **payment.succeeded**: Charge succeeded
-- **payment.failed**: Charge failed
+### Hành vi của Customer Portal
 
-<Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
-</Tip>
+Khi khách hàng hủy subscription on-demand từ [Customer Portal](/features/customer-portal), việc hủy sẽ **được lên lịch vào ngày tính phí tiếp theo** theo mặc định. Tùy chọn **Cancel Now** cố ý không được hiển thị cho subscription on-demand.
 
-## Testing and next steps
+Lý do là subscription on-demand không có ngày gia hạn định kỳ có thể dự đoán — thời điểm tính phí tiếp theo hoàn toàn do các usage event của bạn quyết định. Việc lên lịch hủy vào ngày tính phí tiếp theo giữ mandate hoạt động cho đến cuối kỳ để mọi usage đang xử lý vẫn có thể được tính phí, sau đó kết thúc subscription một cách rõ ràng.
 
-<Steps>
-<Step title="Create in test mode">
-Use your test API key to create the subscription with `payment_link: true`, then open the link and complete the mandate.
-</Step>
-<Step title="Trigger a charge">
-Call the charge endpoint with a small `product_price` (e.g., `100`) and verify you receive `payment.succeeded`.
-</Step>
-<Step title="Go live">
-Switch to your live API key once you have validated events and internal state updates.
-</Step>
-</Steps>
+Sau khi khách hàng xác nhận hủy:
+- Subscription vẫn ở trạng thái `active` và tiếp tục có thể được tính phí qua `POST /subscriptions/{id}/charge` cho đến ngày hủy theo lịch.
+- `cancel_at_next_billing_date` được đặt thành `true` trên subscription.
+- Một webhook `subscription.cancelled` được phát ra khi việc hủy có hiệu lực.
 
-## Troubleshooting
+<Info>
+Nếu cần kết thúc subscription ngay lập tức (ví dụ: để phản hồi yêu cầu hoàn tiền hoặc yêu cầu hỗ trợ), hãy hủy subscription bằng API thay vì dựa vào flow của customer portal.
+</Info>
 
-- **422 Invalid Request**: Ensure `on_demand.mandate_only` is provided on creation and `product_price` is provided for charges.
-- **Currency errors**: If you override `product_currency`, confirm it's supported for your account and customer.
-- **No webhooks received**: Verify your webhook URL and signature secret configuration.
+### Hủy bằng lập trình
 
-Bạn có thể hủy đăng ký theo yêu cầu qua API bất kỳ lúc nào. Bạn kiểm soát việc hủy bỏ ngay lập tức hay theo lịch.
+Bạn có thể hủy subscription on-demand qua API bất cứ lúc nào. Bạn kiểm soát việc hủy diễn ra ngay lập tức hay theo lịch.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Đặt đăng ký `status` thành `cancelled` để kết thúc ngay lập tức. Ủy quyền bị thu hồi và không thể tạo thêm các khoản phí nào khác.
+Đặt `status` của subscription thành `cancelled` để kết thúc subscription ngay lập tức. Mandate bị thu hồi và không thể tạo thêm khoản phí nào.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -512,7 +503,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Giữ hành vi cổng khách hàng — duy trì đăng ký hoạt động cho đến ngày hủy theo lịch, rồi kết thúc.
+Mô phỏng hành vi của customer portal — giữ subscription hoạt động cho đến ngày hủy theo lịch, sau đó kết thúc subscription.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -534,48 +525,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhooks khi hủy bỏ
+### Webhook khi hủy
 
-| Sự kiện | Khi nó kích hoạt |
+| Event | Thời điểm phát ra |
 |-------|---------------|
-| `subscription.cancelled` | Đăng ký bị hủy hoàn toàn và không còn có thể tính phí |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` đã được chuyển đổi (hủy theo lịch đã thiết lập hoặc hoàn tác) |
+| `subscription.cancelled` | Subscription được hủy hoàn toàn và không còn có thể tính phí |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` được bật/tắt (đã đặt hoặc hủy việc hủy theo lịch) |
 
 <Tip>
-Để phân biệt giữa hủy bỏ theo yêu cầu và hủy đăng ký theo lịch trong bộ xử lý của bạn, hãy kiểm tra cờ `on_demand` của đăng ký khi xử lý webhook.
+Để phân biệt việc hủy subscription on-demand với việc hủy subscription theo lịch trong handler, hãy kiểm tra flag `on_demand` của subscription khi xử lý webhook.
 </Tip>
 
-## Theo dõi kết quả với webhooks
+## Theo dõi kết quả bằng webhook
 
-Thực hiện xử lý webhook để theo dõi hành trình khách hàng. Xem [Thực hiện Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Triển khai xử lý webhook để theo dõi hành trình của khách hàng. Xem [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Ủy quyền được xác nhận và đăng ký được kích hoạt
-- **subscription.failed**: Tạo không thành công (ví dụ, lỗi ủy quyền)
-- **subscription.on_hold**: Đăng ký bị tạm dừng (ví dụ, trạng thái chưa thanh toán)
-- **subscription.cancelled**: Đăng ký bị hủy hoàn toàn (xem [Hủy Bỏ](#cancellation))
-- **payment.succeeded**: Tính phí thành công
-- **payment.failed**: Tính phí không thành công
+- **subscription.active**: Mandate đã được authorize và subscription được kích hoạt
+- **subscription.failed**: Tạo không thành công (ví dụ: mandate không thành công)
+- **subscription.on_hold**: Subscription được đặt ở trạng thái on hold (ví dụ: trạng thái chưa thanh toán)
+- **subscription.cancelled**: Subscription được hủy hoàn toàn (xem [Hủy](#cancellation))
+- **payment.succeeded**: Khoản phí thành công
+- **payment.failed**: Khoản phí không thành công
 
 <Tip>
-Đối với luồng theo yêu cầu, hãy tập trung vào `payment.succeeded` và `payment.failed` để đối chiếu các khoản phí dựa trên sử dụng. Khi `payment.failed` được theo sau bởi `subscription.on_hold`, hãy xem [Xử lý các khoản phí không thành công](#handling-failed-charges) để khôi phục đăng ký.
+Đối với các flow on-demand, hãy tập trung vào `payment.succeeded` và `payment.failed` để đối soát các khoản phí dựa trên usage. Khi `payment.failed` được theo sau bởi `subscription.on_hold`, hãy xem [Xử lý các khoản phí không thành công](#handling-failed-charges) để khôi phục subscription.
 </Tip>
 
-## Kiểm tra và bước tiếp theo
+## Kiểm thử và các bước tiếp theo
 
 <Steps>
 <Step title="Create in test mode">
-Sử dụng khóa API kiểm tra của bạn để tạo đăng ký, sau đó mở `checkout_url` trả về và hoàn tất yêu cầu.
+Sử dụng test API key để tạo subscription, sau đó mở `checkout_url` được trả về và hoàn tất mandate.
 </Step>
 <Step title="Trigger a charge">
-Gọi endpoint tính phí với một `product_price` nhỏ (ví dụ, `100`) và xác minh bạn nhận được `payment.succeeded`.
+Gọi charge endpoint với một `product_price` nhỏ (ví dụ: `100`) và xác minh rằng bạn nhận được `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Chuyển sang khóa API trực tiếp của bạn sau khi bạn đã xác nhận các sự kiện và cập nhật trạng thái nội bộ.
+Chuyển sang live API key sau khi đã xác thực các event và cập nhật state nội bộ.
 </Step>
 </Steps>
 
 ## Khắc phục sự cố
 
-- **422 Yêu cầu Không hợp lệ**: Đảm bảo `on_demand.mandate_only` được cung cấp khi tạo và `product_price` được cung cấp cho các khoản phí.
-- **Lỗi tiền tệ**: Nếu bạn ghi đè `product_currency`, xác nhận nó được hỗ trợ cho tài khoản của bạn và khách hàng.
-- **Không nhận được webhook**: Xác minh URL webhook của bạn và cấu hình ký bí mật.
+- **422 Invalid Request**: Đảm bảo `on_demand.mandate_only` được cung cấp khi tạo và `product_price` được cung cấp cho các khoản phí.
+- **Lỗi currency**: Nếu bạn override `product_currency`, hãy xác nhận currency đó được hỗ trợ cho account và khách hàng của bạn.
+- **Không nhận được webhook**: Xác minh cấu hình webhook URL và signature secret.

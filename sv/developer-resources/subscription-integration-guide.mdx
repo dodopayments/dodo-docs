@@ -270,8 +270,7 @@ När kunden är redo att uppdatera sin betalningsmetod anropar du API:t Update P
 ```javascript Node.js
 // Update with new payment method
 const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'new',
-  return_url: 'https://example.com/return'
+  payment_method: { type: 'new', return_url: 'https://example.com/return' }
 });
 
 // For on_hold subscriptions, a charge is automatically created
@@ -285,8 +284,7 @@ if (response.payment_id) {
 # Update with new payment method
 response = client.subscriptions.update_payment_method(
     subscription_id=subscription_id,
-    type="new",
-    return_url="https://example.com/return"
+    payment_method={"type": "new", "return_url": "https://example.com/return"},
 )
 
 # For on_hold subscriptions, a charge is automatically created
@@ -302,8 +300,7 @@ Du kan även använda ett befintligt ID för betalningsmetoden om kunden har spa
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'existing',
-  payment_method_id: 'pm_abc123'
+  payment_method: { type: 'existing', payment_method_id: 'pm_abc123' }
 });
 ```
 
@@ -367,7 +364,7 @@ Du kan uppgradera eller nedgradera en prenumerationsplan med API-endpointen för
 
 ### Alternativ för proportionell debitering
 
-När du ändrar prenumerationsplaner har du två alternativ för hur den omedelbara debiteringen ska hanteras:
+När du ändrar prenumerationsplaner har du fyra alternativ för hur den omedelbara debiteringen ska hanteras:
 
 #### 1. `prorated_immediately`
 - Beräknar det proportionella beloppet baserat på den återstående tiden i den aktuella faktureringsperioden
@@ -429,38 +426,42 @@ När du ändrar prenumerationsplaner har du två alternativ för hur den omedelb
 
 För att skapa en on-demand-prenumeration använder du API-endpointen [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) och inkluderar fältet `on_demand` i request body. Detta låter dig auktorisera en betalningsmetod utan en omedelbar debitering eller ange ett anpassat startpris.
 
+<Warning>
+`POST /subscriptions` är **föråldrad**. Den fungerar fortfarande för befintliga integrationer, men nya integrationer bör skapa on-demand-prenumerationer via en [Checkout Session](/developer-resources/checkout-session) (`POST /checkouts`) med `subscription_data.on_demand`. Se [guiden för on-demand-prenumerationer](/developer-resources/ondemand-subscriptions) för det aktuella flödet.
+</Warning>
+
 **Så här debiterar du en on-demand-prenumeration:**
 
-För efterföljande debiteringar använder du endpointen [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) och anger det belopp som ska debiteras kunden för transaktionen.
+För efterföljande debiteringar använder du endpointen [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) och anger det belopp som kunden ska debiteras för transaktionen.
 
 <Note>
-För en fullständig steg-för-steg-guide (inklusive exempel på request/response, säkra retry-policyer och webhook-hantering), se <a href="/developer-resources/ondemand-subscriptions">guiden för on-demand-prenumerationer</a>.
+För en komplett steg-för-steg-guide (inklusive exempel på requests/responses, säkra policyer för nya försök och hantering av webhooks), se <a href="/developer-resources/ondemand-subscriptions">guiden för on-demand-prenumerationer</a>.
 </Note>
 
-## Viktigt att känna till om prenumerationsfakturering
+## Viktigt att känna till om prenumerationsdebitering
 
 <Warning>
-**Ange en längre prenumerationsperiod än betalningsfrekvensen.** Om prenumerationsperioden är lika lång som betalningsfrekvensen (t.ex. period = 1 månad, frekvens = 1 månad) gäller prenumerationen under **en enda period** och övergår sedan till `expired` i stället för att förnyas. För en löpande månadsplan anger du en lång prenumerationsperiod (t.ex. 20 år) med månadsvis betalningsfrekvens.
+**Ange en längre prenumerationsperiod än betalningsfrekvensen.** Om prenumerationsperioden är lika lång som betalningsfrekvensen (t.ex. period = 1 månad, frekvens = 1 månad) gäller prenumerationen endast under **en enda cykel** och övergår sedan till `expired` i stället för att förnyas. För en löpande månadsplan anger du en lång prenumerationsperiod (t.ex. 20 år) med en månatlig betalningsfrekvens.
 </Warning>
 
 <Warning>
-**Valutan låses vid den första lyckade debiteringen.** Ange alltid `billing_currency` **och** `billing_address.country` uttryckligen när du skapar checkout. Om de utelämnas identifieras de utifrån kundens IP (Adaptive Currency), och när prenumerationen debiteras för första gången är valutan fast under hela dess livstid. En kund som senare reser kan inte byta valuta.
+**Valutan låses vid den första lyckade debiteringen.** Skicka alltid `billing_currency` **och** `billing_address.country` explicit när du skapar checkouten. Om de utelämnas identifieras de från kundens IP-adress (Adaptive Currency), och när prenumerationen genomför sin första debitering är valutan fast för prenumerationens hela livstid. En kund som senare reser kan inte byta valuta.
 </Warning>
 
 <Info>
-**Provperioder innebär en auktorisering på \$0, inte en debitering.** När en prenumeration har en provperiod skapar provperiodens start en **medgivandeauktorisering på \$0** för att spara kortet; den första riktiga debiteringen sker när provperioden slutar. I betalningslistan visas en prenumeration under provperiod med exakt en betalning med `amount: 0`.
+**Provperioder innebär en auktorisering på \$0, inte en debitering.** När en prenumeration har en provperiod skapar provperiodens start en **mandatauktorisering på \$0** för att spara kortet; den första riktiga debiteringen sker när provperioden avslutas. I betalningslistan visas en prenumeration under provperiod med exakt en betalning med `amount: 0`.
 </Info>
 
 <Info>
-**Prenumerationens livscykel:** `on_hold` = en förnyelse misslyckades (kan återställas: be kunden uppdatera sin betalningsmetod; dunning-försök tillämpas). `expired` = perioden avslutades utan förnyelse och **kan inte återaktiveras**. Kunden måste prenumerera igen. `cancelled` = avslutad av kunden eller handlaren. De flesta misslyckade förnyelser beror på **avslag från kortutgivaren** (otillräckliga medel, nekade kort), inte på ett Dodo-fel.
+**Prenumerationens livscykel:** `on_hold` = en förnyelse misslyckades (kan åtgärdas: uppmana kunden att uppdatera sin betalningsmetod; dunning-försök tillämpas). `expired` = perioden avslutades utan förnyelse och **kan inte återaktiveras**. Kunden måste prenumerera igen. `cancelled` = avslutad av kunden eller handlaren. De flesta misslyckade förnyelser beror på **avvisningar på utfärdarens sida** (otillräckliga medel, kortet avvisades), inte på ett fel hos Dodo.
 </Info>
 
 <Warning>
-**Indiska kort använder ett RBI-e-mandat.** Off-session-debiteringar (förnyelser och debiteringar för planändringar) kan ta **upp till cirka 48 timmar** att avräknas, och återkommande autogirodebiteringar **över ₹15,000** kräver ny kundautentisering (så en uppgradering som överskrider gränsen kan inte använda det befintliga medgivandet). Så länge en debitering fortfarande har `processing` misslyckas en andra debitering på samma prenumeration med *"Cannot create new charge as previous payment is not successful yet."* Icke-indiska kort bekräftas nästan omedelbart.
+**Indiska kort använder ett RBI e-mandat.** Off-session-debiteringar (förnyelser och debiteringar vid planändringar) kan ta **upp till cirka 48 timmar** att slutföras, och återkommande autogirodebiteringar **över ₹15 000** kräver ny kundautentisering (så en uppgradering som passerar den gränsen kan inte använda det befintliga mandatet). Medan en debitering fortfarande har statusen `processing` misslyckas en andra debitering på samma prenumeration med *"Cannot create new charge as previous payment is not successful yet."* Icke-indiska kort bekräftas nästan omedelbart.
 </Warning>
 
 <Tip>
-**Prenumerationsdebiteringar har ett minimibelopp på \$1** (eller motsvarande i annan valuta). Belopp på `$0.01–$0.99` avvisas med `product_price: value out of range`; endast `$0` är tillåtet via en on-demand `mandate_only`-konfiguration.
+**Debiteringar av prenumerationer har ett minimibelopp på \$1** (eller motsvarande i annan valuta). Belopp på `$0.01–$0.99` avvisas med `product_price: value out of range`; endast `$0` tillåts via en on-demand-konfiguration med `mandate_only`.
 </Tip>
 
 ## Relaterad API-referens
@@ -470,7 +471,7 @@ För en fullständig steg-för-steg-guide (inklusive exempel på request/respons
   API-referens för att skapa prenumerationsprodukter och hantera prenumerationens livscykel
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  API-referens för att uppgradera, nedgradera eller ändra prenumerationsplaner med alternativ för proportionell debitering
+  API-referens för att uppgradera, nedgradera eller ändra prenumerationsplaner med alternativ för proportionell fördelning
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
   API-referens för att uppdatera betalningsmetoder och återaktivera pausade prenumerationer

@@ -19,9 +19,9 @@ Event ini terjadi setiap kali status pemberian hak istimewa pelanggan berubah, m
 
 | Event | Deskripsi |
 |-------|-------------|
-| `entitlement_grant.created` | Baris pemberian baru telah dibuat. Statusnya adalah `delivered` segera untuk kunci lisensi, dan `pending` untuk setiap integrasi lainnya. |
-| `entitlement_grant.delivered` | Pemberian berubah menjadi terkirim. Pelanggan sekarang memiliki akses ke platform yang ditunjuk, file, atau kunci lisensi. |
-| `entitlement_grant.failed` | Pengiriman gagal dan tidak dicoba kembali. Periksa `error_code` dan `error_message`. |
+| `entitlement_grant.created` | Baris grant baru dibuat. Statusnya segera menjadi `Delivered` untuk license key yang dipenuhi secara otomatis, dan `Pending` untuk license key yang dipenuhi secara manual serta setiap integrasi lainnya. |
+| `entitlement_grant.delivered` | Grant beralih menjadi delivered. Customer kini memiliki akses ke platform, file, atau license key yang menjadi haknya. |
+| `entitlement_grant.failed` | Pengiriman gagal dan tidak akan dicoba lagi. Periksa `error_code` dan `error_message`. |
 | `entitlement_grant.revoked` | Akses dicabut. Periksa `revocation_reason` untuk memahami alasannya. |
 
 Keempat event tersebut memiliki payload `EntitlementGrantResponse` yang sama seperti yang didokumentasikan dalam skema di bawah.
@@ -34,20 +34,20 @@ Keempat event tersebut memiliki payload `EntitlementGrantResponse` yang sama sep
 
 Baris pemberian baru saja dimasukkan. Pemberian selalu memiliki `id` yang stabil sejak saat ini, bahkan jika statusnya berubah. Gunakan event ini untuk mencatat bahwa pemenuhan sedang berlangsung.
 
-Untuk **kunci lisensi** baris dimasukkan langsung dengan `status: "delivered"` dan `delivered_at` terisi, sehingga satu event `created` diikuti tanpa perubahan status lebih lanjut kecuali pemberian dicabut kemudian.
+Untuk **license key yang dipenuhi secara otomatis**, baris langsung disisipkan dengan `status: "Delivered"` dan `delivered_at` yang telah terisi, sehingga satu event `created` tidak diikuti perubahan status lebih lanjut, kecuali grant tersebut kemudian dicabut.
 
-Untuk **setiap integrasi lainnya** baris tiba dengan `status: "pending"`. Sebuah event `delivered` atau `failed` mengikuti setelah pengiriman selesai:
+Untuk **license key yang dipenuhi secara manual** (entitlements dengan `fulfillment_mode: manual`), baris masuk dengan `status: "Pending"` dan tanpa objek `license_key` — belum ada key. Event ini menandakan bahwa key sedang menunggu pemenuhan; berikan key tersebut melalui [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key), yang kemudian memicu `entitlement_grant.delivered`. Lihat [Manual Fulfillment](/features/license-keys#manual-fulfillment).
 
-- **Integrasi berbasis OAuth** (Discord, GitHub, Notion) mencakup `oauth_url` yang harus dikunjungi pelanggan untuk menyelesaikan persetujuan. Pemberian tetap `pending` hingga pelanggan memberikan otorisasi.
-- **Integrasi langsung dari platform** (Telegram, Framer, Digital Files) hanya berada di `pending` dengan singkat saat panggilan platform berjalan, kemudian berpindah ke `delivered`.
+Untuk **setiap integrasi lainnya**, baris masuk dengan `status: "Pending"`. Event `delivered` atau `failed` muncul setelah pengiriman selesai:
 
-### entitlement_grant.delivered
+- **Integrasi berbasis OAuth** (Discord, GitHub, Notion) menyertakan `oauth_url` yang harus dikunjungi customer untuk menyelesaikan persetujuan. Grant tetap dalam status `Pending` hingga customer memberikan otorisasi.
+- **Integrasi langsung ke platform** (Telegram, Framer, Digital Files) hanya berada dalam status `Pending` sebentar saat panggilan ke platform berlangsung, lalu beralih ke `Delivered`.
 
 Pemberian berpindah dari `pending` ke `delivered`. Pelanggan sekarang memiliki akses seperti yang dijelaskan oleh pemberian tersebut. Gunakan event ini untuk membuka fitur bergantung dalam sistem Anda sendiri, misalnya untuk menyediakan workspace, mengirim email sambutan khusus, atau menandai "fulfilled".
 
-Field `delivered_at` dalam payload menangkap waktu penyelesaian pengiriman. Untuk pemberian yang tiba `delivered` pada pembuatan, Anda akan menerima event `created` dan `delivered` secara berurutan.
+Grant beralih dari `Pending` ke `Delivered`. Customer kini memiliki akses yang dijelaskan oleh entitlement. Gunakan event ini untuk membuka fitur dependen di sistem Anda sendiri, misalnya menyediakan workspace, mengirim email sambutan khusus, atau menandai flag "fulfilled".
 
-### entitlement_grant.failed
+Field `delivered_at` pada payload mencatat kapan pengiriman selesai. Untuk grant yang sejak awal dibuat dengan status `Delivered`, Anda akan menerima event `created` dan `delivered` secara berurutan.
 
 Pengiriman dicoba dan gagal dengan kesalahan yang tidak dapat dicoba ulang. Field `error_code` dan `error_message` menjelaskan kegagalan. Penyebab umum termasuk token OAuth dicabut, izin platform ditolak, atau target yang hilang (misalnya, komunitas Discord yang dihapus).
 
@@ -76,12 +76,13 @@ Akses ditarik di tingkat platform: peran Discord dihapus, kolaborator GitHub dih
 
 Field `data` selalu merupakan objek `EntitlementGrantResponse`. Dua jenis integrasi menempelkan objek bersarang tambahan:
 
-- **`license_key`** disertakan ketika jenis integrasi pemberian adalah `license_key`. Ini berisi kunci yang dihasilkan, kedaluwarsa, dan penggunaan aktivasi.
-- **`digital_product_delivery`** disertakan ketika jenis integrasi adalah `digital_files`. Ini berisi URL unduhan yang ditandatangani sebelumnya, `instructions` opsional, dan `external_url` opsional.
+Field `data` selalu berupa objek `EntitlementGrantResponse`. Payload membawa field `integration_type` (misalnya `license_key`, `digital_files`, `discord`) sehingga Anda dapat langsung mengenali jenis grant. Tiga jenis integrasi juga menyertakan objek bertingkat tambahan:
 
-Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) kedua field adalah `null`; konfigurasi yang relevan ditangkap dalam pemberian itu sendiri, bukan pemberian.
+- **`license_key`** disertakan ketika `integration_type` adalah `license_key` **dan key telah diterbitkan**. Objek ini berisi key yang dibuat, masa berlaku, dan penggunaan aktivasi. Untuk grant yang dipenuhi secara manual dan masih dalam status `Pending`, objek ini bernilai `null` hingga Anda memenuhi grant tersebut.
+- **`digital_product_delivery`** disertakan ketika `integration_type` adalah `digital_files`. Objek ini berisi URL unduhan yang telah ditandatangani sebelumnya, `instructions` opsional, dan `external_url` opsional.
+- **`feature`** disertakan ketika `integration_type` adalah `feature_flag`. Objek ini berisi `feature_type` dan `feature_id` dari kapabilitas yang diberikan oleh grant.
 
----
+Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Figma, Framer, Notion), field bertingkat ini bernilai `null`; konfigurasi terkait tercatat dalam entitlement itu sendiri, bukan dalam grant.
 
 ## Contoh Payload
 
@@ -122,7 +123,42 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
 }
 ```
 
-### File digital dikirim (`entitlement_grant.delivered`)
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Delivered",
+    "integration_type": "license_key",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
 
 ```json theme={null}
 {
@@ -167,7 +203,88 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
 }
 ```
 
-### Peran Discord dibuat dan tertunda (`entitlement_grant.created`)
+Dipicu ketika customer membeli produk yang entitlement License Key-nya menggunakan `fulfillment_mode: manual`. Grant berstatus `Pending` tanpa objek `license_key` — merchant harus menyediakan key.
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:24:00.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Pending",
+    "integration_type": "license_key",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:24:00Z",
+    "updated_at": "2026-05-01T10:24:00Z"
+  }
+}
+```
+
+### Pemberian dicabut pada pembatalan langganan (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Delivered",
+    "integration_type": "digital_files",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Pengiriman gagal (`entitlement_grant.failed`)
 
 ```json theme={null}
 {
@@ -175,14 +292,16 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
   "type": "entitlement_grant.created",
   "timestamp": "2026-05-01T10:31:00.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_DiscordPending5L",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_discord_patrons",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "pending",
+    "status": "Pending",
+    "integration_type": "discord",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -199,7 +318,7 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
 }
 ```
 
-### Pemberian dicabut pada pembatalan langganan (`entitlement_grant.revoked`)
+---
 
 ```json theme={null}
 {
@@ -207,14 +326,16 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
   "type": "entitlement_grant.revoked",
   "timestamp": "2026-06-15T08:12:44.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "revoked",
+    "status": "Revoked",
+    "integration_type": "license_key",
     "revocation_reason": "subscription_cancelled",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
@@ -236,42 +357,6 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
 }
 ```
 
-### Pengiriman gagal (`entitlement_grant.failed`)
-
-```json theme={null}
-{
-  "business_id": "bus_H4ekzPSlcg",
-  "type": "entitlement_grant.failed",
-  "timestamp": "2026-05-01T10:36:21.000000Z",
-  "data": {
-    "id": "grant_GhFailed7Z",
-    "business_id": "bus_H4ekzPSlcg",
-    "entitlement_id": "ent_github_repo",
-    "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
-    "payment_id": "pay_a1b2c3d4",
-    "subscription_id": null,
-    "status": "failed",
-    "license_key": null,
-    "digital_product_delivery": null,
-    "delivered_at": null,
-    "revoked_at": null,
-    "revocation_reason": null,
-    "error_code": "github_permission_denied",
-    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
-    "oauth_url": null,
-    "oauth_expires_at": null,
-    "metadata": null,
-    "created_at": "2026-05-01T10:36:00Z",
-    "updated_at": "2026-05-01T10:36:21Z"
-  }
-}
-```
-
----
-
-## Tips Integrasi
-
 - **Tunggu `entitlement_grant.delivered` sebelum membuka fitur yang bergantung.** Sebuah event `payment.succeeded` memberi tahu Anda bahwa pembayaran telah diterima; itu tidak memberi tahu Anda bahwa pelanggan memiliki repo GitHub atau peran Discord. Event `delivered` adalah sumber kebenaran untuk pemenuhan.
 - **Petakan `revocation_reason` ke alur retensi.** Pencabutan `subscription_on_hold` biasanya berarti kartu pelanggan gagal dan pembaruan berikutnya akan memberikan kembali akses. Pencabutan `manual` atau `subscription_cancelled` adalah disengaja. Perlakukan mereka secara berbeda dalam komunikasi pelanggan.
 - **Gunakan `id` pemberian sebagai kunci idempoten Anda.** Sebuah pemberian tunggal mengeluarkan paling banyak satu event `created` dan paling banyak satu event terminal (`delivered` atau `failed`), dan paling banyak satu event `revoked`. Pengiriman ulang dari sistem webhook dapat mengulangi acara; hapus duplikasi pada `id` pemberian plus `type`.
@@ -284,14 +369,15 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
   "type": "entitlement_grant.failed",
   "timestamp": "2026-05-01T10:36:21.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_GhFailed7Z",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_github_repo",
     "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "failed",
+    "status": "Failed",
     "integration_type": "github",
     "license_key": null,
     "digital_product_delivery": null,
@@ -313,8 +399,8 @@ Untuk semua jenis integrasi lainnya (Discord, GitHub, Telegram, Framer, Notion) 
 
 ## Tips Integrasi
 
-- **Tunggu hingga `entitlement_grant.delivered` sebelum membuka fitur yang bergantung padanya.** Event `payment.succeeded` memberi tahu bahwa pembayaran telah berhasil diproses; event ini tidak memberi tahu bahwa pelanggan sudah memiliki repo GitHub atau role Discord. Event `delivered` adalah sumber kebenaran untuk fulfillment.
-- **Petakan `revocation_reason` ke alur retensi.** Revoke `subscription_on_hold` biasanya berarti kartu pelanggan gagal diproses dan perpanjangan berikutnya akan memberikan kembali akses. Revoke `manual` atau `subscription_cancelled` dilakukan secara sengaja. Perlakukan keduanya secara berbeda dalam pesan kepada pelanggan.
-- **Gunakan grant `id` sebagai kunci idempotency Anda.** Satu grant menghasilkan paling banyak satu event `created`, paling banyak satu terminal event (`delivered` atau `failed`), dan paling banyak satu event `revoked`. Pengiriman ulang dari sistem webhook dapat mengulangi event; lakukan deduplikasi berdasarkan grant `id` ditambah `type`.
-- **Baca `integration_type` untuk mengenali jenis grant.** Payload membawa `integration_type` secara langsung (misalnya `license_key`, `digital_files`, `discord`). Objek nested `license_key` dan `digital_product_delivery` akan terisi setelah grant masing-masing dikirimkan; grant license-key yang dipenuhi secara manual tetap berupa `pending` dengan `integration_type: "license_key"` dan `null` `license_key` hingga Anda memenuhinya.
-- **Untuk grant berbasis OAuth, tampilkan `oauth_url` kepada pelanggan.** Event `entitlement_grant.created` untuk alur subscriber Discord, GitHub, atau Notion menyertakan `oauth_url` dan `oauth_expires_at`. Kirimkan melalui email kepada pelanggan atau tampilkan di aplikasi Anda untuk membuka akses delivery.
+- **Tunggu `entitlement_grant.delivered` sebelum membuka fitur dependen.** Event `payment.succeeded` menandakan bahwa pembayaran telah berhasil, bukan bahwa customer sudah memiliki repo GitHub atau role Discord. Event `delivered` adalah sumber kebenaran untuk pemenuhan.
+- **Petakan `revocation_reason` ke alur retensi.** Pencabutan `subscription_on_hold` biasanya berarti kartu customer gagal dan perpanjangan berikutnya akan memberikan kembali akses. Pencabutan `manual` atau `subscription_cancelled` dilakukan secara sengaja. Perlakukan keduanya secara berbeda dalam komunikasi kepada customer.
+- **Gunakan `id` grant sebagai kunci idempotensi Anda.** Satu grant memicu paling banyak satu event `created` dan paling banyak satu event terminal (`delivered` atau `failed`), serta paling banyak satu event `revoked`. Pengiriman ulang dari sistem webhook dapat mengulangi event; lakukan deduplikasi berdasarkan `id` grant dan `type`.
+- **Baca `integration_type` untuk mengenali jenis grant.** Payload membawa `integration_type` secara langsung (misalnya `license_key`, `digital_files`, `discord`). Objek bertingkat `license_key` dan `digital_product_delivery` terisi setelah grant terkait terpenuhi; grant license key yang dipenuhi secara manual tetap dalam status `Pending` dengan `integration_type: "license_key"` dan `null` `license_key` hingga Anda memenuhinya.
+- **Untuk grant berbasis OAuth, tampilkan `oauth_url` kepada customer.** Event `entitlement_grant.created` untuk alur subscriber Discord, GitHub, atau Notion menyertakan `oauth_url` dan `oauth_expires_at`. Kirimkan melalui email kepada customer atau tampilkan di aplikasi Anda untuk melanjutkan pengiriman.

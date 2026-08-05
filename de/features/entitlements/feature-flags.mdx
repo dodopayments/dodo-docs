@@ -23,9 +23,9 @@ Eine Feature-Flag-Berechtigung verwandelt Dodo Payments in einen abrechnungsbewu
 
 Nichts verlässt Dodo Payments — die Berechtigung **ist** das Lieferbare:
 
-- Beim Kauf wird die Berechtigung erstellt und direkt zu `delivered` verschoben. Es gibt keine `pending`-Phase, keine Kundenaktion und keine Möglichkeit für ein Lieferversagen.
-- Die Berechtigung trägt eine typisierte `feature`-Nutzlast: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. Ihre Anwendung liest `feature_id`, um zu entscheiden, was freigeschaltet wird.
-- Stornierungen, Rückerstattungen oder manuelle Widerrufe verschieben die Berechtigung zu `revoked`, und Ihre Anwendung sieht das Flag verschwinden.
+- Beim Kauf wird der Grant erstellt und wechselt direkt zu `Delivered`. Es gibt keine Phase `Pending`, keine Aktion des Kunden und keine Möglichkeit, dass die Bereitstellung fehlschlägt.
+- Der Grant enthält eine typisierte `feature`-Payload: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. Ihre Anwendung liest `feature_id`, um zu entscheiden, was freigeschaltet werden soll.
+- Durch eine Stornierung, Rückerstattung oder manuelle Aufhebung wechselt der Grant zu `Revoked`, und Ihre Anwendung erkennt, dass das Flag nicht mehr vorhanden ist.
 
 Häufige Anwendungsfälle umfassen planbasierte Feature-Gatings (Pro schaltet Analysen frei), Zusatzfähigkeiten (ein "API-Zugriff"-Upgrade) und Early-Access-Programme, die als Einmalkäufe verkauft werden.
 
@@ -227,15 +227,15 @@ Das Überprüfen der API bei jeder Anfrage fügt Ihrem Hot Path Latenz hinzu. Ca
 
 ## Lebenszyklus
 
-Feature-Flag-Berechtigungen folgen dem Standard- [Berechtigungslebenszyklus](/features/entitlements/introduction#how-grants-work) mit einer Vereinfachung: Es gibt keinen Lieferstep, sodass Berechtigungen niemals in `pending` verbleiben und niemals zu `failed` wechseln.
+Feature-Flag-Grants folgen dem standardmäßigen [Grant-Lebenszyklus](/features/entitlements/introduction#how-grants-work) mit einer Vereinfachung: Es gibt keinen Bereitstellungsschritt, daher verbleiben Grants nie in `Pending` und wechseln nie zu `Failed`.
 
 | Auslöser | Effekt |
 |---|---|
-| Einmalzahlung erfolgreich / Abonnement wird aktiv | Berechtigung erstellt mit `status: delivered` und `delivered_at` festgelegt. |
-| Abonnement auf Eis gelegt, storniert oder abgelaufen | Berechtigung widerrufen mit passendem `revocation_reason`. |
-| Rückerstattung bei einer Einmalzahlung | Berechtigung widerrufen mit `revocation_reason: refund`. |
-| Abonnement erholt sich (zum Beispiel, dunning erfolgreich) | Die widerrufene Berechtigung wird zu `delivered` wiederhergestellt — gleiche Berechtigung `id`, Widerrufsfelder gelöscht. |
-| Manueller API-Widerruf | Berechtigung widerrufen mit `revocation_reason: manual`. Wird bei Erneuerung nicht automatisch wiederhergestellt. |
+| Einmalzahlung erfolgreich / Abonnement wird aktiv | Grant mit gesetzten Werten `status: delivered` und `delivered_at` erstellt. |
+| Abonnement pausiert, gekündigt oder abgelaufen | Grant mit dem passenden `revocation_reason` aufgehoben. |
+| Rückerstattung einer Einmalzahlung | Grant mit `revocation_reason: refund` aufgehoben. |
+| Abonnement wird wiederhergestellt (z. B. durch erfolgreiches Dunning) | Der aufgehobene Grant wird zu `Delivered` wiederhergestellt – derselbe Grant `id`, Aufhebungsfelder gelöscht. |
+| Manuelle Aufhebung über die API | Grant mit `revocation_reason: manual` aufgehoben. Bei der Verlängerung nicht automatisch wiederhergestellt. |
 
 Berechtigungen sind idempotent pro Berechtigung und Kunde: Solange ein Kunde eine nicht widerrufene Berechtigung für ein Flag hat, erzeugen wiederholte Käufe und Verlängerungen keine Duplikate.
 
@@ -245,9 +245,9 @@ Berechtigungen sind idempotent pro Berechtigung und Kunde: Solange ein Kunde ein
 
 Abonnieren Sie die [`entitlement_grant.*`-Ereignisse](/developer-resources/webhooks/intents/entitlement-grant), um Flags in Ihre eigene Datenbank zu spiegeln, anstatt zu pollen:
 
-- `entitlement_grant.created` — kommt bereits `delivered` mit der `feature`-Nutzlast an. Aktivieren Sie das Feature.
-- `entitlement_grant.delivered` — wird ausgelöst, wenn eine zuvor widerrufene Berechtigung wiederhergestellt wird. Aktivieren Sie das Feature erneut.
-- `entitlement_grant.revoked` — Zugriff entzogen. Deaktivieren Sie das Feature und überprüfen Sie `revocation_reason`, um Ihre Nachricht zu entscheiden.
+- `entitlement_grant.created` — kommt bereits als `Delivered` mit der `feature`-Payload an. Aktivieren Sie das Feature.
+- `entitlement_grant.delivered` — wird ausgelöst, wenn ein zuvor aufgehobener Grant wiederhergestellt wird. Aktivieren Sie das Feature erneut.
+- `entitlement_grant.revoked` — Zugriff entzogen. Deaktivieren Sie das Feature und prüfen Sie `revocation_reason`, um Ihre Kommunikation festzulegen.
 
 ```typescript TypeScript theme={null}
 app.post('/webhooks/dodo', async (req, res) => {
@@ -275,18 +275,18 @@ Es gibt keinen `entitlement_grant.failed` für Feature-Flags — die Lieferung e
 
 ## Beispiel: Pro-Plan schaltet erweiterte Berichte frei
 
-1. **Erstellen Sie das Flag.** `feature_id: advanced_reports` mit Metadaten `{ "tier": "pro", "monthly_report_limit": 100 }`.
-2. **Anhängen** an Ihr Pro-Plan-Abonnementprodukt.
-3. **Ein Kunde abonniert.** Dodo Payments erstellt eine `delivered`-Berechtigung und löst `entitlement_grant.created` aus; Ihr Webhook-Handler aktiviert `advanced_reports` für den Kunden mit einem Limit von 100.
-4. **Ihre App schaltet die Funktion ab.** Beim Laden des Dashboards, prüfen Sie die zwischengespeicherte Feature-Menge (oder rufen Sie `listEntitlementGrants` auf) und rendern Sie das Berichtsfeld nur, wenn `advanced_reports` vorhanden ist.
-5. **Der Kunde storniert.** Dodo Payments widerruft die Berechtigung und löst `entitlement_grant.revoked` aus; Ihr Handler deaktiviert das Feature. Sollte der Kunde später durch Dunning erneut aktiviert werden, stellt `entitlement_grant.delivered` es wieder her — keine Codeänderungen erforderlich.
+1. **Erstellen Sie das Flag.** `feature_id: advanced_reports` mit den Metadaten `{ "tier": "pro", "monthly_report_limit": 100 }`.
+2. **Verknüpfen Sie es** mit Ihrem Abonnementprodukt Pro Plan.
+3. **Ein Kunde abonniert.** Dodo Payments erstellt einen `Delivered`-Grant und löst `entitlement_grant.created` aus; Ihr Webhook-Handler aktiviert `advanced_reports` für den Kunden mit einem Limit von 100.
+4. **Ihre Anwendung steuert den Feature-Zugriff.** Prüfen Sie beim Laden des Dashboards das zwischengespeicherte Feature-Set (oder rufen Sie `listEntitlementGrants` auf) und rendern Sie den Berichte-Tab nur, wenn `advanced_reports` vorhanden ist.
+5. **Der Kunde kündigt.** Dodo Payments hebt den Grant auf und löst `entitlement_grant.revoked` aus; Ihr Handler deaktiviert das Feature. Wenn der Kunde später durch Dunning wiederhergestellt wird, aktiviert `entitlement_grant.delivered` es erneut – es sind keine Codeänderungen erforderlich.
 
 ---
 
 ## Best Practices
 
-- **Verwenden Sie stabile, snake_case Feature-IDs.** Ihr Anwendungscode überprüft diese Strings; das Umbenennen eines davon ist eine Unterbrechung auf beiden Seiten.
-- **Ein Flag pro Fähigkeit.** Bevorzugen Sie `advanced_reports` + `api_access` als zwei Berechtigungen über ein einziges `pro_bundle` — Widerrufungen und Plan-Mixe bleiben sauber.
-- **Steuern Sie den Status über Webhooks, überprüfen Sie mit der API.** Webhooks halten Ihre Datenbank aktuell; der Endpunkt der Liste ist die Wahrheit für Abstimmungsjobs und Cache-Misses.
-- **Behandeln Sie `revoked` als sofortig.** Ein widerrufenes Flag bedeutet, dass der Kunde nicht mehr für die Funktion bezahlt. Sperren Sie beim nächsten Anruf, nicht in der nächsten Sitzung.
-- **Setzen Sie Limits in Metadaten, nicht im Code.** Eine Quote zu ändern, erfordert dann nur das Bearbeiten der Berechtigung — neue Kunden nehmen es automatisch auf, während bestehende Berechtigungen ihren erworbenen Schnappschuss behalten.
+- **Verwenden Sie stabile Feature-IDs im snake_case-Format.** Ihr Anwendungscode prüft diese Zeichenfolgen; die Umbenennung einer ID ist auf beiden Seiten eine Breaking Change.
+- **Ein Flag pro Funktion.** Bevorzugen Sie `advanced_reports` + `api_access` als zwei Entitlements gegenüber einem einzelnen `pro_bundle` – Aufhebungen und Kombinationen von Plänen bleiben übersichtlich.
+- **Steuern Sie den Status über Webhooks und verifizieren Sie ihn mit der API.** Webhooks halten Ihre Datenbank aktuell; der Listen-Endpunkt ist die maßgebliche Quelle für Abgleich-Jobs und Cache-Misses.
+- **Behandeln Sie `Revoked` als sofort wirksam.** Ein aufgehobenes Flag bedeutet, dass der Kunde nicht mehr für das Feature bezahlt. Steuern Sie den Zugriff bei der nächsten Anfrage, nicht erst bei der nächsten Sitzung.
+- **Legen Sie Limits in den Metadaten statt im Code fest.** Wenn Sie ein Kontingent ändern, müssen Sie anschließend nur das Entitlement bearbeiten – neue Kunden übernehmen es automatisch, während bestehende Grants ihren erworbenen Snapshot behalten.

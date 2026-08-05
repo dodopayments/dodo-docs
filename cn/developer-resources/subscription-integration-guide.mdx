@@ -270,8 +270,7 @@ app.post('/webhooks/dodo', async (req, res) => {
 ```javascript Node.js
 // Update with new payment method
 const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'new',
-  return_url: 'https://example.com/return'
+  payment_method: { type: 'new', return_url: 'https://example.com/return' }
 });
 
 // For on_hold subscriptions, a charge is automatically created
@@ -285,8 +284,7 @@ if (response.payment_id) {
 # Update with new payment method
 response = client.subscriptions.update_payment_method(
     subscription_id=subscription_id,
-    type="new",
-    return_url="https://example.com/return"
+    payment_method={"type": "new", "return_url": "https://example.com/return"},
 )
 
 # For on_hold subscriptions, a charge is automatically created
@@ -302,8 +300,7 @@ if response.payment_id:
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'existing',
-  payment_method_id: 'pm_abc123'
+  payment_method: { type: 'existing', payment_method_id: 'pm_abc123' }
 });
 ```
 
@@ -367,7 +364,7 @@ if (event.type === 'subscription.active') {
 
 ### Proration 选项
 
-更改订阅计划时，您可以选择以下两种方式处理即时扣款：
+更改订阅计划时，您有四种处理即时扣款的选项：
 
 #### 1. `prorated_immediately`
 - 根据当前 billing cycle 的剩余时间计算按比例分摊的金额
@@ -418,51 +415,55 @@ if (event.type === 'subscription.active') {
 
 要创建按需订阅，请使用 [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) API endpoint，并在 request body 中包含 `on_demand` 字段。这样可以在不立即扣款的情况下授权 payment method，或设置自定义初始价格。
 
-**向按需订阅收费：**
+<Warning>
+`POST /subscriptions` 已弃用。它仍适用于现有集成，但新集成应通过 [Checkout Session](/developer-resources/checkout-session)（`POST /checkouts`）和 `subscription_data.on_demand` 创建按需订阅。有关当前流程，请参阅[按需订阅指南](/developer-resources/ondemand-subscriptions)。
+</Warning>
 
-对于后续扣款，请使用 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint，并指定要针对该交易向客户收取的金额。
+**要对按需订阅扣款：**
+
+对于后续扣款，请使用 [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) endpoint，并指定要为该笔交易向客户收取的金额。
 
 <Note>
-如需完整的分步指南（包括 request/response 示例、安全的重试策略和 webhook 处理），请参阅 <a href="/developer-resources/ondemand-subscriptions">按需订阅指南</a>。
+如需完整的分步指南（包括请求/响应示例、安全重试策略和 webhook 处理），请参阅 <a href="/developer-resources/ondemand-subscriptions">按需订阅指南</a>。
 </Note>
 
 ## 关于订阅计费的关键事项
 
 <Warning>
-**将订阅周期设置得长于付款频率。** 如果 subscription period 等于 payment frequency（例如 period = 1 month、frequency = 1 month），订阅只对**一个周期**有效，随后会进入 `expired`，而不是续订。对于持续的月度计划，请设置较长的 subscription period（例如 20 年），并使用月度 payment frequency。
+**将订阅周期设置得长于付款频率。** 如果订阅周期等于付款频率（例如，周期 = 1 个月，频率 = 1 个月），订阅仅对**单个周期**有效，随后会转为 `expired`，而不是续订。对于持续按月计费的计划，请设置较长的订阅周期（例如 20 年），并将付款频率设置为每月。
 </Warning>
 
 <Warning>
-**货币会在首次成功扣款时锁定。** 创建 checkout 时，请始终明确传递 `billing_currency` **和** `billing_address.country`。如果省略，系统会根据客户的 IP 检测货币（Adaptive Currency）；订阅首次扣款后，货币将在其生命周期内固定不变。客户之后旅行也无法切换货币。
+**货币会在首次成功扣款时锁定。** 创建 checkout 时，始终显式传递 `billing_currency` **和** `billing_address.country`。如果省略，系统会根据客户的 IP 检测货币（Adaptive Currency）；订阅首次扣款后，货币将在其整个生命周期内固定不变。客户之后出行也无法切换货币。
 </Warning>
 
 <Info>
-**试用期执行的是 \$0 授权，而不是扣款。** 当订阅包含试用期时，试用期开始会创建一次 **\$0 mandate authorization** 以保存卡片；首次实际扣款会在试用期结束时发生。在 payments list 中，处于试用期的订阅会显示一笔且仅一笔包含 `amount: 0` 的 payment。
+**试用期会进行 \$0 授权，而不是扣款。** 当订阅包含试用期时，试用期开始时会创建一笔**金额为 \$0 的 mandate 授权**以保存卡片；首次实际扣款会在试用期结束时发生。在支付列表中，处于试用期的订阅恰好会显示一笔支付，其状态为 `amount: 0`。
 </Info>
 
 <Info>
-**订阅生命周期：** `on_hold` = 续订失败（可恢复：提示客户更新 payment method；dunning retries 适用）。`expired` = 期限结束且未续订，**无法重新激活**。客户必须重新订阅。`cancelled` = 由客户或 merchant 结束。大多数续订失败是**发卡方拒绝**（余额不足、卡片被拒绝），而不是 Dodo 错误。
+**订阅生命周期：** `on_hold` = 续订失败（可恢复：提示客户更新其付款方式；适用催收重试）。`expired` = 期限结束且未续订，**无法重新激活**。客户必须重新订阅。`cancelled` = 由客户或商户结束。大多数续订失败是**发卡行方面的拒付**（余额不足、卡片被拒），而不是 Dodo 错误。
 </Info>
 
 <Warning>
-**印度卡片使用 RBI e-mandate。** Off-session charges（续订和计划变更扣款）最多可能需要 **约 48 小时**才能结算，并且 **超过 ₹15,000** 的 recurring auto-debits 需要客户重新进行身份验证（因此，超过该限额的升级无法使用现有 mandate）。当一笔扣款仍处于 `processing` 状态时，同一订阅的第二笔扣款会失败，并显示 *"Cannot create new charge as previous payment is not successful yet."* 非印度卡片通常会即时确认。
+**印度卡使用 RBI e-mandate。** 非会话扣款（续订和计划变更扣款）最多可能需要 **约 48 小时**才能结算，并且超过 **₹15,000** 的定期自动扣款需要客户重新进行身份验证（因此，超过该限额的升级无法使用现有 mandate）。当一笔扣款仍处于 `processing` 状态时，同一订阅上的第二笔扣款会失败，并显示 *"Cannot create new charge as previous payment is not successful yet."* 非印度卡几乎可以即时确认。
 </Warning>
 
 <Tip>
-**Subscription charges 的最低金额为 \$1**（或等值货币）。金额为 `$0.01–$0.99` 的扣款会被 `product_price: value out of range` 拒绝；只有通过按需 `mandate_only` setup 才允许使用 `$0`。
+**订阅扣款的最低金额为 \$1**（或等值货币）。金额为 `$0.01–$0.99` 的扣款会被 `product_price: value out of range` 拒绝；只有 `$0` 通过按需 `mandate_only` 设置后才允许使用。
 </Tip>
 
 ## 相关 API 参考
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  用于创建 subscription products 和管理订阅生命周期的 API 参考
+  用于创建订阅产品和管理订阅生命周期的 API 参考
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  用于通过 proration 选项升级、降级或更改订阅计划的 API 参考
+  用于升级、降级或更改订阅计划并配置按比例计费选项的 API 参考
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  用于更新 payment methods 和重新激活暂停订阅的 API 参考
+  用于更新付款方式和重新激活暂停中订阅的 API 参考
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   用于更新订阅详细信息和配置的 API 参考

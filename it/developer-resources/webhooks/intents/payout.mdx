@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Pagamento
+description: Il payload inviato al tuo endpoint webhook quando viene creato un
+  pagamento o ne cambia lo stato, e come riconciliare ogni evento del ciclo di
+  vita del pagamento.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook dei pagamenti
+  - eventi dei pagamenti
+  - integrazione webhook
+  - pagamento
+  - payout.success
+---
+
+<Info>
+I webhook dei pagamenti ti informano quando i tuoi fondi vengono trasferiti da Dodo Payments al tuo conto bancario. Usali per riconciliare i pagamenti nei tuoi sistemi contabili senza eseguire il polling dell'endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Eventi webhook dei pagamenti
+
+Un pagamento genera un evento in ogni fase del suo ciclo di vita. Le fasi corrispondono agli [stati dei pagamenti](/features/payouts/payout-structure) mostrati nella dashboard.
+
+| Evento | Viene generato quando | Cosa significa solitamente |
+|-------|-----------|-----------------------|
+| `payout.created` | Viene creato un pagamento, durante il ciclo automatico o al di fuori del ciclo | Il pagamento esiste, ma non ha ancora iniziato a essere trasferito |
+| `payout.in_progress` | Arriva la data di scadenza del pagamento e inizia l'elaborazione | I fondi sono in trasferimento verso il tuo conto bancario |
+| `payout.on_hold` | Il pagamento viene sospeso o sottoposto a revisione | Potrebbe essere necessario fornire ulteriori informazioni |
+| `payout.success` | Il pagamento sul tuo conto bancario viene regolato | I fondi dovrebbero essere disponibili nel tuo conto |
+| `payout.failed` | Il pagamento non va a buon fine | L'importo e le commissioni vengono riaccreditati sul tuo wallet |
+
+<Note>
+`payout.created` veniva precedentemente generato come `payout.not_initiated`. Se un endpoint esistente applica un filtro su `payout.not_initiated`, aggiorna il filtro a `payout.created` affinché continui a trovare le corrispondenze. Il campo `status` del payload riporta ancora `not_initiated` in questa fase.
+</Note>
+
+## Gestione degli eventi dei pagamenti
+
+I pagamenti riguardano il tuo denaro, non quello di un cliente, quindi questi eventi alimentano solitamente la contabilità e gli avvisi interni, anziché flussi rivolti ai clienti.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Verifica sempre la firma del webhook prima dell'elaborazione — consulta la [guida Webhooks](/developer-resources/webhooks) per la configurazione. Il gestore riportato sopra omette la verifica per brevità.
+</Tip>
+
+<Warning>
+Gli eventi dei pagamenti non sono né terminali né strettamente ordinati. `payout.failed` può arrivare dopo `payout.success` quando una banca restituisce il trasferimento, mentre `payout.success` può arrivare dopo `payout.failed` quando un pagamento non riuscito viene successivamente recuperato. Considera il campo `status` del payload come lo stato corrente, invece di presumere che l'ultimo evento ricevuto sia definitivo.
+</Warning>
+
+## Stato del pagamento
+
+L'oggetto del pagamento riporta il proprio avanzamento tramite un singolo campo:
+
+| Campo | Valori |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` e `tax` nel payload sono deprecati. Usa gli [endpoint per il dettaglio del pagamento](/api-reference/payouts/retrieve-breakup) per una suddivisione dettagliata.
+</Note>
+
+## Correlati
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Come vengono programmati e calcolati i pagamenti e cosa significa ogni stato del pagamento.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Monitora i saldi del wallet e il registro alla base di ogni pagamento.
+</Card>
+</CardGroup>
+
+## Schema del payload del webhook

@@ -21,9 +21,9 @@ keywords:
 
 Dodo Paymentsからは何も離れません。付与が**成果物**です：
 
-- 購入時に付与が作成され、即座に`delivered`に移行します。`pending`フェーズはなく、顧客の行動も不要で、配信が失敗することはありません。
-- 付与には型指定された`feature`ペイロードが含まれます：`{ "feature_type": "boolean", "feature_id": "advanced_reports" }`。アプリケーションは`feature_id`を読み込んでどの機能を解除するかを判断します。
-- キャンセル、払い戻し、または手動による取り消しは、付与を`revoked`に移動させ、アプリケーションからフラグが消えることがわかります。
+- 購入時に grant が作成され、すぐに `Delivered` へ移行します。`Pending` フェーズはなく、顧客による操作も、delivery が失敗する可能性もありません。
+- grant には型付きの `feature` ペイロード（`{ "feature_type": "boolean", "feature_id": "advanced_reports" }`）が含まれます。アプリケーションは `feature_id` を読み取り、アンロックする機能を決定します。
+- キャンセル、refund、または手動 revoke により grant は `Revoked` へ移行し、アプリケーションではフラグが消えたことを検知できます。
 
 よくある使用例として、プランに基づく機能制御（プロが分析を解除）、アドオン機能（"APIアクセス"のアップグレード）、一度限りの購入として販売されるアーリーアクセスプログラムがあります。
 
@@ -225,15 +225,15 @@ for _, grant := range page.Items {
 
 ## Lifecycle
 
-機能フラグの付与は、[付与のライフサイクル](/features/entitlements/introduction#how-grants-work)と同じ標準に従いますが、一つ簡素化されています：配信ステップがないため、付与は`pending`に置かれることがなく、`failed`に移動することがありません。
+Feature flag の grant は標準の [grant lifecycle](/features/entitlements/introduction#how-grants-work) に従いますが、delivery step がないという簡略化が加えられています。そのため、grant が `Pending` に留まることも、`Failed` へ移行することもありません。
 
 | Trigger | Effect |
 |---|---|
-| 一回払いの成功 / サブスクリプションのアクティブ化 | `status: delivered`と`delivered_at`が設定された付与が作成されます。 |
-| サブスクリプションの保留、キャンセル、または期限切れ | 対応する`revocation_reason`で付与が取り消されます。 |
-| 一回払いの払い戻し | `revocation_reason: refund`で付与が取り消されます。 |
-| サブスクリプションの回復（例えば、督促が成功） | 無効になった付与が`delivered`に復元されます。 — 同じ付与`id`で、取り消しフィールドがクリアされます。 |
-| 手動API取り消し | `revocation_reason: manual`で付与が取り消されます。更新時には自動復元されません。 |
+| One-time payment succeeds / subscription becomes active | `status: delivered` と `delivered_at` が設定された状態で grant が作成されます。 |
+| Subscription put on hold, cancelled, or expired | 対応する `revocation_reason` により grant が revoke されます。 |
+| Refund on a one-time payment | `revocation_reason: refund` により grant が revoke されます。 |
+| Subscription recovers (for example, dunning succeeds) | revoke された grant が `Delivered` に復元されます — 同じ grant の `id` で、revoke フィールドはクリアされます。 |
+| Manual API revoke | `revocation_reason: manual` により grant が revoke されます。更新時に自動復元されることはありません。 |
 
 付与は認可および顧客ごとに冪等性を持ちます：顧客がフラグの未取り消しの付与を持つ間は、リピート購入と更新は重複を作成しません。
 
@@ -243,9 +243,9 @@ for _, grant := range page.Items {
 
 [`entitlement_grant.*`イベント](/developer-resources/webhooks/intents/entitlement-grant)を購読して、フラグをポーリングする代わりに自分のデータベースにミラーリングします：
 
-- `entitlement_grant.created` — `delivered`としてすでに到着しており、`feature`ペイロード付きです。機能を有効にします。
-- `entitlement_grant.delivered` — 以前に取り消された付与が復元されたときに発火します。機能を再有効化します。
-- `entitlement_grant.revoked` — アクセスが取り消されました。機能を無効にし、メッセージングを決定するために`revocation_reason`を確認します。
+- `entitlement_grant.created` — すでに `Delivered` の状態で、`feature` ペイロードとともに届きます。機能を有効にします。
+- `entitlement_grant.delivered` — 以前 revoke された grant が復元されたときに発生します。機能を再度有効にします。
+- `entitlement_grant.revoked` — アクセスが取り消されました。機能を無効にし、メッセージの内容を決めるために `revocation_reason` を確認します。
 
 ```typescript TypeScript theme={null}
 app.post('/webhooks/dodo', async (req, res) => {
@@ -273,18 +273,18 @@ app.post('/webhooks/dodo', async (req, res) => {
 
 ## Example: Pro plan unlocks advanced reports
 
-1. **フラグを作成します。** `feature_id: advanced_reports`とメタデータ`{ "tier": "pro", "monthly_report_limit": 100 }`。
-2. **それを**プロプランのサブスクリプション製品にアタッチします。
-3. **顧客がサブスクライブします。** Dodo Paymentsが`delivered`の付与を作成し、`entitlement_grant.created`を発火します。Webhookハンドラが顧客のために100の制限で`advanced_reports`を有効にします。
-4. **アプリが機能を制御します。** ダッシュボードのロード時にキャッシュされた機能セットを確認（または`listEntitlementGrants`を呼び出して）、`advanced_reports`が存在する場合のみレポートタブを表示します。
-5. **顧客がキャンセルします。** Dodo Paymentsが付与を取り消し、`entitlement_grant.revoked`を発火します。ハンドラが機能を無効にします。顧客が督促を介して後で回復すると、`entitlement_grant.delivered`がそれを復元します — コードの変更は不要です。
+1. **フラグを作成します。** `feature_id: advanced_reports` にメタデータ `{ "tier": "pro", "monthly_report_limit": 100 }` を設定します。
+2. **Pro Plan の subscription product にアタッチします。**
+3. **顧客がサブスクライブします。** Dodo Payments が `Delivered` grant を作成して `entitlement_grant.created` を発生させます。webhook handler は顧客に対して `advanced_reports` を有効にし、上限を 100 に設定します。
+4. **アプリで機能を制御します。** dashboard の読み込み時に、キャッシュされた feature set を確認するか `listEntitlementGrants` を呼び出し、`advanced_reports` が存在する場合にのみ reports タブを表示します。
+5. **顧客がキャンセルします。** Dodo Payments が grant を revoke して `entitlement_grant.revoked` を発生させ、handler が機能を無効にします。後で顧客が dunning によって回復した場合は、`entitlement_grant.delivered` により機能が復元されます — コードの変更は必要ありません。
 
 ---
 
 ## Best practices
 
-- **安定したsnake_case機能IDを使用します。** アプリケーションコードはこれらの文字列をチェックします。名前を変更することは、両側での破壊的変更です。
-- **1つの機能につき1つのフラグ。** SINGLE_`advanced_reports` + `api_access`を2つの認可として選択し、単一の`pro_bundle`とします。取り消しおよびプランの組み合わせがスムーズになります。
-- **状態をwebhooksで駆動し、APIで検証します。** Webhooksはデータベースを最新に保ちます。リストエンドポイントは、調整ジョブとキャッシュミスのための真実の源です。
-- **`revoked`を即時とみなします。** 取り消されたフラグは、顧客がもはやその機能に対して支払っていないことを意味します。次のリクエストで、次のセッションではなく制御します。
-- **メタデータに制限を設定し、コードには設定しません。** クオータを変更する場合、それは認可の編集だけを必要とし、新しい顧客は自動的にそれを取り入れ、既存の付与は購入したスナップショットを維持します。
+- **安定した snake_case の feature id を使用します。** アプリケーションコードはこれらの文字列をチェックするため、1 つでも名前を変更すると双方で breaking change になります。
+- **機能ごとに 1 つのフラグを使用します。** 1 つの `pro_bundle` にまとめるよりも、`advanced_reports` と `api_access` の 2 つの entitlement を使用する方が、revoke やプランの組み合わせを適切に管理できます。
+- **webhook を使って状態を更新し、API で検証します。** webhook によりデータベースを最新に保ち、list endpoint は reconciliation job とキャッシュミスにおける source of truth になります。
+- **`Revoked` を即時のものとして扱います。** revoke されたフラグは、顧客がその機能に対して料金を支払っていないことを意味します。次の session ではなく、次の request でアクセスを制御してください。
+- **制限値はコードではなく metadata に設定します。** quota の変更が必要になった場合も entitlement を編集するだけで済みます。新しい顧客には自動的に適用され、既存の grant には購入時のスナップショットが保持されます。

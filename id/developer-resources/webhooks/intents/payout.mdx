@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Payout
+description: Payload yang dikirim ke endpoint webhook Anda saat payout dibuat
+  atau berubah status, serta cara merekonsiliasi setiap event dalam siklus hidup
+  payout.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - payout webhook
+  - payout events
+  - webhook integration
+  - payout
+  - payout.success
+---
+
+<Info>
+Webhook payout memberi tahu Anda saat dana Anda sendiri berpindah dari Dodo Payments ke rekening bank Anda. Gunakan webhook ini untuk merekonsiliasi payout dalam sistem akuntansi Anda tanpa melakukan polling pada endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Event Webhook Payout
+
+Sebuah payout menghasilkan event pada setiap tahap dalam siklus hidupnya. Tahapan tersebut sesuai dengan [status payout](/features/payouts/payout-structure) yang ditampilkan di dashboard Anda.
+
+| Event | Dipicu saat | Biasanya berarti |
+|-------|-----------|-----------------------|
+| `payout.created` | Payout dibuat, baik oleh siklus payout otomatis maupun di luar siklus | Payout sudah ada, tetapi belum mulai diproses |
+| `payout.in_progress` | Tanggal jatuh tempo payout tiba dan pemrosesan dimulai | Dana sedang dikirim ke rekening bank Anda |
+| `payout.on_hold` | Payout dijeda atau ditinjau | Anda mungkin perlu memberikan informasi tambahan |
+| `payout.success` | Payout ke rekening bank Anda selesai | Dana seharusnya sudah tersedia di rekening Anda |
+| `payout.failed` | Payout gagal | Jumlah dan biaya dikreditkan kembali ke wallet Anda |
+
+<Note>
+`payout.created` sebelumnya dikirim sebagai `payout.not_initiated`. Jika endpoint yang sudah ada memfilter berdasarkan `payout.not_initiated`, perbarui filter tersebut ke `payout.created` agar tetap cocok. Field `status` pada payload tetap melaporkan `not_initiated` pada tahap ini.
+</Note>
+
+## Menangani Event Payout
+
+Payout berkaitan dengan uang Anda sendiri, bukan uang pelanggan, sehingga event ini biasanya digunakan untuk pembukuan dan notifikasi internal, bukan untuk alur yang ditujukan kepada pelanggan.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Selalu verifikasi signature webhook sebelum memprosesnya — lihat [panduan Webhooks](/developer-resources/webhooks) untuk penyiapan. Handler di atas menghilangkan verifikasi demi singkatnya contoh.
+</Tip>
+
+<Warning>
+Event payout tidak selalu bersifat terminal dan tidak diurutkan secara ketat. `payout.failed` dapat tiba setelah `payout.success` ketika bank mengembalikan transfer, dan `payout.success` dapat tiba setelah `payout.failed` ketika payout yang gagal kemudian berhasil dipulihkan. Perlakukan field `status` pada payload sebagai status saat ini, bukan menganggap event terakhir yang Anda terima sebagai status final.
+</Warning>
+
+## Status Payout
+
+Objek payout melaporkan progresnya melalui satu field:
+
+| Field | Nilai |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks`, dan `tax` pada payload sudah deprecated. Gunakan [endpoint payout breakup](/api-reference/payouts/retrieve-breakup) untuk rincian lengkap.
+</Note>
+
+## Terkait
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Cara payout dijadwalkan dan dihitung, serta arti setiap status payout.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Pantau saldo wallet dan ledger di balik setiap payout.
+</Card>
+</CardGroup>
+
+## Skema Payload Webhook

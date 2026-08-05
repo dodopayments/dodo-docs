@@ -17,11 +17,11 @@ keywords:
 
 Esses eventos são disparados sempre que a concessão de direitos de um cliente altera o estado, por exemplo, quando uma chave de licença é gerada, um papel do Discord é atribuído, um link de download é provisionado ou o acesso é revogado. Assine esses eventos para manter sua aplicação sincronizada com o que cada cliente pode acessar.
 
-| Evento | Descrição |
+| Event | Description |
 |-------|-------------|
-| `entitlement_grant.created` | Uma nova linha de concessão foi criada. O status é `delivered` imediatamente para chaves de licença, e `pending` para todas as outras integrações. |
-| `entitlement_grant.delivered` | A concessão transita para entregue. O cliente agora tem acesso à plataforma, arquivo ou chave de licença atribuída. |
-| `entitlement_grant.failed` | A entrega falhou e não está sendo tentada novamente. Inspecione `error_code` e `error_message`. |
+| `entitlement_grant.created` | Uma nova linha de grant foi criada. O status é `Delivered` imediatamente para license keys preenchidas automaticamente, e `Pending` para license keys preenchidas manualmente e todas as outras integrações. |
+| `entitlement_grant.delivered` | O grant faz a transição para entregue. O cliente agora tem acesso à plataforma, ao arquivo ou à license key incluída no entitlement. |
+| `entitlement_grant.failed` | A entrega falhou e não será tentada novamente. Inspecione `error_code` e `error_message`. |
 | `entitlement_grant.revoked` | O acesso foi retirado. Inspecione `revocation_reason` para entender o motivo. |
 
 Todos os quatro eventos compartilham a mesma carga útil `EntitlementGrantResponse` documentada no esquema abaixo.
@@ -34,20 +34,20 @@ Todos os quatro eventos compartilham a mesma carga útil `EntitlementGrantRespon
 
 Uma linha de concessão foi inserida. A concessão sempre tem um `id` estável a partir deste ponto, mesmo que seu status mude. Use este evento para registrar que o cumprimento está em andamento.
 
-Para **chaves de licença**, a linha é inserida diretamente com `status: "delivered"` e `delivered_at` preenchidos, então um único evento `created` é seguido por nenhuma alteração de estado adicional, a menos que a concessão seja posteriormente revogada.
+Para **license keys preenchidas automaticamente**, a linha é inserida diretamente com `status: "Delivered"` e `delivered_at` preenchidos, portanto um único evento `created` não é seguido por outras alterações de estado, a menos que o grant seja posteriormente revogado.
 
-Para **todas as outras integrações**, a linha chega com `status: "pending"`. Um evento `delivered` ou `failed` segue uma vez que a entrega é concluída:
+Para **license keys preenchidas manualmente** (entitlements com `fulfillment_mode: manual`), a linha chega com `status: "Pending"` e sem o objeto `license_key` — ainda não há uma key. Esse evento indica que uma key está aguardando preenchimento; forneça-a por meio de [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key), que então dispara `entitlement_grant.delivered`. Consulte [Manual Fulfillment](/features/license-keys#manual-fulfillment).
 
-- **Integrações baseadas em OAuth** (Discord, GitHub, Notion) incluem um `oauth_url` que o cliente deve visitar para completar o consentimento. A concessão permanece `pending` até que o cliente autorize.
-- **Integrações diretas de plataforma** (Telegram, Framer, Arquivos Digitais) ficam `pending` apenas brevemente enquanto a chamada de plataforma é executada, depois se movem para `delivered`.
+Para **todas as outras integrações**, a linha chega com `status: "Pending"`. Um evento `delivered` ou `failed` ocorre quando a entrega é concluída:
 
-### entitlement_grant.delivered
+- **Integrações baseadas em OAuth** (Discord, GitHub, Notion) incluem um `oauth_url` que o cliente deve acessar para concluir o consentimento. O grant permanece `Pending` até que o cliente autorize.
+- **Integrações diretas com a plataforma** (Telegram, Framer, Digital Files) permanecem em `Pending` apenas brevemente enquanto a chamada à plataforma é executada e, em seguida, passam para `Delivered`.
 
 A concessão transitou de `pending` para `delivered`. O cliente agora tem o acesso descrito pela concessão. Use este evento para desbloquear funcionalidades dependentes em seus próprios sistemas, por exemplo, para provisionar um espaço de trabalho, enviar um email de boas-vindas personalizado, ou marcar uma bandeira "cumprida".
 
-O campo `delivered_at` da carga útil captura quando a entrega foi concluída. Para concessões que chegaram `delivered` na criação, você receberá eventos `created` e `delivered` um após o outro.
+O grant fez a transição de `Pending` para `Delivered`. O cliente agora tem o acesso descrito pelo entitlement. Use esse evento para desbloquear funcionalidades dependentes nos seus próprios sistemas, por exemplo, para provisionar um workspace, enviar um e-mail de boas-vindas personalizado ou marcar uma flag de "fulfilled".
 
-### entitlement_grant.failed
+O campo `delivered_at` do payload registra quando a entrega foi concluída. Para grants que chegaram em `Delivered` na criação, você receberá os eventos `created` e `delivered` em sequência.
 
 A entrega foi tentada e falhou com um erro não reativável. Os campos `error_code` e `error_message` explicam a falha. Causas comuns incluem um token OAuth revogado, uma permissão de plataforma negada ou um alvo ausente (por exemplo, uma guilda do Discord excluída).
 
@@ -76,12 +76,13 @@ O acesso foi retirado no nível da plataforma: papel do Discord removido, colabo
 
 O campo `data` é sempre um objeto `EntitlementGrantResponse`. Dois tipos de integração anexam objetos aninhados extras:
 
-- **`license_key`** é incluído quando o tipo de integração de concessão é `license_key`. Ele contém a chave gerada, expiração e uso de ativação.
-- **`digital_product_delivery`** é incluído quando o tipo de integração é `digital_files`. Ele contém URLs de download pré-assinados, o opcional `instructions` e o opcional `external_url`.
+O campo `data` é sempre um objeto `EntitlementGrantResponse`. O payload contém um campo `integration_type` (por exemplo, `license_key`, `digital_files`, `discord`) para que você possa reconhecer diretamente o tipo de grant. Três tipos de integração também incluem objetos aninhados adicionais:
 
-Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, Notion) ambos os campos são `null`; a configuração relevante é capturada na própria concessão, não na concessão.
+- **`license_key`** é incluído quando `integration_type` é `license_key` **e uma key foi emitida**. Ele contém a key gerada, a expiração e o uso de ativação. Para um grant preenchido manualmente que ainda está em `Pending`, esse objeto é `null` até que você preencha o grant.
+- **`digital_product_delivery`** é incluído quando `integration_type` é `digital_files`. Ele contém URLs de download pré-assinadas, o `instructions` opcional e o `external_url` opcional.
+- **`feature`** é incluído quando `integration_type` é `feature_flag`. Ele contém o `feature_type` e o `feature_id` da capacidade concedida pelo grant.
 
----
+Para todos os outros tipos de integração (Discord, GitHub, Telegram, Figma, Framer, Notion), esses campos aninhados são `null`; a configuração relevante é registrada no próprio entitlement, não no grant.
 
 ## Exemplos de Carga Útil
 
@@ -122,7 +123,42 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
 }
 ```
 
-### Arquivos digitais entregues (`entitlement_grant.delivered`)
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:25:33.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Delivered",
+    "integration_type": "license_key",
+    "license_key": {
+      "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+      "expires_at": "2027-05-01T00:00:00Z",
+      "activations_used": 0,
+      "activations_limit": 5
+    },
+    "digital_product_delivery": null,
+    "delivered_at": "2026-05-01T10:25:33Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:25:33Z",
+    "updated_at": "2026-05-01T10:25:33Z"
+  }
+}
+```
 
 ```json theme={null}
 {
@@ -167,7 +203,88 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
 }
 ```
 
-### Papel do Discord criado e pendente (`entitlement_grant.created`)
+Disparado quando um cliente compra um produto cujo entitlement de License Key usa `fulfillment_mode: manual`. O grant está `Pending` sem um objeto `license_key` — o merchant deve fornecer a key.
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.created",
+  "timestamp": "2026-05-01T10:24:00.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Pending",
+    "integration_type": "license_key",
+    "license_key": null,
+    "digital_product_delivery": null,
+    "delivered_at": null,
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:24:00Z",
+    "updated_at": "2026-05-01T10:24:00Z"
+  }
+}
+```
+
+### Concessão revogada no cancelamento da assinatura (`entitlement_grant.revoked`)
+
+```json theme={null}
+{
+  "business_id": "bus_H4ekzPSlcg",
+  "type": "entitlement_grant.delivered",
+  "timestamp": "2026-05-01T10:30:12.000000Z",
+  "data": {
+    "payload_type": "EntitlementGrant",
+    "id": "grant_2P9rQwYvMxTnKoCb4",
+    "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
+    "entitlement_id": "ent_files_J3kLmN4oP5",
+    "customer_id": "cus_abc123",
+    "payment_id": "pay_a1b2c3d4",
+    "subscription_id": null,
+    "status": "Delivered",
+    "integration_type": "digital_files",
+    "license_key": null,
+    "digital_product_delivery": {
+      "files": [
+        {
+          "file_id": "df_a4f6c1de",
+          "download_url": "https://files.dodopayments.com/.../pro-bundle.zip?Signature=...",
+          "filename": "pro-bundle.zip",
+          "content_type": "application/zip",
+          "file_size": 18742390,
+          "expires_in": 900
+        }
+      ],
+      "instructions": "Unzip and run setup.sh from the project root.",
+      "external_url": null
+    },
+    "delivered_at": "2026-05-01T10:30:12Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "error_code": null,
+    "error_message": null,
+    "oauth_url": null,
+    "oauth_expires_at": null,
+    "metadata": null,
+    "created_at": "2026-05-01T10:30:12Z",
+    "updated_at": "2026-05-01T10:30:12Z"
+  }
+}
+```
+
+### Entrega falhou (`entitlement_grant.failed`)
 
 ```json theme={null}
 {
@@ -175,14 +292,16 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
   "type": "entitlement_grant.created",
   "timestamp": "2026-05-01T10:31:00.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_DiscordPending5L",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_discord_patrons",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "pending",
+    "status": "Pending",
+    "integration_type": "discord",
     "license_key": null,
     "digital_product_delivery": null,
     "delivered_at": null,
@@ -199,7 +318,7 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
 }
 ```
 
-### Concessão revogada no cancelamento da assinatura (`entitlement_grant.revoked`)
+---
 
 ```json theme={null}
 {
@@ -207,14 +326,16 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
   "type": "entitlement_grant.revoked",
   "timestamp": "2026-06-15T08:12:44.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "revoked",
+    "status": "Revoked",
+    "integration_type": "license_key",
     "revocation_reason": "subscription_cancelled",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
@@ -236,42 +357,6 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
 }
 ```
 
-### Entrega falhou (`entitlement_grant.failed`)
-
-```json theme={null}
-{
-  "business_id": "bus_H4ekzPSlcg",
-  "type": "entitlement_grant.failed",
-  "timestamp": "2026-05-01T10:36:21.000000Z",
-  "data": {
-    "id": "grant_GhFailed7Z",
-    "business_id": "bus_H4ekzPSlcg",
-    "entitlement_id": "ent_github_repo",
-    "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
-    "payment_id": "pay_a1b2c3d4",
-    "subscription_id": null,
-    "status": "failed",
-    "license_key": null,
-    "digital_product_delivery": null,
-    "delivered_at": null,
-    "revoked_at": null,
-    "revocation_reason": null,
-    "error_code": "github_permission_denied",
-    "error_message": "Repository access could not be granted: the GitHub App installation no longer has permission on this repository.",
-    "oauth_url": null,
-    "oauth_expires_at": null,
-    "metadata": null,
-    "created_at": "2026-05-01T10:36:00Z",
-    "updated_at": "2026-05-01T10:36:21Z"
-  }
-}
-```
-
----
-
-## Dicas de Integração
-
 - **Aguarde `entitlement_grant.delivered` antes de desbloquear funcionalidades dependentes.** Um evento `payment.succeeded` indica que o pagamento foi processado; ele não informa se o cliente já tem o repositório GitHub ou o papel Discord. O evento `delivered` é a fonte da verdade para o cumprimento.
 - **Mapeie `revocation_reason` para fluxos de retenção.** Uma revogação `subscription_on_hold` geralmente significa que o cartão do cliente falhou e a próxima renovação reativará o acesso. Uma revogação `manual` ou `subscription_cancelled` é intencional. Trate-os de forma diferente na comunicação com o cliente.
 - **Use a concessão `id` como sua chave de idempotência.** Uma única concessão emite no máximo um evento `created` e no máximo um evento terminal (`delivered` ou `failed`), e no máximo um evento `revoked`. As re-entregas do sistema de webhook podem repetir eventos; deduplique na concessão `id` mais `type`.
@@ -284,14 +369,15 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
   "type": "entitlement_grant.failed",
   "timestamp": "2026-05-01T10:36:21.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_GhFailed7Z",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_github_repo",
     "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "failed",
+    "status": "Failed",
     "integration_type": "github",
     "license_key": null,
     "digital_product_delivery": null,
@@ -313,8 +399,8 @@ Para todos os outros tipos de integração (Discord, GitHub, Telegram, Framer, N
 
 ## Dicas de integração
 
-- **Aguarde `entitlement_grant.delivered` antes de desbloquear recursos dependentes.** Um evento `payment.succeeded` informa que o pagamento foi compensado; ele não informa que o cliente já recebeu o repositório do GitHub ou a função do Discord. O evento `delivered` é a fonte de verdade para o fulfillment.
-- **Mapeie `revocation_reason` para os fluxos de retenção.** Um revoke de `subscription_on_hold` geralmente significa que o cartão do cliente falhou e que a próxima renovação concederá o acesso novamente. Um revoke de `manual` ou `subscription_cancelled` é intencional. Trate-os de forma diferente nas mensagens ao cliente.
-- **Use o grant `id` como sua chave de idempotência.** Um único grant emite no máximo um evento `created` e no máximo um evento terminal (`delivered` ou `failed`), além de no máximo um evento `revoked`. As reentregas do sistema de webhook podem repetir eventos; elimine duplicidades com base em `id` mais `type`.
-- **Leia `integration_type` para identificar o tipo de grant.** O payload contém `integration_type` diretamente (por exemplo, `license_key`, `digital_files`, `discord`). Os objetos aninhados `license_key` e `digital_product_delivery` são preenchidos quando seus respectivos grants são entregues; um grant de chave de licença cumprido manualmente permanece como `pending` com `integration_type: "license_key"` e um `null` `license_key` até que você o cumpra.
-- **Para grants baseados em OAuth, mostre `oauth_url` ao cliente.** O evento `entitlement_grant.created` para fluxos de assinantes do Discord, GitHub ou Notion inclui `oauth_url` e `oauth_expires_at`. Envie-o por e-mail ao cliente ou exiba-o no seu app para desbloquear a entrega.
+- **Aguarde `entitlement_grant.delivered` antes de desbloquear funcionalidades dependentes.** Um evento `payment.succeeded` informa que o pagamento foi compensado; ele não informa que o cliente já tem o repositório do GitHub ou a função no Discord. O evento `delivered` é a fonte de verdade para o preenchimento.
+- **Associe `revocation_reason` aos fluxos de retenção.** Uma revogação `subscription_on_hold` geralmente significa que o cartão do cliente falhou e a próxima renovação concederá o acesso novamente. Uma revogação `manual` ou `subscription_cancelled` é intencional. Trate-as de forma diferente nas mensagens ao cliente.
+- **Use `id` do grant como sua idempotency key.** Um único grant emite no máximo um evento `created`, no máximo um evento terminal (`delivered` ou `failed`) e no máximo um evento `revoked`. As reentregas do sistema de webhook podem repetir eventos; elimine duplicatas usando `id` do grant junto com `type`.
+- **Leia `integration_type` para reconhecer o tipo de grant.** O payload contém `integration_type` diretamente (por exemplo, `license_key`, `digital_files`, `discord`). Os objetos aninhados `license_key` e `digital_product_delivery` são preenchidos quando seus respectivos grants são entregues; um grant de license key preenchido manualmente permanece `Pending` com `integration_type: "license_key"` e um `null` `license_key` até que você o preencha.
+- **Para grants baseados em OAuth, mostre `oauth_url` ao cliente.** O evento `entitlement_grant.created` para fluxos de assinantes do Discord, GitHub ou Notion inclui `oauth_url` e `oauth_expires_at`. Envie-o por e-mail ao cliente ou mostre-o no seu app para desbloquear a entrega.

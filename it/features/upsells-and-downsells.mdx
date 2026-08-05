@@ -102,8 +102,9 @@ const client = new DodoPayments({
 async function getPaymentMethods(customerId: string) {
   const paymentMethods = await client.customers.retrievePaymentMethods(customerId);
   
-  // Returns array of saved payment methods
-  // Each has: payment_method_id, type, card (last4, brand, exp_month, exp_year)
+  // Returns { items: [...] } — the list of saved payment methods.
+  // Each item has: payment_method_id, payment_method, payment_method_type, last_used_at,
+  // recurring_enabled, and card (last4_digits, card_network, card_type, expiry_month, expiry_year)
   return paymentMethods;
 }
 
@@ -112,7 +113,7 @@ const methods = await getPaymentMethods('cus_123');
 console.log('Available payment methods:', methods);
 
 // Use the first available method for upsell
-const primaryMethod = methods[0]?.payment_method_id;
+const primaryMethod = methods.items[0]?.payment_method_id;
 ```
 
 </Tab>
@@ -131,8 +132,9 @@ client = DodoPayments(
 def get_payment_methods(customer_id: str):
     payment_methods = client.customers.retrieve_payment_methods(customer_id)
     
-    # Returns list of saved payment methods
-    # Each has: payment_method_id, type, card (last4, brand, exp_month, exp_year)
+    # Returns an object with an `items` list of saved payment methods.
+    # Each item has: payment_method_id, payment_method, payment_method_type, last_used_at,
+    # recurring_enabled, and card (last4_digits, card_network, card_type, expiry_month, expiry_year)
     return payment_methods
 
 # Example usage
@@ -140,7 +142,7 @@ methods = get_payment_methods("cus_123")
 print("Available payment methods:", methods)
 
 # Use the first available method for upsell
-primary_method = methods[0].payment_method_id if methods else None
+primary_method = methods.items[0].payment_method_id if methods.items else None
 ```
 
 </Tab>
@@ -260,7 +262,7 @@ async function handlePostPurchaseUpsell(customerId: string) {
   // Get customer's payment methods
   const methods = await client.customers.retrievePaymentMethods(customerId);
   
-  if (methods.length === 0) {
+  if (methods.items.length === 0) {
     console.log('No saved payment methods available');
     return null;
   }
@@ -268,7 +270,7 @@ async function handlePostPurchaseUpsell(customerId: string) {
   // Create the upsell with one-click checkout
   const upsell = await createOneClickUpsell(
     customerId,
-    methods[0].payment_method_id,
+    methods.items[0].payment_method_id,
     'prod_premium_addon'
   );
 
@@ -329,14 +331,14 @@ def handle_post_purchase_upsell(customer_id: str):
     # Get customer's payment methods
     methods = client.customers.retrieve_payment_methods(customer_id)
     
-    if not methods:
+    if not methods.items:
         print("No saved payment methods available")
         return None
     
     # Create the upsell with one-click checkout
     upsell = create_one_click_upsell(
         customer_id=customer_id,
-        payment_method_id=methods[0].payment_method_id,
+        payment_method_id=methods.items[0].payment_method_id,
         upsell_product_id="prod_premium_addon"
     )
     
@@ -478,7 +480,7 @@ async function previewUpgrade(
   return {
     immediateCharge: preview.immediate_charge?.summary,
     newPlan: preview.new_plan,
-    effectiveDate: preview.effective_date
+    effectiveAt: preview.immediate_charge?.effective_at
   };
 }
 
@@ -503,7 +505,7 @@ def preview_upgrade(subscription_id: str, new_product_id: str):
     return {
         "immediate_charge": preview.immediate_charge.summary if preview.immediate_charge else None,
         "new_plan": preview.new_plan,
-        "effective_date": preview.effective_date
+        "effective_at": preview.immediate_charge.effective_at if preview.immediate_charge else None,
     }
 
 # Show customer the charge before confirming
@@ -556,25 +558,22 @@ func previewUpgrade(subscriptionID string, newProductID string) (map[string]inte
 async function upgradeSubscription(
   subscriptionId: string,
   newProductId: string,
-  prorationMode: 'prorated_immediately' | 'difference_immediately' | 'full_immediately' = 'difference_immediately'
+  prorationMode: 'prorated_immediately' | 'difference_immediately' | 'full_immediately' | 'do_not_bill' = 'difference_immediately'
 ) {
-  const result = await client.subscriptions.changePlan(subscriptionId, {
+  // change-plan returns 200 with an empty body — resolving without an error means it was accepted.
+  await client.subscriptions.changePlan(subscriptionId, {
     product_id: newProductId,
     quantity: 1,
     proration_billing_mode: prorationMode
   });
 
-  return {
-    status: result.status,
-    subscriptionId: result.subscription_id,
-    paymentId: result.payment_id,
-    invoiceId: result.invoice_id
-  };
+  // Re-read the subscription to observe the applied state.
+  return await client.subscriptions.retrieve(subscriptionId);
 }
 
 // Upgrade from Basic ($30) to Pro ($80)
 // With difference_immediately: charges $50 instantly
-const upgrade = await upgradeSubscription('sub_123', 'prod_pro_plan');
+const upgrade = await upgradeSubscription('sub_123', 'pdt_pro_plan');
 console.log('Upgrade status:', upgrade.status);
 ```
 
@@ -588,24 +587,21 @@ def upgrade_subscription(
     new_product_id: str,
     proration_mode: str = "difference_immediately"
 ):
-    result = client.subscriptions.change_plan(
+    # change_plan returns 200 with an empty body — returning without an error means it was accepted.
+    client.subscriptions.change_plan(
         subscription_id=subscription_id,
         product_id=new_product_id,
         quantity=1,
         proration_billing_mode=proration_mode
     )
-    
-    return {
-        "status": result.status,
-        "subscription_id": result.subscription_id,
-        "payment_id": result.payment_id,
-        "invoice_id": result.invoice_id
-    }
+
+    # Re-read the subscription to observe the applied state.
+    return client.subscriptions.retrieve(subscription_id)
 
 # Upgrade from Basic ($30) to Pro ($80)
 # With difference_immediately: charges $50 instantly
-upgrade = upgrade_subscription("sub_123", "prod_pro_plan")
-print(f"Upgrade status: {upgrade['status']}")
+upgrade = upgrade_subscription("sub_123", "pdt_pro_plan")
+print(f"Upgrade status: {upgrade.status}")
 ```
 
 </Tab>
@@ -661,8 +657,9 @@ Scegli come vengono addebitati i clienti quando aggiornano:
 | Modalità | Comportamento | Ideale per |
 |------|----------|----------|
 | `difference_immediately` | Addebita immediatamente la differenza di prezzo ($30→$80 = $50) | Upgrade semplici |
-| `prorated_immediately` | Addebita in base al tempo residuo nel ciclo di fatturazione | Fatturazione equa basata sul tempo |
-| `full_immediately` | Addebita l'intero importo del nuovo piano, ignorando il tempo rimanente | Il ciclo di fatturazione si resetta |
+| `prorated_immediately` | Addebita in base al tempo rimanente nel ciclo di fatturazione | Fatturazione equa basata sul tempo |
+| `full_immediately` | Addebita il prezzo completo del nuovo piano, ignorando il tempo rimanente | Reimpostazione del ciclo di fatturazione |
+| `do_not_bill` | Applica la modifica del piano senza alcun addebito immediato; il nuovo piano viene fatturato al rinnovo successivo e la data di fatturazione originale viene mantenuta | Upgrade omaggio e migrazioni gratuite |
 
 <Tip>
 Usa `difference_immediately` per flussi di upgrade lineari. Usa `prorated_immediately` quando vuoi considerare il tempo inutilizzato sul piano corrente.
@@ -699,7 +696,8 @@ async function createCrossSell(
         quantity: quantity
       }
     ],
-    customer_id: customerId,
+    customer: { customer_id: customerId },
+    billing: { country: 'US', city: 'San Francisco', state: 'CA', street: '1 Market St', zipcode: '94105' },
     payment_method_id: paymentMethodId,
     return_url: 'https://yourapp.com/purchase-complete',
     metadata: {
@@ -715,7 +713,7 @@ async function createCrossSell(
 async function offerRelatedProduct(customerId: string, relatedProductId: string) {
   const methods = await client.customers.retrievePaymentMethods(customerId);
   
-  if (methods.length === 0) {
+  if (methods.items.length === 0) {
     // Fall back to standard checkout
     return client.checkoutSessions.create({
       product_cart: [{ product_id: relatedProductId, quantity: 1 }],
@@ -725,7 +723,7 @@ async function offerRelatedProduct(customerId: string, relatedProductId: string)
   }
 
   // One-click purchase
-  return createCrossSell(customerId, methods[0].payment_method_id, relatedProductId);
+  return createCrossSell(customerId, methods.items[0].payment_method_id, relatedProductId);
 }
 ```
 
@@ -749,7 +747,8 @@ def create_cross_sell(
                 "quantity": quantity
             }
         ],
-        customer_id=customer_id,
+        customer={"customer_id": customer_id},
+        billing={"country": "US", "city": "San Francisco", "state": "CA", "street": "1 Market St", "zipcode": "94105"},
         payment_method_id=payment_method_id,
         return_url="https://yourapp.com/purchase-complete",
         metadata={
@@ -765,7 +764,7 @@ def offer_related_product(customer_id: str, related_product_id: str):
     
     methods = client.customers.retrieve_payment_methods(customer_id)
     
-    if not methods:
+    if not methods.items:
         # Fall back to standard checkout
         return client.checkout_sessions.create(
             product_cart=[{"product_id": related_product_id, "quantity": 1}],
@@ -774,7 +773,7 @@ def offer_related_product(customer_id: str, related_product_id: str):
         )
     
     # One-click purchase
-    return create_cross_sell(customer_id, methods[0].payment_method_id, related_product_id)
+    return create_cross_sell(customer_id, methods.items[0].payment_method_id, related_product_id)
 ```
 
 </Tab>
@@ -879,22 +878,22 @@ async function downgradeSubscription(
     proration_billing_mode: 'difference_immediately'
   });
 
-  console.log('Credit to be applied:', preview.credit_amount);
+  console.log('Credit to be applied:', preview.immediate_charge.summary.customer_credits);
 
-  // Execute the downgrade
-  const result = await client.subscriptions.changePlan(subscriptionId, {
+  // Execute the downgrade. change-plan returns 200 with an empty body.
+  await client.subscriptions.changePlan(subscriptionId, {
     product_id: newProductId,
     quantity: 1,
     proration_billing_mode: 'difference_immediately'
   });
 
   // Credits are automatically applied to future renewals
-  return result;
+  return await client.subscriptions.retrieve(subscriptionId);
 }
 
 // Downgrade from Pro ($80) to Basic ($30)
 // $50 credit added to subscription, auto-applied on next renewal
-const downgrade = await downgradeSubscription('sub_123', 'prod_basic_plan');
+const downgrade = await downgradeSubscription('sub_123', 'pdt_basic_plan');
 ```
 
 </Tab>
@@ -911,22 +910,22 @@ def downgrade_subscription(subscription_id: str, new_product_id: str):
         proration_billing_mode="difference_immediately"
     )
     
-    print(f"Credit to be applied: {preview.credit_amount}")
+    print(f"Credit to be applied: {preview.immediate_charge.summary.customer_credits}")
     
-    # Execute the downgrade
-    result = client.subscriptions.change_plan(
+    # Execute the downgrade. change_plan returns 200 with an empty body.
+    client.subscriptions.change_plan(
         subscription_id=subscription_id,
         product_id=new_product_id,
         quantity=1,
         proration_billing_mode="difference_immediately"
     )
-    
+
     # Credits are automatically applied to future renewals
-    return result
+    return client.subscriptions.retrieve(subscription_id)
 
 # Downgrade from Pro ($80) to Basic ($30)
 # $50 credit added to subscription, auto-applied on next renewal
-downgrade = downgrade_subscription("sub_123", "prod_basic_plan")
+downgrade = downgrade_subscription("sub_123", "pdt_basic_plan")
 ```
 
 </Tab>
@@ -1042,7 +1041,7 @@ app.get('/api/upsell/:customerId', async (req, res) => {
   // Get payment methods
   const methods = await client.customers.retrievePaymentMethods(customerId);
   
-  if (methods.length === 0) {
+  if (methods.items.length === 0) {
     return res.json({ eligible: false, reason: 'no_payment_method' });
   }
   
@@ -1055,9 +1054,9 @@ app.get('/api/upsell/:customerId', async (req, res) => {
       id: product.product_id,
       name: product.name,
       price: product.price,
-      currency: product.currency
+      currency: product.price.currency
     },
-    paymentMethodId: methods[0].payment_method_id
+    paymentMethodId: methods.items[0].payment_method_id
   });
 });
 
@@ -1077,7 +1076,7 @@ app.post('/api/upsell/:customerId/accept', async (req, res) => {
     const session = await client.checkoutSessions.create({
       product_cart: [{ product_id: upsell.productId, quantity: 1 }],
       customer: { customer_id: customerId },
-      payment_method_id: methods[0].payment_method_id,
+      payment_method_id: methods.items[0].payment_method_id,
       confirm: true,
       return_url: `${process.env.APP_URL}/upsell-success`,
       feature_flags: { redirect_immediately: true },
@@ -1160,7 +1159,7 @@ def check_upsell(customer_id):
     # Get payment methods
     methods = client.customers.retrieve_payment_methods(customer_id)
     
-    if not methods:
+    if not methods.items:
         return jsonify({'eligible': False, 'reason': 'no_payment_method'})
     
     # Get product details for display
@@ -1172,9 +1171,9 @@ def check_upsell(customer_id):
             'id': product.product_id,
             'name': product.name,
             'price': product.price,
-            'currency': product.currency
+            'currency': product.price.currency
         },
-        'payment_method_id': methods[0].payment_method_id
+        'payment_method_id': methods.items[0].payment_method_id
     })
 
 @app.route('/api/upsell/<customer_id>/accept', methods=['POST'])
@@ -1191,7 +1190,7 @@ def accept_upsell(customer_id):
         session = client.checkout_sessions.create(
             product_cart=[{'product_id': upsell['product_id'], 'quantity': 1}],
             customer={'customer_id': customer_id},
-            payment_method_id=methods[0].payment_method_id,
+            payment_method_id=methods.items[0].payment_method_id,
             confirm=True,
             return_url=f"{os.environ['APP_URL']}/upsell-success",
             feature_flags={'redirect_immediately': True},

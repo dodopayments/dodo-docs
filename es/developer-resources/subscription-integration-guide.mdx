@@ -270,8 +270,7 @@ Cuando el cliente esté listo para actualizar su método de pago, llama a la API
 ```javascript Node.js
 // Update with new payment method
 const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'new',
-  return_url: 'https://example.com/return'
+  payment_method: { type: 'new', return_url: 'https://example.com/return' }
 });
 
 // For on_hold subscriptions, a charge is automatically created
@@ -285,8 +284,7 @@ if (response.payment_id) {
 # Update with new payment method
 response = client.subscriptions.update_payment_method(
     subscription_id=subscription_id,
-    type="new",
-    return_url="https://example.com/return"
+    payment_method={"type": "new", "return_url": "https://example.com/return"},
 )
 
 # For on_hold subscriptions, a charge is automatically created
@@ -302,8 +300,7 @@ También puedes usar un ID de método de pago existente si el cliente tiene mét
 
 ```javascript
 await client.subscriptions.updatePaymentMethod(subscriptionId, {
-  type: 'existing',
-  payment_method_id: 'pm_abc123'
+  payment_method: { type: 'existing', payment_method_id: 'pm_abc123' }
 });
 ```
 
@@ -367,7 +364,7 @@ Puedes actualizar o degradar un plan de suscripción mediante el endpoint de la 
 
 ### Opciones de prorrata
 
-Al cambiar de plan de suscripción, tienes dos opciones para gestionar el cobro inmediato:
+Al cambiar de plan de suscripción, tienes cuatro opciones para gestionar el cargo inmediato:
 
 #### 1. `prorated_immediately`
 - Calcula el importe prorrateado según el tiempo restante del ciclo de facturación actual
@@ -418,51 +415,55 @@ Al cambiar de plan de suscripción, tienes dos opciones para gestionar el cobro 
 
 Para crear una suscripción bajo demanda, usa el endpoint de la API [POST /subscriptions](/api-reference/subscriptions/post-subscriptions) e incluye el campo `on_demand` en el cuerpo de la solicitud. Esto te permite autorizar un método de pago sin realizar un cobro inmediato o establecer un precio inicial personalizado.
 
+<Warning>
+`POST /subscriptions` está **obsoleto**. Sigue funcionando para las integraciones existentes, pero las nuevas integraciones deben crear suscripciones bajo demanda mediante una [Checkout Session](/developer-resources/checkout-session) (`POST /checkouts`) con `subscription_data.on_demand`. Consulta la [Guía de suscripciones bajo demanda](/developer-resources/ondemand-subscriptions) para conocer el flujo actual.
+</Warning>
+
 **Para cobrar una suscripción bajo demanda:**
 
-Para los cobros posteriores, usa el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica el importe que se cobrará al cliente por esa transacción.
+Para los cargos posteriores, utiliza el endpoint [POST /subscriptions/{subscription_id}/charge](/api-reference/subscriptions/create-charge) y especifica el importe que se cobrará al cliente por esa transacción.
 
 <Note>
-Para consultar una guía completa paso a paso (incluidos ejemplos de solicitudes/respuestas, políticas de reintento seguras y gestión de webhooks), consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de suscripciones bajo demanda</a>.
+Para obtener una guía completa paso a paso (incluidos ejemplos de solicitudes y respuestas, políticas de reintento seguro y gestión de webhooks), consulta la <a href="/developer-resources/ondemand-subscriptions">Guía de suscripciones bajo demanda</a>.
 </Note>
 
-## Aspectos clave de la facturación de suscripciones
+## Aspectos clave que debes conocer sobre la facturación de suscripciones
 
 <Warning>
-**Establece un período de suscripción superior a la frecuencia de pago.** Si el período de suscripción equivale a la frecuencia de pago (por ejemplo, período = 1 mes, frecuencia = 1 mes), la suscripción será válida durante un **solo ciclo** y después pasará a `expired` en lugar de renovarse. Para un plan mensual continuo, establece un período de suscripción largo (por ejemplo, 20 años) con una frecuencia de pago mensual.
+**Establece un período de suscripción más largo que la frecuencia de pago.** Si el período de suscripción es igual a la frecuencia de pago (p. ej., período = 1 mes, frecuencia = 1 mes), la suscripción es válida durante un **único ciclo** y luego pasa a `expired` en lugar de renovarse. Para un plan mensual continuo, establece un período de suscripción largo (p. ej., 20 años) con una frecuencia de pago mensual.
 </Warning>
 
 <Warning>
-**La moneda se fija con el primer cobro correcto.** Incluye siempre `billing_currency` **y** `billing_address.country` explícitamente al crear el checkout. Si se omiten, se detectan a partir de la IP del cliente (Adaptive Currency) y, una vez realizado el primer cobro de la suscripción, la moneda queda fijada durante toda su vigencia. Si el cliente viaja posteriormente, no podrá cambiarla.
+**La moneda se fija con el primer cargo correcto.** Pasa siempre `billing_currency` **y** `billing_address.country` explícitamente al crear el checkout. Si se omiten, se detectan a partir de la IP del cliente (Adaptive Currency) y, una vez que la suscripción realiza su primer cargo, la moneda queda fijada durante toda su vigencia. Si el cliente viaja posteriormente, no puede cambiarla.
 </Warning>
 
 <Info>
-**Las pruebas utilizan una autorización de \$0, no un cobro.** Cuando una suscripción tiene una prueba, el inicio de la prueba crea una **autorización de mandato de \$0** para guardar la tarjeta; el primer cobro real se produce al finalizar la prueba. En la lista de pagos, una suscripción en período de prueba muestra exactamente un pago con `amount: 0`.
+**Las pruebas generan una autorización de \$0, no un cargo.** Cuando una suscripción tiene un período de prueba, el inicio de la prueba crea una **autorización de mandato de \$0** para guardar la tarjeta; el primer cargo real se realiza cuando finaliza la prueba. En la lista de pagos, una suscripción en período de prueba muestra exactamente un pago con `amount: 0`.
 </Info>
 
 <Info>
-**Ciclo de vida de la suscripción:** `on_hold` = falló una renovación (se puede recuperar: solicita al cliente que actualice su método de pago; se aplican reintentos de dunning). `expired` = el plazo terminó sin renovación y **no se puede reactivar**. El cliente debe volver a suscribirse. `cancelled` = finalizada por el cliente o el comerciante. La mayoría de los fallos de renovación son **rechazos del emisor** (fondos insuficientes, tarjeta rechazada), no un error de Dodo.
+**Ciclo de vida de la suscripción:** `on_hold` = una renovación falló (se puede recuperar: solicita al cliente que actualice su método de pago; se aplican reintentos de dunning). `expired` = el plazo terminó sin renovación y **no se puede reactivar**. El cliente debe volver a suscribirse. `cancelled` = finalizada por el cliente o el merchant. La mayoría de los fallos de renovación son **rechazos del emisor** (fondos insuficientes, tarjeta rechazada), no un error de Dodo.
 </Info>
 
 <Warning>
-**Las tarjetas indias funcionan con un mandato electrónico del RBI.** Los cobros sin sesión (renovaciones y cobros por cambios de plan) pueden tardar **hasta aproximadamente 48 horas** en liquidarse, y los débitos automáticos recurrentes **superiores a ₹15,000** requieren una nueva autenticación del cliente (por lo que una actualización que supere ese límite no puede utilizar el mandato existente). Mientras un cobro siga en `processing`, un segundo cobro en la misma suscripción falla con *"Cannot create new charge as previous payment is not successful yet."* Las tarjetas no indias se confirman casi al instante.
+**Las tarjetas indias funcionan con un mandato electrónico del RBI.** Los cargos off-session (renovaciones y cargos por cambios de plan) pueden tardar **hasta aproximadamente 48 horas** en liquidarse, y los débitos automáticos recurrentes **superiores a ₹15,000** requieren una nueva autenticación del cliente (por lo que una mejora que supere ese límite no puede utilizar el mandato existente). Mientras un cargo siga en `processing`, un segundo cargo en la misma suscripción falla con *"Cannot create new charge as previous payment is not successful yet."* Las tarjetas no indias se confirman casi al instante.
 </Warning>
 
 <Tip>
-**Los cobros de suscripciones tienen un mínimo de \$1** (o su equivalente en otra moneda). Los importes de `$0.01–$0.99` se rechazan con `product_price: value out of range`; solo se permite `$0` mediante una configuración bajo demanda de `mandate_only`.
+**Los cargos de suscripción tienen un mínimo de \$1** (o el equivalente en la moneda correspondiente). Los importes de `$0.01–$0.99` se rechazan con `product_price: value out of range`; solo se permite `$0` mediante una configuración de `mandate_only` bajo demanda.
 </Tip>
 
 ## Referencia de API relacionada
 
 <CardGroup cols={2}>
 <Card title="Create Subscription" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-  Referencia de API para crear productos de suscripción y gestionar el ciclo de vida de las suscripciones
+  Referencia de API para crear productos de suscripción y gestionar el ciclo de vida de la suscripción
 </Card>
 <Card title="Change Subscription Plan" icon="arrows-rotate" href="/api-reference/subscriptions/change-plan">
-  Referencia de API para actualizar, degradar o cambiar planes de suscripción con opciones de prorrata
+  Referencia de API para mejorar, reducir o cambiar planes de suscripción con opciones de prorrateo
 </Card>
 <Card title="Update Payment Method" icon="credit-card" href="/api-reference/subscriptions/update-payment-method">
-  Referencia de API para actualizar métodos de pago y reactivar suscripciones en espera
+  Referencia de API para actualizar métodos de pago y reactivar suscripciones retenidas
 </Card>
 <Card title="Patch Subscription" icon="pen" href="/api-reference/subscriptions/patch-subscriptions">
   Referencia de API para actualizar los detalles y la configuración de la suscripción

@@ -12,7 +12,7 @@ keywords:
   - entitlements
 ---
 
-このガイドでは、**手動ライセンスキー発行**システムをエンドツーエンドで構築する方法を説明します。Dodo Payments が支払い時に自動生成する代わりに、各購入が `pending` の付与を作成し、*あなた* が独自のシステム、サードパーティのベンダー、または限られたコードのプールからキーを提供するのを待ちます。
+このガイドでは、**手動ライセンスキー付与**システムを最初から最後まで構築する方法を説明します。Dodo Payments が支払い時にキーを自動生成する代わりに、購入ごとに `Pending` grant が作成され、ユーザー自身のシステム、サードパーティベンダー、または有限のコードプールからキー値を提供するまで待機します。
 
 完了することで、次のことが可能になります:
 
@@ -37,8 +37,8 @@ sequenceDiagram
     participant D as Dodo Payments
     participant M as Your Backend
     C->>D: Purchase (manual-mode License Key product)
-    D->>D: Create grant (status: pending, no key)
-    D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
+    D->>D: Create grant (status: Pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: Pending)
     M->>M: Obtain key from own system / vendor
     M->>D: POST /grants/{grant_id}/license-key { key }
     D->>C: Deliver license key to customer
@@ -78,11 +78,11 @@ sequenceDiagram
 - **Activation Message** — キーを有効化するときに表示される、顧客向けのオプションメッセージ。
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="新しいライセンスキー権利フォーム、名前、発行モード、ライセンス期間、アクティベーション制限、アクティベーションメッセージ" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="名前、付与モード、ライセンス期間、アクティベーション上限、アクティベーションメッセージを含む新しいライセンスキー entitlement フォーム" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 <Step title="Set Fulfillment Mode to Manual">
-**Fulfillment Mode** ドロップダウンを開き、**自動**から**手動**に変更します。これは、このガイド全体を駆動する設定です — これがないと、キーは自動的に生成されメールされ、保留中の付与は作成されません。**手動**を選択すると、各購入であなたが発行するための `pending` 付与が作成されます。**Create Entitlement** をクリックして保存します。
+**Fulfillment Mode** ドロップダウンを開き、**Automatic** から **Manual** に変更します。これがこのガイド全体を左右する設定です。この設定を行わない場合、キーが自動的に生成されてメールで送信され、保留中の grant は作成されません。**Manual** を選択すると、購入ごとに付与対象の `Pending` grant が作成されます。**Create Entitlement** をクリックして保存します。
 </Step>
 </Steps>
 </Tab>
@@ -172,15 +172,15 @@ curl -X POST https://test.dodopayments.com/entitlements \
 発行モードは**権利**のプロパティであり、製品のプロパティではありません。ステップ 1 で手動に設定したので、この権利が添付されたすべての製品は購買時に `pending` ライセンスキーの付与を作成します—ここでは何も追加で設定する必要はありません。
 </Note>
 
-<Tip>
-まだ製品を持っていない場合は、最初に製品（ワンタイムまたはサブスクリプション）を作成します。[ワンタイムペイメント統合ガイド](/developer-resources/integration-guide) を参照して、チェックアウトを通じて製品を販売します。
-</Tip>
+<Note>
+付与モードは product ではなく **entitlement** のプロパティです。Step 1 で **Manual** に設定したため、この entitlement が関連付けられたすべての product では、購入時に `Pending` license-key grant が作成されます。ここで追加設定を行う必要はありません。
+</Note>
 
 ## ステップ 3 — 保留中の付与を検出
 
 顧客が製品を購入すると、Dodo Payments は `pending` 状態で**キーが添付されていない**付与を作成し、`entitlement_grant.created` Webhook を発火します。これが顧客がキーを待っていることを示す合図です。
 
-### Webhook を監視する
+顧客が product を購入すると、Dodo Payments はキーが添付されていない状態で `Pending` status の grant を作成し、`entitlement_grant.created` webhook を発火します。これは、顧客がキーを待っていることを示すシグナルです。
 
 Webhook エンドポイントをセットアップし (ダッシュボードの Developer → Webhooks)、保留中のライセンスキー付与にアクションを起こします。実装は [Standard Webhooks](https://standardwebhooks.com/) の仕様に従います。
 
@@ -216,7 +216,37 @@ export async function POST(request: Request) {
 }
 ```
 
-付与ペイロードは `integration_type: "license_key"` を運ぶので、余分なルックアップなしでライセンスキー付与を認識できます。完全なペイロードについては [Entitlement Grant webhook reference](/developer-resources/webhooks/intents/entitlement-grant) を参照してください。
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
+
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'Pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
 
 ### または List Grants API をポーリングする
 
@@ -285,15 +315,32 @@ async function fulfill(grantId: string, key: string) {
 }
 ```
 
-```bash cURL theme={null}
-curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
-  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
-    "activations_limit": 5,
-    "expires_at": "2027-05-01T00:00:00Z"
-  }'
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
+
+  return res.json(); // updated grant, now status: "Delivered"
+}
 ```
 
 </CodeGroup>
@@ -314,7 +361,7 @@ curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
 
 成功すれば付与が `delivered` に移行し、顧客に自動的にキーが送信されます（自動発行の下で受け取るのと同じメール）、`entitlement_grant.delivered` が発火します。
 
-顧客はライセンスキー、製品、アクティベーション制限、有効期限、あなたのアクティベーション指示が含まれるメールを受け取ります:
+成功すると grant は `Delivered` に移行し、顧客にはキーが自動的に送信されます（自動付与の場合に受け取るものと同じメールです）。さらに、`license_key.created` と `entitlement_grant.delivered` webhook event が発火します。
 
 <Frame caption="The license key email the customer receives once you fulfill the grant.">
 <img src="/images/entitlements/license-keys/customer-email.png" alt="ライセンスキー、製品、アクティベーション制限、有効期限、アクティベーション指示を示す顧客ライセンスキーのメール" style={{ maxHeight: '500px', width: 'auto' }} />
@@ -336,9 +383,13 @@ curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
 | `409` | 付与は発行待ちでない（すでに配信されているか、すでにキーがある）、**または** キー値がすでに存在します。 | すでに配信されている場合は、成功として処理します。重複したキーの場合は、別のキーを提供してください。 |
 | `422` | リクエスト本文のバリデーションに失敗した（例: `activations_limit < 1`）。 | フィールドを修正して再試行してください。 |
 
-<Warning>
-一時的なエラー（タイムアウト、`5xx`）については発行を安全に再試行できます。各付与は一度だけ満たすことができるため、成功したが確認されなかった後の再試行は、二つ目のキーを発行したり重複したメールを送信する代わりに `409` を返します。付与 `id` を冪等性キーとして使用してください。
-</Warning>
+| Status | Meaning | What to do |
+|---|---|---|
+| `200` | キーが配信され、grant は現在 `Delivered` です。 | 完了です。 |
+| `400` | license-key grant ではないか、キーが空または空白のみです。 | リクエストを修正してください。そのまま再試行しないでください。 |
+| `404` | その ID を持つ grant が business に存在しません。 | `grant_id` を確認してください。 |
+| `409` | grant が付与を待機していません（すでに配信済み、またはすでにキーがあります）。**または**キー値がすでに存在します。 | すでに配信済みの場合は成功として扱ってください。キーが重複している場合は、別のキーを指定してください。 |
+| `422` | リクエスト body の validation に失敗しました（例：`activations_limit < 1`）。 | field を修正して再試行してください。 |
 
 ## フローを確認
 
@@ -347,9 +398,10 @@ curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
 3. テストキーで発行エンドポイントを呼び出します。
 4. 応答が `status: "delivered"` を示し、`license_key` が入力され、顧客がキーのメールを受け取り、`entitlement_grant.delivered` が発火することを確認します。
 
-<Check>
-配信後、顧客は [アクティベーションと検証](/features/license-keys#activation-validation-deactivation) を公開ライセンスエンドポイントに対して自動生成されたキーのように行うことができます。
-</Check>
+1. test mode で product を購入します（[checkout guides](/developer-resources/integration-guide) を参照してください）。
+2. webhook が `entitlement_grant.created` を `status: "Pending"` および `integration_type: "license_key"` とともに受信したことを確認します。または、同じ filter を指定した List Grants response に grant が表示されることを確認します。
+3. test key を指定して fulfill endpoint を呼び出します。
+4. response に `status: "Delivered"` と値が設定された `license_key` が表示され、顧客が key email を受信し、`entitlement_grant.delivered` が発火することを確認します。
 
 ## 関連 API リファレンス
 
@@ -370,15 +422,15 @@ curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Create the License Key entitlement with `fulfillment_mode: manual`.
+`fulfillment_mode: manual` を指定して License Key entitlement を作成します。
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Filter by `integration_type` and `status` to find pending grants.
+`status` と `customer_id` で filter して、保留中の grant を検索します。
 </Card>
 <Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
-Deliver the key value and transition the grant to delivered.
+キー値を配信し、grant を delivered に移行します。
 </Card>
 <Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
-The `entitlement_grant.*` events that signal pending and delivered grants.
+保留中および配信済みの grant を示す `entitlement_grant.*` event。
 </Card>
 </CardGroup>

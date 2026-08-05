@@ -1,98 +1,221 @@
 ---
-title: 수동 라이선스 키 이행 통합 가이드
-sidebarTitle: 수동 라이선스 키 이행
-description: "제품을 판매하고 필요에 따라 자체 라이선스 키를 제공할 수 있는 시스템을 구축하십시오: 제품과 권한을 생성하고, 대기
-  중인 그랜트를 감지하고, 고객에게 키를 제공합니다."
-icon: key
-keywords:
-  - Dodo Payments
-  - developer guide
-  - license keys
-  - manual fulfillment
-  - entitlements
+title: "Manual License Key Fulfillment Integration Guide"
+sidebarTitle: "Manual License Key Fulfillment"
+description: "Build an end-to-end system that sells a product and lets you supply your own license keys on demand: create the product and entitlement, detect pending grants, and deliver the key to the customer."
+icon: "key"
+keywords: ["Dodo Payments", "developer guide", "license keys", "manual fulfillment", "entitlements"]
 ---
 
-이 가이드는 **수동 라이선스 키 이행** 시스템을 처음부터 끝까지 구축하는 방법을 안내합니다. Dodo Payments가 결제 시 자동으로 키를 생성하는 대신, 각 구매는 `pending` 그랜트를 생성하고 *귀하*가 자체 시스템, 타사 공급업체 또는 제한된 코드 풀에서 키 값을 제공할 때까지 기다립니다.
+This guide walks through building a **manual license key fulfillment** system end to end. Instead of Dodo Payments auto-generating a key on payment, each purchase creates a `Pending` grant and waits for *you* to supply the key value from your own system, a third-party vendor, or a finite pool of codes.
 
-완료 시:
+By the end you will have:
 
-- LICENSE 키 권한이 `manual` 이행으로 설정된 제품.
-- 고객이 키를 기다리고 있을 때 이를 감지하는 웹훅 리스너.
-- 키를 전달하고 자동으로 고객에게 알리는 이행 호출.
+- A product with a License Key entitlement set to `manual` fulfillment.
+- A webhook listener that detects when a customer is waiting for a key.
+- A fulfillment call that delivers the key and notifies the customer automatically.
 
-LICENSE 키 수명 주기 전체 및 `fulfillment_mode` 설정.
+<CardGroup cols={2}>
+<Card title="License Keys overview" icon="key" href="/features/license-keys">
+The full license key lifecycle and the `fulfillment_mode` setting.
+</Card>
+<Card title="Fulfill License Key Grant API" icon="code" href="/api-reference/entitlements/fulfill-license-key">
+API reference for the endpoint you call to deliver a key.
+</Card>
+</CardGroup>
 
-## 작동 방식
+## How It Works
 
-수동 이행은 **발급** 단계만 변경합니다. 키가 전달된 후 활성화, 검증, 비활성화, 만료 및 취소는 자동 생성된 키와 동일하게 작동합니다.
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant D as Dodo Payments
+    participant M as Your Backend
+    C->>D: Purchase (manual-mode License Key product)
+    D->>D: Create grant (status: Pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: Pending)
+    M->>M: Obtain key from own system / vendor
+    M->>D: POST /grants/{grant_id}/license-key { key }
+    D->>C: Deliver license key to customer
+    D->>M: entitlement_grant.delivered
+```
 
-## 전제 조건
+Manual fulfillment changes only the **issuance** step. Activation, validation, deactivation, expiry, and revocation behave exactly like an auto-generated key once delivered.
 
-이 가이드를 따르려면 다음이 필요합니다:
+## Prerequisites
 
-- Dodo Payments 판매자 계정.
-- 대시보드에서의 API 키 (`DODO_PAYMENTS_API_KEY`) 및 웹훅 비밀 키. [API 키 생성 가이드](/api-reference/introduction#api-key-generation)를 참조하세요.
-- 웹훅을 수신할 수 있는 백엔드 엔드포인트.
+To follow this guide you'll need:
 
-`https://test.dodopayments.com` 및 테스트 모드 자격 증명을 사용하십시오. 라이브 키로 전환할 때는 `https://live.dodopayments.com`을 사용하세요.
+- A Dodo Payments merchant account.
+- Your API key (`DODO_PAYMENTS_API_KEY`) and webhook secret key from the dashboard. See the [API key generation guide](/api-reference/introduction#api-key-generation).
+- A backend endpoint that can receive webhooks.
 
-## 1단계 — 수동 모드에서 라이선스 키 권한 생성
+<Info>
+Use `https://test.dodopayments.com` and test-mode credentials while building. Switch to `https://live.dodopayments.com` and live keys when you go to production.
+</Info>
 
-**권한**은 전달하는 항목에 대한 재사용 가능한 정의입니다. 라이선스 키 권한을 생성하고 이를 `fulfillment_mode`으로 설정하십시오.
+## Step 1 — Create a License Key Entitlement in Manual Mode
 
-대시보드에서 **권한**으로 이동하여 **+**를 클릭하여 새 권한을 생성합니다.
+An **entitlement** is a reusable definition of what you deliver. Create a License Key entitlement and set its `fulfillment_mode` to `manual`.
 
-통합으로 **라이선스 키**를 선택하고 **이름**을 지정하십시오. 양식에는 다음 필드가 나타납니다:
+<Tabs>
+<Tab title="Dashboard">
+<Steps>
+<Step title="Open Entitlements">
+Go to **Entitlements** in your dashboard and click **+** to create a new entitlement.
+</Step>
+<Step title="Choose License Key">
+Select **License Key** as the integration and give it a **Name**. The form exposes these fields:
 
-- **이행 모드** — 기본적으로 `Automatic`. 이것이 수동 이행을 가능하게 하는 설정이며 다음 단계에서 변경합니다.
-- **라이선스 길이** — 발행된 각 키가 유효한 기간 또는 **만료 없음**.
-- **활성화 제한** — 키당 최대 활성화 수 또는 **무제한**.
-- **활성화 메시지** — 사용자가 키를 활성화할 때 표시되는 선택적 메시지.
+- **Fulfillment Mode** — `Automatic` by default. This is the setting that enables manual fulfillment; you change it in the next step.
+- **License Length** — how long each issued key stays valid, or **No expiration**.
+- **Activations Limit** — maximum activations per key, or **Unlimited**.
+- **Activation Message** — optional customer-facing message shown when they activate the key.
 
-드롭다운에서 **이행 모드**를 열고 자동에서 수동으로 변경합니다. 이 설정이 이 전체 가이드를 주도합니다. 이 설정이 없으면 키가 자동으로 생성되고 이메일로 전송되며 대기 중인 그랜트가 생성되지 않습니다. 수동을 선택하면 각 구매가 귀하가 이행할 수 있는 `pending` 그랜트를 생성합니다. **권한 생성**을 클릭하여 저장합니다.
+<Frame>
+<img src="/images/entitlements/license-keys/create.png" alt="New License Key entitlement form with name, fulfillment mode, license length, activations limit, and activation message" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+</Step>
+<Step title="Set Fulfillment Mode to Manual">
+Open the **Fulfillment Mode** dropdown and change it from **Automatic** to **Manual**. This is the setting that drives this entire guide — without it, keys are generated and emailed automatically and no pending grant is created. With **Manual** selected, each purchase creates a `Pending` grant for you to fulfill. Click **Create Entitlement** to save.
+</Step>
+</Steps>
+</Tab>
 
-`integration_config.fulfillment_mode`을 `manual`로 설정하여 권한을 생성합니다.
+<Tab title="API">
+Create the entitlement with `integration_config.fulfillment_mode` set to `manual`.
 
-`fulfillment_mode`은 기본적으로 `auto`입니다. 생략하거나 기존 권한을 변경하지 않으면 자동 동작이 유지됩니다. 명시적으로 `manual`로 설정된 권한만 대기 중인 그랜트를 생성합니다.
+<CodeGroup>
+```typescript Node.js theme={null}
+import DodoPayments from 'dodopayments';
 
-## 2단계 — 제품에 권한 연결
+const client = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: 'test_mode', // defaults to 'live_mode'
+});
 
-판매하려는 제품을 열고 **고급 설정 → 권한 및 크레딧**을 확장하여 1단계에서 수동으로 설정한 **라이선스 키 권한**을 선택합니다. 단일 제품은 동일한 구매 시 다른 권한과 함께 이 라이선스 키를 제공할 수 있습니다.
+const entitlement = await client.entitlements.create({
+  name: 'Pro License (Manual)',
+  integration_type: 'license_key',
+  integration_config: {
+    fulfillment_mode: 'manual',
+    activations_limit: 5,
+    duration_count: 1,
+    duration_interval: 'Year',
+  },
+});
 
-이행 모드는 **권한**의 속성이지 제품의 속성이 아닙니다. 1단계에서 수동으로 설정했기 때문에 이 권한이 첨부된 모든 제품은 구매 시 `pending` 라이선스 키 그랜트를 생성합니다. 여기서 추가로 구성할 것은 없습니다.
+console.log(entitlement.id); // ent_...
+```
 
-아직 제품이 없는 경우 먼저 하나를 만드십시오 (일회성 또는 구독). '[일회성 결제 통합 가이드](/developer-resources/integration-guide)'를 참조하여 결제를 통해 제품을 판매하세요.
+```python Python theme={null}
+import os
+from dodopayments import DodoPayments
 
-## 3단계 — 대기 중인 그랜트 감지
+client = DodoPayments(
+    bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+    environment="test_mode",  # defaults to "live_mode"
+)
 
-고객이 제품을 구매하면 Dodo Payments는 `pending` 상태의 그랜트를 생성하고 **키가 없는** `entitlement_grant.created` 웹훅을 실행합니다. 이는 고객이 키를 기다리고 있다는 신호입니다.
+entitlement = client.entitlements.create(
+    name="Pro License (Manual)",
+    integration_type="license_key",
+    integration_config={
+        "fulfillment_mode": "manual",
+        "activations_limit": 5,
+        "duration_count": 1,
+        "duration_interval": "Year",
+    },
+)
 
-### 웹훅을 수신 대기
+print(entitlement.id)
+```
 
-웹훅 엔드포인트를 설정하고(대시보드의 개발자 → 웹훅) 대기 중인 라이선스 키 그랜트를 처리하십시오. 구현은 [표준 웹훅](https://standardwebhooks.com/) 사양을 따릅니다.
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/entitlements \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pro License (Manual)",
+    "integration_type": "license_key",
+    "integration_config": {
+      "fulfillment_mode": "manual",
+      "activations_limit": 5,
+      "duration_count": 1,
+      "duration_interval": "Year"
+    }
+  }'
+```
+</CodeGroup>
+</Tab>
+</Tabs>
 
-그랜트 페이로드는 `integration_type: "license_key"`을 전달하므로 추가 조회 없이 라이선스 키 그랜트를 인식할 수 있습니다. 전체 페이로드는 [권한 그랜트 웹훅 참조](/developer-resources/webhooks/intents/entitlement-grant)를 참조하십시오.
+<Note>
+`fulfillment_mode` defaults to `auto`. Omitting it, or leaving an existing entitlement unchanged, keeps the automatic behavior. Only entitlements explicitly set to `manual` create pending grants.
+</Note>
 
-### 또는 리스트 그랜트 API를 폴링
+## Step 2 — Attach the Entitlement to a Product
 
-웹훅에 의존하지 않고자 한다면, 권한에 대해 그랜트를 나열하고 `integration_type` 및 `status`로 필터링하십시오:
+Open the product you want to sell, expand **Advanced Settings → Entitlements & Credits**, and select the **License Key entitlement you set to Manual** in Step 1. A single product can deliver this license key alongside other entitlements on the same purchase.
 
-## 4단계 — 키 전달
+<Frame caption="Selecting the License Key entitlement in the product entitlements panel.">
+<img src="/images/entitlements/attach-to-product.png" alt="Product entitlements panel with License Key selected" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
 
-자체 시스템에서 키 값을 확보한 후 [라이선스 키 그랜트 이행](/api-reference/entitlements/fulfill-license-key) 엔드포인트에 제출하십시오. 이는 귀하의 비밀 API 키(편집자 권한)를 요구합니다; 이는 **공용 라이선스 엔드포인트의 하나가 아닙니다**.
+<Note>
+Fulfillment mode is a property of the **entitlement**, not the product. Because you set it to **Manual** in Step 1, every product this entitlement is attached to creates `Pending` license-key grants on purchase — there is nothing extra to configure here.
+</Note>
 
-### 요청 필드
+<Tip>
+If you don't have a product yet, create one first (one-time or subscription). See the [One-time Payments Integration Guide](/developer-resources/integration-guide) for selling the product through checkout.
+</Tip>
 
-고객에게 전달할 라이선스 키 문자열. 공백은 제거됩니다; 비어 있거나 공백만 있는 값은 거부됩니다.
+## Step 3 — Detect Pending Grants
 
-키별 활성화 제한. 누락 시 권한 구성을 기본값으로 합니다.
+When a customer buys the product, Dodo Payments creates a grant in `Pending` status with **no key attached** and fires an `entitlement_grant.created` webhook. This is your signal that a customer is waiting for a key.
 
-키별 만료(ISO 8601). 생략 시 권한 구성의 기간을 기본값으로 합니다. 구독 발행 그랜트의 경우 유효성은 구독과 무관하게 유지됩니다.
+### Listen for the webhook
 
-웹훅에 의존하지 않으려면, 라이선스 키 권한의 부여 목록을 나열하고 `status`로 필터링하세요. 라이선스 키 권한의 모든 부여는 이미 라이선스 키 부여이므로 `integration_type` 필터가 필요하지 않습니다:
+Set up a webhook endpoint (Developer → Webhooks in the dashboard) and act on pending license-key grants. The implementation follows the [Standard Webhooks](https://standardwebhooks.com/) specification.
 
-고객은 라이선스 키, 제품, 활성화 제한, 만료 및 활성화 지침을 포함한 이메일을 받습니다:
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
 
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'Pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
+
+The grant payload carries `integration_type: "license_key"`, so you can recognize a license-key grant without an extra lookup. See the [Entitlement Grant webhook reference](/developer-resources/webhooks/intents/entitlement-grant) for the full payload.
+
+### Or poll the List Grants API
+
+If you'd rather not rely on webhooks, list the grants for your License Key entitlement and filter by `status`. Every grant on a License Key entitlement is already a license-key grant, so no `integration_type` filter is needed:
+
+<CodeGroup>
 ```typescript Node.js theme={null}
 const pending = await client.entitlements.grants.list('ent_license_key_id', {
   status: 'Pending',
@@ -108,31 +231,54 @@ curl -G https://test.dodopayments.com/entitlements/ent_license_key_id/grants \
   -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
   --data-urlencode "status=Pending"
 ```
+</CodeGroup>
 
-엔드포인트는 무엇이든 전달하기 전에 그랜트를 검증합니다. 다음 응답을 처리하십시오:
+## Step 4 — Deliver the Key
 
-| 상태 | 의미 | 조치 |
-|---|---|---|
-| `200` | 키가 전달되어 그랜트가 이제 `delivered`. | 완료. |
-| `400` | 라이선스 키 그랜트가 아니거나 키가 비어 있거나 공백임. | 요청 수정; 있는 그대로 다시 시도하지 마십시오. |
-| `404` | 귀하의 비즈니스에 해당 ID의 그랜트가 없음. | `grant_id` 확인. |
-| `409` | 이행을 기다리는 그랜트 아님(이미 전달되었거나 이미 키가 있음), **또는** 키 값이 이미 존재함. | 이미 전달된 경우 성공으로 처리. 중복 키일 경우 다른 키를 제공하십시오. |
-| `422` | 요청 본문 검증 실패(예: `activations_limit < 1`). | 필드를 수정하고 다시 시도. |
+Obtain the key value from your own system, then submit it with the [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) endpoint. This requires your secret API key (Editor permission); it is **not** one of the public license endpoints.
 
-이행은 일시적인 오류(타임아웃, `5xx`)에서 안전하게 재시도할 수 있습니다. 각 그랜트는 한번만 이행할 수 있으며, 성공하지만 인식되지 않은 호출 후 재시도는 두 번째 키를 발행하거나 중복 이메일을 보내기보다는 `409`를 반환합니다. 그랜트 `id`을 귀하의 아이템포시 키로 사용하십시오.
+<CodeGroup>
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
 
-## 흐름 확인
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
 
-1. 테스트 모드에서 제품을 구매하십시오(관련 [체크아웃 가이드](/developer-resources/integration-guide) 참조).
-2. 웹훅이 `entitlement_grant.created` 및 `status: "pending"` 및 `integration_type: "license_key"`를 수신했는지 확인하거나, 해당 필터로 리스트 그랜트 응답에 그랜트가 나타나는지 확인합니다.
-3. 테스트 키로 이행 엔드포인트를 호출하십시오.
-4. 응답이 `status: "delivered"`을 표시하며 인구가 많은 `license_key`, 고객이 키 이메일을 받았고, `entitlement_grant.delivered`가 실행되었는지 확인하십시오.
+  return res.json(); // updated grant, now status: "Delivered"
+}
+```
 
-전달된 후, 고객은 공용 라이선스 엔드포인트에 대해 [활성화 및 검증](/features/license-keys#activation-validation-deactivation)을 자동 생성된 키와 동일하게 할 수 있습니다.
+```bash cURL theme={null}
+curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
+    "activations_limit": 5,
+    "expires_at": "2027-05-01T00:00:00Z"
+  }'
+```
+</CodeGroup>
 
-## 관련 API 참조
-
-`delivered`으로 그랜트를 이동하고 키 값을 전달합니다.
+### Request fields
 
 <ParamField body="key" type="string" required>
 The license key string to deliver to the customer. Whitespace is trimmed; an empty or whitespace-only value is rejected.
@@ -146,7 +292,7 @@ Per-key activation limit. Falls back to the entitlement config when omitted.
 Per-key expiry (ISO 8601). Falls back to the entitlement config's duration when omitted. For subscription-issued grants, validity remains tied to the subscription regardless.
 </ParamField>
 
-On success the grant moves to `delivered`, the customer is sent the key automatically (the same email they'd receive under auto fulfillment), and `entitlement_grant.delivered` fires.
+On success the grant moves to `Delivered`, the customer is sent the key automatically (the same email they'd receive under auto fulfillment), and the `license_key.created` and `entitlement_grant.delivered` webhook events fire.
 
 The customer receives an email with the license key, the product, activation limit, expiry, and your activation instructions:
 
@@ -164,7 +310,7 @@ The endpoint validates the grant before delivering anything. Handle these respon
 
 | Status | Meaning | What to do |
 |---|---|---|
-| `200` | Key delivered, grant is now `delivered`. | Done. |
+| `200` | Key delivered, grant is now `Delivered`. | Done. |
 | `400` | Not a license-key grant, or the key is empty/whitespace. | Fix the request; do not retry as-is. |
 | `404` | No grant with that ID for your business. | Verify the `grant_id`. |
 | `409` | Grant not awaiting fulfillment (already delivered or already has a key), **or** the key value already exists. | If already delivered, treat as success. If a duplicate key, supply a different key. |
@@ -177,9 +323,9 @@ Fulfillment is safe to retry on transient errors (timeouts, `5xx`). Each grant c
 ## Verify the Flow
 
 1. Buy the product in test mode (see the [checkout guides](/developer-resources/integration-guide)).
-2. Confirm your webhook received `entitlement_grant.created` with `status: "pending"` and `integration_type: "license_key"`, or that the grant appears in the List Grants response with those filters.
+2. Confirm your webhook received `entitlement_grant.created` with `status: "Pending"` and `integration_type: "license_key"`, or that the grant appears in the List Grants response with those filters.
 3. Call the fulfill endpoint with a test key.
-4. Confirm the response shows `status: "delivered"` with a populated `license_key`, the customer receives the key email, and `entitlement_grant.delivered` fires.
+4. Confirm the response shows `status: "Delivered"` with a populated `license_key`, the customer receives the key email, and `entitlement_grant.delivered` fires.
 
 <Check>
 Once delivered, the customer can [activate and validate](/features/license-keys#activation-validation-deactivation) the key against the public license endpoints exactly like an auto-generated key.
@@ -192,7 +338,7 @@ Once delivered, the customer can [activate and validate](/features/license-keys#
 Create the License Key entitlement with `fulfillment_mode: manual`.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Filter by `integration_type` and `status` to find pending grants.
+Filter by `status` and `customer_id` to find pending grants.
 </Card>
 <Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
 Deliver the key value and transition the grant to delivered.
