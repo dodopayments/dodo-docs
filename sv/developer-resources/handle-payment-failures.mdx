@@ -25,20 +25,24 @@ När en betalning misslyckas talar Dodo Payments om **varför** genom en standar
 
 Varje misslyckad betalning — oavsett om det är en engångskassa eller en abonnemangsförnyelse — bär samma fel fält på betalningsobjektet:
 
-| Fält | Typ | Beskrivning |
+| Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | `failed` för en misslyckad betalning. Andra icke-framgångsstatusar inkluderar `cancelled`, `requires_customer_action` och `requires_payment_method`. |
-| `error_code` | string \| null | Den standardiserade anledningen till misslyckandet, till exempel `INSUFFICIENT_FUNDS` eller `PROCESSING_ERROR`. Se referensen för [Transaktionsfel](/api-reference/transaction-failures) för hela listan. |
-| `error_message` | string \| null | En läsbar förklaring av felet. |
-| `retry_attempt` | integer | `0` för den ursprungliga avgiften. `1` eller högre identifierar en schemalagd abonnemangsförnyelseförsök. |
+| `status` | string | `failed` för en misslyckad betalning. Andra tillstånd som inte innebär framgång är `cancelled`, `requires_customer_action` och `requires_payment_method`. |
+| `error_code` | string \| null | Den standardiserade orsaken till misslyckandet, till exempel `INSUFFICIENT_FUNDS` eller `PROCESSING_ERROR`. Se referensen [Transaction Failures](/api-reference/transaction-failures) för hela listan. |
+| `error_message` | string \| null | En lättförståelig förklaring av misslyckandet, skriven för dig och inte för kunden. För ett standardiserat `error_code` består detta av en rubrik plus den rekommenderade åtgärden, inte den råa texten från betalningsprocessorn. |
+| `retry_attempt` | integer | `0` för den ursprungliga debiteringen. `1` eller högre identifierar ett schemalagt nytt försök vid förnyelse av en prenumeration. |
 
 <Note>
 `error_code` och `error_message` är `null` tills en betalning faktiskt misslyckas. Kontrollera alltid `status` först och läs sedan fält för fel.
 </Note>
 
-## Webhook för `payment.failed`
+<Warning>
+`error_message` från merchant API är **text för handlaren**. Den kan ange den verkliga orsaken till ett avslag, inklusive bedrägerirelaterade orsaker, så återge den aldrig direkt för en kund. Mappa i stället `error_code` till din egen kundsäkra formulering, enligt exemplet i [Visa fel för kunder på ett säkert sätt](#surface-errors-to-customers-safely).
+</Warning>
 
-Det mest pålitliga sättet att upptäcka ett fel är webhooken `payment.failed`. Händelsen omsluter det fullständiga betalningsobjektet i `data`:
+## Webhooken `payment.failed`
+
+Det mest tillförlitliga sättet att upptäcka ett misslyckande är webhooken `payment.failed`. Händelsen kapslar in hela betalningsobjektet i `data`:
 
 ```json payment.failed payload expandable
 {
@@ -68,7 +72,7 @@ Det mest pålitliga sättet att upptäcka ett fel är webhooken `payment.failed`
 }
 ```
 
-En minimal hanterare läser `error_code` och dirigerar utifrån det:
+En minimal handler läser `error_code` och dirigerar utifrån det:
 
 <CodeGroup>
 
@@ -146,54 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-Verifiera alltid webhookens signatur innan du behandlar den. Se [Webhooks guide](/developer-resources/webhooks) för fullständig installation, inklusive signaturverifiering och idempotens.
+Verifiera alltid webhookens signatur innan du behandlar den. Se [Webhooks guide](/developer-resources/webhooks) för hela konfigurationen, inklusive signaturverifiering och idempotens.
 </Tip>
 
-## Avgör Om Du Ska Försöka Igen: Mjuka vs. Hårda Avslag
+## Avgör om du ska försöka igen: mjuka kontra hårda avslag
 
-`error_code` berättar för dig om det är värt att försöka med samma betalningsmetod igen.
+`error_code` visar om det är meningsfullt att försöka igen med samma betalningsmetod.
 
-| Avslagstyp | Vad det betyder | Vad du ska göra |
+| Typ av avslag | Vad det betyder | Vad du ska göra |
 |--------------|---------------|------------|
-| **Mjukt avslag** | Tillfälligt eller korrigerbart (till exempel `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Att försöka igen — efter en fördröjning, eller när kunden rättar till sin inmatning — kan lyckas. |
-| **Hårt avslag** | Terminal (till exempel `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Försök **inte** med samma kort igen. Be kunden att välja en annan betalningsmetod. |
+| **Mjukt avslag** | Tillfälligt eller möjligt att korrigera (till exempel `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Ett nytt försök — efter en fördröjning eller när kunden har korrigerat sina uppgifter — kan lyckas. |
+| **Hårt avslag** | Slutgiltigt (till exempel `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Försök **inte** igen med samma kort. Be kunden använda en annan betalningsmetod. |
 
-Referensen [Transaktionsfel](/api-reference/transaction-failures) listar avslagstypen och rekommenderad åtgärd för varje `error_code`.
+Referensen [Transaction Failures](/api-reference/transaction-failures) listar typen av avslag och den rekommenderade åtgärden för varje `error_code`.
 
-## Hantera Fel Vid Checkout vs. Vid Förnyelse
+## Hantera misslyckanden i checkout jämfört med vid förnyelse
 
-Hur du återställer beror på om kunden är närvarande.
+Hur du återställer betalningen beror på om kunden är närvarande.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-Kunden handlar aktivt. Visa ett tydligt meddelande och låt dem försöka igen direkt eller använda ett annat kort.
+Kunden genomför aktivt checkout. Visa ett tydligt meddelande och låt kunden försöka igen direkt eller använda ett annat kort.
 
-- `requires_payment_method` — kunden har aldrig angett en betalningsmetod: de angav inte kortuppgifter, eller blev ombedda att göra det och gjorde inget. Detta är vanligtvis en checkout **avbrott**, inte ett avslag — återengagera kunden för att slutföra betalningen (se [Återhämtning av Övergivna Varukorgar](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — ytterligare autentisering (såsom 3DS) behövs; be kunden slutföra den. Se [3D Secure hantering](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — kunden angav aldrig någon betalningsmetod: hen angav inte kortuppgifter eller blev ombedd att ange dem men vidtog ingen åtgärd. Detta är vanligtvis ett **avbrutet köp**, inte ett avslag — återengagera kunden så att hen slutför betalningen (se [Återställning av övergivna kundvagnar](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — ytterligare autentisering (till exempel 3DS) krävs; be kunden slutföra den. Se [Hantering av 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-Kunden är inte närvarande, så du kan inte uppmana dem i realtid. När en förnyelse misslyckas går abonnemanget till `on_hold` och `subscription.on_hold` utlöses.
+Kunden är inte närvarande, så du kan inte be hen agera i realtid. När en förnyelse misslyckas flyttas prenumerationen till `on_hold` och `subscription.on_hold` utlöses.
 
-- **Mjuka avslag** försöks automatiskt igen av [Abonnemangsbetalningsförsök](/features/recovery/payment-retries).
-- **Hårda avslag** (och uttömda försök) återhämtas bäst med [Abonnemang Dunning](/features/recovery/subscription-dunning), som skickar e-post till kunden för att uppdatera sin betalningsmetod.
+- **Mjuka avslag** försöks automatiskt igen av [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Hårda avslag** (och uttömda försök) återställs bäst med [Subscription Dunning](/features/recovery/subscription-dunning), som skickar ett e-postmeddelande till kunden med en uppmaning att uppdatera betalningsmetoden.
 
-Se [Abonnemangsintegrationsguiden](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) för hela flödet från på paus → reaktivera.
+Se [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) för hela flödet från pausad → återaktiverad prenumeration.
 </Tab>
 </Tabs>
 
-## Försöka med en Misslyckad Betalning Igen
+## Försöka igen med en misslyckad betalning
 
-- **Abonnemang:** Aktivera [Abonnemangsbetalningsförsök](/features/recovery/payment-retries) för att återhämta sig från mjuka avslag utan integrationsarbete. Du kan också utlösa återhämtning genom att kunden uppdaterar sin betalningsmetod via [API för Uppdatering av Betalningsmetod](/api-reference/subscriptions/update-payment-method), som debiterar alla utestående avgifter.
-- **Engångsbetalningar:** Skicka om checkout eller `payment_link` så att kunden kan försöka igen med en annan metod. Det finns ingen automatisk återförsök för engångsbetalningar.
+- **Prenumerationer:** Aktivera [Subscription Payment Retries](/features/recovery/payment-retries) för att återställa mjuka avslag utan integrationsarbete. Du kan också utlösa återställning genom att låta kunden uppdatera sin betalningsmetod via [Update Payment Method API](/api-reference/subscriptions/update-payment-method), som debiterar eventuella utestående belopp.
+- **Engångsbetalningar:** Skicka checkout eller `payment_link` igen så att kunden kan försöka med en annan metod. Det finns inget automatiskt nytt försök för engångsbetalningar.
 
 <Warning>
-Försök inte med hårda avslag mot samma kort igen. Kortnätverk kan flagga upprepade avslag som missbruk, vilket försämrar din auktorisationsfrekvens.
+Försök inte igen med hårda avslag mot samma kort. Kortnätverk kan flagga upprepade avslag som missbruk, vilket försämrar din auktoriseringsgrad.
 </Warning>
 
-## Visa Fel För Kunder På Ett Säkert Sätt
+## Visa fel för kunder på ett säkert sätt
 
-Visa kunderna ett vänligt meddelande — aldrig den råa `error_code`.
+Visa kunderna ett vänligt meddelande — aldrig det råa `error_code` och aldrig det `error_message` som är avsett för handlaren.
+
+<Info>
+På ytor som styrs av Dodo Payments — checkout, [Customer Portal](/features/customer-portal) och kravmejl — är denna mappning redan gjord åt dig, inklusive återgången till ett generiskt meddelande för bedrägerirelaterade avslag. Du behöver bara mappningen nedan när du återger misslyckanden i din egen produkt.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -213,33 +221,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**Avslöja aldrig den verkliga anledningen till `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` eller `FRAUDULENT`.** Att visa dessa kan tipsa en bedräglig aktör. Visa ett generiskt meddelande om avslag och logga bara det specifika `error_code` internt.
+**Avslöja aldrig den verkliga orsaken till `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` eller `FRAUDULENT`.** Om du visar dessa kan du ge en bedragare information. Visa ett generiskt avslagsmeddelande och logga endast det specifika `error_code` internt.
 </Warning>
 
-## Relaterade
+## Relaterat
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Varje avvisningskod, dess typ och den rekommenderade åtgärden.
+Varje avslagskod, dess typ och den rekommenderade åtgärden.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-API- och affärslogiska fel som inte är kortavslag.
+API- och affärslogikfel som inte är kortavslag.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Automatisk återhämtning av mjuka avslag vid abonnemangsförnyelser.
+Automatisk återställning av mjuka avslag vid förnyelse av prenumerationer.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-E-postsekvenser som återhämtar hårda avslag.
+E-postsekvenser som återställer hårda avslag.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-Fullständigt payload-schema för betalningshändelser.
+Fullständigt schema för nyttolasten för betalningshändelser.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-Testkort som simulerar avslag och förnyelsemisslyckanden.
+Testkort som simulerar avslag och misslyckade förnyelser.
 </Card>
 </CardGroup>

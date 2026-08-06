@@ -27,18 +27,22 @@ keywords:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | विफल भुगतान के लिए `failed`। अन्य गैर-सफल राज्यों में शामिल हैं `cancelled`, `requires_customer_action`, और `requires_payment_method`। |
-| `error_code` | string \| null | मानकीकृत विफलता का कारण, उदाहरण के लिए `INSUFFICIENT_FUNDS` या `PROCESSING_ERROR`। पूरी सूची के लिए [Transaction Failures](/api-reference/transaction-failures) संदर्भ देखें। |
-| `error_message` | string \| null | विफलता का मानव-पठनीय स्पष्टीकरण। |
-| `retry_attempt` | integer | मूल शुल्क के लिए `0`। `1` या उससे अधिक निर्धारित सदस्यता नवीकरण पुनः प्रयास को पहचानता है। |
+| `status` | string | विफल payment के लिए `failed`। अन्य non-success states में `cancelled`, `requires_customer_action` और `requires_payment_method` शामिल हैं। |
+| `error_code` | string \| null | Standardized failure reason, उदाहरण के लिए `INSUFFICIENT_FUNDS` या `PROCESSING_ERROR`। पूरी सूची के लिए [Transaction Failures](/api-reference/transaction-failures) reference देखें। |
+| `error_message` | string \| null | Failure का human-readable explanation, जो आपके लिए लिखा गया है, आपके customer के लिए नहीं। Standardized `error_code` के लिए, यह raw processor text के बजाय headline और recommended action होता है। |
+| `retry_attempt` | integer | Original charge के लिए `0`। `1` या उससे अधिक मान scheduled subscription renewal retry की पहचान करता है। |
 
 <Note>
 `error_code` और `error_message` `null` हैं जब तक कि वास्तव में कोई भुगतान विफल नहीं होता है। हमेशा पहले `status` की जाँच करें, फिर त्रुटि फ़ील्ड पढ़ें।
 </Note>
 
-## `payment.failed` वेबहूक
+<Warning>
+Merchant API से प्राप्त `error_message` **merchant-facing copy** है। इसमें decline का वास्तविक कारण, जिसमें fraud-related कारण भी शामिल हैं, बताया जा सकता है, इसलिए इसे कभी भी सीधे customer को render न करें। इसके बजाय `error_code` को अपने customer-safe wording में map करें, जैसा कि [Surface Errors to Customers Safely](#surface-errors-to-customers-safely) में दिखाया गया है।
+</Warning>
 
-एक विफलता का पता लगाने का सबसे विश्वसनीय तरीका है `payment.failed` वेबहूक। ईवेंट पूरे भुगतान ऑब्जेक्ट को `data` में लपेटता है:
+## `payment.failed` Webhook
+
+Failure का पता लगाने का सबसे विश्वसनीय तरीका `payment.failed` webhook है। यह event पूरे payment object को `data` में wrap करता है:
 
 ```json payment.failed payload expandable
 {
@@ -68,7 +72,7 @@ keywords:
 }
 ```
 
-एक न्यूनतम हैंडलर `error_code` पढ़ता है और उस पर मार्ग बनाता है:
+एक minimal handler `error_code` को पढ़ता है और उसके आधार पर route करता है:
 
 <CodeGroup>
 
@@ -146,54 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-प्रोसेसिंग से पहले हमेशा वेबहूक हस्ताक्षर को सत्यापित करें। हस्ताक्षर सत्यापन और उदमित सुरक्षा सहित पूरे सेटअप के लिए [Webhooks गाइड](/developer-resources/webhooks) देखें।
+Processing से पहले हमेशा webhook signature verify करें। Signature verification और idempotency सहित पूरे setup के लिए [Webhooks guide](/developer-resources/webhooks) देखें।
 </Tip>
 
-## यह तय करें कि पुनः प्रयास करें: नरम बनाम कठोर अस्वीकृति
+## तय करें कि Retry करना है या नहीं: Soft बनाम Hard Declines
 
-`error_code` आपको बताता है कि क्या उसी भुगतान विधि को पुनः प्रयास करना सार्थक है।
+`error_code` आपको बताता है कि उसी payment method को retry करना उपयोगी होगा या नहीं।
 
-| Decline type | इसका मतलब क्या है | क्या करें |
+| Decline type | इसका अर्थ | क्या करें |
 |--------------|---------------|------------|
-| **Soft decline** | अस्थायी या सुधार योग्य (उदाहरण के लिए `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`)। | फिर से प्रयास करना — एक देरी के बाद, या जब ग्राहक उनकी इनपुट को ठीक करता है — सफल हो सकता है। |
-| **Hard decline** | अंतिम (उदाहरण के लिए `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`)। | उसी कार्ड को पुनः प्रयास **न करें**। ग्राहक से एक अलग भुगतान विधि मांगें। |
+| **Soft decline** | अस्थायी या सुधार योग्य (उदाहरण के लिए `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`)। | Delay के बाद या customer द्वारा अपना input ठीक करने के बाद retry करने पर payment सफल हो सकता है। |
+| **Hard decline** | Terminal (उदाहरण के लिए `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`)। | उसी card को **retry न करें**। Customer से कोई अलग payment method मांगें। |
 
-[Transaction Failures](/api-reference/transaction-failures) संदर्भ प्रत्येक `error_code` के लिए अस्वीकृति प्रकार और अनुशंसित कार्रवाई को सूचीबद्ध करता है।
+[Transaction Failures](/api-reference/transaction-failures) reference हर `error_code` के लिए decline type और recommended action की सूची देती है।
 
-## चेकआउट पर बनाम नवीकरण पर विफलताओं को संभालना
+## Checkout के दौरान बनाम Renewal पर Failures को Handle करना
 
-आपकी वसूली इस पर निर्भर करती है कि क्या ग्राहक उपस्थित है।
+आप recovery कैसे करेंगे, यह इस बात पर निर्भर करता है कि customer मौजूद है या नहीं।
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-ग्राहक सक्रिय रूप से चेकआउट कर रहा है। एक स्पष्ट संदेश पेश करें और उन्हें तुरंत पुनः प्रयास करने दें या एक अन्य कार्ड का उपयोग करें।
+Customer actively checkout कर रहा है। एक स्पष्ट message दिखाएं और उसे तुरंत retry करने या किसी अन्य card का उपयोग करने दें।
 
-- `requires_payment_method` — ग्राहक ने कभी भुगतान विधि प्रदान नहीं की: उन्होंने कार्ड विवरण नहीं दर्ज किए, या एक के लिए कहा गया था और कोई कार्रवाई नहीं की। यह आमतौर पर एक चेकआउट **ड्रॉप-ऑफ** है, अस्वीकृति नहीं — भुगतान पूर्ण करने के लिए ग्राहक को फिर से संलग्न करें (देखें [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — अतिरिक्त प्रमाणीकरण (जैसे 3DS) की आवश्यकता है; ग्राहक को इसे पूरा करने दें। देखें [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — customer ने कभी payment method प्रदान नहीं किया: उसने card details दर्ज नहीं कीं या उससे payment method देने को कहा गया, लेकिन उसने कोई action नहीं लिया। यह आमतौर पर decline नहीं, बल्कि checkout का **drop-off** होता है — payment पूरा करने के लिए customer से फिर संपर्क करें (देखें [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — अतिरिक्त authentication (जैसे 3DS) आवश्यक है; customer से इसे पूरा करने को कहें। देखें [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)।
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-ग्राहक उपस्थित नहीं है, इसलिए आप उन्हें वास्तविक समय में संकेत नहीं दे सकते। जब नवीकरण विफल होता है, तो सदस्यता `on_hold` की ओर बढ़ जाती है और `subscription.on_hold` फायर करता है।
+Customer मौजूद नहीं है, इसलिए आप उसे real time में prompt नहीं कर सकते। Renewal विफल होने पर subscription `on_hold` में चली जाती है और `subscription.on_hold` fire होता है।
 
-- **Soft declines** को [Subscription Payment Retries](/features/recovery/payment-retries) द्वारा स्वचालित रूप से पुनः प्रयास किया जाता है।
-- **Hard declines** (और समाप्त प्रयास) को [Subscription Dunning](/features/recovery/subscription-dunning) के साथ सबसे अच्छे ढंग से पुनर्प्राप्त किया जाता है, जो ग्राहकों को उनकी भुगतान विधि को अपडेट करने के लिए ईमेल करता है।
+- **Soft declines** को [Subscription Payment Retries](/features/recovery/payment-retries) द्वारा automatically फिर से attempt किया जाता है।
+- **Hard declines** (और समाप्त हो चुके retries) को [Subscription Dunning](/features/recovery/subscription-dunning) के साथ recover करना सबसे बेहतर है; यह customer को अपना payment method update करने के लिए email भेजता है।
 
-पूरा धारण → पुनर्सक्रियण प्रवाह के लिए [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) देखें।
+पूरे on-hold → reactivate flow के लिए [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) देखें।
 </Tab>
 </Tabs>
 
-## एक विफल भुगतान को पुनः प्रयास करना
+## Failed Payment को Retry करना
 
-- **Subscriptions:** [Subscription Payment Retries](/features/recovery/payment-retries) को सक्षम करें ताकि बिना किसी एकीकरण कार्य के नरम अस्वीकृतियों को पुनः प्राप्त किया जा सके। आप ग्राहक के माध्यम से उनकी भुगतान विधि को अपडेट कराकर पुनर्प्राप्ति को ट्रिगर कर सकते हैं [Update Payment Method API](/api-reference/subscriptions/update-payment-method), जो किसी भी बकाया राशि को चार्ज करता है।
-- **One-time payments:** चेकआउट या `payment_link` को पुनः भेजें ताकि ग्राहक किसी भिन्न विधि से पुनः प्रयास कर सकें। वन टाइम भुगतान के लिए कोई स्वचालित पुन: प्रयास नहीं है।
+- **Subscriptions:** बिना किसी integration work के soft declines recover करने के लिए [Subscription Payment Retries](/features/recovery/payment-retries) enable करें। Customer से [Update Payment Method API](/api-reference/subscriptions/update-payment-method) के माध्यम से अपना payment method update करवाकर भी recovery trigger कर सकते हैं; इससे कोई भी outstanding dues charge हो जाते हैं।
+- **One-time payments:** checkout या `payment_link` फिर से भेजें, ताकि customer किसी अलग method से दोबारा प्रयास कर सके। One-time payments के लिए कोई automatic retry नहीं है।
 
 <Warning>
-कठोर अस्वीकृतियों को उसी कार्ड के खिलाफ पुन: प्रयास न करें। कार्ड नेटवर्क बार-बार अस्वीकारों को दुरुपयोग के रूप में चिह्नित कर सकते हैं, जिससे आपकी अधिकृति दर को नुकसान होता है।
+उसी card पर hard declines को retry न करें। Card networks repeated declines को abusive के रूप में flag कर सकते हैं, जिससे आपकी authorization rate प्रभावित होती है।
 </Warning>
 
-## त्रुटियों को ग्राहकों तक सुरक्षित रूप से पहुँचाएं
+## Customers को Errors सुरक्षित रूप से दिखाना
 
-ग्राहकों को एक मित्रवत संदेश दिखाएं — कभी भी कच्चा `error_code` नहीं।
+Customers को friendly message दिखाएं — कभी भी raw `error_code` नहीं और merchant-facing `error_message` भी नहीं।
+
+<Info>
+Dodo Payments द्वारा नियंत्रित surfaces — checkout, [Customer Portal](/features/customer-portal) और dunning emails — पर यह mapping आपके लिए पहले से की गई है, जिसमें fraud-related declines के लिए generic message का fallback भी शामिल है। नीचे दी गई mapping की आवश्यकता केवल तब है जब आप अपने product में failures render करते हैं।
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -213,33 +221,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, या `FRAUDULENT` के वास्तविक कारण को **कभी नहीं उजागर करें**। इनको उजागर करने से एक धोखेबाज अभिनेता को जानकारी मिल सकती है। एक सामान्य अस्वीकृति संदेश दिखाएं और केवल विशेष `error_code` को आंतरिक रूप से लॉग करें।
+**`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` या `FRAUDULENT` का वास्तविक कारण कभी उजागर न करें।** इन्हें दिखाने से किसी fraudulent actor को संकेत मिल सकता है। Generic decline message दिखाएं और specific `error_code` को केवल internally log करें।
 </Warning>
 
 ## संबंधित
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-प्रत्येक अस्वीकृति कोड, उसका प्रकार, और अनुशंसित क्रिया।
+हर decline code, उसका type और recommended action।
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-ऐपीआई और व्यापार-तर्क त्रुटियाँ जो कार्ड अस्वीकृति नहीं हैं।
+API और business-logic errors जो card declines नहीं हैं।
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-सदस्यता नवीकरण पर नरम अस्वीकृतियों की स्वचालित वसूली।
+Subscription renewals पर soft declines की automatic recovery।
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-ईमेल अनुक्रम जो कठोर अस्वीकृतियों को पुनः प्राप्त करते हैं।
+Hard declines को recover करने वाले email sequences।
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-भुगतान ईवेंट्स के लिए पूरा पेलोड स्कीमा।
+Payment events के लिए full payload schema।
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-ऐसे परीक्षण कार्ड्स जो अस्वीकृतियों और नवीकरण विफलताओं का अनुकरण करते हैं।
+Declines और renewal failures को simulate करने वाले test cards।
 </Card>
 </CardGroup>

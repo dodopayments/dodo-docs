@@ -27,18 +27,22 @@ Ogni pagamento fallito — sia un checkout una tantum che un rinnovo di abboname
 
 | Campo | Tipo | Descrizione |
 |-------|------|-------------|
-| `status` | string | `failed` per un pagamento fallito. Altri stati non di successo includono `cancelled`, `requires_customer_action`, e `requires_payment_method`. |
-| `error_code` | string \| null | Il motivo standardizzato del fallimento, per esempio `INSUFFICIENT_FUNDS` o `PROCESSING_ERROR`. Vedi il riferimento [Transaction Failures](/api-reference/transaction-failures) per la lista completa. |
-| `error_message` | string \| null | Una spiegazione leggibile del fallimento. |
-| `retry_attempt` | integer | `0` per l'addebito originale. `1` o superiore identifica un tentativo di rinnovo abbonamento programmato. |
+| `status` | string | `failed` per un pagamento non riuscito. Altri stati non riusciti includono `cancelled`, `requires_customer_action` e `requires_payment_method`. |
+| `error_code` | string \| null | Il motivo standardizzato del fallimento, ad esempio `INSUFFICIENT_FUNDS` o `PROCESSING_ERROR`. Consulta il riferimento [Transaction Failures](/api-reference/transaction-failures) per l'elenco completo. |
+| `error_message` | string \| null | Una spiegazione leggibile del fallimento, scritta per te e non per il cliente. Per un `error_code` standardizzato, si tratta di un titolo seguito dall'azione consigliata, non del testo grezzo del processore. |
+| `retry_attempt` | integer | `0` per l'addebito originale. `1` o un valore superiore identifica un tentativo di rinnovo programmato di un abbonamento. |
 
 <Note>
 `error_code` e `error_message` sono `null` finché un pagamento non fallisce effettivamente. Controlla sempre prima `status`, poi leggi i campi di errore.
 </Note>
 
-## Il Webhook `payment.failed`
+<Warning>
+`error_message` proveniente dall'API merchant è un **testo rivolto al merchant**. Può indicare il motivo reale di un rifiuto, inclusi quelli correlati alle frodi, quindi non mostrarlo mai direttamente al cliente. Mappa invece `error_code` su un testo sicuro per il cliente, come illustrato in [Mostrare gli errori ai clienti in modo sicuro](#surface-errors-to-customers-safely).
+</Warning>
 
-Il modo più affidabile per rilevare un fallimento è il webhook `payment.failed`. L'evento avvolge l'intero oggetto di pagamento in `data`:
+## Il webhook `payment.failed`
+
+Il modo più affidabile per rilevare un fallimento è il webhook `payment.failed`. L'evento include l'intero oggetto del pagamento in `data`:
 
 ```json payment.failed payload expandable
 {
@@ -68,7 +72,7 @@ Il modo più affidabile per rilevare un fallimento è il webhook `payment.failed
 }
 ```
 
-Un gestore minimale legge `error_code` e instrada su di esso:
+Un handler minimale legge `error_code` e applica il routing in base a tale valore:
 
 <CodeGroup>
 
@@ -146,54 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-Verifica sempre la firma del webhook prima di elaborarlo. Vedi la [guida Webhooks](/developer-resources/webhooks) per l'intero setup, compresa la verifica della firma e l'idempotenza.
+Verifica sempre la firma del webhook prima di elaborarlo. Consulta la [guida sui webhook](/developer-resources/webhooks) per la configurazione completa, inclusa la verifica della firma e l'idempotenza.
 </Tip>
 
-## Decidi se Riprovare: Declini Soft vs. Hard
+## Decidere se riprovare: rifiuti soft e hard
 
-`error_code` ti dice se vale la pena riprovare con lo stesso metodo di pagamento.
+`error_code` indica se vale la pena riprovare con lo stesso metodo di pagamento.
 
-| Tipo di declino | Cosa significa | Cosa fare |
+| Tipo di rifiuto | Significato | Cosa fare |
 |--------------|---------------|------------|
-| **Declino soft** | Temporaneo o correggibile (per esempio `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Riprovare, dopo un ritardo o una volta che il cliente ha corretto il proprio input, può avere successo. |
-| **Declino hard** | Terminale (per esempio `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Non riprovare con lo stesso carta. Chiedi al cliente un diverso metodo di pagamento. |
+| **Rifiuto soft** | Temporaneo o risolvibile (ad esempio `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Un nuovo tentativo — dopo un intervallo o dopo che il cliente ha corretto i dati inseriti — può riuscire. |
+| **Rifiuto hard** | Definitivo (ad esempio `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **Non** riprovare con la stessa carta. Chiedi al cliente di usare un metodo di pagamento diverso. |
 
-Il riferimento [Transaction Failures](/api-reference/transaction-failures) elenca il tipo di declino e l'azione consigliata per ogni `error_code`.
+Il riferimento [Transaction Failures](/api-reference/transaction-failures) elenca il tipo di rifiuto e l'azione consigliata per ogni `error_code`.
 
-## Gestire i Fallimenti al Checkout vs. al Rinnovo
+## Gestire i fallimenti al checkout e durante il rinnovo
 
-Come si recupera dipende dal fatto che il cliente sia presente.
+Il modo in cui recuperi il pagamento dipende dalla presenza o meno del cliente.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-Il cliente sta effettuando attivamente il checkout. Mostra un messaggio chiaro e lascia che riprovino immediatamente o utilizzino un'altra carta.
+Il cliente sta effettuando attivamente il checkout. Mostra un messaggio chiaro e consenti di riprovare immediatamente o di usare un'altra carta.
 
-- `requires_payment_method` — il cliente non ha mai fornito un metodo di pagamento: non ha inserito i dettagli della carta o è stato richiesto di farlo e non ha agito. Questo è di solito un **abbandono del checkout**, non un rifiuto: re-ingaggia il cliente per completare il pagamento (vedi [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — è necessaria un'autenticazione aggiuntiva (come 3DS); fai completare al cliente. Vedi [gestione 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — il cliente non ha mai fornito un metodo di pagamento: non ha inserito i dati della carta oppure gli è stato richiesto di inserirli ma non ha eseguito alcuna azione. Di solito si tratta di un **abbandono** del checkout, non di un rifiuto: coinvolgi nuovamente il cliente per completare il pagamento (consulta [Recupero dei carrelli abbandonati](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — è necessaria un'autenticazione aggiuntiva (ad esempio 3DS); chiedi al cliente di completarla. Consulta [Gestione di 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-Il cliente non è presente, quindi non puoi sollecitarlo in tempo reale. Quando un rinnovo fallisce, l'abbonamento passa a `on_hold` e `subscription.on_hold` si attiva.
+Il cliente non è presente, quindi non puoi chiedergli di intervenire in tempo reale. Quando un rinnovo non riesce, l'abbonamento passa a `on_hold` e viene attivato `subscription.on_hold`.
 
-- **Declini soft** sono ritentati automaticamente da [Subscription Payment Retries](/features/recovery/payment-retries).
-- **Declini hard** (e riprove esaurite) sono meglio recuperati con [Subscription Dunning](/features/recovery/subscription-dunning), che invia un'email al cliente per aggiornare il proprio metodo di pagamento.
+- I **rifiuti soft** vengono sottoposti automaticamente a un nuovo tentativo da [Subscription Payment Retries](/features/recovery/payment-retries).
+- I **rifiuti hard** (e i tentativi esauriti) si recuperano al meglio con [Subscription Dunning](/features/recovery/subscription-dunning), che invia un'e-mail al cliente chiedendogli di aggiornare il metodo di pagamento.
 
-Vedi la [Guida all'Integrazione degli Abbonamenti](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) per il flusso completo da sospeso → riattivato.
+Consulta la [guida all'integrazione degli abbonamenti](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) per il flusso completo di sospensione → riattivazione.
 </Tab>
 </Tabs>
 
-## Riprovare un Pagamento Fallito
+## Riprovare un pagamento non riuscito
 
-- **Abbonamenti:** Abilita [Subscription Payment Retries](/features/recovery/payment-retries) per recuperare declini soft senza lavoro di integrazione. Puoi anche innescare il recupero facendo aggiornare al cliente il proprio metodo di pagamento tramite l'[API di Aggiornamento Metodo di Pagamento](/api-reference/subscriptions/update-payment-method), che addebita eventuali importi in sospeso.
-- **Pagamenti una tantum:** Invia nuovamente il checkout o `payment_link` affinché il cliente possa riprovare con un metodo diverso. Non esiste un ripetizione automatica per pagamenti una tantum.
+- **Abbonamenti:** abilita [Subscription Payment Retries](/features/recovery/payment-retries) per recuperare i rifiuti soft senza interventi di integrazione. Puoi anche attivare il recupero chiedendo al cliente di aggiornare il metodo di pagamento tramite l'[API Update Payment Method](/api-reference/subscriptions/update-payment-method), che addebita gli importi ancora dovuti.
+- **Pagamenti una tantum:** invia nuovamente il checkout o `payment_link` affinché il cliente possa riprovare con un metodo diverso. Non è previsto alcun nuovo tentativo automatico per i pagamenti una tantum.
 
 <Warning>
-Non riprovare declini hard con la stessa carta. Le reti di carte possono segnalare ripetuti declini come abusivi, il che riduce il tuo tasso di autorizzazione.
+Non riprovare i rifiuti hard con la stessa carta. I circuiti delle carte possono segnalare i rifiuti ripetuti come attività abusiva, danneggiando il tuo tasso di autorizzazione.
 </Warning>
 
-## Comunicazione degli Errori ai Clienti in Sicurezza
+## Mostrare gli errori ai clienti in modo sicuro
 
-Mostra ai clienti un messaggio amichevole — mai il vero `error_code`.
+Mostra ai clienti un messaggio chiaro e cordiale — mai il valore grezzo di `error_code` e mai `error_message`, che è rivolto al merchant.
+
+<Info>
+Nelle superfici gestite da Dodo Payments — checkout, [Customer Portal](/features/customer-portal) ed e-mail di dunning — questa mappatura è già effettuata per te, incluso il fallback a un messaggio generico per i rifiuti correlati alle frodi. Ti serve la mappatura seguente solo quando mostri i fallimenti nel tuo prodotto.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -213,33 +221,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**Non rivelare mai la vera ragione per `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, o `FRAUDULENT`.** Mostrare questi può avvisare un attore fraudolento. Mostra un messaggio di declino generico e registra solo il specifico `error_code` internamente.
+**Non rivelare mai il motivo reale di `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` o `FRAUDULENT`.** Mostrarli può fornire informazioni utili a un autore di frodi. Mostra un messaggio generico di rifiuto e registra internamente solo il valore specifico di `error_code`.
 </Warning>
 
 ## Correlati
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Ogni codice di declino, il suo tipo e l'azione raccomandata.
+Ogni codice di rifiuto, il relativo tipo e l'azione consigliata.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-Errori di API e logica aziendale che non sono declini di carta.
+Errori dell'API e della logica di business che non sono rifiuti della carta.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Recupero automatico dei declini soft sui rinnovi degli abbonamenti.
+Recupero automatico dei rifiuti soft durante i rinnovi degli abbonamenti.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Sequenze email che recuperano declini hard.
+Sequenze di e-mail che recuperano i rifiuti hard.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-Schema completo del payload per eventi di pagamento.
+Schema completo del payload per gli eventi di pagamento.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-Carte di test che simulano declini e fallimenti di rinnovo.
+Carte di test che simulano rifiuti e fallimenti dei rinnovi.
 </Card>
 </CardGroup>

@@ -25,20 +25,24 @@ Lorsqu'un paiement échoue, Dodo Payments vous indique **pourquoi** grâce à un
 
 Chaque paiement échoué — qu'il s'agisse d'un achat unique ou d'un renouvellement d'abonnement — comporte les mêmes champs d'échec sur l'objet de paiement :
 
-| Champ | Type | Description |
+| Field | Type | Description |
 |-------|------|-------------|
-| `status` | chaîne | `failed` pour un paiement échoué. D'autres états non réussis incluent `cancelled`, `requires_customer_action`, et `requires_payment_method`. |
-| `error_code` | chaîne \| null | La raison de l'échec standardisée, par exemple `INSUFFICIENT_FUNDS` ou `PROCESSING_ERROR`. Voir la référence des [Échecs de Transaction](/api-reference/transaction-failures) pour la liste complète. |
-| `error_message` | chaîne \| null | Une explication lisible par l'homme de l'échec. |
-| `retry_attempt` | entier | `0` pour la charge initiale. `1` ou supérieur identifie une nouvelle tentative de renouvellement d'abonnement programmée. |
+| `status` | string | `failed` pour un paiement échoué. Les autres états sans succès incluent `cancelled`, `requires_customer_action` et `requires_payment_method`. |
+| `error_code` | string \| null | Le motif d'échec standardisé, par exemple `INSUFFICIENT_FUNDS` ou `PROCESSING_ERROR`. Consultez la référence [Transaction Failures](/api-reference/transaction-failures) pour obtenir la liste complète. |
+| `error_message` | string \| null | Une explication lisible de l'échec, rédigée pour vous et non pour votre client. Pour un `error_code` standardisé, il s'agit d'un titre accompagné de l'action recommandée, et non du texte brut du processeur. |
+| `retry_attempt` | integer | `0` pour le débit d'origine. `1` ou une valeur supérieure identifie une nouvelle tentative planifiée de renouvellement d'abonnement. |
 
  <Note>
 `error_code` et `error_message` sont `null` jusqu'à ce qu'un paiement échoue réellement. Vérifiez toujours d'abord `status`, puis lisez les champs d'erreur.
 </Note>
 
-## Le Webhook `payment.failed`
+<Warning>
+Le `error_message` de l'API marchand est un **contenu destiné au marchand**. Il peut indiquer le motif réel d'un refus, y compris les motifs liés à la fraude. Ne l'affichez donc jamais directement à un client. Associez plutôt `error_code` à votre propre formulation sécurisée pour les clients, comme indiqué dans [Afficher les erreurs aux clients en toute sécurité](#surface-errors-to-customers-safely).
+</Warning>
 
-La manière la plus fiable de détecter un échec est le webhook `payment.failed`. L'événement enveloppe l'objet de paiement complet dans `data` :
+## Le webhook `payment.failed`
+
+Le moyen le plus fiable de détecter un échec est le webhook `payment.failed`. L'événement encapsule l'objet de paiement complet dans `data` :
 
 ```json payment.failed payload expandable
 {
@@ -68,9 +72,9 @@ La manière la plus fiable de détecter un échec est le webhook `payment.failed
 }
 ```
 
-Un gestionnaire minimal lit `error_code` et l'oriente :
+Un gestionnaire minimal lit `error_code` et effectue un routage en fonction de celui-ci :
 
- <CodeGroup>
+<CodeGroup>
 
 ```javascript Node.js expandable
 import { Webhook } from "standardwebhooks";
@@ -143,57 +147,61 @@ async def handle_webhook(request: Request):
     return {"received": True}
 ```
 
- </CodeGroup>
+</CodeGroup>
 
- <Tip>
-Vérifiez toujours la signature du webhook avant de traiter. Voir le [guide des Webhooks](/developer-resources/webhooks) pour la configuration complète, y compris la vérification des signatures et l'idempotence.
+<Tip>
+Vérifiez toujours la signature du webhook avant tout traitement. Consultez le [guide Webhooks](/developer-resources/webhooks) pour la configuration complète, notamment la vérification de signature et l'idempotence.
 </Tip>
 
-## Décider de Retenter: Refus Temporaires vs. Définitifs
+## Décider s'il faut réessayer : refus temporaires ou définitifs
 
-Le `error_code` vous indique si réessayer le même mode de paiement vaut la peine.
+Le `error_code` vous indique s'il est utile de réessayer avec le même moyen de paiement.
 
-| Type de refus | Ce que cela signifie | Que faire |
+| Decline type | What it means | What to do |
 |--------------|---------------|------------|
-| **Refus temporaire** | Temporaire ou corrigeable (par exemple `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Un nouvel essai — après un délai, ou une fois que le client a corrigé son entrée — peut réussir. |
-| **Refus définitif** | Terminal (par exemple `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Ne **pas** réessayer avec la même carte. Demandez au client un autre mode de paiement. |
+| **Refus temporaire** | Temporaire ou corrigeable (par exemple `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Une nouvelle tentative — après un délai ou une fois que le client a corrigé ses informations — peut aboutir. |
+| **Refus définitif** | Irréversible (par exemple `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **Ne réessayez pas** avec la même carte. Demandez au client d'utiliser un autre moyen de paiement. |
 
-La référence [Échecs de Transaction](/api-reference/transaction-failures) liste le type de refus et l'action recommandée pour chaque `error_code`.
+La référence [Transaction Failures](/api-reference/transaction-failures) répertorie le type de refus et l'action recommandée pour chaque `error_code`.
 
-## Gérer les Échecs à la Caisse vs. au Renouvellement
+## Gérer les échecs lors du paiement initial ou du renouvellement
 
-La façon de récupérer dépend de la présence ou non du client.
+La façon dont vous récupérez l'échec dépend de la présence ou non du client.
 
- <Tabs>
+<Tabs>
 <Tab title="At checkout (customer present)">
-Le client est activement en train de passer à la caisse. Affichez un message clair et permettez-lui de réessayer immédiatement ou d'utiliser une autre carte.
+Le client est en train d'effectuer son paiement. Affichez un message clair et laissez-le réessayer immédiatement ou utiliser une autre carte.
 
-- `requires_payment_method` — le client n'a jamais fourni de mode de paiement : il n'a pas saisi les détails de la carte, ou a été invité à le faire et n'a pris aucune mesure. Cela représente généralement un abandon de panier à la caisse, non un refus — réengagez le client pour compléter le paiement (voir [Récupération de Panier Abandonné](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — une authentification supplémentaire (comme 3DS) est nécessaire ; faites compléter cela par le client. Voir [gestion du 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — le client n'a jamais fourni de moyen de paiement : il n'a pas saisi les informations de sa carte ou a été invité à le faire sans donner suite. Il s'agit généralement d'un **abandon** lors du paiement, et non d'un refus : relancez le client pour qu'il termine son paiement (consultez [Récupération des paniers abandonnés](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — une authentification supplémentaire (telle que 3DS) est requise ; demandez au client de l'effectuer. Consultez [Gestion de 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
- <Tab title="On subscription renewal (customer not present)">
-Le client n'est pas présent, donc vous ne pouvez pas le solliciter en temps réel. Lorsqu'un renouvellement échoue, l'abonnement passe à `on_hold` et `subscription.on_hold` est déclenché.
+<Tab title="On subscription renewal (customer not present)">
+Le client n'est pas présent, vous ne pouvez donc pas lui demander d'intervenir en temps réel. Lorsqu'un renouvellement échoue, l'abonnement passe à `on_hold` et `subscription.on_hold` est déclenché.
 
-- **Refus temporaires** sont réessayés automatiquement par [Reprises de Paiement d'Abonnement](/features/recovery/payment-retries).
-- **Refus définitifs** (et tentatives épuisées) sont mieux récupérés avec le [Recouvrement d'Abonnement](/features/recovery/subscription-dunning), qui envoie un e-mail au client pour mettre à jour son mode de paiement.
+- Les **refus temporaires** font automatiquement l'objet de nouvelles tentatives par [Nouvelles tentatives de paiement d'abonnement](/features/recovery/payment-retries).
+- Les **refus définitifs** (ainsi que les nouvelles tentatives épuisées) sont mieux récupérés avec [Relances d'abonnement](/features/recovery/subscription-dunning), qui envoie un e-mail au client pour l'inviter à mettre à jour son moyen de paiement.
 
-Voir le [Guide d'Intégration des Abonnements](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) pour le flux complet de mise en attente → réactivation.
+Consultez le [guide d'intégration des abonnements](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) pour découvrir le flux complet de mise en attente → réactivation.
 </Tab>
 </Tabs>
 
-## Réessayer un Paiement Échoué
+## Réessayer un paiement échoué
 
-- **Abonnements :** Activez [Reprises de Paiement d'Abonnement](/features/recovery/payment-retries) pour récupérer les refus temporaires sans travail d'intégration. Vous pouvez également déclencher la récupération en demandant au client de mettre à jour son mode de paiement via l'[API de Mise à Jour du Mode de Paiement](/api-reference/subscriptions/update-payment-method), ce qui prélève les dus en suspens.
-- **Paiements uniques :** Renvoyez la caisse ou `payment_link` pour que le client puisse réessayer avec un autre mode. Il n'y a pas de réessai automatique pour les paiements uniques.
+- **Abonnements :** activez [Nouvelles tentatives de paiement d'abonnement](/features/recovery/payment-retries) pour récupérer les refus temporaires sans travail d'intégration. Vous pouvez également déclencher la récupération en demandant au client de mettre à jour son moyen de paiement via l'[API Update Payment Method](/api-reference/subscriptions/update-payment-method), qui débite les sommes dues.
+- **Paiements ponctuels :** renvoyez le checkout ou `payment_link` afin que le client puisse réessayer avec un autre moyen de paiement. Les paiements ponctuels ne font l'objet d'aucune nouvelle tentative automatique.
 
- <Warning>
+<Warning>
 Ne réessayez pas les refus définitifs avec la même carte. Les réseaux de cartes peuvent considérer les refus répétés comme abusifs, ce qui nuit à votre taux d'autorisation.
 </Warning>
 
-## Présenter les Erreurs aux Clients en toute Sécurité
+## Afficher les erreurs aux clients en toute sécurité
 
-Montrez aux clients un message amical — jamais le `error_code` brut.
+Affichez aux clients un message convivial — jamais le `error_code` brut et jamais le `error_message` destiné au marchand.
+
+<Info>
+Sur les interfaces contrôlées par Dodo Payments — le checkout, le [Customer Portal](/features/customer-portal) et les e-mails de relance — cette correspondance est déjà effectuée pour vous, y compris le recours à un message générique pour les refus liés à la fraude. Vous n'avez besoin de la correspondance ci-dessous que lorsque vous affichez les échecs dans votre propre produit.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -212,34 +220,34 @@ function customerMessage(errorCode) {
 }
 ```
 
- <Warning>
-**Ne révélez jamais la vraie raison pour `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, ou `FRAUDULENT`.** Révéler cela peut alerter un acteur frauduleux. Affichez un message de refus générique et ne consignez que le `error_code` spécifique en interne.
+<Warning>
+**Ne révélez jamais le motif réel de `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` ou `FRAUDULENT`.** Leur affichage pourrait alerter un acteur frauduleux. Affichez un message de refus générique et consignez uniquement le `error_code` spécifique en interne.
 </Warning>
 
-## Liens Connexes
+## Articles associés
 
- <CardGroup cols={2}>
+<CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Chaque code de refus, son type, et l'action recommandée.
+Chaque code de refus, son type et l'action recommandée.
 </Card>
 
- <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
 Erreurs d'API et de logique métier qui ne sont pas des refus de carte.
 </Card>
 
- <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Récupération automatique des refus temporaires sur les renouvellements d'abonnement.
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Récupération automatique des refus temporaires lors des renouvellements d'abonnement.
 </Card>
 
- <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Séquences d'e-mails qui récupèrent les refus définitifs.
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Séquences d'e-mails qui permettent de récupérer les refus définitifs.
 </Card>
 
- <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-Schéma de charge utile complet pour les événements de paiement.
+<Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
+Schéma complet de la charge utile des événements de paiement.
 </Card>
 
- <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
+<Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
 Cartes de test qui simulent les refus et les échecs de renouvellement.
 </Card>
 </CardGroup>

@@ -1,0 +1,199 @@
+---
+title: Rekomi
+description: Kör ett affiliateprogram i din Dodo Payments-butik med Rekomi. En
+  inklistrad API-nyckel kopplar ihop de två tjänsterna, och Rekomi spårar
+  försäljning och betalar dina affiliates.
+icon: /images/logos/rekomi.svg
+keywords:
+  - Dodo Payments
+  - Rekomi
+  - affiliate-spårning
+  - affiliateprogram
+  - affiliateutbetalningar
+---
+
+## Introduktion
+
+[Rekomi](https://rekomi.com) är en plattform för affiliate-spårning och hantering med en inbyggd Dodo Payments-integration. Någon delar en affiliatelänk, Rekomi registrerar klicket och när besökaren genomför ett köp kommer försäljningen från Dodo Payments och rätt affiliate krediteras automatiskt. Rekomi beräknar provisionen och betalar även dina affiliates åt dig, i över 150 länder, inklusive skatteformulär.
+
+Anslutningen består av en enda inklistring: du ger Rekomi en Dodo Payments API key med write access aktiverad, och Rekomi validerar den, skapar webhook endpoint direkt i ditt Dodo Payments-konto och hämtar signing secret direkt. Det finns inget webhook-formulär att fylla i och inget att klistra tillbaka i Dodo Payments.
+
+<Info>
+En "försäljning" krediteras en affiliate när en hänvisad kund genomför en engångsbetalning, startar en betald prenumeration eller betalar en förnyelse. Återbetalningar och tvister återför provisionen automatiskt.
+</Info>
+
+## Så fungerar det
+
+Dodo Payments hostar checkout på sin egen domän, så affiliate-hänvisningen följer med i försäljningen som checkout-metadata:
+
+1. En besökare klickar på en affiliatelänk och kommer till din webbplats, där Rekomi-skriptet lagrar hänvisningen i webbläsaren.
+2. Besökaren går till checkout, och du bifogar hänvisningen till betalningen som `rekomi_ref` metadata.
+3. Dodo Payments behandlar betalningen och levererar en signerad `payment.succeeded` webhook till den endpoint som Rekomi skapade.
+4. Rekomi kopplar hänvisningen till affiliaten, beräknar provisionen på försäljningsbeloppet före skatt och registrerar den.
+
+Förnyelser av prenumerationer kommer in på samma sätt, så återkommande provisioner kräver inget extra arbete, och återbetalningar och tvister går via samma endpoint.
+
+## Förutsättningar
+
+Innan du konfigurerar denna integration ska du se till att du har:
+
+1. Ett [Dodo Payments-konto](https://app.dodopayments.com) i live mode
+2. Ett [Rekomi-konto](https://app.rekomi.com/sign-up)
+3. En Dodo Payments API key med **write access** aktiverad (read-only keys kan inte skapa webhooks)
+
+## Kom igång
+
+<Steps>
+<Step title="Create an API Key with Write Access">
+  I din Dodo Payments-dashboard går du till **Developer → API Keys** och skapar en nyckel (döp den till "Rekomi") med **Enable write access** markerat. Se [guiden för API keys](/api-reference/introduction#api-key-management-and-authentication) för detaljerade instruktioner.
+
+  <Warning>
+  Aktivera write access för nyckeln: read-only keys klarar valideringen men kan inte skapa webhook endpoint, så anslutningen skulle misslyckas halvvägs.
+  </Warning>
+</Step>
+
+<Step title="Paste the Key into Rekomi">
+  I Rekomi öppnar du **Setup → Connect payment processor**, väljer Dodo Payments och klistrar in nyckeln. Rekomi validerar den direkt, skapar webhook endpoint i ditt konto och hämtar själv dess signing secret.
+
+  <Frame>
+    <img src="/images/integrations/rekomi/connect.png" alt="Rekomis konfigurationssida för Dodo Payments med det enda API key-fältet och anslutningsknappen" style={{ maxHeight: '500px', width: 'auto' }} />
+  </Frame>
+
+  <Info>
+  Efter anslutningen används nyckeln endast för att hantera webhook endpoint och köra regelbundna hälsokontroller. Din försäljning kommer via den signerade webhooken, aldrig via API:t.
+  </Info>
+</Step>
+
+<Step title="Install the Rekomi Script">
+  Lägg till Rekomis tracking script på din marknadsföringswebbplats så att affiliate-klick registreras. Ditt kodavsnitt med program-ID:t ifyllt finns under **Setup → Install** i Rekomi.
+
+  ```html
+  <script
+    async
+    src="https://api.rekomi.com/api/v1/r/loader.js"
+    data-program-id="YOUR_PROGRAM_ID"
+  ></script>
+  ```
+
+</Step>
+
+<Step title="Pass the Referral into Checkout">
+  Bifoga den registrerade hänvisningen till varje betalning som `rekomi_ref` metadata. Se implementeringsexemplen nedan.
+</Step>
+
+<Step title="Done!">
+  Försäljningar, förnyelser, återbetalningar och tvister krediterar och återför nu affiliateprovisioner automatiskt, och Rekomi hanterar utbetalningarna till dina affiliates.
+</Step>
+</Steps>
+
+## Implementeringsguide
+
+### Checkout Sessions via API:t
+
+Läs hänvisningen i ditt frontend med `window.Rekomi.getReferral()`, skicka den till ditt backend tillsammans med checkout-begäran och ange den i `metadata`:
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, rekomiRef?: string) {
+  const session = await client.checkoutSessions.create({
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    return_url: 'https://yoursite.com/success',
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return session.checkout_url;
+}
+```
+
+Samma `metadata.rekomi_ref`-fält fungerar för prenumerationsprodukter, så både den första debiteringen och varje förnyelse krediterar samma affiliate.
+
+### Payments API
+
+<Note>
+Exemplet nedan använder `POST /payments`, som är **deprecated**. Det fungerar fortfarande för befintliga integrationer, men nya integrationer bör använda [Checkout Sessions](/developer-resources/checkout-session) (`POST /checkouts`) — `metadata` skickas på samma sätt.
+</Note>
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createPayment(productId: string, rekomiRef?: string) {
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    payment_link: true,
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return payment;
+}
+```
+
+### Statiska betalningslänkar
+
+Lägg till den platta metadata-query-parametern i länken (inte bracket-formen):
+
+```javascript
+const ref = window.Rekomi?.getReferral?.();
+let url = 'https://checkout.dodopayments.com/buy/YOUR_PRODUCT_ID';
+if (ref) url += `?metadata_rekomi_ref=${encodeURIComponent(ref)}`;
+// use url as the href on your Buy button
+```
+
+Dodo Payments inkluderar `metadata_*` query-parametrar i betalningens metadata, där Rekomi läser dem.
+
+## Det som spåras
+
+| Händelse             | Vad som händer                                                          |
+| -------------------- | ----------------------------------------------------------------------- |
+| Engångsbetalning     | Provision krediteras på försäljningsbeloppet före skatt                 |
+| Förnyelse av prenumeration | Återkommande provision, varje debitering kommer in som en egen betalningshändelse |
+| Återbetalning         | Provisionen återförs automatiskt, aldrig utöver det som krediterats     |
+| Tvist                 | Provisionen återförs så snart tvisten öppnas                            |
+
+<Tip>
+Provisioner beräknas på försäljningsbeloppet före skatt: Dodo Payments är en Merchant of Record och tar ut skatten, så dina affiliates tjänar på själva försäljningen, aldrig på den skatt som råkade läggas till av köparens land.
+</Tip>
+
+## Viktiga anmärkningar
+
+- Rekomi registrerar webhook endpoint med exakt de händelser som behövs. Undvik att redigera händelselistan för denna endpoint i Dodo Payments-dashboarden; Rekomis hälsokontroller markerar anslutningen som felaktig om händelser tas bort.
+- Provperioder utlöser ingen betalning förrän provperioden är slut, så ingen provision finns förrän den första riktiga debiteringen.
+- Om du kopplar från i Rekomi raderas webhook endpoint från ditt Dodo Payments-konto igen.
+
+## Ytterligare resurser
+
+<CardGroup cols={2}>
+  <Card title="Rekomi's Dodo Payments Guide" icon="book-open" href="https://rekomi.com/docs/brands/install/dodo">
+    Den fullständiga installationsguiden, felsökningsinformationen och säkerhetsdetaljerna i Rekomis dokumentation.
+  </Card>
+  <Card title="Affiliates Feature Guide" icon="users" href="/features/affiliates">
+    Alla alternativ för affiliate-integration med Dodo Payments.
+  </Card>
+</CardGroup>
+
+<Info>
+Behöver du hjälp? Kontakta Rekomis support på [support@rekomi.com](mailto:support@rekomi.com) eller Dodo Payments support på [support@dodopayments.com](mailto:support@dodopayments.com) för hjälp med integrationen.
+</Info>

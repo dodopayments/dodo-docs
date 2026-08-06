@@ -25,20 +25,24 @@ Ketika pembayaran gagal, Dodo Payments memberi tahu Anda **mengapa** melalui `er
 
 Setiap pembayaran yang gagal — baik checkout satu kali maupun perpanjangan langganan — memiliki kolom kegagalan yang sama pada objek pembayaran:
 
-| Kolom | Tipe | Deskripsi |
+| Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | `failed` untuk pembayaran yang gagal. Status non-sukses lainnya mencakup `cancelled`, `requires_customer_action`, dan `requires_payment_method`. |
-| `error_code` | string \| null | Alasan kegagalan yang terstandarisasi, misalnya `INSUFFICIENT_FUNDS` atau `PROCESSING_ERROR`. Lihat referensi [Kegagalan Transaksi](/api-reference/transaction-failures) untuk daftar lengkap. |
-| `error_message` | string \| null | Penjelasan kegagalan yang dapat dibaca manusia. |
-| `retry_attempt` | integer | `0` untuk tagihan awal. `1` atau lebih tinggi mengidentifikasi percobaan ulang perpanjangan langganan yang dijadwalkan. |
+| `error_code` | string \| null | Alasan kegagalan terstandarisasi, misalnya `INSUFFICIENT_FUNDS` atau `PROCESSING_ERROR`. Lihat referensi [Transaction Failures](/api-reference/transaction-failures) untuk daftar lengkap. |
+| `error_message` | string \| null | Penjelasan kegagalan yang dapat dibaca manusia, ditulis untuk Anda, bukan untuk customer Anda. Untuk `error_code` yang terstandarisasi, ini berupa judul utama ditambah tindakan yang direkomendasikan, bukan teks mentah dari processor. |
+| `retry_attempt` | integer | `0` untuk charge asli. `1` atau lebih tinggi menunjukkan percobaan ulang renewal subscription yang terjadwal. |
 
 <Note>
 `error_code` dan `error_message` adalah `null` sampai pembayaran benar-benar gagal. Selalu periksa `status` terlebih dahulu, lalu baca kolom error.
 </Note>
 
+<Warning>
+`error_message` dari merchant API adalah **teks yang ditujukan untuk merchant**. Teks ini dapat menyebutkan alasan sebenarnya dari penolakan, termasuk alasan terkait fraud, jadi jangan pernah menampilkannya langsung kepada customer. Petakan `error_code` ke teks Anda sendiri yang aman bagi customer, seperti yang ditunjukkan dalam [Menampilkan Error kepada Customer dengan Aman](#surface-errors-to-customers-safely).
+</Warning>
+
 ## Webhook `payment.failed`
 
-Cara paling andal untuk mendeteksi kegagalan adalah webhook `payment.failed`. Event tersebut membungkus seluruh objek pembayaran dalam `data`:
+Cara paling andal untuk mendeteksi kegagalan adalah webhook `payment.failed`. Event ini membungkus seluruh objek payment dalam `data`:
 
 ```json payment.failed payload expandable
 {
@@ -146,54 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-Selalu verifikasi tanda tangan webhook sebelum memprosesnya. Lihat [panduan Webhook](/developer-resources/webhooks) untuk penyiapan lengkap, termasuk verifikasi tanda tangan dan idempotensi.
+Selalu verifikasi signature webhook sebelum memprosesnya. Lihat [panduan Webhooks](/developer-resources/webhooks) untuk penyiapan lengkap, termasuk verifikasi signature dan idempotency.
 </Tip>
 
-## Tentukan Apakah Perlu Mencoba Lagi: Penolakan Lunak vs. Keras
+## Tentukan Apakah Perlu Retry: Soft vs. Hard Decline
 
-`error_code` memberi tahu Anda apakah mencoba lagi dengan metode pembayaran yang sama layak dilakukan.
+`error_code` memberi tahu apakah retry dengan metode pembayaran yang sama layak dilakukan.
 
-| Jenis penolakan | Artinya | Tindakan yang harus dilakukan |
+| Jenis decline | Artinya | Tindakan yang harus dilakukan |
 |--------------|---------------|------------|
-| **Penolakan lunak** | Sementara atau dapat diperbaiki (misalnya `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Mencoba lagi — setelah jeda atau setelah pelanggan memperbaiki input mereka — dapat berhasil. |
-| **Penolakan keras** | Bersifat final (misalnya `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **Jangan** mencoba lagi dengan kartu yang sama. Minta pelanggan menggunakan metode pembayaran lain. |
+| **Soft decline** | Sementara atau dapat diperbaiki (misalnya `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Melakukan retry — setelah jeda, atau setelah customer memperbaiki input mereka — dapat berhasil. |
+| **Hard decline** | Bersifat terminal (misalnya `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **Jangan** melakukan retry pada kartu yang sama. Minta customer menggunakan metode pembayaran lain. |
 
-Referensi [Kegagalan Transaksi](/api-reference/transaction-failures) mencantumkan jenis penolakan dan tindakan yang disarankan untuk setiap `error_code`.
+Referensi [Transaction Failures](/api-reference/transaction-failures) mencantumkan jenis decline dan tindakan yang direkomendasikan untuk setiap `error_code`.
 
-## Menangani Kegagalan saat Checkout vs. Perpanjangan
+## Menangani Kegagalan Saat Checkout vs. Saat Renewal
 
-Cara pemulihan bergantung pada apakah pelanggan sedang hadir.
+Cara pemulihan yang Anda lakukan bergantung pada apakah customer sedang hadir.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-Pelanggan sedang aktif melakukan checkout. Tampilkan pesan yang jelas dan biarkan mereka mencoba lagi segera atau menggunakan kartu lain.
+Customer sedang aktif melakukan checkout. Tampilkan pesan yang jelas dan izinkan mereka melakukan retry segera atau menggunakan kartu lain.
 
-- `requires_payment_method` — pelanggan tidak pernah memberikan metode pembayaran: mereka tidak memasukkan detail kartu, atau diminta memberikan metode pembayaran tetapi tidak melakukan tindakan apa pun. Ini biasanya merupakan **drop-off** saat checkout, bukan penolakan — hubungi kembali pelanggan untuk menyelesaikan pembayaran (lihat [Pemulihan Keranjang yang Ditinggalkan](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — autentikasi tambahan (seperti 3DS) diperlukan; minta pelanggan menyelesaikannya. Lihat [Penanganan 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — customer tidak pernah memberikan metode pembayaran: mereka tidak memasukkan detail kartu, atau diminta memasukkannya tetapi tidak melakukan tindakan apa pun. Ini biasanya merupakan **drop-off** saat checkout, bukan decline — hubungi kembali customer agar menyelesaikan pembayaran (lihat [Pemulihan Abandoned Cart](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — autentikasi tambahan (seperti 3DS) diperlukan; minta customer menyelesaikannya. Lihat [penanganan 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-Pelanggan tidak sedang hadir, jadi Anda tidak dapat meminta tindakan mereka secara langsung. Ketika perpanjangan gagal, langganan berpindah ke `on_hold` dan `subscription.on_hold` dipicu.
+Customer tidak hadir, sehingga Anda tidak dapat meminta tindakan dari mereka secara real time. Saat renewal gagal, subscription berpindah ke `on_hold` dan `subscription.on_hold` dipicu.
 
-- **Penolakan lunak** dicoba kembali secara otomatis oleh [Percobaan Ulang Pembayaran Langganan](/features/recovery/payment-retries).
-- **Penolakan keras** (dan percobaan ulang yang telah habis) sebaiknya dipulihkan dengan [Dunning Langganan](/features/recovery/subscription-dunning), yang mengirim email kepada pelanggan untuk memperbarui metode pembayaran mereka.
+- **Soft decline** dicoba ulang secara otomatis oleh [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Hard decline** (dan retry yang telah habis) paling baik dipulihkan dengan [Subscription Dunning](/features/recovery/subscription-dunning), yang mengirim email kepada customer untuk memperbarui metode pembayaran mereka.
 
-Lihat [Panduan Integrasi Langganan](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) untuk alur lengkap ditahan → mengaktifkan kembali.
+Lihat [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) untuk alur lengkap on-hold → reactivate.
 </Tab>
 </Tabs>
 
-## Mencoba Lagi Pembayaran yang Gagal
+## Melakukan Retry pada Pembayaran yang Gagal
 
-- **Langganan:** Aktifkan [Percobaan Ulang Pembayaran Langganan](/features/recovery/payment-retries) untuk memulihkan penolakan lunak tanpa pekerjaan integrasi. Anda juga dapat memicu pemulihan dengan meminta pelanggan memperbarui metode pembayaran mereka melalui [API Pembaruan Metode Pembayaran](/api-reference/subscriptions/update-payment-method), yang akan menagih tunggakan apa pun.
-- **Pembayaran satu kali:** Kirim ulang checkout atau `payment_link` agar pelanggan dapat mencoba lagi dengan metode lain. Tidak ada percobaan ulang otomatis untuk pembayaran satu kali.
+- **Subscriptions:** Aktifkan [Subscription Payment Retries](/features/recovery/payment-retries) untuk memulihkan soft decline tanpa pekerjaan integrasi. Anda juga dapat memicu pemulihan dengan meminta customer memperbarui metode pembayaran mereka melalui [Update Payment Method API](/api-reference/subscriptions/update-payment-method), yang akan menagihkan tunggakan apa pun.
+- **Pembayaran satu kali:** Kirim ulang checkout atau `payment_link` agar customer dapat mencoba lagi dengan metode lain. Tidak ada retry otomatis untuk pembayaran satu kali.
 
 <Warning>
-Jangan mencoba lagi penolakan keras dengan kartu yang sama. Jaringan kartu dapat menandai penolakan berulang sebagai tindakan penyalahgunaan, yang menurunkan tingkat otorisasi Anda.
+Jangan melakukan retry untuk hard decline pada kartu yang sama. Jaringan kartu dapat menandai decline berulang sebagai tindakan penyalahgunaan, yang menurunkan tingkat otorisasi Anda.
 </Warning>
 
-## Tampilkan Error kepada Pelanggan dengan Aman
+## Menampilkan Error kepada Customer dengan Aman
 
-Tampilkan pesan yang ramah kepada pelanggan — jangan pernah menampilkan `error_code` mentah.
+Tampilkan pesan yang ramah kepada customer — jangan pernah menampilkan `error_code` mentah, dan jangan pernah menampilkan `error_message` yang ditujukan untuk merchant.
+
+<Info>
+Pada permukaan yang dikontrol oleh Dodo Payments — checkout, [Customer Portal](/features/customer-portal), dan email dunning — pemetaan ini sudah dilakukan untuk Anda, termasuk fallback ke pesan umum untuk decline terkait fraud. Anda hanya memerlukan pemetaan di bawah ini ketika menampilkan kegagalan dalam produk Anda sendiri.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -213,26 +221,26 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**Jangan pernah mengungkapkan alasan sebenarnya untuk `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, atau `FRAUDULENT`.** Menampilkan informasi ini dapat memberi petunjuk kepada pelaku penipuan. Tampilkan pesan penolakan umum dan catat `error_code` spesifik hanya secara internal.
+**Jangan pernah mengungkapkan alasan sebenarnya untuk `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, atau `FRAUDULENT`.** Menampilkan informasi ini dapat memberi petunjuk kepada pelaku fraud. Tampilkan pesan decline umum dan hanya catat `error_code` yang spesifik secara internal.
 </Warning>
 
 ## Terkait
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Setiap kode penolakan, jenisnya, dan tindakan yang disarankan.
+Setiap kode decline, jenisnya, dan tindakan yang direkomendasikan.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-Error API dan logika bisnis yang bukan merupakan penolakan kartu.
+Error API dan logika bisnis yang bukan merupakan card decline.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Pemulihan otomatis penolakan lunak pada perpanjangan langganan.
+Pemulihan otomatis soft decline pada renewal subscription.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Rangkaian email untuk memulihkan penolakan keras.
+Rangkaian email untuk memulihkan hard decline.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
@@ -240,6 +248,6 @@ Skema payload lengkap untuk event pembayaran.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-Kartu pengujian yang mensimulasikan penolakan dan kegagalan perpanjangan.
+Kartu pengujian yang menyimulasikan decline dan kegagalan renewal.
 </Card>
 </CardGroup>
