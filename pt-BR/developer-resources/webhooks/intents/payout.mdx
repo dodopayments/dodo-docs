@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Repasse
+description: O payload enviado ao seu endpoint de webhook quando um repasse é
+  criado ou muda de status, e como reconciliar cada evento do ciclo de vida do
+  repasse.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook de repasse
+  - eventos de repasse
+  - integração de webhook
+  - repasse
+  - payout.success
+---
+
+<Info>
+Os webhooks de repasse informam quando seus próprios fundos são transferidos da Dodo Payments para sua conta bancária. Use-os para reconciliar repasses em seus sistemas contábeis sem consultar repetidamente o endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Eventos de webhook de repasse
+
+Um repasse emite um evento em cada etapa do seu ciclo de vida. As etapas correspondem aos [status de repasse](/features/payouts/payout-structure) exibidos no seu dashboard.
+
+| Evento | Ocorre quando | O que isso geralmente significa |
+|-------|-----------|-----------------------|
+| `payout.created` | Um repasse é criado, pelo ciclo automático de repasses ou fora do ciclo | O repasse existe, mas ainda não começou a ser movimentado |
+| `payout.in_progress` | A data de vencimento do repasse chega e o processamento começa | Os fundos estão a caminho da sua conta bancária |
+| `payout.on_hold` | O repasse é pausado ou colocado em análise | Talvez seja necessário fornecer informações adicionais |
+| `payout.success` | O repasse para sua conta bancária é liquidado | Os fundos devem estar disponíveis na sua conta |
+| `payout.failed` | O repasse falha | O valor e as tarifas são creditados novamente na sua carteira |
+
+<Note>
+O `payout.created` era emitido anteriormente como `payout.not_initiated`. Se um endpoint existente filtra por `payout.not_initiated`, atualize o filtro para `payout.created` para que ele continue correspondendo. O campo `status` no payload ainda informa `not_initiated` nesta etapa.
+</Note>
+
+## Como lidar com eventos de repasse
+
+Os repasses dizem respeito ao seu próprio dinheiro, e não ao de um cliente, portanto esses eventos geralmente alimentam a escrituração contábil e os alertas internos, em vez de fluxos voltados para o cliente.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Sempre verifique a assinatura do webhook antes do processamento — consulte o [guia de Webhooks](/developer-resources/webhooks) para obter instruções de configuração. O handler acima omite a verificação por brevidade.
+</Tip>
+
+<Warning>
+Os eventos de repasse não são terminais nem seguem uma ordem estrita. `payout.failed` pode chegar depois de `payout.success` quando um banco devolve a transferência, e `payout.success` pode chegar depois de `payout.failed` quando um repasse com falha é recuperado posteriormente. Considere o campo `status` no payload como o estado atual, em vez de presumir que o último evento recebido é definitivo.
+</Warning>
+
+## Status do repasse
+
+O objeto de repasse informa seu progresso por meio de um único campo:
+
+| Campo | Valores |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` e `tax` no payload estão obsoletos. Use os [endpoints de detalhamento de repasse](/api-reference/payouts/retrieve-breakup) para obter um detalhamento completo.
+</Note>
+
+## Relacionado
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Como os repasses são programados e calculados, e o que cada status de repasse significa.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Acompanhe os saldos da carteira e o ledger por trás de cada repasse.
+</Card>
+</CardGroup>
+
+## Esquema do payload do webhook

@@ -252,8 +252,12 @@ Key request fields (body):
       If true, includes adaptive currency fees within <code>product_price</code>. If false, fees are added on top.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Legt fest, wie das Wallet-Guthaben des Kunden verwendet wird, um diese Belastung zu begleichen.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Additional metadata for the payment. If omitted, the subscription metadata is used.
+      Zusätzliche Metadaten für die Zahlung. Wenn nicht angegeben, werden die Metadaten des Abonnements verwendet.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -335,94 +339,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
+Die Belastung eines Abonnements, das nicht auf Abruf erfolgt, kann fehlschlagen. Stelle sicher, dass das Abonnement in seinen Details über `on_demand: true` verfügt, bevor du es belastest.
 </Warning>
 
-## Handling failed charges
+## Umgang mit fehlgeschlagenen Belastungen
 
-When a charge against an on-demand subscription fails, you decide what happens next. Unlike scheduled subscriptions — where a failed renewal stops further automatic billing — **on-demand subscriptions remain chargeable after a failure**. You can call the charge endpoint again as part of your own retry logic.
+Wenn eine Belastung eines On-Demand-Abonnements fehlschlägt, entscheidest du, was als Nächstes passiert. Anders als bei geplanten Abonnements – bei denen eine fehlgeschlagene Verlängerung die weitere automatische Abrechnung beendet – **können On-Demand-Abonnements nach einem Fehler weiterhin belastet werden**. Du kannst den Charge-Endpoint im Rahmen deiner eigenen Retry-Logik erneut aufrufen.
 
-### What happens on failure
+### Was bei einem Fehler passiert
 
 <Steps>
 <Step title="Charge attempt fails">
-The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook with the decline reason.
+Die Anfrage `POST /subscriptions/{subscription_id}/charge` gibt entweder eine Fehlerantwort zurück oder wird asynchron abgeschlossen und löst einen `payment.failed`-Webhook mit dem Ablehnungsgrund aus.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-The subscription may move to the `on_hold` state and emit a `subscription.on_hold` webhook (see [Subscription States → On Hold](/features/subscription#on-hold-state)). This is a signal — not a lock. For on-demand subscriptions, `on_hold` does **not** prevent you from charging again.
+Das Abonnement kann in den Status `on_hold` wechseln und einen `subscription.on_hold`-Webhook auslösen (siehe [Abonnementstatus → On Hold](/features/subscription#on-hold-state)). Dies ist ein Signal – keine Sperre. Bei On-Demand-Abonnements verhindert `on_hold` **nicht**, dass du erneut eine Belastung vornimmst.
 </Step>
 
 <Step title="Retry the charge (your call)">
-For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscriptions/{subscription_id}/charge` again at any time to retry. Apply the [safe retry policy](#payment-retries) below — use exponential backoff, skip hard declines, and avoid burst patterns — so retries are not flagged by our fraud and risk systems.
+Bei On-Demand-Abläufen führt Dodo keine automatischen Retries durch. Du kannst `POST /subscriptions/{subscription_id}/charge` jederzeit erneut aufrufen. Wende die unten beschriebene [Richtlinie für sichere Retries](#payment-retries) an – verwende exponentielles Backoff, überspringe endgültige Ablehnungen und vermeide Burst-Muster –, damit Retries nicht von unseren Betrugs- und Risikosystemen markiert werden.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-Wenn die Wiederholungen weiterhin fehlschlagen, weil die Zahlungsmethode selbst fehlerhaft ist (abgelaufene Karte, geschlossenes Konto usw.), verwenden Sie [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method), um eine neue vom Kunden einzuziehen. Bei Erfolg kehrt das Abonnement zu `active` zurück und `payment.succeeded` gefolgt von `subscription.active` Webhooks werden ausgelöst.
+Wenn Retries weiterhin fehlschlagen, weil die Zahlungsmethode selbst nicht funktioniert (abgelaufene Karte, geschlossenes Konto usw.), verwende [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method), um eine neue Zahlungsmethode vom Kunden zu erfassen. Bei Erfolg kehrt das Abonnement zu `active` zurück und anschließend werden `payment.succeeded`- und `subscription.active`-Webhooks ausgelöst.
 </Step>
 </Steps>
 
 <Info>
-**On-demand vs scheduled**: For scheduled subscriptions, Dodo runs its own renewal retries and dunning. For on-demand subscriptions, you own the retry policy because only you know when the next charge should occur (it's driven by your usage events, not a calendar).
+**On-Demand vs. geplant**: Bei geplanten Abonnements führt Dodo eigene Retries für Verlängerungen und Dunning durch. Bei On-Demand-Abonnements legst du die Retry-Richtlinie selbst fest, da nur du weißt, wann die nächste Belastung erfolgen soll (sie wird durch deine Nutzungsereignisse und nicht durch einen Kalender ausgelöst).
 </Info>
 
-### Webhook sequence on a failed on-demand charge
+### Webhook-Sequenz bei einer fehlgeschlagenen On-Demand-Belastung
 
-| Order | Event | Meaning |
+| Reihenfolge | Ereignis | Bedeutung |
 |-------|-------|---------|
-| 1 | `payment.failed` | The on-demand charge attempt did not succeed (includes the decline reason) |
-| 2 | `subscription.on_hold` | The subscription was placed on hold (informational; does not block further charges) |
-| 3* | `payment.succeeded` | A subsequent charge — either your retry or after a payment method update — succeeded |
-| 4* | `subscription.active` | The subscription returned to `active` after a successful charge |
+| 1 | `payment.failed` | Der Versuch einer On-Demand-Belastung war nicht erfolgreich (einschließlich des Ablehnungsgrunds) |
+| 2 | `subscription.on_hold` | Das Abonnement wurde pausiert (informativ; blockiert keine weiteren Belastungen) |
+| 3* | `payment.succeeded` | Eine nachfolgende Belastung – entweder dein Retry oder eine Belastung nach der Aktualisierung der Zahlungsmethode – war erfolgreich |
+| 4* | `subscription.active` | Das Abonnement kehrte nach einer erfolgreichen Belastung zu `active` zurück |
 
 <Info>
-Events 3 and 4 only fire after a follow-up charge succeeds.
+Die Ereignisse 3 und 4 werden erst ausgelöst, nachdem eine Folgebelastung erfolgreich war.
 </Info>
 
-### Retry responsibility
+### Verantwortung für Retries
 
 <Warning>
-Dodo Payments **does not auto-retry failed on-demand charges**. You own the retry policy. Follow the safe retry guidelines below to avoid being flagged by our fraud detection systems as card testing.
+Dodo Payments führt **keine automatischen Retries für fehlgeschlagene On-Demand-Belastungen durch**. Du bist für die Retry-Richtlinie verantwortlich. Befolge die unten aufgeführten Richtlinien für sichere Retries, damit unsere Systeme zur Betrugserkennung dich nicht als Card Testing einstufen.
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) when you decide the payment method needs to be updated.
+[Subscription Dunning](/features/recovery/subscription-dunning) – die integrierte E-Mail-Wiederherstellungssequenz – ist auf fehlgeschlagene *Verlängerungszahlungen* bei geplanten Abonnements und vom Kunden veranlasste Kündigungen beschränkt. Sie ist nicht für fehlgeschlagene On-Demand-Belastungen vorgesehen. Kommuniziere direkt mit dem Kunden (z. B. per Transaktions-E-Mail oder In-App-Aufforderung), wenn du entscheidest, dass die Zahlungsmethode aktualisiert werden muss.
 
-## Payment retries
+## Zahlungs-Retries
 
-Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
+Unser System zur Betrugserkennung kann aggressive Retry-Muster blockieren (und sie als potenzielles Card Testing markieren). Befolge eine sichere Retry-Richtlinie.
 
 <Warning>
-Burst retry patterns can be flagged as fraudulent or suspected card testing by our risk systems and processors. Avoid clustered retries; follow the backoff schedule and time alignment guidance below.
+Burst-Retry-Muster können von unseren Risikosystemen und Zahlungsabwicklern als betrügerisch oder als vermutetes Card Testing markiert werden. Vermeide gebündelte Retries und befolge den unten beschriebenen Backoff-Zeitplan sowie die Hinweise zur zeitlichen Abstimmung.
 </Warning>
 
-### Principles for safe retry policies
+### Grundsätze für sichere Retry-Richtlinien
 
-- **Backoff mechanism**: Use exponential backoff between retries.
-- **Retry limits**: Cap total retries (3–4 attempts max).
-- **Intelligent filtering**: Retry only on retryable failures (e.g., network/issuer errors, insufficient funds); never retry hard declines.
-- **Card testing prevention**: Do not retry failures like `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Vary metadata (optional)**: If you maintain your own retry system, differentiate retries via metadata (e.g., `retry_attempt`).
+- **Backoff-Mechanismus**: Verwende exponentielles Backoff zwischen Retries.
+- **Retry-Limits**: Begrenze die Gesamtzahl der Retries (maximal 3–4 Versuche).
+- **Intelligente Filterung**: Wiederhole nur bei wiederholbaren Fehlern (z. B. Netzwerk-/Issuer-Fehlern, unzureichendem Guthaben); wiederhole niemals endgültige Ablehnungen.
+- **Verhinderung von Card Testing**: Wiederhole keine Fehler wie `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Metadaten variieren (optional)**: Wenn du ein eigenes Retry-System unterhältst, unterscheide Retries über Metadaten (z. B. `retry_attempt`).
 
-### Suggested retry schedule (subscriptions)
+### Vorgeschlagener Retry-Zeitplan (Abonnements)
 
-- **1st attempt**: Immediate when you create the charge
-- **2nd attempt**: After 3 days
-- **3rd attempt**: After 7 more days (10 days total)
-- **4th attempt (final)**: After another 7 days (17 days total)
+- **1. Versuch**: Sofort beim Erstellen der Belastung
+- **2. Versuch**: Nach 3 Tagen
+- **3. Versuch**: Nach weiteren 7 Tagen (insgesamt 10 Tage)
+- **4. Versuch (final)**: Nach weiteren 7 Tagen (insgesamt 17 Tage)
 
-Final step: if still unpaid, mark the subscription as unpaid or cancel it, based on your policy. Notify the customer during the window to update their payment method.
+Letzter Schritt: Wenn die Zahlung weiterhin aussteht, markiere das Abonnement abhängig von deiner Richtlinie als unbezahlt oder kündige es. Informiere den Kunden innerhalb dieses Zeitfensters darüber, seine Zahlungsmethode zu aktualisieren.
 
-### Avoid burst retries; align to authorization time
+### Burst-Retries vermeiden und an der Autorisierungszeit ausrichten
 
-- Anchor retries to the original authorization timestamp to avoid "burst" behavior across your portfolio.
-- Example: If the customer starts a trial or mandate at 1:10 pm today, schedule follow-up retries at 1:10 pm on subsequent days per your backoff (e.g., +3 days → 1:10 pm, +7 days → 1:10 pm).
-- Alternatively, if you store the last successful payment time `T`, schedule the next attempt at `T + X days` to preserve time-of-day alignment.
+- Verankere Retries am ursprünglichen Zeitstempel der Autorisierung, um ein „Burst“-Verhalten über dein gesamtes Portfolio hinweg zu vermeiden.
+- Beispiel: Wenn der Kunde heute um 13:10 Uhr einen Testzeitraum oder ein Mandat startet, plane Folge-Retries an den darauffolgenden Tagen gemäß deinem Backoff um 13:10 Uhr (z. B. +3 Tage → 13:10 Uhr, +7 Tage → 13:10 Uhr).
+- Wenn du alternativ die Zeit der letzten erfolgreichen Zahlung `T` speicherst, plane den nächsten Versuch für `T + X days`, um die zeitliche Ausrichtung beizubehalten.
 
 <Note>
-Time-zone and DST: use a consistent time standard for scheduling and convert for display only to maintain intervals.
+Zeitzone und DST: Verwende für die Planung einen einheitlichen Zeitstandard und rechne nur für die Anzeige um, damit die Intervalle erhalten bleiben.
 </Note>
 
-### Decline codes you should not retry
+### Ablehnungscodes, bei denen du keinen Retry durchführen solltest
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -432,52 +436,52 @@ Time-zone and DST: use a consistent time standard for scheduling and convert for
 - `LOST_CARD`
 
 <Note>
-For a comprehensive list of decline reasons and whether they are user-correctable, see the
-[Transaction Failures](/api-reference/transaction-failures) documentation.
+Eine umfassende Liste der Ablehnungsgründe und Informationen dazu, ob sie vom Benutzer korrigiert werden können, findest du in der
+Dokumentation zu [Transaktionsfehlern](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Only retry on soft/temporary issues (e.g., `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeouts). If the same decline repeats, pause further retries.
+Wiederhole nur bei vorübergehenden Problemen (z. B. `insufficient_funds`, `issuer_unavailable`, `processing_error`, Netzwerk-Timeouts). Wenn dieselbe Ablehnung erneut auftritt, pausiere weitere Retries.
 </Tip>
 
-### Implementation guidelines (no code)
+### Implementierungsrichtlinien (ohne Code)
 
-- Use a scheduler/queue that persists precise timestamps; compute next attempt at the exact time-of-day offset (e.g., `T + 3 days` at the same HH:MM).
-- Maintain and reference the last successful payment timestamp `T` to compute the next attempt; do not bunch multiple subscriptions at the same instant.
-- Always evaluate the last decline reason; stop retries for hard declines in the skip list above.
-- Cap concurrent retries per customer and per account to prevent accidental surges.
-- Communicate proactively: email/SMS the customer to update their payment method before the next scheduled attempt.
-- Use metadata only for observability (e.g., `retry_attempt`); never try to "evade" fraud/risk systems by rotating inconsequential fields.
+- Verwende einen Scheduler/eine Queue, die präzise Zeitstempel speichert; berechne den nächsten Versuch zum exakten Tageszeitpunkt des Offsets (z. B. `T + 3 days` zur gleichen HH:MM-Zeit).
+- Speichere den Zeitstempel der letzten erfolgreichen Zahlung `T` und verwende ihn zur Berechnung des nächsten Versuchs; bündele nicht mehrere Abonnements zum selben Zeitpunkt.
+- Werte immer den letzten Ablehnungsgrund aus und stoppe Retries bei endgültigen Ablehnungen aus der obigen Ausschlussliste.
+- Begrenze gleichzeitige Retries pro Kunde und Konto, um versehentliche Lastspitzen zu verhindern.
+- Kommuniziere proaktiv: Sende dem Kunden eine E-Mail/SMS, damit er seine Zahlungsmethode vor dem nächsten geplanten Versuch aktualisiert.
+- Verwende Metadaten ausschließlich zur Beobachtung (z. B. `retry_attempt`); versuche niemals, Betrugs-/Risikosysteme durch das Rotieren unwesentlicher Felder zu „umgehen“.
 
-## Cancellation
+## Kündigung
 
-On-demand subscriptions follow a different cancellation flow from scheduled subscriptions because there is no fixed billing cycle to anchor an immediate end date.
+On-Demand-Abonnements folgen einem anderen Kündigungsablauf als geplante Abonnements, da es keinen festen Abrechnungszyklus gibt, an dem ein sofortiges Enddatum ausgerichtet werden kann.
 
-### Customer portal behavior
+### Verhalten des Customer Portal
 
-When a customer cancels an on-demand subscription from the [Customer Portal](/features/customer-portal), the cancellation is **scheduled for the next billing date** by default. The **Cancel Now** option is intentionally not shown for on-demand subscriptions.
+Wenn ein Kunde ein On-Demand-Abonnement über das [Customer Portal](/features/customer-portal) kündigt, wird die Kündigung standardmäßig **für das nächste Abrechnungsdatum geplant**. Die Option **Jetzt kündigen** wird bei On-Demand-Abonnements absichtlich nicht angezeigt.
 
-The reason: on-demand subscriptions do not have predictable recurring renewal dates — the next charge time is driven entirely by your usage events. Scheduling cancellation at the next billing date keeps the mandate active until the period boundary so any in-flight usage can still be charged, then ends the subscription cleanly.
+Der Grund: On-Demand-Abonnements haben keine vorhersehbaren wiederkehrenden Verlängerungsdaten – der Zeitpunkt der nächsten Belastung wird vollständig durch deine Nutzungsereignisse bestimmt. Durch die Planung der Kündigung zum nächsten Abrechnungsdatum bleibt das Mandat bis zum Ende des Zeitraums aktiv, sodass laufende Nutzung weiterhin belastet werden kann. Anschließend wird das Abonnement ordnungsgemäß beendet.
 
-After the customer confirms cancellation:
-- The subscription stays `active` and remains chargeable via `POST /subscriptions/{id}/charge` until the scheduled cancellation date.
-- `cancel_at_next_billing_date` is set to `true` on the subscription.
-- A `subscription.cancelled` webhook is emitted when the cancellation takes effect.
+Nachdem der Kunde die Kündigung bestätigt hat:
+- Das Abonnement bleibt `active` und kann bis zum geplanten Kündigungsdatum weiterhin über `POST /subscriptions/{id}/charge` belastet werden.
+- `cancel_at_next_billing_date` wird im Abonnement auf `true` gesetzt.
+- Wenn die Kündigung wirksam wird, wird ein `subscription.cancelled`-Webhook ausgelöst.
 
 <Info>
-If you need to end the subscription immediately (for example, in response to a refund or a support request), cancel it programmatically via the API instead of relying on the customer portal flow.
+Wenn du das Abonnement sofort beenden musst (zum Beispiel als Reaktion auf eine Rückerstattung oder eine Supportanfrage), kündige es programmgesteuert über die API, anstatt dich auf den Ablauf im Customer Portal zu verlassen.
 </Info>
 
-### Cancel programmatically
+### Programmgesteuert kündigen
 
-You can cancel an on-demand subscription via the API at any time. You control whether the cancellation is immediate or scheduled.
+Du kannst ein On-Demand-Abonnement jederzeit über die API kündigen. Du entscheidest, ob die Kündigung sofort oder geplant erfolgen soll.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Set the subscription `status` to `cancelled` to end it right away. The mandate is revoked and no further charges can be created.
+Setze `status` des Abonnements auf `cancelled`, um es sofort zu beenden. Das Mandat wird widerrufen und es können keine weiteren Belastungen erstellt werden.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -499,7 +503,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Mirror the customer portal behavior — keep the subscription active until the scheduled cancellation date, then end it.
+Bilde das Verhalten des Customer Portal nach – halte das Abonnement bis zum geplanten Kündigungsdatum aktiv und beende es anschließend.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -521,48 +525,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhooks on cancellation
+### Webhooks bei der Kündigung
 
-| Event | When it fires |
+| Ereignis | Auslösezeitpunkt |
 |-------|---------------|
-| `subscription.cancelled` | Subscription is fully cancelled and no longer chargeable |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` was toggled (scheduled cancellation set or undone) |
+| `subscription.cancelled` | Das Abonnement ist vollständig gekündigt und kann nicht mehr belastet werden |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` wurde umgeschaltet (geplante Kündigung gesetzt oder aufgehoben) |
 
 <Tip>
-To distinguish on-demand cancellations from scheduled-subscription cancellations in your handler, check the subscription's `on_demand` flag when processing the webhook.
+Um in deinem Handler On-Demand-Kündigungen von Kündigungen geplanter Abonnements zu unterscheiden, prüfe beim Verarbeiten des Webhooks das `on_demand`-Flag des Abonnements.
 </Tip>
 
-## Track outcomes with webhooks
+## Ergebnisse mit Webhooks verfolgen
 
-Implement webhook handling to track the customer journey. See [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Implementiere die Verarbeitung von Webhooks, um die Customer Journey zu verfolgen. Siehe [Webhooks implementieren](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Mandate authorized and subscription activated
-- **subscription.failed**: Creation failed (e.g., mandate failure)
-- **subscription.on_hold**: Subscription placed on hold (e.g., unpaid state)
-- **subscription.cancelled**: Subscription fully cancelled (see [Cancellation](#cancellation))
-- **payment.succeeded**: Charge succeeded
-- **payment.failed**: Charge failed
+- **subscription.active**: Mandat autorisiert und Abonnement aktiviert
+- **subscription.failed**: Erstellung fehlgeschlagen (z. B. Mandatsfehler)
+- **subscription.on_hold**: Abonnement pausiert (z. B. Status „unbezahlt“)
+- **subscription.cancelled**: Abonnement vollständig gekündigt (siehe [Kündigung](#cancellation))
+- **payment.succeeded**: Belastung erfolgreich
+- **payment.failed**: Belastung fehlgeschlagen
 
 <Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
+Konzentriere dich bei On-Demand-Abläufen auf `payment.succeeded` und `payment.failed`, um nutzungsbasierte Belastungen abzugleichen. Wenn auf `payment.failed` `subscription.on_hold` folgt, siehe [Umgang mit fehlgeschlagenen Belastungen](#handling-failed-charges), um das Abonnement wiederherzustellen.
 </Tip>
 
-## Testing and next steps
+## Testen und nächste Schritte
 
 <Steps>
 <Step title="Create in test mode">
-Verwenden Sie Ihren Test-API-Schlüssel, um das Abonnement zu erstellen, öffnen Sie dann den zurückgegebenen `checkout_url` und schließen Sie das Mandat ab.
+Verwende deinen Test-API-Key, um das Abonnement zu erstellen. Öffne anschließend den zurückgegebenen `checkout_url` und schließe das Mandat ab.
 </Step>
 <Step title="Trigger a charge">
-Rufen Sie den Charge-Endpunkt mit einem kleinen `product_price` (z.B. `100`) auf und überprüfen Sie, ob Sie `payment.succeeded` erhalten.
+Rufe den Charge-Endpoint mit einem kleinen `product_price` (z. B. `100`) auf und überprüfe, dass du `payment.succeeded` erhältst.
 </Step>
 <Step title="Go live">
-Wechseln Sie zu Ihrem Live-API-Schlüssel, sobald Sie Ereignisse und interne Statusaktualisierungen validiert haben.
+Wechsle zu deinem Live-API-Key, sobald du die Ereignisse und internen Statusaktualisierungen validiert hast.
 </Step>
 </Steps>
 
-## Troubleshooting
+## Fehlerbehebung
 
-- **422 Invalid Request**: Ensure `on_demand.mandate_only` is provided on creation and `product_price` is provided for charges.
-- **Currency errors**: If you override `product_currency`, confirm it's supported for your account and customer.
-- **No webhooks received**: Verify your webhook URL and signature secret configuration.
+- **422 Invalid Request**: Stelle sicher, dass `on_demand.mandate_only` bei der Erstellung und `product_price` für Belastungen angegeben wird.
+- **Währungsfehler**: Wenn du `product_currency` überschreibst, bestätige, dass die Währung für dein Konto und deinen Kunden unterstützt wird.
+- **Keine Webhooks empfangen**: Überprüfe die Konfiguration deiner Webhook-URL und des Signaturgeheimnisses.

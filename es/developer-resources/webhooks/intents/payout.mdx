@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Payout
+description: El payload que se envía a tu endpoint de webhook cuando se crea un
+  payout o cambia su estado, y cómo conciliar cada evento del ciclo de vida del
+  payout.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook de payout
+  - eventos de payout
+  - integración de webhook
+  - payout
+  - payout.success
+---
+
+<Info>
+Los webhooks de payout te indican cuándo tus propios fondos se transfieren de Dodo Payments a tu cuenta bancaria. Úsalos para conciliar los payouts en tus sistemas contables sin consultar periódicamente el endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Eventos de webhook de payout
+
+Un payout emite un evento en cada etapa de su ciclo de vida. Las etapas coinciden con los [estados de payout](/features/payouts/payout-structure) que se muestran en tu dashboard.
+
+| Evento | Se activa cuando | Lo que normalmente significa |
+|-------|-----------|-----------------------|
+| `payout.created` | Se crea un payout, ya sea mediante el ciclo automático de payouts o fuera de ciclo | El payout existe, pero aún no ha comenzado a moverse |
+| `payout.in_progress` | Llega la fecha de vencimiento del payout y comienza el procesamiento | Los fondos están en camino a tu cuenta bancaria |
+| `payout.on_hold` | El payout se pausa o se somete a revisión | Es posible que debas proporcionar información adicional |
+| `payout.success` | Se liquida el payout a tu cuenta bancaria | Los fondos deberían estar disponibles en tu cuenta |
+| `payout.failed` | El payout falla | El importe y las comisiones se abonan nuevamente en tu wallet |
+
+<Note>
+`payout.created` se emitía anteriormente como `payout.not_initiated`. Si un endpoint existente filtra por `payout.not_initiated`, actualiza el filtro a `payout.created` para que siga coincidiendo. El campo `status` del payload sigue indicando `not_initiated` en esta etapa.
+</Note>
+
+## Gestión de eventos de payout
+
+Los payouts corresponden a tu propio dinero, no al de un cliente, por lo que estos eventos normalmente alimentan la contabilidad y las alertas internas, en lugar de los flujos orientados al cliente.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Verifica siempre la firma del webhook antes de procesarlo; consulta la [guía de Webhooks](/developer-resources/webhooks) para configurarla. El handler anterior omite la verificación para simplificar.
+</Tip>
+
+<Warning>
+Los eventos de payout no son terminales ni siguen un orden estricto. `payout.failed` puede llegar después de `payout.success` cuando un banco devuelve la transferencia, y `payout.success` puede llegar después de `payout.failed` cuando un payout fallido se recupera posteriormente. Trata el campo `status` del payload como el estado actual, en lugar de asumir que el último evento recibido es definitivo.
+</Warning>
+
+## Estado del payout
+
+El objeto payout informa de su progreso mediante un único campo:
+
+| Campo | Valores |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` e `tax` del payload están obsoletos. Usa los [endpoints de desglose de payouts](/api-reference/payouts/retrieve-breakup) para obtener un desglose detallado.
+</Note>
+
+## Relacionado
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Cómo se programan y calculan los payouts, y qué significa cada estado de payout.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Haz un seguimiento de los saldos de la wallet y del ledger que respalda cada payout.
+</Card>
+</CardGroup>
+
+## Esquema del payload del webhook

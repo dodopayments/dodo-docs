@@ -19,11 +19,12 @@ keywords:
 
 ## نظرة عامة
 
-- يمكن أن تكون مفاتيح البيانات الوصفية بطول يصل إلى 40 حرفًا
-- يمكن أن تكون قيم البيانات الوصفية بطول يصل إلى 500 حرف
-- يمكنك أن تحتوي على ما يصل إلى 50 زوج مفتاح-قيمة من البيانات الوصفية لكل كائن
-- يجب أن تحتوي المفاتيح على أحرف أبجدية رقمية فقط، وشرطات، وشرطات سفلية
-- البيانات الوصفية ليست قابلة للبحث باستخدام واجهة برمجة التطبيقات الخاصة بنا ولكن يتم إرجاعها في استجابات واجهة برمجة التطبيقات وwebhooks
+- يمكن أن يصل طول مفاتيح البيانات الوصفية إلى 40 حرفًا
+- يمكن أن تكون قيم البيانات الوصفية سلسلة نصية أو عددًا صحيحًا أو رقمًا أو قيمة منطقية؛ ويمكن أن يصل طول السلاسل النصية إلى 500 حرف
+- لا يتم قبول الكائنات والمصفوفات و`null` كقيم للبيانات الوصفية
+- يمكنك إضافة ما يصل إلى 50 زوجًا من مفتاح وقيمة البيانات الوصفية لكل كائن
+- يجب أن تحتوي المفاتيح على أحرف وأرقام وشرطات وشرطات سفلية فقط
+- لا يمكن البحث في البيانات الوصفية باستخدام API الخاص بنا، ولكن يتم إرجاعها في استجابات API وwebhooks
 
 ## حالات الاستخدام
 
@@ -54,8 +55,9 @@ const checkoutSession = await client.checkoutSessions.create({
 });
 
 // Adding metadata when creating a payment
+// Note: POST /payments is deprecated — prefer checkout sessions for new integrations
 const payment = await client.payments.create({
-    billing: { city: 'city', country: 'AF', state: 'state', street: 'street', zipcode: 0 },
+    billing: { city: 'city', country: 'AF', state: 'state', street: 'street', zipcode: '12345' },
     customer: { customer_id: 'customer_id' },
     product_cart: [{ product_id: 'product_id', quantity: 0 }],
     metadata:{order_id: 'ORD-123', customer_notes: 'Customer notes'}
@@ -92,7 +94,7 @@ const customer = await client.customers.create({
 
 // Adding metadata when changing a subscription plan
 await client.subscriptions.changePlan('sub_123', {
-    product_id: 'prod_premium',
+    product_id: 'pdt_premium',
     proration_billing_mode: 'prorated_immediately',
     quantity: 1,
     metadata: {
@@ -132,75 +134,84 @@ const discount = await client.discounts.create({
 تتضمن البيانات الوصفية في استجابات واجهة برمجة التطبيقات عند استرجاع الكائنات:
 
 ```javascript
-// Retrieving checkout session metadata
-const checkoutSession = await client.checkoutSessions.retrieve('cs_123');
-console.log(checkoutSession.metadata.order_id); // 'ORD-123'
-
 // Retrieving payment metadata
 const payment = await client.payments.retrieve('pay_123');
 console.log(payment.metadata.order_id); // '6735'
 
 // Retrieving customer metadata
-const customer = await client.customers.retrieve('customer_123');
+const customer = await client.customers.retrieve('cus_123');
 console.log(customer.metadata.crm_id); // 'CRM-12345'
 
 // Retrieving refund metadata
-const refund = await client.refunds.retrieve('refund_123');
+const refund = await client.refunds.retrieve('ref_123');
 console.log(refund.metadata.refund_reason); // 'customer_request'
 ```
 
+<Note>
+لا يؤدي استرداد جلسة الدفع (`GET /checkouts/{id}`) إلى إرجاع `metadata`. تحتوي استجابة حالة الجلسة على `id` و`created_at` و`payment_id` و`payment_status` و`customer_email` و`customer_name` فقط. اقرأ البيانات الوصفية التي أرفقتها عند إنشاء الجلسة من الدفعة الناتجة بدلًا من ذلك، باستخدام `payment_id` الذي يعيده ذلك endpoint.
+</Note>
+
 ## البحث والتصفية
 
-بينما لا يمكن البحث عن البيانات الوصفية مباشرة عبر واجهة برمجة التطبيقات الخاصة بنا، يمكنك:
+على الرغم من أنه لا يمكن البحث في البيانات الوصفية مباشرةً عبر API الخاص بنا، يمكنك:
 
-1. تخزين المعرفات المهمة في البيانات الوصفية
-2. استرجاع الكائنات باستخدام معرفاتها الأساسية
+
+1. تخزين المعرّفات المهمة في البيانات الوصفية
+2. استرداد الكائنات باستخدام معرّفاتها الأساسية
 3. تصفية النتائج في كود التطبيق الخاص بك
 
 ```javascript
-// Example: Find a payment using your order ID
-const payments = await client.payments.list({
-  page_size: 100
-});
-
-const matchingPayment = payments.items.find(
-  payment => payment.metadata.order_id === '6735'
-);
+// Example: Find a payment using your order ID.
+// list() is auto-paginating, so iterating searches across pages instead of
+// only the first one.
+let matchingPayment;
+for await (const payment of client.payments.list({ page_size: 100 })) {
+  if (payment.metadata?.order_id === '6735') {
+    matchingPayment = payment;
+    break;
+  }
+}
 ```
 
 ## أفضل الممارسات
 
-### افعل:
-- استخدم اتفاقيات تسمية متسقة لمفاتيح البيانات الوصفية
-- وثّق مخطط البيانات الوصفية داخليًا
-- اجعل القيم قصيرة ومعنوية
-- استخدم البيانات الوصفية للبيانات الثابتة فقط
-- فكّر في استخدام بادئات للأنظمة المختلفة (على سبيل المثال، `crm_id`، `inventory_sku`)
+### يُنصح بما يلي:
+- استخدام اصطلاحات تسمية متسقة لمفاتيح البيانات الوصفية
+- توثيق مخطط البيانات الوصفية داخليًا
+- إبقاء القيم قصيرة وذات معنى
+- استخدام البيانات الوصفية للبيانات الثابتة فقط
+- التفكير في استخدام بادئات للأنظمة المختلفة (مثل `crm_id` و`inventory_sku`)
 
-### لا يجب عليك:
-- تخزين بيانات حساسة في البيانات الوصفية
+### لا يُنصح بما يلي:
+- تخزين البيانات الحساسة في البيانات الوصفية
 - استخدام البيانات الوصفية للقيم التي تتغير بشكل متكرر
-- الاعتماد على البيانات الوصفية للمنطق التجاري الحرج
-- تخزين معلومات مكررة متاحة في مكان آخر في الكائن
+- الاعتماد على البيانات الوصفية في منطق الأعمال المهم
+- تخزين معلومات مكررة متوفرة في موضع آخر من الكائن
 - استخدام أحرف خاصة في مفاتيح البيانات الوصفية
 
 ## الكائنات المدعومة
 
-تدعم البيانات الوصفية الكائنات التالية:
+تُدعم البيانات الوصفية في الكائنات التالية:
 
 | نوع الكائن | الدعم |
 |------------|---------|
-| المدفوعات | ✓ |
-| الاشتراكات | ✓ |
-| تغيير خطة الاشتراك | ✓ |
-| المنتجات | ✓ |
-| المبالغ المستردة | ✓ |
-| جلسات الدفع | ✓ |
-| العملاء | ✓ |
+| Payments | ✓ |
+| Subscriptions | ✓ |
+| Subscription Change Plan | ✓ |
+| Subscription Charges | ✓ |
+| Products | ✓ |
+| Refunds | ✓ |
+| Checkout Sessions | ✓ |
+| Customers | ✓ |
+| Discounts | ✓ |
+| Entitlements | ✓ |
+| Credit Ledger Entries | ✓ |
+| Usage Events | ✓ |
+| Webhooks | ✓ |
 
 ## Webhooks والبيانات الوصفية
 
-تتضمن البيانات الوصفية في أحداث webhook، مما يسهل التعامل مع الإشعارات باستخدام بياناتك المخصصة:
+يتم تضمين البيانات الوصفية في أحداث webhook، مما يسهل التعامل مع الإشعارات باستخدام بياناتك المخصصة:
 
 ```javascript
 // Example webhook handler

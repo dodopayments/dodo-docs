@@ -23,9 +23,9 @@ Un diritto di feature flag trasforma Dodo Payments in un negozio di feature flag
 
 Nulla lascia Dodo Payments — il diritto **è** il deliverable:
 
-- Al momento dell'acquisto, il diritto viene creato e passa direttamente a `delivered`. Non c'è nessuna fase `pending`, nessuna azione del cliente e nessun modo per il fallimento della consegna.
-- Il diritto porta un payload tipizzato `feature`: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. La tua applicazione legge `feature_id` per decidere cosa sbloccare.
-- Cancellazione, rimborso o revoca manuale sposta il diritto a `revoked`, e la tua applicazione vede il flag scomparire.
+- Al momento dell'acquisto, il grant viene creato e passa direttamente a `Delivered`. Non esiste alcuna fase `Pending`, non è richiesta alcuna azione da parte del cliente e non è possibile che la delivery non vada a buon fine.
+- Il grant contiene un payload `feature` tipizzato: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. La tua applicazione legge `feature_id` per decidere cosa sbloccare.
+- L'annullamento, il rimborso o la revoca manuale spostano il grant a `Revoked` e la tua applicazione rileva la scomparsa del flag.
 
 Gli usi comuni includono gating di funzionalità basati su piani (Pro sblocca analitica), capacità aggiuntive (aggiornamento "API access"), e programmi di accesso anticipato venduti come acquisti una tantum.
 
@@ -235,9 +235,15 @@ I diritti di feature flag seguono il ciclo di vita standard [grant lifecycle](/f
 | Abbonamento ripristinato (ad esempio, riscossione riuscita) | Il diritto revocato viene ripristinato a `delivered` — stesso diritto `id`, campi di revoca cancellati. |
 | Revoca API manuale | Diritto revocato con `revocation_reason: manual`. Non viene ripristinato automaticamente al rinnovo. |
 
-I diritti sono idempotenti per ogni entitlement e cliente: mentre un cliente ha un diritto non revocato per un flag, acquisti e rinnovi ripetuti non creano duplicati.
+I grant dei feature flag seguono il [ciclo di vita standard dei grant](/features/entitlements/introduction#how-grants-work) con una semplificazione: non esiste una fase di delivery, quindi i grant non rimangono mai in `Pending` e non passano mai a `Failed`.
 
----
+| Trigger | Effetto |
+|---|---|
+| Il pagamento una tantum va a buon fine / l'abbonamento diventa attivo | Grant creato con `status: delivered` e `delivered_at` impostati. |
+| L'abbonamento viene sospeso, annullato o scade | Grant revocato con il corrispondente `revocation_reason`. |
+| Rimborso di un pagamento una tantum | Grant revocato con `revocation_reason: refund`. |
+| L'abbonamento viene ripristinato (ad esempio, il recupero dei pagamenti va a buon fine) | Il grant revocato viene ripristinato a `Delivered` — stesso `id` del grant, campi di revoca cancellati. |
+| Revoca manuale tramite API | Grant revocato con `revocation_reason: manual`. Non viene ripristinato automaticamente al rinnovo. |
 
 ## Webhooks
 
@@ -267,7 +273,9 @@ app.post('/webhooks/dodo', async (req, res) => {
 });
 ```
 
-Non ci sono `entitlement_grant.failed` per i feature flags — la consegna avviene interamente all'interno di Dodo Payments e non può fallire.
+- `entitlement_grant.created` — arriva già in stato `Delivered` con il payload `feature`. Abilita la funzionalità.
+- `entitlement_grant.delivered` — viene attivato quando un grant precedentemente revocato viene ripristinato. Riabilita la funzionalità.
+- `entitlement_grant.revoked` — accesso revocato. Disabilita la funzionalità e controlla `revocation_reason` per decidere quale messaggio mostrare.
 
 ---
 
@@ -281,7 +289,11 @@ Non ci sono `entitlement_grant.failed` per i feature flags — la consegna avvie
 
 ---
 
-## Migliori pratiche
+1. **Crea il flag.** `feature_id: advanced_reports` con i metadati `{ "tier": "pro", "monthly_report_limit": 100 }`.
+2. **Assoc ialo** al prodotto di abbonamento Pro Plan.
+3. **Un cliente sottoscrive l'abbonamento.** Dodo Payments crea un grant `Delivered` e attiva `entitlement_grant.created`; il tuo gestore webhook abilita `advanced_reports` per il cliente con un limite di 100.
+4. **La tua app controlla l'accesso alla funzionalità.** Al caricamento della dashboard, controlla il set di funzionalità memorizzato nella cache (oppure chiama `listEntitlementGrants`) e visualizza la scheda dei report solo quando `advanced_reports` è presente.
+5. **Il cliente annulla l'abbonamento.** Dodo Payments revoca il grant e attiva `entitlement_grant.revoked`; il tuo gestore disabilita la funzionalità. Se in seguito il cliente recupera i pagamenti, `entitlement_grant.delivered` la ripristina — non sono necessarie modifiche al codice.
 
 - **Usa ID funzionalità stabili in snake_case.** Il codice della tua applicazione controlla queste stringhe; rinominare uno è un cambiamento radicale su entrambi i lati.
 - **Un flag per capacità.** Preferisci `advanced_reports` + `api_access` come due entitlements su un singolo `pro_bundle` — revoca e combinazioni di piani rimangono pulite.
@@ -291,8 +303,8 @@ Non ci sono `entitlement_grant.failed` per i feature flags — la consegna avvie
 
 ## Best practices
 
-- **Use stable, snake_case feature ids.** Your application code checks these strings; renaming one is a breaking change on both sides.
-- **One flag per capability.** Prefer `advanced_reports` + `api_access` as two entitlements over a single `pro_bundle` — revocation and plan mixes stay clean.
-- **Drive state from webhooks, verify with the API.** Webhooks keep your database current; the list endpoint is the source of truth for reconciliation jobs and cache misses.
-- **Treat `revoked` as immediate.** A revoked flag means the customer is no longer paying for the feature. Gate on the next request, not the next session.
-- **Put limits in metadata, not in code.** Changing a quota then only requires editing the entitlement — new customers pick it up automatically while existing grants keep their purchased snapshot.
+- **Usa ID di funzionalità stabili in snake_case.** Il codice della tua applicazione controlla queste stringhe; rinominarne una è una modifica incompatibile su entrambi i lati.
+- **Un flag per ogni funzionalità.** Preferisci `advanced_reports` + `api_access` come due entitlement invece di un singolo `pro_bundle`: la revoca e le combinazioni di piani restano più semplici da gestire.
+- **Gestisci lo stato tramite webhook e verifica tramite API.** I webhook mantengono aggiornato il database; l'endpoint di elenco è la fonte autorevole per i processi di riconciliazione e le cache miss.
+- **Tratta `Revoked` come immediato.** Un flag revocato significa che il cliente non sta più pagando per la funzionalità. Applica il controllo alla richiesta successiva, non alla sessione successiva.
+- **Inserisci i limiti nei metadati, non nel codice.** Per modificare una quota è quindi sufficiente aggiornare l'entitlement: i nuovi clienti la ricevono automaticamente, mentre i grant esistenti mantengono lo snapshot acquistato.

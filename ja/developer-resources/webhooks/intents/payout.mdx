@@ -1,0 +1,104 @@
+---
+openapi-schema: PayoutsResponse
+title: Payout
+description: Payout が作成されたとき、またはステータスが変更されたときに webhook エンドポイントへ送信されるペイロードと、各
+  Payout ライフサイクルイベントを照合する方法。
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - Payout webhook
+  - Payout イベント
+  - webhook 統合
+  - Payout
+  - payout.success
+---
+
+<Info>
+Payout webhook は、ユーザー自身の資金が Dodo Payments から銀行口座へ移動したタイミングを通知します。これらを使用すると、[Payouts の一覧](/api-reference/payouts/get-payouts) エンドポイントをポーリングせずに、会計システム内で Payout を照合できます。
+</Info>
+
+## Payout Webhook イベント
+
+Payout はライフサイクルの各段階でイベントを発行します。各段階は、ダッシュボードに表示される [Payout のステータス](/features/payouts/payout-structure) に対応しています。
+
+| イベント | 発生するタイミング | 通常の意味 |
+|-------|-----------|-----------------------|
+| `payout.created` | 自動 Payout サイクルまたはサイクル外の処理によって Payout が作成されたとき | Payout は存在しますが、まだ移動を開始していません |
+| `payout.in_progress` | Payout の支払期日になり、処理が開始されたとき | 資金が銀行口座へ移動中です |
+| `payout.on_hold` | Payout が一時停止された、または審査対象になったとき | 追加情報の提供が必要になる場合があります |
+| `payout.success` | 銀行口座への Payout の決済が完了したとき | 資金が口座で利用可能になっているはずです |
+| `payout.failed` | Payout が失敗したとき | 金額と手数料がウォレットに返金されます |
+
+<Note>
+`payout.created` は以前、`payout.not_initiated` として発行されていました。既存のエンドポイントが `payout.not_initiated` でフィルタリングしている場合は、引き続き一致するようにフィルターを `payout.created` に更新してください。ペイロードの `status` フィールドは、この段階でも `not_initiated` を報告します。
+</Note>
+
+## Payout イベントの処理
+
+Payout は顧客の資金ではなくユーザー自身の資金に関するものなので、これらのイベントは通常、顧客向けのフローではなく、帳簿管理や社内アラートに使用されます。
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+処理する前に、必ず webhook の署名を検証してください。設定方法については [Webhooks ガイド](/developer-resources/webhooks) を参照してください。上記のハンドラーでは、簡潔にするため検証を省略しています。
+</Tip>
+
+<Warning>
+Payout イベントは終端イベントではなく、厳密な順序で発生するわけでもありません。銀行が送金を返却した場合、`payout.failed` が `payout.success` の後に届くことがあります。また、失敗した Payout が後から復旧した場合は、`payout.success` が `payout.failed` の後に届くことがあります。最後に受信したイベントが確定したものだと想定せず、ペイロードの `status` フィールドを現在の状態として扱ってください。
+</Warning>
+
+## Payout のステータス
+
+Payout オブジェクトは、1 つのフィールドで進行状況を報告します。
+
+| フィールド | 値 |
+|-------|--------|
+| `status` | `not_initiated`、`in_progress`、`on_hold`、`success`、`failed` |
+
+<Note>
+ペイロードの `refunds`、`chargebacks`、`tax` は非推奨です。詳細な内訳については、代わりに [Payout 内訳エンドポイント](/api-reference/payouts/retrieve-breakup) を使用してください。
+</Note>
+
+## 関連情報
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Payout のスケジュールと計算方法、および各 Payout ステータスの意味について説明します。
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+ウォレット残高と、各 Payout の基盤となる台帳を確認します。
+</Card>
+</CardGroup>
+
+## Webhook ペイロードスキーマ

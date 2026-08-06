@@ -251,8 +251,12 @@ curl -X POST "$DODO_API/checkouts" \
       如果为真，在<code>product_price</code>中包含自适应货币费用。如果为假，则费用将被追加在顶部。
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      指定如何使用客户的钱包余额来结算此笔扣款。
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      付款的附加元数据。如果省略，则使用订阅元数据。
+      付款的其他 metadata。如果省略，则使用 subscription metadata。
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -334,94 +338,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-向非按需订阅收费可能会失败。在收费前确保订阅详情中有`on_demand: true`。
+对非按需 subscription 进行扣款可能会失败。请确保 subscription 的详情中包含 `on_demand: true`，然后再进行扣款。
 </Warning>
 
-## 处理失败的收费
+## 处理扣款失败
 
-当对按需订阅的收费失败时，您可以决定接下来会发生什么。与计划订阅不同，按需订阅在失败后仍然可以收费。您可以调用收费端点作为自己的重试逻辑的一部分。
+当对按需 subscription 的扣款失败时，接下来如何处理由你决定。与定期 subscription 不同——定期 subscription 的续期失败后会停止后续自动计费——**按需 subscription 在失败后仍可继续扣款**。你可以根据自己的重试逻辑再次调用扣款 endpoint。
 
-### 失败时发生的事情
+### 失败时会发生什么
 
 <Steps>
 <Step title="Charge attempt fails">
-`POST /subscriptions/{subscription_id}/charge`请求返回错误响应或异步完成并发出带有拒绝原因的`payment.failed` webhook。
+`POST /subscriptions/{subscription_id}/charge` 请求要么返回错误响应，要么异步完成，并发送包含拒付原因的 `payment.failed` webhook。
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-订阅可能会移动到`on_hold`状态并发出`subscription.on_hold` webhook（请参阅[订阅状态→暂停](/features/subscription#on-hold-state)）。这是一个信号，而不是锁定。对于按需订阅，`on_hold`并**不**会阻止您再次收费。
+subscription 可能会进入 `on_hold` 状态，并发送 `subscription.on_hold` webhook（参见 [Subscription States → On Hold](/features/subscription#on-hold-state)）。这是一种信号，而不是锁定状态。对于按需 subscription，`on_hold` **不会阻止你再次扣款**。
 </Step>
 
 <Step title="Retry the charge (your call)">
-对于按需流程，Dodo不会自动重试。您可以随时再次调用`POST /subscriptions/{subscription_id}/charge`进行重试。应用下方的[安全重试策略](#payment-retries)——使用指数回退，跳过硬拒绝，并避免突发模式，以便我们的欺诈和风险系统不会标记重试。
+对于按需流程，Dodo **不会自动重试**。你可以随时再次调用 `POST /subscriptions/{subscription_id}/charge` 进行重试。请应用下方的[安全重试策略](#payment-retries)——使用指数退避、跳过硬拒付并避免突发式重试——以免重试被我们的欺诈和风险系统标记。
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-如果重试因支付方式本身失效（过期卡、关闭账户等）而持续失败，使用[`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method)从客户那里收集新的。在成功时，订阅返回到`active`，并依次发出`payment.succeeded`和`subscription.active` webhook。
+如果由于 payment method 本身存在问题（卡片过期、账户已关闭等）而导致重试持续失败，请使用 [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) 向客户收集新的 payment method。成功后，subscription 会返回 `active`，并依次发送 `payment.succeeded` 和 `subscription.active` webhook。
 </Step>
 </Steps>
 
 <Info>
-**按需 vs 计划**：对于计划订阅，Dodo会自动进行续订重试和扣款通知。对于按需订阅，您负责重试策略，因为只有您知道下次收费什么时候应该发生（由您的使用情况事件驱动，而不是日历）。
+**按需与定期的区别**：对于定期 subscription，Dodo 会执行自身的续期重试和催收。对于按需 subscription，重试策略由你负责，因为只有你知道下一次扣款应在何时发生（它由使用量事件驱动，而不是日历驱动）。
 </Info>
 
-### 按需收费失败的webhook顺序
+### 按需扣款失败时的 webhook 顺序
 
-| 顺序 | 事件 | 含义 |
+| 顺序 | Event | 含义 |
 |-------|-------|---------|
-| 1 | `payment.failed` | 按需收费尝试未成功（包含拒绝原因） |
-| 2 | `subscription.on_hold` | 订阅被暂停（信息性，不阻止进一步收费） |
-| 3* | `payment.succeeded` | 后续收费——无论是您的重试还是更新支付方式后的收费——成功 |
-| 4* | `subscription.active` | 成功收费后，订阅返回到`active` |
+| 1 | `payment.failed` | 按需扣款尝试未成功（包含拒付原因） |
+| 2 | `subscription.on_hold` | subscription 被置于暂停状态（仅供参考；不会阻止后续扣款） |
+| 3* | `payment.succeeded` | 后续扣款成功——无论是你的重试，还是更新 payment method 后发起的扣款 |
+| 4* | `subscription.active` | 扣款成功后，subscription 返回 `active` |
 
 <Info>
-事件3和4只有在后续收费成功后才会触发。
+事件 3 和 4 仅在后续扣款成功后触发。
 </Info>
 
 ### 重试责任
 
 <Warning>
-Dodo Payments **不会自动重试失败的按需收费**。您拥有重试策略。请遵循以下的安全重试准则，以避免被我们的欺诈检测系统标记为卡测试。
+Dodo Payments **不会自动重试失败的按需扣款**。重试策略由你负责。请遵循下方的安全重试指南，避免被我们的欺诈检测系统标记为盗刷测试。
 </Warning>
 
-[订阅扣款通知](/features/recovery/subscription-dunning)——内置的电子邮件恢复序列——仅限于计划订阅的*续订*付款失败和客户主动取消。它并不适用于按需收费失败。当您决定需要更新支付方式时，请直接与客户沟通（例如，事务性电子邮件或应用内提示）。
+[Subscription Dunning](/features/recovery/subscription-dunning)——内置的邮件恢复序列——仅适用于定期 subscription 的失败*续期*付款以及客户发起的取消。它并非为按需扣款失败而设计。当你判断 payment method 需要更新时，请直接与客户沟通（例如通过事务性邮件或应用内提示）。
 
 ## 付款重试
 
-我们的欺诈检测系统可能会阻止激进的重试模式（并可能将其标记为潜在的卡测试）。请遵循安全重试政策。
+我们的欺诈检测系统可能会阻止激进的重试模式（并将其标记为潜在的盗刷测试）。请遵循安全重试策略。
 
 <Warning>
-突发重试模式可能会被我们的风险系统和处理器标记为欺诈或怀疑的卡测试。避免集中的重试；请遵循下列的后退时间表和时间对齐指南。
+突发式重试模式可能会被我们的风险系统和处理方标记为欺诈或疑似盗刷测试。请避免集中重试，并遵循下方的退避计划和时间对齐指南。
 </Warning>
 
-### 安全重试政策的原则
+### 安全重试策略的原则
 
-- **后退机制**：在重试之间使用指数退避。
-- **重试限制**：限制总重试次数（最大3-4次尝试）。
-- **智能筛选**：仅对可重试的失败进行重试（例如，网络/发卡行错误、资金不足）；绝不要对硬拒绝进行重试。
-- **卡测试防范**：不要重试诸如`DO_NOT_HONOR`，`STOLEN_CARD`，`LOST_CARD`，`PICKUP_CARD`，`FRAUDULENT`，`AUTHENTICATION_FAILURE`等失败。
-- **可变元数据（可选）**：如果您维护自己的重试系统，通过元数据区分重试（例如，`retry_attempt`）。
+- **退避机制**：在重试之间使用指数退避。
+- **重试次数限制**：限制总重试次数（最多 3–4 次尝试）。
+- **智能筛选**：仅对可重试的失败进行重试（例如网络错误、发卡行错误、余额不足）；绝不重试硬拒付。
+- **防止盗刷测试**：不要重试诸如 `DO_NOT_HONOR`、`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`、`AUTHENTICATION_FAILURE` 等失败。
+- **改变 metadata（可选）**：如果你维护自己的重试系统，可通过 metadata 区分重试（例如 `retry_attempt`）。
 
-### 建议的重试时间表（订阅）
+### 建议的重试计划（subscriptions）
 
-- **第一次尝试**：您创建收费时立即进行
-- **第二次尝试**：3天后
-- **第三次尝试**：再过7天（总共10天）
-- **第四次尝试（最后一次）**：再过7天（总共17天）
+- **第 1 次尝试**：创建扣款时立即执行
+- **第 2 次尝试**：3 天后
+- **第 3 次尝试**：再过 7 天（共 10 天）
+- **第 4 次尝试（最后一次）**：再过 7 天（共 17 天）
 
-最后一步：如果仍未付款，根据您的政策将订阅标记为未付款或取消。在窗口期内通知客户更新其支付方式。
+最后一步：如果仍未付款，请根据你的策略将 subscription 标记为未付款或取消。请在此期间通知客户更新其 payment method。
 
-### 避免突发重试；与授权时间对齐
+### 避免突发式重试；与授权时间对齐
 
-- 将重试固定在原始授权时间戳上，以避免在您的投资组合中出现“突发”行为。
-- 示例：如果客户在今天的1:10开始试用或授权，请按您的退避时间安排后续重试在后续天的1:10（例如，+3天→1:10，+7天→1:10）。
-- 或者，如果您存储了上次成功支付的时间`T`，请安排下次尝试在`T + X days`以保持时间对齐。
+- 将重试锚定到最初的授权时间戳，以避免整个客户组合出现“突发式”行为。
+- 示例：如果客户今天下午 1:10 开始试用或 mandate，请根据退避计划在后续日期的下午 1:10 安排重试（例如 +3 天 → 下午 1:10，+7 天 → 下午 1:10）。
+- 或者，如果你存储了上次成功付款的时间 `T`，请将下一次尝试安排在 `T + X days`，以保持时间对齐。
 
 <Note>
-时区和DST：使用统一的时间标准进行安排，仅在显示时进行转换以保持间隔。
+时区和 DST：使用一致的时间标准进行调度，仅在显示时进行转换，以保持时间间隔。
 </Note>
 
-### 您不应重试的拒绝代码
+### 不应重试的拒付代码
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -431,51 +435,52 @@ Dodo Payments **不会自动重试失败的按需收费**。您拥有重试策�
 - `LOST_CARD`
 
 <Note>
-有关拒绝原因的完整列表及其是否可由用户纠正，请参见[交易失败](/api-reference/transaction-failures)文档。
+如需查看完整的拒付原因列表以及这些原因是否可由用户修正，请参阅
+[Transaction Failures](/api-reference/transaction-failures) 文档。
 </Note>
 
 <Tip>
-仅对软/临时问题（例如，`insufficient_funds`，`issuer_unavailable`，`processing_error`，网络超时）进行重试。如果同样的拒绝重复出现，请暂停进一步的重试。
+仅对软性/临时问题进行重试（例如 `insufficient_funds`、`issuer_unavailable`、`processing_error`、网络超时）。如果相同的拒付重复出现，请暂停后续重试。
 </Tip>
 
-### 实现指南（无代码）
+### 实施指南（无代码）
 
-- 使用调度程序/队列持久化精确时间戳；在相同的HH:MM计算下次尝试。
-- 维护和引用上次成功支付的时间戳`T`来计算下次尝试；不要在相同时刻将多个订阅聚集在一起。
-- 始终评估最后的拒绝原因；对于上面的跳过列表中的硬拒绝停止重试。
-- 限制每个客户和每个账户的并发重试，以防止意外激增。
-- 积极沟通：通过电子邮件/SMS通知客户更新其支付方式，以便在下次计划尝试前更新。
-- 元数据仅用于可观测性（例如，`retry_attempt`）；切勿通过旋转无关紧要的字段“规避”欺诈/风险系统。
+- 使用能够持久化精确时间戳的 scheduler/queue；在准确的时间偏移处计算下一次尝试（例如 `T + 3 days`，在相同的 HH:MM 执行）。
+- 维护并参考上次成功付款的时间戳 `T` 来计算下一次尝试；不要让多个 subscription 在同一时刻集中重试。
+- 始终评估上次拒付原因；对于上方跳过列表中的硬拒付，停止重试。
+- 限制每位客户和每个账户的并发重试次数，防止意外激增。
+- 主动沟通：在下一次计划尝试前，通过电子邮件/SMS 通知客户更新其 payment method。
+- 仅将 metadata 用于可观测性（例如 `retry_attempt`）；绝不要通过轮换无关字段来试图“规避”欺诈/风险系统。
 
 ## 取消
 
-按需订阅与计划订阅的取消流程不同，因为没有固定的计费周期可用于锚定即时结束日期。
+按需 subscription 的取消流程与定期 subscription 不同，因为没有固定的计费周期可用于确定立即结束日期。
 
-### 客户门户行为
+### Customer Portal 行为
 
-当客户从[客户门户](/features/customer-portal)取消按需订阅时，取消**计划在下一个计费日期**。对于按需订阅，有意不显示**立即取消**选项。
+当客户从 [Customer Portal](/features/customer-portal) 取消按需 subscription 时，默认情况下，取消操作会**安排在下一计费日期执行**。按需 subscription 不会显示**立即取消**选项。
 
-原因：按需订阅没有可预测的定期续订日期——下次收费时间完全由您的使用情况事件驱动。将取消安排在下一个计费日期，保持授权有效，直到期间结束，以便对正在进行的使用情况收取费用，然后干净地结束订阅。
+原因在于：按需 subscription 没有可预测的周期性续期日期——下一次扣款时间完全由你的使用量事件驱动。在下一计费日期取消，可以让 mandate 保持有效直到周期边界，从而仍可对正在处理的使用量进行扣款，然后干净地结束 subscription。
 
 客户确认取消后：
-- 订阅保持`active`，并通过`POST /subscriptions/{id}/charge`收费，直到安排的取消日期。
-- `cancel_at_next_billing_date`设置为`true`。
-- 取消生效时会发出`subscription.cancelled` webhook。
+- subscription 保持 `active` 状态，并可通过 `POST /subscriptions/{id}/charge` 继续扣款，直到计划的取消日期。
+- subscription 上的 `cancel_at_next_billing_date` 被设置为 `true`。
+- 取消生效时会发送 `subscription.cancelled` webhook。
 
 <Info>
-如果您需要立即结束订阅（例如，响应退款或支持请求），请通过API而不是依赖客户门户流程程序化地取消它。
+如果你需要立即结束 subscription（例如响应退款或支持请求），请通过 API 以编程方式取消，而不要依赖 Customer Portal 流程。
 </Info>
 
-### 程序化取消
+### 以编程方式取消
 
-您可以随时通过API取消按需订阅。您可以选择取消是立即生效还是计划的。
+你可以随时通过 API 取消按需 subscription。取消是立即执行还是计划执行，由你控制。
 
-端点：[PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
+Endpoint：[PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-将订阅`status`设置为`cancelled`以立即结束。授权被撤销，无法创建进一步的收费。
+将 subscription 的 `status` 设置为 `cancelled`，即可立即结束 subscription。mandate 将被撤销，之后无法再创建扣款。
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -497,7 +502,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-镜像客户门户行为——保持订阅活跃，直到安排的取消日期，然后结束。
+镜像 Customer Portal 的行为——保持 subscription 有效，直到计划的取消日期，然后结束 subscription。
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -519,48 +524,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### 取消时的webhook
+### 取消时的 Webhooks
 
-| 事件 | 触发时间 |
+| Event | 触发时机 |
 |-------|---------------|
-| `subscription.cancelled` | 订阅完全取消并不再可收费 |
-| `subscription.plan_changed` | `cancel_at_next_billing_date`被切换（计划的取消被设置或取消） |
+| `subscription.cancelled` | Subscription 已完全取消且不再可扣款 |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` 被切换（设置或撤销计划取消） |
 
 <Tip>
-要在处理webhook时区分类别按需取消和计划订阅取消，请在处理webhook时检查订阅的`on_demand`标志。
+要在处理 webhook 时区分按需取消和定期 subscription 取消，请检查 subscription 的 `on_demand` 标志。
 </Tip>
 
-## 使用webhook跟踪结果
+## 使用 webhooks 跟踪结果
 
-实施webhook处理以跟踪客户旅程。参见[实现Webhooks](/developer-resources/integration-guide#implementing-webhooks)。
+实施 webhook 处理，以跟踪客户旅程。请参阅 [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks)。
 
-- **subscription.active**: 授权授权并激活订阅
-- **subscription.failed**: 创建失败（例如，授权失败）
-- **subscription.on_hold**: 订阅已暂停（例如，未付款状态）
-- **subscription.cancelled**: 订阅完全取消（参见[取消](#cancellation)）
-- **payment.succeeded**: 收费成功
-- **payment.failed**: 收费失败
+- **subscription.active**：mandate 已授权且 subscription 已激活
+- **subscription.failed**：创建失败（例如 mandate 失败）
+- **subscription.on_hold**：subscription 被置于暂停状态（例如未付款状态）
+- **subscription.cancelled**：subscription 已完全取消（参见[取消](#cancellation)）
+- **payment.succeeded**：扣款成功
+- **payment.failed**：扣款失败
 
 <Tip>
-对于按需流程，重点关注`payment.succeeded`和`payment.failed`来对齐使用情况的收费。当`payment.failed`后接`subscription.on_hold`时，请参见[处理失败的收费](#handling-failed-charges)以恢复订阅。
+对于按需流程，请重点关注 `payment.succeeded` 和 `payment.failed`，以核对基于使用量的扣款。当 `payment.failed` 后紧接着出现 `subscription.on_hold` 时，请参阅[处理扣款失败](#handling-failed-charges)以恢复 subscription。
 </Tip>
 
-## 测试和下一步
+## 测试和后续步骤
 
 <Steps>
 <Step title="Create in test mode">
-使用您的测试API密钥创建订阅，然后打开返回的`checkout_url`并完成授权。
+使用 test API key 创建 subscription，然后打开返回的 `checkout_url` 并完成 mandate。
 </Step>
 <Step title="Trigger a charge">
-调用收费端点，使用小型`product_price`（例如，`100`），并验证您收到`payment.succeeded`。
+使用较小的 `product_price` 调用扣款 endpoint（例如 `100`），并确认收到 `payment.succeeded`。
 </Step>
 <Step title="Go live">
-验证事件和内部状态更新后，切换到您的实时API密钥。
+验证事件和内部状态更新后，切换到 live API key。
 </Step>
 </Steps>
 
-## 故障排除
+## 故障排查
 
-- **422 无效请求**：确保在创建时提供了`on_demand.mandate_only`，并且在收费时提供了`product_price`。
-- **货币错误**：如果您覆盖`product_currency`，请确认您的账户和客户是否支持。
-- **未收到webhooks**：验证您的webhook URL和签名密钥配置。
+- **422 Invalid Request**：确保在创建时提供 `on_demand.mandate_only`，并在扣款时提供 `product_price`。
+- **货币错误**：如果覆盖 `product_currency`，请确认该货币受你的账户和客户支持。
+- **未收到 webhooks**：验证 webhook URL 和签名密钥配置。

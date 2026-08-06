@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Utbetalning
+description: Den nyttolast som skickas till din webhook-endpoint när en
+  utbetalning skapas eller ändrar status, samt hur du stämmer av varje händelse
+  i utbetalningens livscykel.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook för utbetalningar
+  - händelser för utbetalningar
+  - webhook-integrering
+  - utbetalning
+  - payout.success
+---
+
+<Info>
+Webhooks för utbetalningar meddelar dig när dina egna medel överförs från Dodo Payments till ditt bankkonto. Använd dem för att stämma av utbetalningar i dina bokföringssystem utan att polla endpointen [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Händelser för utbetalningar
+
+En utbetalning genererar en händelse i varje steg av sin livscykel. Stegen motsvarar de [statusar för utbetalningar](/features/payouts/payout-structure) som visas i din dashboard.
+
+| Händelse | Utlöses när | Vad det vanligtvis innebär |
+|-------|-----------|-----------------------|
+| `payout.created` | En utbetalning skapas, av den automatiska utbetalningscykeln eller utanför cykeln | Utbetalningen finns, men har ännu inte börjat överföras |
+| `payout.in_progress` | Utbetalningens förfallodatum infaller och behandlingen börjar | Medlen är på väg till ditt bankkonto |
+| `payout.on_hold` | Utbetalningen pausas eller läggs under granskning | Du kan behöva tillhandahålla ytterligare information |
+| `payout.success` | Utbetalningen till ditt bankkonto har genomförts | Medlen bör vara tillgängliga på ditt konto |
+| `payout.failed` | Utbetalningen misslyckas | Beloppet och avgifterna krediteras tillbaka till din plånbok |
+
+<Note>
+`payout.created` skickades tidigare som `payout.not_initiated`. Om en befintlig endpoint filtrerar på `payout.not_initiated` ska du uppdatera filtret till `payout.created` så att det fortsätter att matcha. Fältet `status` i nyttolasten rapporterar fortfarande `not_initiated` i detta skede.
+</Note>
+
+## Hantera händelser för utbetalningar
+
+Utbetalningar gäller dina egna pengar snarare än en kunds, så dessa händelser används vanligtvis i bokföring och interna aviseringar i stället för i kundvända flöden.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Verifiera alltid webhook-signaturen innan du behandlar den — se [guiden om Webhooks](/developer-resources/webhooks) för konfiguration. Hanteraren ovan utelämnar verifiering för korthetens skull.
+</Tip>
+
+<Warning>
+Händelser för utbetalningar är varken slutgiltiga eller strikt ordnade. `payout.failed` kan komma efter `payout.success` när en bank returnerar överföringen, och `payout.success` kan komma efter `payout.failed` när en misslyckad utbetalning senare återställs. Använd fältet `status` i nyttolasten som det aktuella tillståndet i stället för att anta att den senaste händelsen du tog emot är slutgiltig.
+</Warning>
+
+## Utbetalningsstatus
+
+Utbetalningsobjektet rapporterar sina framsteg via ett enda fält:
+
+| Fält | Värden |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` och `tax` i nyttolasten är föråldrade. Använd i stället [endpoints för uppdelning av utbetalningar](/api-reference/payouts/retrieve-breakup) för en detaljerad uppdelning.
+</Note>
+
+## Relaterat
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Hur utbetalningar schemaläggs och beräknas, samt vad varje status för utbetalning innebär.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Följ saldon i plånboken och huvudboken bakom varje utbetalning.
+</Card>
+</CardGroup>
+
+## Schema för webhook-nyttolast

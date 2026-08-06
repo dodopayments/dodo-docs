@@ -21,9 +21,9 @@ keywords:
 
 Dodo Payments를 벗어나지 않습니다 — 권한 자체가 전달물입니다:
 
-- 구매 시, 권한이 생성되어 즉시 `delivered`로 이동합니다. `pending` 단계가 없으며, 고객 행동도 없고 전달 실패 위험이 없습니다.
-- 권한은 유형화된 `feature` 페이로드를 가집니다: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. 애플리케이션은 `feature_id`를 읽어 어떤 기능을 해제할지 결정합니다.
-- 취소, 환불 또는 수동 해지는 권한을 `revoked`로 이동시키며, 애플리케이션에서 플래그가 사라지는 것을 봅니다.
+- 구매 시 grant가 생성되고 즉시 `Delivered`로 이동합니다. `Pending` 단계가 없으며, 고객 작업도 필요하지 않고 delivery가 실패할 수도 없습니다.
+- grant에는 타입이 지정된 `feature` payload가 포함됩니다: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`. 애플리케이션은 `feature_id`을 읽어 어떤 기능을 잠금 해제할지 결정합니다.
+- 취소, 환불 또는 수동 revoke가 발생하면 grant는 `Revoked`로 이동하며, 애플리케이션에서는 해당 flag가 사라진 것을 확인할 수 있습니다.
 
 일반적인 사용 사례로는 플랜 기반 기능 게이팅(프로는 분석 기능 해제), 추가 기능(“API 액세스” 업그레이드), 일회성 구매로 판매되는 얼리 액세스 프로그램 등이 있습니다.
 
@@ -225,15 +225,15 @@ for _, grant := range page.Items {
 
 ## 라이프사이클
 
-기능 플래그 권한은 [권한 라이프사이클](/features/entitlements/introduction#how-grants-work) 표준을 따르며 한 가지 단순화가 있습니다: 전달 단계가 없으므로 권한은 `pending`에 멈추지 않으며 `failed`로 이동하지 않습니다.
+Feature flag grant는 표준 [grant lifecycle](/features/entitlements/introduction#how-grants-work)을 따르며, 한 가지 단순화된 점이 있습니다. delivery 단계가 없으므로 grant는 `Pending`에 머무르지 않고 `Failed`로 이동하지도 않습니다.
 
-| 트리거 | 효과 |
+| Trigger | Effect |
 |---|---|
-| 일회성 지불 성공 / 구독 활성화 | 권한이 `status: delivered` 및 `delivered_at` 설정으로 생성됩니다. |
-| 구독 보류, 취소 또는 만료 | 권한이 일치하는 `revocation_reason`로 해지됩니다. |
-| 일회성 지불 환불 | 권한이 `revocation_reason: refund`로 해지됩니다. |
-| 구독 복구(예: 비용 추심 성공) | 해지된 권한이 `delivered`로 복구됩니다. 동일한 권한 `id`, 해지 필드가 지워집니다. |
-| 수동 API 해지 | 권한이 `revocation_reason: manual`로 해지됩니다. 갱신 시 자동 복구되지 않습니다. |
+| 일회성 결제가 성공하거나 subscription이 활성화됨 | `status: delivered` 및 `delivered_at`이 설정된 grant가 생성됩니다. |
+| Subscription이 일시 중지되거나 취소 또는 만료됨 | 일치하는 `revocation_reason`와 함께 grant가 revoke됩니다. |
+| 일회성 결제 환불 | `revocation_reason: refund`와 함께 grant가 revoke됩니다. |
+| Subscription이 복구됨(예: dunning 성공) | revoke된 grant가 `Delivered`로 복원됩니다. — 동일한 grant `id`이며, revocation 필드는 삭제됩니다. |
+| 수동 API revoke | `revocation_reason: manual`와 함께 grant가 revoke됩니다. 갱신 시 자동으로 복원되지 않습니다. |
 
 권한은 권한 및 고객당 멱등적입니다: 고객이 플래그에 대한 해지되지 않은 권한이 있는 동안 반복 구매 및 갱신은 중복을 생성하지 않습니다.
 
@@ -246,25 +246,9 @@ for _, grant := range page.Items {
 - `entitlement_grant.delivered` — 이전에 해지된 권한이 복구될 때 실행됩니다. 기능을 다시 활성화합니다.
 - `entitlement_grant.revoked` — 접근이 철회되었습니다. 기능을 비활성화하고 `revocation_reason`을 확인하여 메시지를 결정합니다.
 
-```typescript TypeScript theme={null}
-app.post('/webhooks/dodo', async (req, res) => {
-  const event = req.body;
-
-  if (event.type.startsWith('entitlement_grant.') && event.data.feature) {
-    const { customer_id, feature } = event.data;
-    const enabled = event.type !== 'entitlement_grant.revoked';
-
-    await db.customerFeatures.upsert({
-      customerId: customer_id,
-      featureId: feature.feature_id,
-      enabled,
-      config: event.data.metadata ?? {},
-    });
-  }
-
-  res.sendStatus(200);
-});
-```
+- `entitlement_grant.created` — 이미 `Delivered` 상태이며 `feature` payload가 포함된 채 도착합니다. 기능을 활성화합니다.
+- `entitlement_grant.delivered` — 이전에 revoke된 grant가 복원될 때 발생합니다. 기능을 다시 활성화합니다.
+- `entitlement_grant.revoked` — 액세스가 철회되었습니다. 기능을 비활성화하고 `revocation_reason`을 확인하여 사용자에게 표시할 메시지를 결정합니다.
 
 기능 플래그에는 `entitlement_grant.failed`가 없습니다. 전달은 완전히 Dodo Payments 내에서 이루어지며 실패할 수 없습니다.
 
@@ -278,7 +262,11 @@ app.post('/webhooks/dodo', async (req, res) => {
 4. **앱이 기능을 제어합니다.** 대시보드가 로드될 때 캐시된 기능 세트를 확인하고(`listEntitlementGrants` 호출) `advanced_reports`가 있을 때만 보고서 탭을 렌더링합니다.
 5. **고객이 취소합니다.** Dodo Payments가 권한을 해지하고 `entitlement_grant.revoked`를 실행하여 핸들러가 기능을 비활성화합니다. 나중에 고객이 비용 추심을 통해 복구되면, `entitlement_grant.delivered`가 이를 복원합니다 — 코드 변경 필요 없음.
 
----
+1. **Flag를 생성합니다.** `feature_id: advanced_reports`에 metadata `{ "tier": "pro", "monthly_report_limit": 100 }`를 추가합니다.
+2. **Flag를** Pro Plan subscription product에 연결합니다.
+3. **고객이 구독합니다.** Dodo Payments가 `Delivered` grant를 생성하고 `entitlement_grant.created`를 발생시킵니다. webhook handler는 고객에게 `advanced_reports`을 100개 한도로 활성화합니다.
+4. **앱에서 기능 접근을 제어합니다.** Dashboard를 로드할 때 캐시된 feature set을 확인하거나 `listEntitlementGrants`을 호출하고, `advanced_reports`이 있는 경우에만 reports tab을 렌더링합니다.
+5. **고객이 취소합니다.** Dodo Payments가 grant를 revoke하고 `entitlement_grant.revoked`를 발생시킵니다. handler는 기능을 비활성화합니다. 이후 고객이 dunning을 통해 복구되면 `entitlement_grant.delivered`가 기능을 복원하므로 코드를 변경할 필요가 없습니다.
 
 ## 모범 사례
 
@@ -288,8 +276,8 @@ app.post('/webhooks/dodo', async (req, res) => {
 - **`revoked`를 즉시 처리합니다.** 해지된 플래그는 고객이 더 이상 기능에 비용을 지불하지 않음을 의미합니다. 다음 세션이 아닌 다음 요청에서 제한하십시오.
 - **제한을 코드가 아닌 메타데이터에 넣습니다.** 할당량을 변경하는 것은 권한을 편집하는 것만 필요합니다 — 새로운 고객은 자동으로 이를 수용하고 기존 권한은 구매한 스냅샷을 유지합니다.
 
-- **Use stable, snake_case feature ids.** Your application code checks these strings; renaming one is a breaking change on both sides.
-- **One flag per capability.** Prefer `advanced_reports` + `api_access` as two entitlements over a single `pro_bundle` — revocation and plan mixes stay clean.
-- **Drive state from webhooks, verify with the API.** Webhooks keep your database current; the list endpoint is the source of truth for reconciliation jobs and cache misses.
-- **Treat `revoked` as immediate.** A revoked flag means the customer is no longer paying for the feature. Gate on the next request, not the next session.
-- **Put limits in metadata, not in code.** Changing a quota then only requires editing the entitlement — new customers pick it up automatically while existing grants keep their purchased snapshot.
+- **안정적인 snake_case feature id를 사용합니다.** 애플리케이션 코드는 이러한 문자열을 확인하므로 하나의 이름을 변경하면 양쪽 모두에서 breaking change가 발생합니다.
+- **기능 하나당 flag 하나를 사용합니다.** 단일 `pro_bundle`보다 `advanced_reports` + `api_access`를 두 개의 entitlement로 사용하는 방식을 권장합니다. 이렇게 하면 revoke와 plan 조합을 깔끔하게 유지할 수 있습니다.
+- **Webhook으로 상태를 관리하고 API로 검증합니다.** Webhook은 database를 최신 상태로 유지하며, list endpoint는 reconciliation job과 cache miss를 처리할 때 source of truth 역할을 합니다.
+- **`Revoked`를 즉시 처리합니다.** revoke된 flag는 고객이 더 이상 해당 기능에 비용을 지불하지 않는다는 의미입니다. 다음 session이 아니라 다음 request에서 접근을 제어합니다.
+- **Limit은 코드가 아니라 metadata에 저장합니다.** Quota를 변경할 때 entitlement만 편집하면 되므로, 신규 고객은 자동으로 변경 사항을 적용받고 기존 grant는 구매 당시의 snapshot을 유지합니다.

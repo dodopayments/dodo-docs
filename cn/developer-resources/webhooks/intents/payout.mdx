@@ -1,0 +1,103 @@
+---
+openapi-schema: PayoutsResponse
+title: 打款
+description: 当打款创建或状态发生变化时发送到您的 webhook endpoint 的 payload，以及如何对账每个打款生命周期事件。
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - 打款 webhook
+  - 打款事件
+  - webhook 集成
+  - 打款
+  - payout.success
+---
+
+<Info>
+打款 webhook 会在您自己的资金从 Dodo Payments 转入您的银行账户时通知您。使用它们在您的会计系统中对账打款，无需轮询 [List Payouts](/api-reference/payouts/get-payouts) endpoint。
+</Info>
+
+## 打款 Webhook 事件
+
+打款会在其生命周期的每个阶段触发一个事件。这些阶段与您的 dashboard 中显示的 [打款状态](/features/payouts/payout-structure)一致。
+
+| 事件 | 触发时机 | 通常含义 |
+|-------|-----------|-----------------------|
+| `payout.created` | 通过自动打款周期或非周期流程创建打款时 | 打款已存在，但尚未开始转移 |
+| `payout.in_progress` | 打款到期日到达且处理开始时 | 资金正在转入您的银行账户 |
+| `payout.on_hold` | 打款暂停或进入审核时 | 您可能需要提供其他信息 |
+| `payout.success` | 转入您银行账户的打款完成结算时 | 资金应已可在您的账户中使用 |
+| `payout.failed` | 打款失败时 | 金额和费用会退回您的 wallet |
+
+<Note>
+`payout.created` 之前以 `payout.not_initiated` 的形式发送。如果现有 endpoint 按 `payout.not_initiated` 进行过滤，请将过滤条件更新为 `payout.created`，以便继续匹配。此阶段，payload 上的 `status` 字段仍会报告 `not_initiated`。
+</Note>
+
+## 处理打款事件
+
+打款涉及的是您自己的资金，而不是客户的资金，因此这些事件通常用于记账和内部告警，而不是面向客户的流程。
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+在处理之前，务必验证 webhook 签名 — 有关设置，请参阅 [Webhooks guide](/developer-resources/webhooks)。为简洁起见，上面的处理程序省略了验证步骤。
+</Tip>
+
+<Warning>
+打款事件既不是终态事件，也不一定严格按顺序发生。当银行退回转账时，`payout.failed` 可能会在 `payout.success` 之后到达；当失败的打款之后恢复时，`payout.success` 也可能会在 `payout.failed` 之后到达。应将 payload 上的 `status` 字段视为当前状态，而不要假设您收到的最后一个事件就是最终状态。
+</Warning>
+
+## 打款状态
+
+打款对象通过单个字段报告其进度：
+
+| 字段 | 值 |
+|-------|--------|
+| `status` | `not_initiated`、`in_progress`、`on_hold`、`success`、`failed` |
+
+<Note>
+payload 上的 `refunds`、`chargebacks` 和 `tax` 已弃用。请改用 [打款拆分 endpoint](/api-reference/payouts/retrieve-breakup) 获取详细明细。
+</Note>
+
+## 相关内容
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+打款如何安排和计算，以及每种打款状态的含义。
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+跟踪 wallet 余额以及每笔打款背后的 ledger。
+</Card>
+</CardGroup>
+
+## Webhook Payload Schema

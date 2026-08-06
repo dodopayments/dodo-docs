@@ -1,0 +1,104 @@
+---
+openapi-schema: PayoutsResponse
+title: 지급
+description: 지급이 생성되거나 상태가 변경될 때 webhook endpoint로 전송되는 payload와 각 지급 lifecycle
+  이벤트를 조정하는 방법입니다.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - 지급 webhook
+  - 지급 이벤트
+  - webhook 통합
+  - 지급
+  - payout.success
+---
+
+<Info>
+Payout webhook은 자체 자금이 Dodo Payments에서 은행 계좌로 이동할 때 이를 알려줍니다. [List Payouts](/api-reference/payouts/get-payouts) endpoint를 polling하지 않고 회계 시스템에서 지급을 조정하려면 이를 사용하세요.
+</Info>
+
+## 지급 Webhook 이벤트
+
+지급은 lifecycle의 각 단계에서 이벤트를 발생시킵니다. 각 단계는 dashboard에 표시되는 [지급 상태](/features/payouts/payout-structure)와 일치합니다.
+
+| 이벤트 | 발생 시점 | 일반적인 의미 |
+|-------|-----------|-----------------------|
+| `payout.created` | 자동 지급 주기 또는 주기 외 지급으로 지급이 생성될 때 | 지급이 존재하지만 아직 이동을 시작하지 않음 |
+| `payout.in_progress` | 지급 예정일이 도래하고 처리가 시작될 때 | 자금이 은행 계좌로 이동 중임 |
+| `payout.on_hold` | 지급이 일시 중지되거나 검토 대상으로 지정될 때 | 추가 정보를 제공해야 할 수 있음 |
+| `payout.success` | 은행 계좌로의 지급이 정산될 때 | 계좌에서 자금을 사용할 수 있어야 함 |
+| `payout.failed` | 지급이 실패할 때 | 금액과 수수료가 wallet에 다시 적립됨 |
+
+<Note>
+`payout.created`은 이전에 `payout.not_initiated`로 발생했습니다. 기존 endpoint가 `payout.not_initiated`를 기준으로 필터링하는 경우, 계속 일치하도록 필터를 `payout.created`로 업데이트하세요. payload의 `status` 필드는 이 단계에서도 여전히 `not_initiated`을 보고합니다.
+</Note>
+
+## 지급 이벤트 처리
+
+지급은 고객의 자금이 아니라 자체 자금과 관련되므로, 이러한 이벤트는 일반적으로 고객에게 표시되는 flow보다는 장부 기록과 내부 alerting에 사용됩니다.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+처리하기 전에 항상 webhook signature를 확인하세요. 설정 방법은 [Webhooks guide](/developer-resources/webhooks)를 참조하세요. 위 handler에서는 간결한 설명을 위해 verification을 생략했습니다.
+</Tip>
+
+<Warning>
+지급 이벤트는 terminal 상태가 아니며 순서가 엄격하게 보장되지도 않습니다. 은행이 transfer를 반환하면 `payout.failed`이 `payout.success` 이후에 도착할 수 있고, 실패한 지급이 나중에 복구되면 `payout.success`이 `payout.failed` 이후에 도착할 수 있습니다. 수신한 마지막 이벤트가 최종 상태라고 가정하지 말고 payload의 `status` 필드를 현재 상태로 처리하세요.
+</Warning>
+
+## 지급 상태
+
+지급 object는 단일 필드를 통해 진행 상태를 보고합니다:
+
+| 필드 | 값 |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+payload의 `refunds`, `chargebacks` 및 `tax`은 deprecated되었습니다. 대신 자세한 내역은 [payout breakup endpoints](/api-reference/payouts/retrieve-breakup)를 사용하세요.
+</Note>
+
+## 관련 문서
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+지급이 예약되고 계산되는 방식과 각 지급 상태의 의미를 설명합니다.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+wallet 잔액과 각 지급을 뒷받침하는 ledger를 추적합니다.
+</Card>
+</CardGroup>
+
+## Webhook Payload 스키마

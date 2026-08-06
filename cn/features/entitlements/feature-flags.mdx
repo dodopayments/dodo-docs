@@ -21,9 +21,9 @@ keywords:
 
 没有任何东西离开 Dodo Payments — 授权**就是**交付物:
 
-- 购买时，创建授权，并直接移动到 `delivered`。没有 `pending` 阶段，无需客户操作，也没有交付失败的方式。
-- 授权携带一个类型 `feature` 负载: `{ "feature_type": "boolean", "feature_id": "advanced_reports" }`。您的应用程序读取 `feature_id` 以决定解锁什么。
-- 取消、退款或手动撤销后，授权移动到 `revoked`，您的应用程序将看到标志消失。
+- 购买后，grant 会被创建，并直接进入 `Delivered`。不存在 `Pending` 阶段，不需要客户执行任何操作，交付也不会失败。
+- grant 携带类型化的 `feature` payload：`{ "feature_type": "boolean", "feature_id": "advanced_reports" }`。您的应用读取 `feature_id`，以决定解锁哪些内容。
+- 取消、退款或手动撤销会将 grant 移至 `Revoked`，您的应用会看到该标志消失。
 
 常见用途包括基于计划的功能控制（Pro 解锁分析）、附加能力（"API 访问" 升级）和作为一次性购买出售的早期访问计划。
 
@@ -225,15 +225,15 @@ for _, grant := range page.Items {
 
 ## 生命周期
 
-功能标志授权遵循标准的[授权生命周期](/features/entitlements/introduction#how-grants-work)，但有一项简化：没有交付步骤，因此授权从未停留在 `pending` 或移动到 `failed`。
+Feature flag grant 遵循标准的 [grant lifecycle](/features/entitlements/introduction#how-grants-work)，但进行了简化：不存在交付步骤，因此 grant 永远不会停留在 `Pending`，也不会转移到 `Failed`。
 
-| 触发器 | 效果 |
+| 触发条件 | 效果 |
 |---|---|
-| 一次性支付成功 / 订阅变为活动状态 | 使用已设置的 `status: delivered` 和 `delivered_at` 创建授权。 |
-| 订阅被搁置、取消或过期 | 使用匹配的 `revocation_reason` 撤销授权。 |
-| 一次性支付退款 | 使用 `revocation_reason: refund` 撤销授权。 |
-| 订阅恢复（例如，扣款成功） | 撤销的授权恢复到 `delivered` — 相同的授权 `id`，撤销字段清除。 |
-| 手动 API 撤销 | 使用 `revocation_reason: manual` 撤销授权。续订时不会自动恢复。 |
+| 一次性付款成功 / 订阅变为 active | 创建 grant，并设置 `status: delivered` 和 `delivered_at`。 |
+| 订阅被暂停、取消或过期 | 撤销 grant，并设置匹配的 `revocation_reason`。 |
+| 一次性付款退款 | 撤销 grant，并设置 `revocation_reason: refund`。 |
+| 订阅恢复（例如 dunning 成功） | 将已撤销的 grant 恢复为 `Delivered` — 使用相同的 grant `id`，并清除撤销字段。 |
+| 手动 API revoke | 撤销 grant，并设置 `revocation_reason: manual`。续订时不会自动恢复。 |
 
 授权对于每个权限和客户是幂等的：当客户对一个标志拥有未撤销的授权时，重复购买和续订不会创建重复项。
 
@@ -243,9 +243,9 @@ for _, grant := range page.Items {
 
 订阅 [`entitlement_grant.*` 事件](/developer-resources/webhooks/intents/entitlement-grant) 以将标志镜像到您自己的数据库而不是轮询：
 
-- `entitlement_grant.created` — 已到达 `delivered`，带有 `feature` 负载。启用功能。
-- `entitlement_grant.delivered` — 在先前撤销的授权恢复时触发。重新启用功能。
-- `entitlement_grant.revoked` — 已取回访问。禁用功能并查看 `revocation_reason` 以决定您的消息传递。
+- `entitlement_grant.created` — 到达时已处于 `Delivered`，并携带 `feature` payload。启用该功能。
+- `entitlement_grant.delivered` — 之前被撤销的 grant 恢复时触发。重新启用该功能。
+- `entitlement_grant.revoked` — 访问权限已撤回。禁用该功能，并检查 `revocation_reason` 以决定向客户展示的消息。
 
 ```typescript TypeScript theme={null}
 app.post('/webhooks/dodo', async (req, res) => {
@@ -273,18 +273,18 @@ app.post('/webhooks/dodo', async (req, res) => {
 
 ## 示例：Pro 计划解锁高级报告
 
-1. **创建标志。** `feature_id: advanced_reports`，带有元数据 `{ "tier": "pro", "monthly_report_limit": 100 }`。
-2. **将其附加**到您的 Pro 计划订购产品。
-3. **客户进行订购。** Dodo Payments 创建一个 `delivered` 授权并触发 `entitlement_grant.created`；您的 webhook 处理程序为客户启用 `advanced_reports`，限制为 100。
-4. **您的应用程序控制功能。** 在加载仪表板时，检查缓存的功能集（或调用 `listEntitlementGrants`），并仅在存在 `advanced_reports` 时渲染报告选项卡。
-5. **客户取消。** Dodo Payments 撤销授权并触发 `entitlement_grant.revoked`；您的处理程序禁用功能。如果客户稍后通过扣款恢复，`entitlement_grant.delivered` 会恢复它 — 无需代码更改。
+1. **创建 flag。** 使用元数据 `{ "tier": "pro", "monthly_report_limit": 100 }` 执行 `feature_id: advanced_reports`。
+2. **附加该 flag** 到您的 Pro Plan subscription product。
+3. **客户订阅。** Dodo Payments 创建一个 `Delivered` grant，并触发 `entitlement_grant.created`；您的 webhook handler 为该客户启用 `advanced_reports`，限制为 100。
+4. **您的应用控制功能访问。** 加载 dashboard 时，检查缓存的 feature set（或调用 `listEntitlementGrants`），仅当存在 `advanced_reports` 时才渲染 reports tab。
+5. **客户取消订阅。** Dodo Payments 撤销 grant 并触发 `entitlement_grant.revoked`；您的 handler 会禁用该功能。如果客户之后通过 dunning 恢复订阅，`entitlement_grant.delivered` 会恢复该功能 — 无需修改代码。
 
 ---
 
 ## 最佳实践
 
-- **使用稳定的 snake_case 功能 ID。** 您的应用程序代码检查这些字符串；重命名其中一个是双方的重大更改。
-- **每个能力一个标志。** 优先选择 `advanced_reports` + `api_access` 作为两个权限，而不是单一的 `pro_bundle` —— 撤销和计划混合保持整洁。
-- **从 webhook 驱动状态，通过 API 验证。** Webhook 保持您的数据库当前；列表终端是对账工作和缓存丢失的真相来源。
-- **立即将 `revoked` 视为有效。** 撤销标志意味着客户不再为该功能付费。控制下一个请求，而不是下一次会话。
-- **将限制放在元数据中，而不是代码中。** 更改配额然后只需编辑权限 — 新客户会自动获取，而现有授权保留他们购买的快照。
+- **使用稳定的 snake_case feature id。** 您的应用代码会检查这些字符串；重命名其中任何一个都会导致双方发生 breaking change。
+- **每项 capability 使用一个 flag。** 与其使用单个 `pro_bundle`，不如优先使用 `advanced_reports` + `api_access` 作为两个 entitlement — 这样撤销和 plan 组合能够保持清晰。
+- **由 webhook 驱动状态，并通过 API 验证。** Webhook 会使您的数据库保持最新；list endpoint 是 reconciliation job 和 cache miss 场景的事实来源。
+- **将 `Revoked` 视为立即生效。** 被撤销的 flag 意味着客户不再为该功能付费。应在下一次请求时进行访问控制，而不是等到下一次 session。
+- **将限制放在元数据中，而不是代码中。** 这样更改 quota 时只需编辑 entitlement — 新客户会自动获得更新后的限制，而现有 grant 会保留其购买时的快照。

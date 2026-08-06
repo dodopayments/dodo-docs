@@ -13,7 +13,7 @@ keywords:
   - hak
 ---
 
-Panduan ini menjelaskan langkah-langkah membangun sistem **pemenuhan kunci lisensi manual** dari awal hingga akhir. Alih-alih Dodo Payments yang membuat kunci otomatis saat pembayaran, setiap pembelian membuat grant `pending` dan menunggu *Anda* memasok nilai kunci dari sistem Anda sendiri, vendor pihak ketiga, atau kumpulan kode yang terbatas.
+Panduan ini membahas cara membangun sistem **pemenuhan kunci lisensi manual** secara menyeluruh. Alih-alih Dodo Payments membuat kunci secara otomatis saat pembayaran, setiap pembelian membuat grant `Pending` dan menunggu *Anda* memasukkan nilai kunci dari sistem Anda sendiri, vendor pihak ketiga, atau kumpulan kode yang terbatas.
 
 Pada akhirnya Anda akan memiliki:
 
@@ -38,8 +38,8 @@ sequenceDiagram
     participant D as Dodo Payments
     participant M as Your Backend
     C->>D: Purchase (manual-mode License Key product)
-    D->>D: Create grant (status: pending, no key)
-    D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
+    D->>D: Create grant (status: Pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: Pending)
     M->>M: Obtain key from own system / vendor
     M->>D: POST /grants/{grant_id}/license-key { key }
     D->>C: Deliver license key to customer
@@ -79,11 +79,11 @@ Pilih **License Key** sebagai integrasi dan berikan **Nama**. Formulirnya menamp
 - **Pesan Aktivasi** — pesan opsional yang ditampilkan kepada pelanggan ketika mereka mengaktifkan kunci.
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="Formulir hak Kunci Lisensi baru dengan nama, mode pemenuhan, panjang lisensi, batas aktivasi, dan pesan aktivasi" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="Form entitlement New License Key dengan nama, mode fulfillment, durasi lisensi, batas aktivasi, dan pesan aktivasi" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 <Step title="Set Fulfillment Mode to Manual">
-Buka dropdown **Fulfillment Mode** dan ubah dari **Automatic** ke **Manual**. Ini adalah pengaturan yang mengarahkan seluruh panduan ini — tanpanya, kunci dibuat dan dikirim secara otomatis dan tidak ada grant yang tertunda dibuat. Dengan **Manual** yang dipilih, setiap pembelian membuat grant `pending` untuk Anda penuhi. Klik **Create Entitlement** untuk menyimpan.
+Buka dropdown **Fulfillment Mode** dan ubah dari **Automatic** menjadi **Manual**. Ini adalah pengaturan yang menggerakkan seluruh panduan ini — tanpanya, kunci dibuat dan dikirim melalui email secara otomatis dan tidak ada grant tertunda yang dibuat. Setelah **Manual** dipilih, setiap pembelian membuat grant `Pending` untuk Anda penuhi. Klik **Create Entitlement** untuk menyimpan.
 </Step>
 </Steps>
 </Tab>
@@ -173,15 +173,15 @@ Buka produk yang ingin Anda jual, perluas **Pengaturan Lanjutan → Hak & Kredit
 Fulfillment mode adalah properti dari **hak**, bukan produk. Karena Anda mengaturnya ke **Manual** di Langkah 1, setiap produk yang terpasang pada hak ini menciptakan grant lisensi-kunci `pending` saat pembelian — tidak ada yang perlu dikonfigurasi di sini.
 </Note>
 
-<Tip>
-Jika Anda belum memiliki produk, buat terlebih dahulu (satu kali atau berlangganan). Lihat [Panduan Integrasi Pembayaran Satu Kali](/developer-resources/integration-guide) untuk menjual produk melalui checkout.
-</Tip>
+<Note>
+Fulfillment mode adalah properti **entitlement**, bukan produk. Karena Anda menetapkannya ke **Manual** pada Langkah 1, setiap produk yang dikaitkan dengan entitlement ini akan membuat grant kunci lisensi `Pending` saat pembelian — tidak ada konfigurasi tambahan yang diperlukan di sini.
+</Note>
 
 ## Langkah 3 — Deteksi Grant yang Tertunda
 
 Ketika pelanggan membeli produk, Dodo Payments membuat grant dalam status `pending` dengan **tidak ada kunci terlampir** dan menembakkan webhook `entitlement_grant.created`. Ini adalah sinyal Anda bahwa pelanggan menunggu kunci.
 
-### Dengarkan untuk webhook
+Saat pelanggan membeli produk, Dodo Payments membuat grant berstatus `Pending` **tanpa kunci terlampir** dan memicu webhook `entitlement_grant.created`. Ini adalah sinyal bahwa pelanggan sedang menunggu kunci.
 
 Siapkan endpoint webhook (Pengembang → Webhook di dashboard) dan bertindaklah pada grant lisensi-kunci yang tertunda. Implementasinya mengikuti spesifikasi [Standard Webhooks](https://standardwebhooks.com/).
 
@@ -217,7 +217,37 @@ export async function POST(request: Request) {
 }
 ```
 
-Payload grant membawa `integration_type: "license_key"`, sehingga Anda dapat mengenali grant lisensi-kunci tanpa pencarian tambahan. Lihat [referensi webhook Grant Hak](/developer-resources/webhooks/intents/entitlement-grant) untuk payload lengkap.
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
+
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'Pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
 
 ### Atau polling API List Grants
 
@@ -286,15 +316,32 @@ async function fulfill(grantId: string, key: string) {
 }
 ```
 
-```bash cURL theme={null}
-curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
-  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
-    "activations_limit": 5,
-    "expires_at": "2027-05-01T00:00:00Z"
-  }'
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
+
+  return res.json(); // updated grant, now status: "Delivered"
+}
 ```
 
 </CodeGroup>
@@ -315,7 +362,7 @@ Kadaluarsa per kunci (ISO 8601). Kembali ke durasi konfigurasi hak jika tidak di
 
 Pada keberhasilan, grant berpindah ke `delivered`, pelanggan dikirim kunci secara otomatis (email yang sama yang akan mereka terima di bawah pemenuhan otomatis), dan `entitlement_grant.delivered` menembak.
 
-Pelanggan menerima email dengan kunci lisensi, produk, batas aktivasi, kadaluarsa, dan instruksi aktivasi Anda:
+Setelah berhasil, grant berpindah ke `Delivered`, pelanggan dikirimi kunci secara otomatis (email yang sama seperti yang akan mereka terima dalam pemenuhan otomatis), dan event webhook `license_key.created` serta `entitlement_grant.delivered` dipicu.
 
 <Frame caption="The license key email the customer receives once you fulfill the grant.">
 <img src="/images/entitlements/license-keys/customer-email.png" alt="Email kunci lisensi pelanggan yang menunjukkan kunci, produk, batas aktivasi, kadaluarsa, dan instruksi aktivasi" style={{ maxHeight: '500px', width: 'auto' }} />
@@ -337,9 +384,13 @@ Endpoint memvalidasi grant sebelum mengirimkan apapun. Tangani tanggapan berikut
 | `409` | Grant tidak menunggu pemenuhan (sudah terkirim atau sudah memiliki kunci), **atau** nilai kunci sudah ada. | Jika sudah dikirim, perlakukan sebagai keberhasilan. Jika duplikat kunci, berikan kunci yang berbeda. |
 | `422` | Body permintaan gagal validasi (mis. `activations_limit < 1`). | Koreksi bidang dan coba lagi. |
 
-<Warning>
-Pemenuhan aman untuk diulang pada kesalahan sementara (timeout, `5xx`). Setiap grant hanya dapat dipenuhi sekali, jadi pengulangan setelah panggilan yang berhasil-tapi-belum diakui mengembalikan `409` daripada mengeluarkan kunci kedua atau mengirim email duplikat. Gunakan grant `id` sebagai kunci idempoten Anda.
-</Warning>
+| Status | Arti | Tindakan yang harus dilakukan |
+|---|---|---|
+| `200` | Kunci telah dikirim, grant sekarang berstatus `Delivered`. | Selesai. |
+| `400` | Bukan grant kunci lisensi, atau kuncinya kosong/berisi spasi. | Perbaiki request; jangan retry apa adanya. |
+| `404` | Tidak ada grant dengan ID tersebut untuk bisnis Anda. | Verifikasi `grant_id`. |
+| `409` | Grant tidak sedang menunggu fulfillment (sudah dikirim atau sudah memiliki kunci), **atau** nilai kunci tersebut sudah ada. | Jika sudah dikirim, anggap sebagai berhasil. Jika kunci duplikat, berikan kunci yang berbeda. |
+| `422` | Body request gagal divalidasi (misalnya `activations_limit < 1`). | Perbaiki field tersebut dan lakukan retry. |
 
 ## Verifikasi Alur
 
@@ -348,9 +399,10 @@ Pemenuhan aman untuk diulang pada kesalahan sementara (timeout, `5xx`). Setiap g
 3. Panggil endpoint pemenuhan dengan kunci pengujian.
 4. Konfirmasi tanggapan menunjukkan `status: "delivered"` dengan `license_key` yang terisi, pelanggan menerima email kunci, dan `entitlement_grant.delivered` menembak.
 
-<Check>
-Setelah dikirim, pelanggan dapat [mengaktifkan dan memvalidasi](/features/license-keys#activation-validation-deactivation) kunci terhadap endpoint lisensi publik persis seperti kunci yang dihasilkan secara otomatis.
-</Check>
+1. Beli produk dalam test mode (lihat [panduan checkout](/developer-resources/integration-guide)).
+2. Pastikan webhook Anda menerima `entitlement_grant.created` dengan `status: "Pending"` dan `integration_type: "license_key"`, atau pastikan grant muncul dalam respons List Grants dengan filter tersebut.
+3. Panggil endpoint fulfill dengan kunci pengujian.
+4. Pastikan respons menampilkan `status: "Delivered"` dengan `license_key` yang terisi, pelanggan menerima email berisi kunci, dan `entitlement_grant.delivered` dipicu.
 
 ## Referensi API Terkait
 
@@ -371,15 +423,15 @@ Acara `entitlement_grant.*` yang menandakan grant yang tertunda dan terkirim.
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Create the License Key entitlement with `fulfillment_mode: manual`.
+Buat entitlement License Key dengan `fulfillment_mode: manual`.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Filter by `integration_type` and `status` to find pending grants.
+Filter berdasarkan `status` dan `customer_id` untuk menemukan grant yang tertunda.
 </Card>
 <Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
-Deliver the key value and transition the grant to delivered.
+Kirimkan nilai kunci dan ubah status grant menjadi delivered.
 </Card>
 <Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
-The `entitlement_grant.*` events that signal pending and delivered grants.
+Event `entitlement_grant.*` yang menandakan grant tertunda dan terkirim.
 </Card>
 </CardGroup>
