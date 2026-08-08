@@ -1,0 +1,199 @@
+---
+title: Rekomi
+description: Ejecuta un programa de afiliados en tu tienda de Dodo Payments con
+  Rekomi. Una clave de API pegada conecta ambos servicios, y Rekomi realiza el
+  seguimiento de las ventas y paga a tus afiliados.
+icon: /images/logos/rekomi.svg
+keywords:
+  - Dodo Payments
+  - Rekomi
+  - seguimiento de afiliados
+  - programa de afiliados
+  - pagos a afiliados
+---
+
+## Introducción
+
+[Rekomi](https://rekomi.com) es una plataforma de seguimiento y gestión de afiliados con una integración nativa con Dodo Payments. Alguien comparte un enlace de afiliado, Rekomi registra el clic y, cuando ese visitante compra, la venta llega desde Dodo Payments y el afiliado correspondiente recibe el crédito automáticamente. Rekomi calcula la comisión y también paga a tus afiliados por ti, en más de 150 países e incluyendo los formularios fiscales.
+
+La conexión consiste en pegar un único valor: proporcionas a Rekomi una clave de API de Dodo Payments con acceso de escritura habilitado, y Rekomi la valida, crea el endpoint de webhook directamente en tu cuenta de Dodo Payments y obtiene el signing secret directamente. No hay ningún formulario de webhook que completar ni nada que pegar de vuelta en Dodo Payments.
+
+<Info>
+Una «venta» se atribuye a un afiliado cuando un cliente referido completa un pago único, inicia una suscripción de pago o paga una renovación. Los reembolsos y las disputas revierten la comisión automáticamente.
+</Info>
+
+## Cómo funciona
+
+Dodo Payments aloja el checkout en su propio dominio, por lo que la referencia del afiliado llega a la venta como metadata del checkout:
+
+1. Un visitante hace clic en un enlace de afiliado y llega a tu sitio, donde el script de Rekomi guarda la referencia en su navegador.
+2. Va al checkout y adjuntas esa referencia al pago como metadata `rekomi_ref`.
+3. Dodo Payments procesa el pago y envía un webhook `payment.succeeded` firmado al endpoint que Rekomi creó.
+4. Rekomi vincula la referencia con el afiliado, calcula la comisión sobre el importe de la venta antes de impuestos y la registra.
+
+Las renovaciones de suscripciones llegan de la misma manera, por lo que las comisiones recurrentes no requieren trabajo adicional, y los reembolsos y las disputas pasan por el mismo endpoint.
+
+## Requisitos previos
+
+Antes de configurar esta integración, asegúrate de tener:
+
+1. Una [cuenta de Dodo Payments](https://app.dodopayments.com) en modo live
+2. Una [cuenta de Rekomi](https://app.rekomi.com/sign-up)
+3. Una clave de API de Dodo Payments con **acceso de escritura** habilitado (las claves de solo lectura no pueden crear webhooks)
+
+## Primeros pasos
+
+<Steps>
+<Step title="Create an API Key with Write Access">
+  En tu dashboard de Dodo Payments, ve a **Developer → API Keys** y crea una clave (llámala "Rekomi") con **Enable write access** marcado. Consulta la [guía de claves de API](/api-reference/introduction#api-key-management-and-authentication) para obtener instrucciones detalladas.
+
+  <Warning>
+  Habilita el acceso de escritura en la clave: las claves de solo lectura superan la validación, pero no pueden crear el endpoint de webhook, por lo que la conexión fallaría a mitad del proceso.
+  </Warning>
+</Step>
+
+<Step title="Paste the Key into Rekomi">
+  En Rekomi, abre **Setup → Connect payment processor**, elige Dodo Payments y pega la clave. Rekomi la valida en tiempo real, crea el endpoint de webhook en tu cuenta y obtiene su signing secret directamente.
+
+  <Frame>
+    <img src="/images/integrations/rekomi/connect.png" alt="Página de configuración de Dodo Payments de Rekomi con el único campo de clave de API y el botón de conexión" style={{ maxHeight: '500px', width: 'auto' }} />
+  </Frame>
+
+  <Info>
+  Después de conectarla, la clave solo se utiliza para gestionar el endpoint de webhook y ejecutar comprobaciones de estado periódicas. Tus ventas llegan a través del webhook firmado, nunca mediante la API.
+  </Info>
+</Step>
+
+<Step title="Install the Rekomi Script">
+  Añade el script de seguimiento de Rekomi a tu sitio de marketing para capturar los clics de los afiliados. Tu fragmento con el ID del programa completado se encuentra en **Setup → Install**, dentro de Rekomi.
+
+  ```html
+  <script
+    async
+    src="https://api.rekomi.com/api/v1/r/loader.js"
+    data-program-id="YOUR_PROGRAM_ID"
+  ></script>
+  ```
+
+</Step>
+
+<Step title="Pass the Referral into Checkout">
+  Adjunta la referencia capturada a cada pago como metadata `rekomi_ref`. Consulta los ejemplos de implementación a continuación.
+</Step>
+
+<Step title="Done!">
+  Las ventas, renovaciones, reembolsos y disputas ahora atribuyen y revierten las comisiones de afiliados automáticamente, y Rekomi se encarga de pagar a tus afiliados.
+</Step>
+</Steps>
+
+## Guía de implementación
+
+### Checkout Sessions mediante la API
+
+Lee la referencia en tu frontend con `window.Rekomi.getReferral()`, envíala a tu backend con la solicitud de checkout y establécela en `metadata`:
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, rekomiRef?: string) {
+  const session = await client.checkoutSessions.create({
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    return_url: 'https://yoursite.com/success',
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return session.checkout_url;
+}
+```
+
+El mismo campo `metadata.rekomi_ref` funciona en productos de suscripción, por lo que el cargo inicial y cada renovación atribuyen la venta al mismo afiliado.
+
+### Payments API
+
+<Note>
+El ejemplo siguiente utiliza `POST /payments`, que está **deprecated**. Sigue funcionando para las integraciones existentes, pero las nuevas integraciones deben usar [Checkout Sessions](/developer-resources/checkout-session) (`POST /checkouts`); `metadata` se proporciona de la misma manera.
+</Note>
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createPayment(productId: string, rekomiRef?: string) {
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    payment_link: true,
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return payment;
+}
+```
+
+### Enlaces de pago estáticos
+
+Añade al enlace el query parameter de metadata plano (no el formato con corchetes):
+
+```javascript
+const ref = window.Rekomi?.getReferral?.();
+let url = 'https://checkout.dodopayments.com/buy/YOUR_PRODUCT_ID';
+if (ref) url += `?metadata_rekomi_ref=${encodeURIComponent(ref)}`;
+// use url as the href on your Buy button
+```
+
+Dodo Payments incorpora los query parameters `metadata_*` en la metadata del pago, donde Rekomi los lee.
+
+## Qué se registra
+
+| Evento                | Qué ocurre                                                            |
+| -------------------- | --------------------------------------------------------------------- |
+| Pago único            | Comisión atribuida sobre el importe de la venta antes de impuestos    |
+| Renovación de suscripción | Comisión recurrente; cada cargo llega como su propio evento de pago |
+| Reembolso             | La comisión se revierte automáticamente, sin superar nunca el importe atribuido |
+| Disputa               | La comisión se revierte en el momento en que se abre la disputa      |
+
+<Tip>
+Las comisiones se calculan sobre el importe de la venta antes de impuestos: Dodo Payments es un Merchant of Record y recauda los impuestos, por lo que tus afiliados ganan sobre la venta en sí, nunca sobre el impuesto que el país del comprador haya añadido.
+</Tip>
+
+## Notas importantes
+
+- Rekomi registra el endpoint de webhook exactamente con los eventos que necesita. Evita editar la lista de eventos de ese endpoint en el dashboard de Dodo Payments; las comprobaciones de estado de Rekomi marcarán la conexión si se eliminan eventos.
+- Las pruebas no generan ningún pago hasta que finaliza el periodo de prueba, por lo que no existe ninguna comisión hasta el primer cargo real.
+- Al desconectar en Rekomi, el endpoint de webhook vuelve a eliminarse de tu cuenta de Dodo Payments.
+
+## Recursos adicionales
+
+<CardGroup cols={2}>
+  <Card title="Rekomi's Dodo Payments Guide" icon="book-open" href="https://rekomi.com/docs/brands/install/dodo">
+    El tutorial completo de configuración, la solución de problemas y los detalles de seguridad en la documentación de Rekomi.
+  </Card>
+  <Card title="Affiliates Feature Guide" icon="users" href="/features/affiliates">
+    Todas las opciones de integración de afiliados para Dodo Payments.
+  </Card>
+</CardGroup>
+
+<Info>
+¿Necesitas ayuda? Contacta con el equipo de soporte de Rekomi en [support@rekomi.com](mailto:support@rekomi.com) o con el equipo de soporte de Dodo Payments en [support@dodopayments.com](mailto:support@dodopayments.com) para obtener asistencia con la integración.
+</Info>

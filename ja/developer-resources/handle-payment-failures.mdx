@@ -25,18 +25,22 @@ keywords:
 
 | フィールド | 型 | 説明 |
 |-------|------|-------------|
-| `status` | string | 失敗した支払いの`failed`。他の非成功状態には`cancelled`、`requires_customer_action`、`requires_payment_method`が含まれます。 |
-| `error_code` | string \| null | 標準化された失敗の理由、例えば`INSUFFICIENT_FUNDS`や`PROCESSING_ERROR`。完全なリストは[取引失敗](/api-reference/transaction-failures)リファレンスを参照してください。 |
-| `error_message` | string \| null | 失敗の人間が読める説明。 |
-| `retry_attempt` | integer | 元の請求に対する`0`。`1`以上はスケジュールされたサブスクリプション更新の再試行を識別します。 |
+| `status` | string | 支払い失敗時の`failed`。その他の成功以外の状態には、`cancelled`、`requires_customer_action`、`requires_payment_method`などがあります。 |
+| `error_code` | string \| null | 標準化された失敗理由。例：`INSUFFICIENT_FUNDS`または`PROCESSING_ERROR`。[Transaction Failures](/api-reference/transaction-failures)リファレンスで全リストを確認できます。 |
+| `error_message` | string \| null | 失敗についての、人が読める説明。顧客向けではなく、加盟店向けに記述されています。標準化された`error_code`の場合、プロセッサーから返された生のテキストではなく、見出しと推奨アクションが含まれます。 |
+| `retry_attempt` | integer | 元の請求に対する`0`。`1`以上の場合、スケジュールされたサブスクリプション更新の再試行を示します。 |
 
 <Note>
 `error_code`と`error_message`は支払いが実際に失敗するまで`null`です。最初に`status`を常に確認し、次にエラーフィールドを読み取ります。
 </Note>
 
+<Warning>
+Merchant APIの`error_message`は、**加盟店向けの文言**です。詐欺に関連するものを含め、拒否の実際の理由が示される場合があるため、顧客に直接表示しないでください。代わりに、[Surface Errors to Customers Safely](#surface-errors-to-customers-safely)に示すように、`error_code`を顧客に安全な独自の文言にマッピングしてください。
+</Warning>
+
 ## `payment.failed` Webhook
 
-失敗を検出する最も信頼できる方法は`payment.failed` webhookです。このイベントは`data`にフル支払いオブジェクトをラップします。
+失敗を検出する最も信頼性の高い方法は、`payment.failed` webhookです。このイベントには、`data`内の完全な支払いオブジェクトが含まれます。
 
 ```json payment.failed payload expandable
 {
@@ -66,7 +70,7 @@ keywords:
 }
 ```
 
-ミニマルハンドラーは`error_code`を読み取り、それにルートします。
+最小限のハンドラーでは、`error_code`を読み取り、それに基づいて処理を振り分けます。
 
 <CodeGroup>
 
@@ -144,54 +148,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-処理前にWebhookの署名を必ず検証してください。完全な設定には署名の検証と冪等性が含まれていますので、[Webhookガイド](/developer-resources/webhooks)を参照してください。
+処理する前に、必ずwebhookの署名を検証してください。署名検証や冪等性を含む完全な設定方法については、[Webhooks guide](/developer-resources/webhooks)を参照してください。
 </Tip>
 
-## 再試行するかどうかの決定：ソフト拒否とハード拒否
+## 再試行するかどうかを判断する：Soft declineとHard decline
 
-`error_code`は、同じ支払い方法を再試行する価値があるかどうかを教えてくれます。
+`error_code`は、同じ支払い方法で再試行する価値があるかどうかを示します。
 
-| 拒否タイプ | 意味 | すべきこと |
+| 拒否タイプ | 意味 | 対応 |
 |--------------|---------------|------------|
-| **ソフト拒否** | 一時的または修正可能（例えば`INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 顧客が入力を修正した後、遅延後に再試行すると成功する可能性があります。 |
-| **ハード拒否** | 終局的（例えば`STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | 同じカードを再試行しないでください。顧客に別の支払い方法を尋ねてください。 |
+| **Soft decline** | 一時的、または修正可能な拒否（例：`INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 時間を置いて再試行するか、顧客が入力を修正した後に再試行すると、成功する可能性があります。 |
+| **Hard decline** | 終端状態の拒否（例：`STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | 同じカードで**再試行しないでください**。顧客に別の支払い方法を依頼してください。 |
 
-[取引失敗](/api-reference/transaction-failures)リファレンスには、すべての`error_code`の拒否タイプと推奨操作が記載されています。
+[Transaction Failures](/api-reference/transaction-failures)リファレンスには、すべての`error_code`について、拒否タイプと推奨アクションが記載されています。
 
-## チェックアウトでの失敗と更新時の失敗の処理
+## Checkout時と更新時の失敗への対応
 
-回収方法は、顧客がその場にいるかどうかによって異なります。
+顧客がその場にいるかどうかによって、回復方法は異なります。
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-顧客が積極的にチェックアウトしています。明確なメッセージを表示し、すぐに再試行するか、別のカードを使用してもらいます。
+顧客はCheckoutを進行中です。わかりやすいメッセージを表示し、すぐに再試行するか、別のカードを使用できるようにしてください。
 
-- `requires_payment_method` — 顧客が支払い方法を提供しなかった：カードの詳細を入力しなかったか、プロンプトが表示されたか、何の行動も取らなかった。これは通常、チェックアウト**ドロップオフ**であり、拒否ではありません — 顧客を再びエンゲージして支払いを完了させます（[放棄されたカートの回収](/features/recovery/abandoned-cart-recovery)を参照してください）。
-- `requires_customer_action` — 追加の認証（例えば3DS）が必要です。顧客にそれを完了させます。[3D Secureの処理](/features/payment-methods/cards#3d-secure-authentication)を参照してください。
+- `requires_payment_method` — 顧客が支払い方法を一度も提示していない状態です。カード情報を入力しなかったか、入力を求められたものの何も操作しなかったことを意味します。通常、これは拒否ではなくCheckoutからの**離脱**です。[Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)を参照し、支払いを完了してもらうために顧客へ再度アプローチしてください。
+- `requires_customer_action` — 追加の認証（3DSなど）が必要です。顧客に認証を完了してもらってください。[3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)を参照してください。
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-顧客がその場にいないため、リアルタイムでプロンプトを表示できません。更新が失敗した場合、サブスクリプションは`on_hold`に移り、`subscription.on_hold`が発生します。
+顧客がその場にいないため、リアルタイムで操作を促すことはできません。更新に失敗すると、サブスクリプションは`on_hold`に移行し、`subscription.on_hold`が発生します。
 
-- **ソフト拒否**は、[サブスクリプション支払い再試行](/features/recovery/payment-retries)によって自動的に再試行されます。
-- **ハード拒否**（および再試行が尽きた場合）は、顧客に支払い方法を更新するようメールで通知する[サブスクリプション追徴](/features/recovery/subscription-dunning)で回収するのが最適です。
+- **Soft decline**は、[Subscription Payment Retries](/features/recovery/payment-retries)によって自動的に再試行されます。
+- **Hard decline**（および再試行回数を使い果たした場合）は、[Subscription Dunning](/features/recovery/subscription-dunning)で回復するのが最適です。顧客に支払い方法の更新を依頼するメールが送信されます。
 
-[サブスクリプション統合ガイド](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)で、保留から再活性化までの完全な流れを参照してください。
+保留中から再有効化までの完全なフローについては、[Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)を参照してください。
 </Tab>
 </Tabs>
 
 ## 失敗した支払いの再試行
 
-- **サブスクリプション:** [サブスクリプション支払い再試行](/features/recovery/payment-retries)を有効にし、統合作業なしでソフト拒否を回収します。また、顧客が[支払い方法更新API](/api-reference/subscriptions/update-payment-method)を通じて支払い方法を更新し、未払い金額を請求することで回収をトリガーすることもできます。
-- **一度限りの支払い:** チェックアウトを再送信するか`payment_link`を実行し、顧客が別の方法で再試行できるようにします。一度限りの支払いに自動再試行はありません。
+- **サブスクリプション：** [Subscription Payment Retries](/features/recovery/payment-retries)を有効にすると、追加の連携作業なしでSoft declineを回復できます。[Update Payment Method API](/api-reference/subscriptions/update-payment-method)を使用して顧客に支払い方法を更新してもらうことでも、回復を開始できます。このAPIは未払いの料金を請求します。
+- **1回限りの支払い：** Checkoutまたは`payment_link`を再送信し、顧客が別の方法で再試行できるようにします。1回限りの支払いには自動再試行はありません。
 
 <Warning>
-同じカードへのハード拒否を再試行しないでください。カードネットワークは繰り返される拒否を乱用として旗を立てる可能性があり、承認率に悪影響を与える可能性があります。
+同じカードに対してHard declineの再試行を行わないでください。カードネットワークによって、繰り返される拒否が不正な行為として検知される可能性があり、承認率の低下につながります。
 </Warning>
 
-## 顧客へのエラーを安全に表示する
+## 顧客にエラーを安全に表示する
 
-顧客にフレンドリーなメッセージを表示し、決して生の`error_code`を表示しないでください。
+顧客には親しみやすいメッセージを表示してください。生の`error_code`や、加盟店向けの`error_message`を表示してはいけません。
+
+<Info>
+Dodo Paymentsが管理する画面（Checkout、[Customer Portal](/features/customer-portal)、および督促メール）では、詐欺に関連する拒否に対する一般的なメッセージへのフォールバックを含め、このマッピングがすでに適用されています。以下のマッピングが必要なのは、自社プロダクト内で失敗を表示する場合のみです。
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -211,7 +219,7 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`の実際の理由を決して明らかにしないでください。** これらを表面化すると、不正なアクターへの警告となります。ジェネリックな拒否メッセージを表示し、特定の`error_code`は内部のみにログしてください。
+**`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`の実際の理由は、決して開示しないでください。** これらを表示すると、不正行為者に手がかりを与える可能性があります。一般的な拒否メッセージを表示し、具体的な`error_code`は内部でのみ記録してください。
 </Warning>
 
 ## 関連情報
@@ -222,22 +230,22 @@ function customerMessage(errorCode) {
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-カードの拒否でないAPIおよびビジネスロジックエラー。
+カードの拒否ではないAPIおよびビジネスロジックのエラー。
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-サブスクリプション更新でのソフト拒否の自動回復。
+サブスクリプション更新時のSoft declineの自動回復。
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-ハード拒否を回収するメールシーケンス。
+Hard declineを回復するメールシーケンス。
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-支払いイベントのフルペイロードスキーマ。
+支払いイベントの完全なペイロードスキーマ。
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-拒否と更新失敗をシミュレートするテストカード。
+拒否や更新失敗をシミュレートするテストカード。
 </Card>
 </CardGroup>

@@ -21,103 +21,118 @@ keywords:
 
 जब payment fail होता है, तो `payment.failed` webhook और payment object ये जानकारी उपलब्ध कराते हैं:
 
-- `error_code` — नीचे दी गई table से standardized failure reason।
-- `error_message` — human-readable explanation।
-- `retry_attempt` — मूल charge के लिए `0`, या प्रत्येक scheduled subscription renewal retry के लिए `1` या उससे अधिक।
+- `error_code` — नीचे दी गई तालिका से एक standardized failure reason।
+- `error_message` — **आप**, यानी merchant, के लिए लिखा गया human-readable explanation। जब `error_code` नीचे दिए गए standardized codes में से एक होता है, तो यह payment processor के raw text के बजाय headline और recommended action होता है।
+- `retry_attempt` — मूल charge के लिए `0`, और प्रत्येक scheduled subscription renewal retry के लिए `1` या उससे अधिक।
 
 इन failure reasons को समझने से आप customers को स्पष्ट feedback दे सकते हैं, तय कर सकते हैं कि retry करना उचित है या नहीं, और अधिक revenue recover कर सकते हैं।
 
+### Merchant Copy बनाम Customer Copy
+
+हर standardized failure code दो अलग-अलग messages से जुड़ा होता है, ताकि सही audience को सही स्तर की जानकारी दिखाई दे:
+
+| Audience | Where it appears | What it says |
+|----------|------------------|--------------|
+| **आप** | payment पर `error_message`, dashboard payment details page और merchant payment-failed email में | वास्तविक कारण और recommended action, जैसे *"Cardholder ने card को activate नहीं किया है। Customer से कहें कि वह अपने bank से card activate करे, फिर retry करें।"* |
+| **आपका customer** | checkout failure screen, [Customer Portal](/features/customer-portal) और [dunning](/features/recovery/subscription-dunning) emails में | एक छोटा, सरल भाषा में लिखा explanation, जिस पर वे कार्रवाई कर सकें, जैसे *"आपका card अभी तक activate नहीं हुआ है। कृपया अपने bank से इसे activate करें और फिर प्रयास करें।"* |
+
+<Note>
+Customer Portal customer-facing wording को `error_message` में लौटाता है, जबकि merchant API उसी payment के लिए merchant wording लौटाता है। दोनों में `error_code` समान होता है।
+</Note>
+
 <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-webhooks और API से इन codes को पढ़ने, customers को दिखाने और retry करने का निर्णय लेने के लिए step-by-step developer guide।
+webhooks और API से इन codes को पढ़ने, customers को दिखाने और retry कब करना है यह तय करने के लिए step-by-step developer guide।
 </Card>
 
 ## Soft बनाम Hard Declines
 
 हर failure code दो categories में से एक में आता है। यह distinction तय करता है कि आपको उसी payment method को retry करना चाहिए या customer से नया method मांगना चाहिए।
 
-| Decline type | इसका अर्थ | क्या करें | Examples |
+| Decline type | What it means | What to do | Examples |
 |--------------|---------------|------------|----------|
-| **Soft decline** | Temporary या correctable — वही card बाद के attempt में या customer द्वारा अपना input ठीक करने के बाद सफल हो सकता है। | Retry करना सुरक्षित है (delay के बाद या customer द्वारा details ठीक करने के बाद)। | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
-| **Hard decline** | Terminal — उसी card को retry करने से outcome नहीं बदलेगा। | उसी card को **retry न करें**। Customer से अलग payment method इस्तेमाल करने या अपने bank से contact करने को कहें। | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
+| **Soft decline** | अस्थायी या सुधारा जा सकने वाला — वही card बाद के प्रयास में या customer द्वारा अपना input ठीक करने के बाद सफल हो सकता है। | Retry करना सुरक्षित है (कुछ समय बाद या customer द्वारा अपना विवरण ठीक करने के बाद)। | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
+| **Hard decline** | अंतिम — उसी card को retry करने से परिणाम नहीं बदलेगा। | उसी card को **retry न करें**। Customer से अलग payment method इस्तेमाल करने या अपने bank से संपर्क करने को कहें। | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
 
-Subscription renewals के लिए, Dodo Payments इस distinction को automatically लागू करता है: soft declines को [Subscription Payment Retries](/features/recovery/payment-retries) द्वारा फिर से attempt किया जाता है, जबकि hard declines retry chain को तुरंत समाप्त कर देते हैं और उन्हें [Subscription Dunning](/features/recovery/subscription-dunning) के साथ handle करना बेहतर है।
+Subscription renewals के लिए Dodo Payments इस distinction को automatically लागू करता है: soft declines को [Subscription Payment Retries](/features/recovery/payment-retries) द्वारा फिर से attempt किया जाता है, जबकि hard declines retry chain को तुरंत समाप्त कर देते हैं और इन्हें [Subscription Dunning](/features/recovery/subscription-dunning) के माध्यम से संभालना बेहतर होता है।
 
 <Warning>
-**`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` या `FRAUDULENT` का वास्तविक reason customer को कभी न बताएं।** इन्हें दिखाने से fraudulent actor को संकेत मिल सकता है। Customer को हमेशा generic decline message दिखाएं (उदाहरण के लिए, *"Your card was declined. Please contact your bank or use another card."*) और specific code को केवल internally log करें।
+**`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` या `FRAUDULENT` का वास्तविक कारण customer को कभी न बताएं।** इन्हें दिखाने से fraudulent actor को संकेत मिल सकता है। Customer को हमेशा generic decline message दिखाएं (उदाहरण के लिए, *"आपका card decline हो गया। कृपया अपने bank से संपर्क करें या दूसरा card इस्तेमाल करें।"*) और specific code को केवल internally log करें।
+
+Dodo Payments अपने नियंत्रण वाले surfaces पर इसे पहले से लागू करता है: इन चार codes के लिए checkout, Customer Portal और dunning emails हमेशा generic decline message दिखाते हैं, जबकि आपकी अपनी copy में वास्तविक कारण रहता है। Merchant API से प्राप्त `error_message` को customer को दिखाने वाली हर जगह यही नियम लागू करें।
 </Warning>
 
 ## Transaction Failure Reasons
 
-नीचे दी गई table में हर failure code, उसका decline type, customer द्वारा उसे resolve किए जा सकने की स्थिति, description और recommended action सूचीबद्ध हैं।
+नीचे दी गई तालिका में हर failure code, उसका decline type, customer इसे resolve कर सकता है या नहीं, description और recommended action दिया गया है।
 
 | Failure Code | Type | User Error | Description | Recommended Action |
 |--------------|------|------------|-------------|--------------------|
-| `AUTHENTICATION_FAILURE` | Soft | Yes | Transaction के दौरान authentication fail हुआ | Customer से retry करने और 3DS authentication पूरा करने, या दूसरा card इस्तेमाल करने को कहें |
+| `AUTHENTICATION_FAILURE` | Soft | Yes | Transaction के दौरान authentication विफल हुआ | Customer से retry करने और 3DS authentication पूरा करने, या दूसरा card इस्तेमाल करने को कहें |
 | `AUTHENTICATION_REQUIRED` | Soft | Yes | Transaction पूरा करने के लिए additional authentication आवश्यक है | Customer को 3DS authentication पूरा करने के लिए prompt करें। Subscription renewals के लिए customer से वापस आकर authenticate करने को कहें |
-| `AUTHENTICATION_TIMEOUT` | Soft | Yes | Authentication process का timeout हो गया | Customer से retry करने और तुरंत authentication पूरा करने को कहें |
-| `CARD_DECLINED` | Soft | No | Issuing bank ने किसी specific reason के बिना card decline किया (generic decline) | Customer से retry करने, अपने bank से contact करने या दूसरा card इस्तेमाल करने को कहें |
+| `AUTHENTICATION_TIMEOUT` | Soft | Yes | Authentication process का समय समाप्त हो गया | Customer से retry करने और तुरंत authentication पूरा करने को कहें |
+| `CARD_DECLINED` | Soft | No | Issuing bank ने बिना किसी specific reason के card decline किया (generic decline) | Customer से retry करने, अपने bank से संपर्क करने या दूसरा card इस्तेमाल करने को कहें |
 | `CARD_NOT_ACTIVATED` | Soft | Yes | Cardholder ने card activate नहीं किया है | Customer से अपने bank के साथ card activate करने और फिर retry करने को कहें |
-| `CARD_VELOCITY_EXCEEDED` | Soft | Yes | कम समय में बहुत अधिक transactions का प्रयास किया गया | Customer से कुछ समय प्रतीक्षा करके बाद में retry करने या limits के बारे में अपने bank से contact करने को कहें |
-| `CUSTOMER_CANCELLED` | Soft | Yes | Customer ने transaction cancel कर दिया | Customer से तैयार होने पर checkout restart करने को कहें |
-| `DO_NOT_HONOR` | Hard | No | Issuing bank ने transaction को स्पष्ट रूप से अस्वीकार किया (ISO 8583 code 05 — do not honor); networks इसे terminal मानते हैं | Customer से अपने bank से contact करने को कहें; उसी card को retry न करें |
-| `EXPIRED_CARD` | Hard | Yes | Card expire हो गया है | Customer से valid expiry date वाला card इस्तेमाल करने को कहें |
-| `FRAUDULENT` | Hard | Yes | Transaction को potentially fraudulent के रूप में flag किया गया | Customer को generic decline message दिखाएं — reason न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
-| `GENERIC_DECLINE` | Soft | No | Transaction किसी unspecified reason से decline हुआ | Customer से अपने bank से contact करने या दूसरा card आज़माने को कहें |
-| `INCORRECT_CVC` | Soft | Yes | दिया गया CVC code गलत था | Customer से सही CVC दोबारा enter करने को कहें |
-| `INCORRECT_NUMBER` | Soft | Yes | Card number गलत enter किया गया | Customer से सही card number दोबारा enter करने को कहें |
+| `CARD_VELOCITY_EXCEEDED` | Soft | Yes | थोड़े समय में बहुत अधिक transactions का प्रयास किया गया | Customer से कुछ समय प्रतीक्षा करके बाद में retry करने या limits के बारे में अपने bank से संपर्क करने को कहें |
+| `CUSTOMER_CANCELLED` | Soft | Yes | Customer ने transaction cancel कर दिया | Customer से तैयार होने पर checkout फिर से शुरू करने को कहें |
+| `DO_NOT_HONOR` | Hard | No | Issuing bank ने transaction को स्पष्ट रूप से अस्वीकार कर दिया (ISO 8583 code 05 — do not honor); networks इसे terminal मानते हैं | Customer से अपने bank से संपर्क करने को कहें; उसी card को retry न करें |
+| `EXPIRED_CARD` | Hard | Yes | Card की expiry हो चुकी है | Customer से valid expiry date वाला card इस्तेमाल करने को कहें |
+| `FRAUDULENT` | Hard | Yes | Transaction को संभावित रूप से fraudulent के रूप में flag किया गया | Customer को generic decline message दिखाएं — कारण न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
+| `GENERIC_DECLINE` | Soft | No | Transaction किसी unspecified reason से decline हुआ | Customer से अपने bank से संपर्क करने या दूसरा card आज़माने को कहें |
+| `INCORRECT_CVC` | Soft | Yes | दिया गया CVC code गलत था | Customer से सही CVC दोबारा दर्ज करने को कहें |
+| `INCORRECT_NUMBER` | Soft | Yes | Card number गलत दर्ज किया गया | Customer से सही card number दोबारा दर्ज करने को कहें |
 | `INSUFFICIENT_FUNDS` | Soft | Yes | Transaction पूरा करने के लिए account में पर्याप्त funds नहीं हैं | Customer से दूसरा payment method इस्तेमाल करने या funds उपलब्ध होने पर retry करने को कहें |
-| `INVALID_ACCOUNT` | Hard | Yes | दिए गए account details invalid हैं | Customer से अपने bank से contact करने या दूसरा card इस्तेमाल करने को कहें |
+| `INVALID_ACCOUNT` | Hard | Yes | दिए गए account details invalid हैं | Customer से अपने bank से संपर्क करने या दूसरा card इस्तेमाल करने को कहें |
 | `INVALID_AMOUNT` | Soft | Yes | Transaction amount invalid है | Customer के साथ amount और किसी भी purchase limits को verify करें |
-| `INVALID_CARD_NUMBER` | Soft | Yes | Card number format invalid है | Customer से valid card number दोबारा enter करने को कहें |
+| `INVALID_CARD_NUMBER` | Soft | Yes | Card number format invalid है | Customer से valid card number दोबारा दर्ज करने को कहें |
 | `INVALID_CARD_OWNER` | Soft | Yes | Card owner information invalid है | Customer से cardholder name ठीक करने को कहें |
-| `INVALID_CVC` | Soft | Yes | CVC format invalid है | Customer से valid CVC दोबारा enter करने को कहें |
-| `INVALID_EXPIRY_YEAR` | Soft | Yes | Card expiry year invalid है | Customer से valid expiry date enter करने को कहें |
-| `INVALID_PIN` | Soft | Yes | दिया गया PIN गलत है | Customer से सही PIN दोबारा enter करने को कहें |
-| `INVALID_REQUEST` | Soft | Yes | Transaction request में invalid data है | Payment request fields check करें और valid data के साथ resubmit करें |
-| `INVALID_UPI_ID` | Soft | Yes | दिया गया UPI ID invalid है | Customer से valid UPI ID enter करने को कहें |
-| `LIMIT_EXCEEDED` | Soft | Yes | Transaction card या account limit से अधिक है | Customer से limits के बारे में अपने bank से contact करने या दूसरा method इस्तेमाल करने को कहें |
-| `LIVE_MODE_TEST_CARD` | Hard | Yes | Live mode में test card इस्तेमाल किया गया | Real card इस्तेमाल करें — live mode में test card को retry करना हमेशा fail होगा |
-| `LOST_CARD` | Hard | Yes | Card के खो जाने की report की गई है | Customer को generic decline message दिखाएं — reason न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
+| `INVALID_CVC` | Soft | Yes | CVC format invalid है | Customer से valid CVC दोबारा दर्ज करने को कहें |
+| `INVALID_EXPIRY_YEAR` | Soft | Yes | Card expiry year invalid है | Customer से valid expiry date दर्ज करने को कहें |
+| `INVALID_PIN` | Soft | Yes | दिया गया PIN गलत है | Customer से सही PIN दोबारा दर्ज करने को कहें |
+| `INVALID_REQUEST` | Soft | Yes | Transaction request में invalid data है | Payment request fields जाँचें और valid data के साथ फिर submit करें |
+| `INVALID_UPI_ID` | Soft | Yes | दिया गया UPI ID invalid है | Customer से valid UPI ID दर्ज करने को कहें |
+| `LIMIT_EXCEEDED` | Soft | Yes | Transaction card या account limit से अधिक है | Customer से limits के बारे में अपने bank से संपर्क करने या दूसरा method इस्तेमाल करने को कहें |
+| `LIVE_MODE_TEST_CARD` | Hard | Yes | Live mode में test card का उपयोग किया गया | Real card का उपयोग करें — live mode में test card को retry करने पर हमेशा विफलता होगी |
+| `LOST_CARD` | Hard | Yes | Card के lost होने की report की गई है | Customer को generic decline message दिखाएं — कारण न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
 | `MANDATE_INVALID` | Soft | Yes | Payment mandate invalid है | Customer से payment mandate फिर से set up करने को कहें |
 | `MANDATE_REQUIRED` | Soft | Yes | इस transaction के लिए mandate आवश्यक है | Mandate set up करें और charge करने से पहले customer से इसे authorize करने को कहें |
-| `MANDATE_REQUIRED_SYSTEM` | Hard | No | System को इस transaction type के लिए mandate आवश्यक है | Charge करने से पहले सुनिश्चित करें कि mandate setup flow पूरा हो गया है |
-| `NETWORK_ERROR` | Soft | No | Transaction के दौरान network error हुआ | Transient — थोड़े delay के बाद payment retry करें |
-| `NETWORK_TIMEOUT` | Soft | No | Network request का timeout हो गया | Transient — थोड़े delay के बाद payment retry करें |
-| `ORDER_ALREADY_EXISTS` | Soft | No | इस transaction के लिए order पहले से मौजूद है (duplicate order creation) | Retry करने से पहले existing order का status check करें; समस्या बनी रहने पर support से contact करें |
-| `ORDER_CREATION_FAILED` | Soft | No | Transaction के लिए order create नहीं हो सका | Transient/system error — payment retry करें; समस्या बनी रहने पर support से contact करें |
-| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hard | Yes | Payment method provider ने transaction decline किया | Customer से अपने provider से contact करने या दूसरा payment method इस्तेमाल करने को कहें |
-| `PAYMENT_METHOD_UNSUPPORTED` | Hard | Yes | इस transaction के लिए payment method supported नहीं है | Customer से supported payment method इस्तेमाल करने को कहें |
-| `PICKUP_CARD` | Hard | Yes | Card के खो जाने या चोरी होने की report की गई है और pickup के लिए flag किया गया है | Customer को generic decline message दिखाएं — reason न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
-| `PROCESSING_ERROR` | Soft | No | Transaction process करते समय error हुआ | Transient — payment retry करें; समस्या बनी रहने पर customer से अपने bank से contact करने को कहें |
+| `MANDATE_REQUIRED_SYSTEM` | Hard | No | इस transaction type के लिए system को mandate आवश्यक है | Charge करने से पहले सुनिश्चित करें कि mandate setup flow पूरा हो गया है |
+| `NETWORK_ERROR` | Soft | No | Transaction के दौरान network error हुआ | Transient — थोड़ी देर बाद payment retry करें |
+| `NETWORK_TIMEOUT` | Soft | No | Network request का समय समाप्त हो गया | Transient — थोड़ी देर बाद payment retry करें |
+| `ORDER_ALREADY_EXISTS` | Soft | No | इस transaction के लिए order पहले से मौजूद है (duplicate order creation) | Retry करने से पहले existing order का status जाँचें; समस्या बनी रहने पर support से संपर्क करें |
+| `ORDER_CREATION_FAILED` | Soft | No | Transaction के लिए order create करने में विफलता हुई | Transient/system error — payment retry करें; समस्या बनी रहने पर support से संपर्क करें |
+| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hard | Yes | Payment method provider ने transaction decline किया | Customer से अपने provider से संपर्क करने या दूसरा payment method इस्तेमाल करने को कहें |
+| `PAYMENT_METHOD_UNSUPPORTED` | Hard | Yes | यह payment method इस transaction के लिए supported नहीं है | Customer से supported payment method इस्तेमाल करने को कहें |
+| `PICKUP_CARD` | Hard | Yes | Card के lost या stolen होने की report की गई है और उसे pickup के लिए flag किया गया है | Customer को generic decline message दिखाएं — कारण न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
+| `PROCESSING_ERROR` | Soft | No | Transaction process करते समय error हुआ | Transient — payment retry करें; समस्या बनी रहने पर customer से अपने bank से संपर्क करने को कहें |
 | `PROVIDER_UNSUPPORTED` | Hard | No | Payment provider इस transaction type को support नहीं करता | Customer से दूसरा payment method इस्तेमाल करने को कहें |
-| `REENTER_TRANSACTION` | Soft | Yes | Transaction को फिर से enter करना आवश्यक है | Customer से payment retry करने को कहें |
-| `REVOCATION_OF_AUTHORIZATION` | Hard | Yes | Transaction का authorization revoke कर दिया गया | Customer से दूसरा payment method इस्तेमाल करने को कहें |
-| `STOLEN_CARD` | Hard | Yes | Card के चोरी होने की report की गई है | Customer को generic decline message दिखाएं — reason न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
+| `REENTER_TRANSACTION` | Soft | Yes | Transaction को फिर से दर्ज करना आवश्यक है | Customer से payment retry करने को कहें |
+| `REVOCATION_OF_AUTHORIZATION` | Hard | Yes | Transaction का authorization revoke कर दिया गया है | Customer से दूसरा payment method इस्तेमाल करने को कहें |
+| `STOLEN_CARD` | Hard | Yes | Card के stolen होने की report की गई है | Customer को generic decline message दिखाएं — कारण न बताएं। उनसे दूसरा card इस्तेमाल करने को कहें |
 | `SUBSCRIPTION_NOT_ACTIVE` | Hard | No | Subscription active नहीं है, इसलिए recurring charge process नहीं किया जा सका | Charge का फिर से प्रयास करने से पहले subscription reactivate करें (उदाहरण के लिए, payment method update करके) |
-| `TRANSACTION_NOT_ALLOWED` | Hard | Yes | इस card या account के लिए transaction allowed नहीं है | Customer से इस transaction type को allow करने के लिए अपने bank से contact करने या दूसरा card इस्तेमाल करने को कहें |
-| `TRANSACTION_NOT_APPROVED` | Hard | Yes | Transaction approve नहीं हुआ | Customer से अपने bank से contact करने या दूसरा card आज़माने को कहें |
-| `TRY_AGAIN_LATER` | Soft | No | Transaction को बाद में retry किया जाना चाहिए | Transient — payment को बाद में retry करें |
-| `UNKNOWN_ERROR` | Soft | No | Unknown error हुआ | Payment retry करें; समस्या बनी रहने पर support से contact करें |
+| `TRANSACTION_NOT_ALLOWED` | Hard | Yes | यह transaction इस card या account के लिए allowed नहीं है | Customer से इस transaction type को allow करने के लिए अपने bank से संपर्क करने या दूसरा card इस्तेमाल करने को कहें |
+| `TRANSACTION_NOT_APPROVED` | Hard | Yes | Transaction approve नहीं हुआ | Customer से अपने bank से संपर्क करने या दूसरा card आज़माने को कहें |
+| `TRY_AGAIN_LATER` | Soft | No | Transaction को बाद में retry करना चाहिए | Transient — payment को बाद में retry करें |
+| `UNKNOWN_ERROR` | Soft | No | Unknown error हुआ | Payment retry करें; समस्या बनी रहने पर support से संपर्क करें |
 
 <Note>
-**User Error** बताता है कि payment decline को customer resolve कर सकता है या नहीं। जब `Yes` हो, तो customer issue ठीक करने के लिए action ले सकता है (उदाहरण के लिए, सही card details enter करके)। जब `No` हो, तो decline system-level issues या bank restrictions के कारण है, जिन्हें customer सीधे resolve नहीं कर सकता।
+**User Error** बताता है कि payment decline को customer resolve कर सकता है या नहीं। जब `Yes` हो, तो customer issue ठीक करने के लिए कार्रवाई कर सकता है (उदाहरण के लिए, सही card details दर्ज करना)। जब `No` हो, तो decline system-level issues या bank restrictions के कारण है, जिन्हें customer सीधे resolve नहीं कर सकता।
 </Note>
 
 <Info>
-Issuing bank का अपना risk engine cardholder को high-risk customer flag करने पर भी card decline हो सकता है — merchant या transaction details से स्वतंत्र रूप से। ये declines आमतौर पर generic codes जैसे `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED` या `FRAUDULENT` के रूप में दिखाई देते हैं। इन मामलों में bank specific reason share नहीं करता, और न ही Dodo Payments और न ही merchant इस decision को override कर सकते हैं। Customer से flag resolve करने के लिए अपने bank से contact करने, या अलग card अथवा payment method इस्तेमाल करने को कहें।
+Issuing bank का अपना risk engine cardholder को high-risk customer के रूप में flag करने पर भी card decline हो सकता है — merchant या transaction details से स्वतंत्र रूप से। ऐसे declines आमतौर पर generic codes जैसे `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED` या `FRAUDULENT` के रूप में दिखाई देते हैं। इन मामलों में bank specific reason साझा नहीं करता, और न ही Dodo Payments या merchant इस decision को override कर सकते हैं। Customer से flag resolve करने के लिए अपने bank से संपर्क करने या अलग card अथवा payment method इस्तेमाल करने को कहें।
 </Info>
 
-## Programmatically Failures Handle करना
+## Programmatically Handling Failures
 
-`payment.failed` webhook या payment object से `error_code` पढ़ें, उसे ऊपर दिए गए recommended action से map करें और तय करें कि retry करना है या नहीं। Subscription renewals के लिए soft declines automatically आपके लिए retry किए जाते हैं — [Subscription Payment Retries](/features/recovery/payment-retries) देखें।
+`error_code` को `payment.failed` webhook या payment object से पढ़ें, इसे ऊपर दिए गए recommended action से map करें और तय करें कि retry करना है या नहीं। Subscription renewals के लिए soft declines आपके लिए automatically retry किए जाते हैं — [Subscription Payment Retries](/features/recovery/payment-retries) देखें।
 
-API-level और business-logic errors (जैसे `PAYMENT_NOT_SUCCEEDED` या `REFUND_WINDOW_EXPIRED`) के लिए, जो card declines नहीं हैं, [Error Codes](/api-reference/error-codes) reference देखें।
+API-level और business-logic errors (जैसे `PAYMENT_NOT_SUCCEEDED` या `REFUND_WINDOW_EXPIRED`), जो card declines नहीं हैं, उनके लिए [Error Codes](/api-reference/error-codes) reference देखें।
 
-## संबंधित
+## Related
 
 <CardGroup cols={2}>
 <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-Failed payments को detect, surface और retry करने की end-to-end guide।
+Failed payments का पता लगाने, उन्हें दिखाने और retry करने की end-to-end guide।
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
@@ -125,14 +140,14 @@ Non-decline failures के लिए API और business-logic error codes।
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Subscription renewals पर soft declines recover करने वाले automatic retries।
+Subscription renewals पर soft declines को recover करने वाले automatic retries।
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Payment method update करने के लिए prompt करके hard declines recover करने वाले email sequences।
+Payment method update का prompt देकर hard declines को recover करने वाले email sequences।
 </Card>
 </CardGroup>
 
 ## Support
 
-Transaction failures या integration issues में additional help के लिए support@dodopayments.com पर हमारी support team से contact करें।
+Transaction failures या integration issues में अतिरिक्त सहायता के लिए support@dodopayments.com पर हमारी support team से संपर्क करें।

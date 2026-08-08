@@ -1,0 +1,198 @@
+---
+title: Rekomi
+description: Dodo
+  Paymentsのストアでアフィリエイトプログラムを運営できます。APIキーを1つ貼り付けるだけで2つのサービスが接続され、Rekomiが売上を追跡してアフィリエイトに報酬を支払います。
+icon: /images/logos/rekomi.svg
+keywords:
+  - Dodo Payments
+  - Rekomi
+  - アフィリエイト追跡
+  - アフィリエイトプログラム
+  - アフィリエイト報酬支払い
+---
+
+## はじめに
+
+[Rekomi](https://rekomi.com)は、ネイティブなDodo Payments連携を備えたアフィリエイト追跡・管理プラットフォームです。誰かがアフィリエイトリンクを共有すると、Rekomiがクリックを記録します。その訪問者が購入すると、Dodo Paymentsから売上が届き、適切なアフィリエイトに自動的に成果が付与されます。Rekomiはコミッションを計算し、150か国以上で税務フォームの処理も含め、アフィリエイトへの支払いも代行します。
+
+接続は1回の貼り付けだけで完了します。書き込みアクセスを有効にしたDodo Payments APIキーをRekomiに渡すと、Rekomiがキーを検証し、Dodo Paymentsアカウント内にwebhookエンドポイントを作成して、署名シークレットを直接取得します。入力するwebhookフォームも、Dodo Paymentsに貼り戻す情報もありません。
+
+<Info>
+紹介された顧客が1回限りの支払いを完了するか、有料サブスクリプションを開始するか、更新料金を支払うと、その「売上」がアフィリエイトに付与されます。返金やdisputeが発生すると、コミッションは自動的に取り消されます。
+</Info>
+
+## 仕組み
+
+Dodo Paymentsは独自ドメインでcheckoutをホストするため、アフィリエイトの紹介情報はcheckoutのmetadataとして売上に引き継がれます。
+
+1. 訪問者がアフィリエイトリンクをクリックしてサイトにアクセスすると、Rekomiのスクリプトがブラウザに紹介情報を保存します。
+2. 訪問者がcheckoutに進んだら、その紹介情報を `rekomi_ref` metadataとして支払いに付加します。
+3. Dodo Paymentsが支払いを処理し、Dodo Paymentsが作成したエンドポイントに署名付きの `payment.succeeded` webhookを配信します。
+4. Rekomiが紹介情報とアフィリエイトを照合し、税引前の売上金額に基づいてコミッションを計算して記録します。
+
+サブスクリプションの更新も同じ方法で届くため、継続コミッションのために追加作業は必要ありません。返金やdisputeも同じエンドポイントを通じて処理されます。
+
+## 前提条件
+
+この連携を設定する前に、次のものがあることを確認してください。
+
+1. 本番モードの[Dodo Paymentsアカウント](https://app.dodopayments.com)
+2. [Rekomiアカウント](https://app.rekomi.com/sign-up)
+3. **書き込みアクセス**を有効にしたDodo Payments APIキー（読み取り専用キーではwebhookを作成できません）
+
+## はじめに
+
+<Steps>
+<Step title="Create an API Key with Write Access">
+  Dodo Paymentsダッシュボードで**Developer → API Keys**に移動し、**Enable write access**にチェックを入れてキーを作成します（名前は「Rekomi」にします）。詳しい手順については[APIキーガイド](/api-reference/introduction#api-key-management-and-authentication)を参照してください。
+
+  <Warning>
+  キーの書き込みアクセスを有効にしてください。読み取り専用キーは検証には合格しますが、webhookエンドポイントを作成できないため、接続は途中で失敗します。
+  </Warning>
+</Step>
+
+<Step title="Paste the Key into Rekomi">
+  Rekomiで**Setup → Connect payment processor**を開き、Dodo Paymentsを選択してキーを貼り付けます。Rekomiがリアルタイムでキーを検証し、アカウント内にwebhookエンドポイントを作成して、署名シークレットを自動的に取得します。
+
+  <Frame>
+    <img src="/images/integrations/rekomi/connect.png" alt="APIキーの入力欄と接続ボタンが1つずつ表示されたRekomiのDodo Payments設定ページ" style={{ maxHeight: '500px', width: 'auto' }} />
+  </Frame>
+
+  <Info>
+  接続後、キーはwebhookエンドポイントの管理と定期的なヘルスチェックの実行にのみ使用されます。売上は署名付きwebhookを通じて届き、API経由では届きません。
+  </Info>
+</Step>
+
+<Step title="Install the Rekomi Script">
+  アフィリエイトのクリックを取得できるよう、Rekomiのトラッキングスクリプトをマーケティングサイトに追加します。プログラムIDが入力済みのスニペットは、Rekomiの**Setup → Install**にあります。
+
+  ```html
+  <script
+    async
+    src="https://api.rekomi.com/api/v1/r/loader.js"
+    data-program-id="YOUR_PROGRAM_ID"
+  ></script>
+  ```
+
+</Step>
+
+<Step title="Pass the Referral into Checkout">
+  取得した紹介情報を `rekomi_ref` metadataとして各支払いに付加します。実装例については以下を参照してください。
+</Step>
+
+<Step title="Done!">
+  売上、更新、返金、disputeに対するアフィリエイトコミッションの付与と取り消しが自動的に行われ、Rekomiがアフィリエイトへの支払いを処理します。
+</Step>
+</Steps>
+
+## 実装ガイド
+
+### API経由のCheckout Sessions
+
+フロントエンドで `window.Rekomi.getReferral()` を使って紹介情報を読み取り、checkoutリクエストとともにバックエンドへ送信し、 `metadata` に設定します。
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, rekomiRef?: string) {
+  const session = await client.checkoutSessions.create({
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    return_url: 'https://yoursite.com/success',
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return session.checkout_url;
+}
+```
+
+同じ `metadata.rekomi_ref` フィールドはサブスクリプション商品でも使用できるため、初回請求とすべての更新で同じアフィリエイトに成果が付与されます。
+
+### Payments API
+
+<Note>
+以下の例では `POST /payments` を使用していますが、これは**非推奨**です。既存の連携では引き続き機能しますが、新しい連携では[Checkout Sessions](/developer-resources/checkout-session)（`POST /checkouts`）を使用してください。`metadata` は同じ方法で渡します。
+</Note>
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createPayment(productId: string, rekomiRef?: string) {
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    payment_link: true,
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return payment;
+}
+```
+
+### Static Payment Links
+
+フラット形式のmetadataクエリパラメータ（角括弧形式ではありません）を使ってリンクに情報を付加します。
+
+```javascript
+const ref = window.Rekomi?.getReferral?.();
+let url = 'https://checkout.dodopayments.com/buy/YOUR_PRODUCT_ID';
+if (ref) url += `?metadata_rekomi_ref=${encodeURIComponent(ref)}`;
+// use url as the href on your Buy button
+```
+
+Dodo Paymentsは `metadata_*` クエリパラメータを支払いのmetadataに取り込み、Rekomiはそこから情報を読み取ります。
+
+## 追跡される内容
+
+| イベント | 動作 |
+| -------------------- | ----------------------------------------------------------------------- |
+| 1回限りの支払い | 税引前の売上金額に対してコミッションを付与 |
+| サブスクリプションの更新 | 継続コミッション。各請求は個別の支払いイベントとして届く |
+| 返金 | コミッションを自動的に取り消し、付与済みの金額を超えることはない |
+| Dispute | disputeの開始時点でコミッションを取り消し |
+
+<Tip>
+コミッションは税引前の売上金額に基づいて計算されます。Dodo PaymentsはMerchant of Recordであり、税金を徴収するため、アフィリエイトが報酬を得るのは売上そのものに対してであり、購入者の国によって追加された税金に対してではありません。
+</Tip>
+
+## 重要事項
+
+- Rekomiは必要なイベントのみを正確に指定してwebhookエンドポイントを登録します。Dodo Paymentsダッシュボードでそのエンドポイントのイベントリストを編集しないでください。イベントが削除されると、Rekomiのヘルスチェックで接続に問題があると判定されます。
+- トライアル中はトライアル終了まで支払いが発生しないため、最初の実際の請求が行われるまでコミッションは発生しません。
+- Rekomiで接続を解除すると、Dodo Paymentsアカウントからwebhookエンドポイントが再び削除されます。
+
+## 追加リソース
+
+<CardGroup cols={2}>
+  <Card title="Rekomi's Dodo Payments Guide" icon="book-open" href="https://rekomi.com/docs/brands/install/dodo">
+    Rekomiのドキュメントにある、設定手順、トラブルシューティング、セキュリティに関する詳細です。
+  </Card>
+  <Card title="Affiliates Feature Guide" icon="users" href="/features/affiliates">
+    Dodo Paymentsで利用できるすべてのアフィリエイト連携オプションです。
+  </Card>
+</CardGroup>
+
+<Info>
+サポートが必要ですか？連携については、Rekomiサポート（[support@rekomi.com](mailto:support@rekomi.com)）またはDodo Paymentsサポート（[support@dodopayments.com](mailto:support@dodopayments.com)）までお問い合わせください。
+</Info>

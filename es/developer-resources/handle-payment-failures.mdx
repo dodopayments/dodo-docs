@@ -27,18 +27,22 @@ Cada pago fallido, ya sea una compra única o una renovación de suscripción, l
 
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
-| `status` | string | `failed` para un pago fallido. Otros estados no exitosos incluyen `cancelled`, `requires_customer_action`, y `requires_payment_method`. |
-| `error_code` | string \| null | La razón estandarizada del fallo, por ejemplo `INSUFFICIENT_FUNDS` o `PROCESSING_ERROR`. Consulta la referencia de [Fallos de Transacción](/api-reference/transaction-failures) para la lista completa. |
-| `error_message` | string \| null | Una explicación legible para humanos del fallo. |
-| `retry_attempt` | integer | `0` para el cargo original. `1` o superior identifica un reintento de renovación de suscripción programada. |
+| `status` | string | `failed` para un pago fallido. Otros estados que no indican éxito incluyen `cancelled`, `requires_customer_action` y `requires_payment_method`. |
+| `error_code` | string \| null | El motivo estandarizado del fallo, por ejemplo `INSUFFICIENT_FUNDS` o `PROCESSING_ERROR`. Consulta la referencia de [Transaction Failures](/api-reference/transaction-failures) para ver la lista completa. |
+| `error_message` | string \| null | Una explicación del fallo en lenguaje natural, escrita para ti y no para tu cliente. Para un `error_code` estandarizado, se trata de un encabezado más la acción recomendada, no del texto sin procesar del procesador. |
+| `retry_attempt` | integer | `0` del cargo original. `1` o superior identifica un reintento programado de renovación de una suscripción. |
 
 <Note>
 `error_code` e `error_message` son `null` hasta que un pago realmente falle. Siempre verifica `status` primero, luego lee los campos de error.
 </Note>
 
-## El Webhook `payment.failed`
+<Warning>
+`error_message` de la API del comercio es **texto dirigido al comercio**. Puede indicar el motivo real de un rechazo, incluidos los relacionados con fraude, por lo que nunca debes mostrarlo directamente al cliente. En su lugar, asigna `error_code` a tu propio texto seguro para el cliente, como se muestra en [Mostrar errores a los clientes de forma segura](#surface-errors-to-customers-safely).
+</Warning>
 
-La manera más confiable de detectar un fallo es el webhook `payment.failed`. El evento envuelve el objeto de pago completo en `data`:
+## El webhook de `payment.failed`
+
+La forma más fiable de detectar un fallo es el webhook de `payment.failed`. El evento incluye el objeto de pago completo en `data`:
 
 ```json payment.failed payload expandable
 {
@@ -68,7 +72,7 @@ La manera más confiable de detectar un fallo es el webhook `payment.failed`. El
 }
 ```
 
-Un manejador mínimo lee `error_code` y lo encamina:
+Un handler mínimo lee `error_code` y decide según su valor:
 
 <CodeGroup>
 
@@ -146,54 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-Siempre verifica la firma del webhook antes de procesar. Consulta la [guía de Webhooks](/developer-resources/webhooks) para la configuración completa, incluyendo la verificación de firma e idempotencia.
+Verifica siempre la firma del webhook antes de procesarlo. Consulta la [guía de Webhooks](/developer-resources/webhooks) para conocer la configuración completa, incluida la verificación de firmas y la idempotencia.
 </Tip>
 
-## Decidir si Reintentar: Rechazos Suaves vs. Duros
+## Decide si reintentar: rechazos temporales frente a definitivos
 
-El `error_code` te indica si vale la pena reintentar el mismo método de pago.
+`error_code` te indica si vale la pena reintentar con el mismo método de pago.
 
-| Tipo de Rechazo | Qué significa | Qué hacer |
-|--------------|---------------|------------|
-| **Rechazo suave** | Temporal o corregible (por ejemplo `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Reintentar — después de un retraso, o una vez que el cliente corrija su entrada — puede tener éxito. |
-| **Rechazo duro** | Terminal (por ejemplo `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **No** reintentar con la misma tarjeta. Solicita al cliente un método de pago diferente. |
+| Tipo de rechazo | Qué significa | Qué hacer |
+|-----------------|---------------|-----------|
+| **Rechazo temporal** | Temporal o corregible (por ejemplo, `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Reintentar — después de un tiempo o una vez que el cliente corrija los datos introducidos — puede funcionar. |
+| **Rechazo definitivo** | Terminal (por ejemplo, `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **No** reintentes con la misma tarjeta. Pide al cliente un método de pago diferente. |
 
-La referencia de [Fallos de Transacción](/api-reference/transaction-failures) lista el tipo de rechazo y la acción recomendada para cada `error_code`.
+La referencia de [Transaction Failures](/api-reference/transaction-failures) indica el tipo de rechazo y la acción recomendada para cada `error_code`.
 
-## Manejo de Fallos en el Pago vs. en la Renovación
+## Gestión de fallos durante el checkout y durante la renovación
 
-Cómo te recuperas depende de si el cliente está presente.
+La forma de recuperar el pago depende de si el cliente está presente.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-El cliente está realizando la compra activamente. Muestra un mensaje claro y permite que reintenten inmediatamente o usen otra tarjeta.
+El cliente está completando el checkout activamente. Muestra un mensaje claro y permítele reintentar de inmediato o usar otra tarjeta.
 
-- `requires_payment_method` — el cliente nunca proporcionó un método de pago: no ingresaron detalles de la tarjeta o se les solicitó uno y no tomaron acción. Esto usualmente es un **abandono** de carrito de compra, no un rechazo — vuelve a involucrar al cliente para completar el pago (consulta [Recuperación de Carrito Abandonado](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — se necesita autenticación adicional (como 3DS); haz que el cliente la complete. Consulta el manejo de [3D Secure](/features/payment-methods/cards#3d-secure-authentication).
+- `requires_payment_method` — el cliente nunca proporcionó un método de pago: no introdujo los datos de la tarjeta o se le pidió que lo hiciera y no realizó ninguna acción. Por lo general, esto es un **abandono** del checkout, no un rechazo: vuelve a captar la atención del cliente para que complete el pago (consulta [Recuperación de carritos abandonados](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — se necesita autenticación adicional (como 3DS); haz que el cliente la complete. Consulta [Gestión de 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-El cliente no está presente, por lo que no puedes solicitarle en tiempo real. Cuando una renovación falla, la suscripción se mueve a `on_hold` y se dispara `subscription.on_hold`.
+El cliente no está presente, por lo que no puedes solicitarle nada en tiempo real. Cuando falla una renovación, la suscripción pasa a `on_hold` y se activa `subscription.on_hold`.
 
-- **Rechazos suaves** se reintentan automáticamente por [Reintentos de Pago de Suscripción](/features/recovery/payment-retries).
-- **Rechazos duros** (y reintentos agotados) se recuperan mejor con [Gestión de Suscripción](/features/recovery/subscription-dunning), que envía correos electrónicos al cliente para actualizar su método de pago.
+- Los **rechazos temporales** se vuelven a intentar automáticamente mediante [Reintentos de pagos de suscripciones](/features/recovery/payment-retries).
+- Los **rechazos definitivos** (y los reintentos agotados) se recuperan mejor con [Gestión de cobros de suscripciones](/features/recovery/subscription-dunning), que envía un correo al cliente para que actualice su método de pago.
 
-Consulta la [Guía de Integración de Suscripciones](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) para el flujo completo de en espera → reactivar.
+Consulta la [Guía de integración de suscripciones](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) para conocer el flujo completo de en espera → reactivación.
 </Tab>
 </Tabs>
 
-## Reintentando un Pago Fallido
+## Reintentar un pago fallido
 
-- **Suscripciones:** Activa [Reintentos de Pago de Suscripción](/features/recovery/payment-retries) para recuperar rechazos suaves sin trabajo de integración. También puedes desencadenar la recuperación haciendo que el cliente actualice su método de pago a través de la [API de Actualización de Método de Pago](/api-reference/subscriptions/update-payment-method), que carga cualquier saldo pendiente.
-- **Pagos únicos:** Reenvía el checkout o `payment_link` para que el cliente pueda intentarlo de nuevo con un método diferente. No hay reintento automático para pagos únicos.
+- **Suscripciones:** activa [Reintentos de pagos de suscripciones](/features/recovery/payment-retries) para recuperar rechazos temporales sin trabajo de integración. También puedes activar la recuperación haciendo que el cliente actualice su método de pago mediante la [API de actualización del método de pago](/api-reference/subscriptions/update-payment-method), que cobra cualquier importe pendiente.
+- **Pagos únicos:** vuelve a enviar el checkout o `payment_link` para que el cliente pueda intentarlo de nuevo con un método diferente. No existe un reintento automático para los pagos únicos.
 
 <Warning>
-No reintentes rechazos duros con la misma tarjeta. Las redes de tarjetas pueden marcar rechazos repetidos como abusivos, lo que perjudica tu tasa de autorización.
+No reintentes rechazos definitivos con la misma tarjeta. Las redes de tarjetas pueden marcar los rechazos repetidos como abusivos, lo que perjudica tu tasa de autorización.
 </Warning>
 
-## Mostrar Errores a los Clientes de Manera Segura
+## Mostrar errores a los clientes de forma segura
 
-Muestra a los clientes un mensaje amigable — nunca el `error_code` crudo.
+Muestra al cliente un mensaje cordial: nunca el `error_code` sin procesar y nunca el `error_message` dirigido al comercio.
+
+<Info>
+En las superficies que controla Dodo Payments — el checkout, el [Customer Portal](/features/customer-portal) y los correos de gestión de cobros — esta asignación ya está hecha, incluido el uso de un mensaje genérico como alternativa para los rechazos relacionados con fraude. Solo necesitas la asignación siguiente cuando muestres fallos en tu propio producto.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -213,30 +221,30 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**Nunca reveles la razón real para `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, o `FRAUDULENT`.** Mostrar estos puede alertar a un actor fraudulento. Muestra un mensaje genérico de rechazo y solo registra el `error_code` específico internamente.
+**Nunca reveles el motivo real de `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` ni `FRAUDULENT`.** Mostrar estos motivos puede alertar a un actor fraudulento. Muestra un mensaje de rechazo genérico y registra internamente únicamente el `error_code` específico.
 </Warning>
 
 ## Relacionado
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Cada código de rechazo, su tipo, y la acción recomendada.
+Cada código de rechazo, su tipo y la acción recomendada.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-Errores de API y lógica de negocio que no son rechazos de tarjeta.
+Errores de API y de lógica de negocio que no son rechazos de tarjeta.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Recuperación automática de rechazos suaves en renovaciones de suscripción.
+Recuperación automática de rechazos temporales durante las renovaciones de suscripciones.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Secuencias de email que recuperan rechazos duros.
+Secuencias de correos que recuperan rechazos definitivos.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-Esquema completo de carga útil para eventos de pago.
+Esquema completo de la carga útil para eventos de pago.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">

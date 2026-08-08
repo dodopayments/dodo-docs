@@ -23,20 +23,24 @@ keywords:
 
 每个失败的支付——无论是一次性结账还是订阅续订——都会在支付对象上携带相同的失败字段：
 
-| 字段 | 类型 | 描述 |
+| Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | 用于失败支付的 `failed`。其他非成功状态包括 `cancelled`、`requires_customer_action` 和 `requires_payment_method`。 |
-| `error_code` | string \| null | 标准化的失败原因，例如 `INSUFFICIENT_FUNDS` 或 `PROCESSING_ERROR`。请参阅 [Transaction Failures](/api-reference/transaction-failures) 参考获取完整列表。 |
-| `error_message` | string \| null | 人类可读的失败解释。 |
-| `retry_attempt` | integer | 原始收费的 `0`。`1` 或更高标识计划的订阅续订重试。 |
+| `status` | string | `failed` 表示支付失败。其他非成功状态包括 `cancelled`、`requires_customer_action` 和 `requires_payment_method`。 |
+| `error_code` | string \| null | 标准化的失败原因，例如 `INSUFFICIENT_FUNDS` 或 `PROCESSING_ERROR`。完整列表请参阅 [Transaction Failures](/api-reference/transaction-failures) 参考。 |
+| `error_message` | string \| null | 面向你而非客户编写的、易于理解的失败说明。对于标准化的 `error_code`，该字段包含标题和建议操作，而不是处理器返回的原始文本。 |
+| `retry_attempt` | integer | `0` 表示原始扣款。`1` 或更高值表示计划中的订阅续费重试。 |
 
 <Note>
 `error_code` 和 `error_message` 在付款实际失败之前是 `null`。始终先检查 `status`，然后读取错误字段。
 </Note>
 
+<Warning>
+来自 merchant API 的 `error_message` 是**面向商户的文案**。它可能会指出拒付的真实原因，包括与欺诈相关的原因，因此绝不要直接向客户展示。请改为将 `error_code` 映射为你自己的、对客户安全的文案，如 [Surface Errors to Customers Safely](#surface-errors-to-customers-safely) 中所示。
+</Warning>
+
 ## `payment.failed` Webhook
 
-检测失败的最可靠方法是 `payment.failed` webhook。事件在 `data` 中封装完整的支付对象：
+检测失败最可靠的方式是 `payment.failed` webhook。该事件会将完整的支付对象封装在 `data` 中：
 
 ```json payment.failed payload expandable
 {
@@ -66,7 +70,7 @@ keywords:
 }
 ```
 
-一个最小的处理器读取 `error_code` 并基于它进行路由：
+一个最小化的处理程序会读取 `error_code` 并据此进行路由：
 
 <CodeGroup>
 
@@ -144,54 +148,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-始终在处理之前验证 webhook 签名。请参阅 [Webhooks guide](/developer-resources/webhooks) 获取完整设置，包括签名验证和幂等性。
+处理前务必验证 webhook 签名。有关完整设置（包括签名验证和幂等性），请参阅 [Webhooks guide](/developer-resources/webhooks)。
 </Tip>
 
-## 决定是否重试：软拒绝 vs. 硬拒绝
+## 决定是否重试：软拒付与硬拒付
 
-`error_code` 告诉您重试相同的支付方式是否值得。
+`error_code` 会告诉你是否值得使用相同的支付方式重试。
 
-| 拒绝类型 | 意味着什么 | 该怎么办 |
+| Decline type | What it means | What to do |
 |--------------|---------------|------------|
-| **软拒绝** | 临时或可纠正的（例如 `INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 重试——延迟后，或客户修复输入后——可以成功。 |
-| **硬拒绝** | 终端（例如 `STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | **不要**重试同一张卡。请客户提供不同的支付方式。 |
+| **Soft decline** | 暂时性或可纠正的拒付（例如 `INSUFFICIENT_FUNDS`、`PROCESSING_ERROR`、`NETWORK_ERROR`、`TRY_AGAIN_LATER`）。 | 延迟一段时间后重试，或在客户修正输入信息后重试，可能会成功。 |
+| **Hard decline** | 终止性拒付（例如 `STOLEN_CARD`、`LOST_CARD`、`DO_NOT_HONOR`、`FRAUDULENT`）。 | **不要**使用同一张卡重试。请客户改用其他支付方式。 |
 
-[Transaction Failures](/api-reference/transaction-failures) 参考列出了每个 `error_code` 的拒绝类型和建议操作。
+[Transaction Failures](/api-reference/transaction-failures) 参考列出了每个 `error_code` 的拒付类型和建议操作。
 
-## 处理结账与续订失败
+## 处理结账期间与续费期间的失败
 
-您的恢复方式取决于客户是否在场。
+恢复方式取决于客户是否在场。
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-客户正在积极结账。显示清晰的消息并让他们立即重试或使用其他卡。
+客户正在主动结账。显示清晰的消息，让客户立即重试或使用其他卡。
 
-- `requires_payment_method` — 客户未提供支付方式：他们未输入卡片详情，或受到提示未采取行动。这通常是结账**放弃**，而不是拒绝——重新接触客户完成付款（参见 [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)）。
-- `requires_customer_action` — 需要额外验证（如 3DS）；让客户完成验证。参见 [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)。
+- `requires_payment_method` — 客户从未提供支付方式：他们没有输入卡片详细信息，或系统提示他们提供支付方式后却没有采取任何操作。这通常是结账**中途放弃**，而不是拒付 — 重新吸引客户完成支付（请参阅 [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)）。
+- `requires_customer_action` — 需要额外身份验证（例如 3DS）；请客户完成验证。请参阅 [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)。
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-客户不在场，因此您无法实时提示他们。当续订失败时，订阅转为 `on_hold`，并触发 `subscription.on_hold`。
+客户不在场，因此你无法实时提示他们。续费失败时，订阅会转为 `on_hold`，并触发 `subscription.on_hold`。
 
-- **软拒绝** 由 [Subscription Payment Retries](/features/recovery/payment-retries) 自动重试。
-- **硬拒绝**（和已耗尽的重试）最好通过 [Subscription Dunning](/features/recovery/subscription-dunning) 恢复，该方式通过电子邮件要求客户更新他们的付款方式。
+- **软拒付**会由 [Subscription Payment Retries](/features/recovery/payment-retries) 自动重新尝试。
+- **硬拒付**（以及重试次数耗尽的情况）最好通过 [Subscription Dunning](/features/recovery/subscription-dunning) 恢复；该功能会发送电子邮件，要求客户更新支付方式。
 
-请参阅 [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) 获取完整的 on-hold → reactivate 流程。
+完整的暂停 → 重新激活流程请参阅 [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)。
 </Tab>
 </Tabs>
 
-## 重试失败的付款
+## 重试失败的支付
 
-- **订阅：** 启用 [Subscription Payment Retries](/features/recovery/payment-retries) 来恢复软拒绝，且无需集成工作。您还可以通过让客户通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 更新他们的支付方式来触发恢复，该方法将收取所有未缴款项。
-- **一次性付款：** 重新发送结账或 `payment_link`，以便客户可以使用不同的方法重试。对于一次性付款，没有自动重试。
+- **订阅：**启用 [Subscription Payment Retries](/features/recovery/payment-retries)，无需进行集成开发即可恢复软拒付。你也可以让客户通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 更新支付方式来触发恢复，该操作会收取所有未付费用。
+- **一次性支付：**重新发送结账页面或 `payment_link`，让客户可以使用其他方式再次尝试。一次性支付不会自动重试。
 
 <Warning>
-不要对同一张卡进行硬拒绝重试。卡片网络可能会将重复拒绝标记为滥用行为，这会影响您的授权率。
+不要使用同一张卡重试硬拒付。卡组织可能会将反复拒付标记为滥用行为，从而降低你的授权率。
 </Warning>
 
 ## 安全地向客户展示错误
 
-向客户显示友好的消息——永远不要显示原始 `error_code`。
+向客户显示友好的消息 — 绝不要显示原始的 `error_code`，也绝不要显示面向商户的 `error_message`。
+
+<Info>
+在由 Dodo Payments 控制的界面中 — 结账页面、[Customer Portal](/features/customer-portal) 和催款电子邮件 — 该映射已为你完成，其中包括针对欺诈相关拒付回退到通用消息的处理。只有当你在自己的产品中展示失败信息时，才需要使用下面的映射。
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -211,33 +219,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**切勿透露 `STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD` 或 `FRAUDULENT` 的真实原因。** 公开这些可能会给骗子提供线索。显示通用的拒绝消息，并只在内部记录特定的 `error_code`。
+**绝不要泄露 `STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD` 或 `FRAUDULENT` 的真实原因。**展示这些原因可能会向欺诈者提供线索。请显示通用的拒付消息，并且仅在内部记录具体的 `error_code`。
 </Warning>
 
-## 相关
+## 相关内容
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-每个拒绝代码、其类型和建议的操作。
+每个拒付代码、其类型及建议操作。
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-不是卡片拒绝的 API 和业务逻辑错误。
+并非卡片拒付的 API 和业务逻辑错误。
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-订阅续订时软拒绝的自动恢复。
+自动恢复订阅续费时的软拒付。
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-恢复硬拒绝的电子邮件序列。
+用于恢复硬拒付的电子邮件序列。
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-支付事件的完整负载模式。
+支付事件的完整 payload schema。
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-模拟拒绝和续订失败的测试卡。
+用于模拟拒付和续费失败的测试卡。
 </Card>
 </CardGroup>

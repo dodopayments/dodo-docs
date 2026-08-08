@@ -22,117 +22,132 @@ O Dodo Payments retorna uma razão detalhada de falha sempre que uma tentativa d
 Quando um pagamento falha, o `payment.failed` webhook e o objeto de pagamento expõem:
 
 - `error_code` — um motivo de falha padronizado da tabela abaixo.
-- `error_message` — uma explicação legível para humanos.
-- `retry_attempt` — `0` para a cobrança original, `1` ou superior para cada tentativa de renovação de assinatura agendada.
+- `error_message` — uma explicação legível escrita para **você**, o merchant. Quando `error_code` é um dos códigos padronizados abaixo, este é um título acompanhado da ação recomendada, em vez do texto bruto do processador de pagamentos.
+- `retry_attempt` — `0` para a cobrança original, `1` ou superior para cada tentativa de renovação agendada da assinatura.
 
 Entender esses motivos de falha permite dar um feedback claro aos clientes, decidir se uma nova tentativa vale a pena, e recuperar mais receita.
 
-<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-Um guia passo a passo para desenvolvedores sobre como ler esses códigos de webhooks e da API, apresentá-los aos clientes, e decidir quando tentar novamente.
-</Card>
+### Texto para o Merchant vs. Texto para o Customer
 
-## Recusas Suaves vs. Duras
+Cada código de falha padronizado corresponde a duas mensagens diferentes, para que o público certo veja o nível adequado de detalhes:
 
-Cada código de falha se encaixa em uma das duas categorias. Essa distinção determina se você deve tentar novamente com o mesmo método de pagamento ou pedir ao cliente um novo.
-
-| Tipo de Recusa | O que significa | O que fazer | Exemplos |
-|--------------|---------------|------------|----------|
-| **Recusa suave** | Temporária ou corrigível — o mesmo cartão pode ter sucesso em uma tentativa posterior ou uma vez que o cliente corrige seu erro. | Seguro para tentar novamente (depois de um atraso, ou uma vez que o cliente corrige seus detalhes). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
-| **Recusa dura** | Terminal — tentar o mesmo cartão não mudará o resultado. | Não **tentar** novamente o mesmo cartão. Peça ao cliente para usar outro método de pagamento ou contacte seu banco. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
-
-Para renovações de assinatura, o Dodo Payments aplica essa distinção automaticamente: recusas suaves são tentadas novamente por [Recuperações de Pagamento de Assinatura](/features/recovery/payment-retries), enquanto recusas duras encerram imediatamente a cadeia de tentativas e são melhor tratadas com [Recuperação de Assinatura](/features/recovery/subscription-dunning).
-
-<Warning>
-**Nunca revele a verdadeira razão para `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, ou `FRAUDULENT` para o cliente.** Apresentar esses motivos pode alertar um ator fraudulento. Sempre mostre ao cliente uma mensagem genérica de recusa (por exemplo, *"Seu cartão foi recusado. Por favor, entre em contato com seu banco ou use outro cartão."*) e apenas registre o código específico internamente.
-</Warning>
-
-## Motivos de Falha de Transação
-
-A seguinte tabela lista cada código de falha, seu tipo de recusa, se o cliente pode resolvê-lo, uma descrição e a ação recomendada.
-
-| Código de Falha | Tipo | Erro do Usuário | Descrição | Ação Recomendada |
-|--------------|------|------------|-------------|--------------------|
-| `AUTHENTICATION_FAILURE` | Suave | Sim | Autenticação falhou durante a transação | Peça ao cliente para tentar novamente e completar a autenticação 3DS, ou use outro cartão |
-| `AUTHENTICATION_REQUIRED` | Suave | Sim | Autenticação adicional é necessária para completar a transação | Solicite que o cliente complete a autenticação 3DS. Para renovações de assinatura, peça ao cliente para retornar e autenticar |
-| `AUTHENTICATION_TIMEOUT` | Suave | Sim | O processo de autenticação expirou | Peça ao cliente para tentar novamente e completar a autenticação rapidamente |
-| `CARD_DECLINED` | Suave | Não | O cartão foi recusado pelo banco emissor sem uma razão específica (recusa genérica) | Peça ao cliente para tentar novamente, entrar em contato com seu banco, ou usar outro cartão |
-| `CARD_NOT_ACTIVATED` | Suave | Sim | O cartão não foi ativado pelo titular do cartão | Peça ao cliente para ativar o cartão com seu banco e tentar novamente |
-| `CARD_VELOCITY_EXCEEDED` | Suave | Sim | Muitas transações foram tentadas em um curto período | Peça ao cliente para aguardar e tentar mais tarde, ou entrar em contato com seu banco sobre limites |
-| `CUSTOMER_CANCELLED` | Suave | Sim | O cliente cancelou a transação | Deixe o cliente reiniciar o checkout quando estiver pronto |
-| `DO_NOT_HONOR` | Dura | Não | O banco emissor recusou explicitamente a transação (código ISO 8583 05 — não honrar); as redes tratam isso como terminal | Peça ao cliente para entrar em contato com seu banco; não tente o mesmo cartão novamente |
-| `EXPIRED_CARD` | Dura | Sim | O cartão está expirado | Peça ao cliente para usar um cartão com data de validade válida |
-| `FRAUDULENT` | Dura | Sim | A transação foi sinalizada como potencialmente fraudulenta | Mostre ao cliente uma mensagem genérica de recusa — não revele o motivo. Peça para usar outro cartão |
-| `GENERIC_DECLINE` | Suave | Não | A transação foi recusada por uma razão não especificada | Peça ao cliente para entrar em contato com seu banco ou tentar outro cartão |
-| `INCORRECT_CVC` | Suave | Sim | O código CVC fornecido estava incorreto | Peça ao cliente para inserir o CVC correto novamente |
-| `INCORRECT_NUMBER` | Suave | Sim | O número do cartão foi digitado incorretamente | Peça ao cliente para inserir o número do cartão correto novamente |
-| `INSUFFICIENT_FUNDS` | Suave | Sim | A conta não possui fundos suficientes para completar a transação | Peça ao cliente para usar outro método de pagamento ou tentar novamente quando os fundos estiverem disponíveis |
-| `INVALID_ACCOUNT` | Dura | Sim | Os detalhes da conta fornecidos são inválidos | Peça ao cliente para entrar em contato com seu banco ou usar outro cartão |
-| `INVALID_AMOUNT` | Suave | Sim | O valor da transação é inválido | Verifique o valor e quaisquer limites de compra com o cliente |
-| `INVALID_CARD_NUMBER` | Suave | Sim | O formato do número do cartão é inválido | Peça ao cliente para inserir novamente um número de cartão válido |
-| `INVALID_CARD_OWNER` | Suave | Sim | As informações do titular do cartão são inválidas | Peça ao cliente para corrigir o nome do titular do cartão |
-| `INVALID_CVC` | Suave | Sim | O formato CVC é inválido | Peça ao cliente para inserir novamente um CVC válido |
-| `INVALID_EXPIRY_YEAR` | Suave | Sim | O ano de validade do cartão é inválido | Peça ao cliente para inserir uma data de validade válida |
-| `INVALID_PIN` | Suave | Sim | O PIN fornecido está incorreto | Peça ao cliente para inserir novamente o PIN correto |
-| `INVALID_REQUEST` | Suave | Sim | A solicitação de transação contém dados inválidos | Verifique os campos da solicitação de pagamento e reenvie com dados válidos |
-| `INVALID_UPI_ID` | Suave | Sim | O ID UPI fornecido é inválido | Peça ao cliente para inserir um ID UPI válido |
-| `LIMIT_EXCEEDED` | Suave | Sim | A transação excede o limite do cartão ou da conta | Peça ao cliente para entrar em contato com seu banco sobre limites, ou usar outro método |
-| `LIVE_MODE_TEST_CARD` | Dura | Sim | Um cartão de teste foi usado no modo ao vivo | Use um cartão real — tentar novamente o cartão de teste sempre falhará no modo ao vivo |
-| `LOST_CARD` | Dura | Sim | O cartão foi relatado como perdido | Mostre ao cliente uma mensagem genérica de recusa — não revele o motivo. Peça para usar outro cartão |
-| `MANDATE_INVALID` | Suave | Sim | O mandato de pagamento é inválido | Peça ao cliente para configurar o mandato de pagamento novamente |
-| `MANDATE_REQUIRED` | Suave | Sim | Um mandato é necessário para esta transação | Configure um mandato e peça ao cliente para autorizá-lo antes de cobrar |
-| `MANDATE_REQUIRED_SYSTEM` | Dura | Não | O sistema requer um mandato para este tipo de transação | Certifique-se de que o fluxo de configuração do mandato seja concluído antes de cobrar |
-| `NETWORK_ERROR` | Suave | Não | Um erro de rede ocorreu durante a transação | Transitório — tente o pagamento novamente após um curto período |
-| `NETWORK_TIMEOUT` | Suave | Não | O pedido de rede expirou | Transitório — tente o pagamento novamente após um curto período |
-| `ORDER_ALREADY_EXISTS` | Suave | Não | Já existe um pedido para essa transação (criação de pedido duplicado) | Verifique o status do pedido existente antes de tentar novamente; entre em contato com o suporte se persistir |
-| `ORDER_CREATION_FAILED` | Suave | Não | Falha ao criar o pedido para a transação | Erro transitório/sistema — tente o pagamento novamente; entre em contato com o suporte se persistir |
-| `PAYMENT_METHOD_PROVIDER_DECLINED` | Dura | Sim | O provedor do método de pagamento recusou a transação | Peça ao cliente para entrar em contato com seu provedor ou usar outro método de pagamento |
-| `PAYMENT_METHOD_UNSUPPORTED` | Dura | Sim | O método de pagamento não é compatível com esta transação | Peça ao cliente para usar um método de pagamento compatível |
-| `PICKUP_CARD` | Dura | Sim | O cartão foi relatado como perdido ou roubado e sinalizado para coleta | Mostre ao cliente uma mensagem genérica de recusa — não revele o motivo. Peça para usar outro cartão |
-| `PROCESSING_ERROR` | Suave | Não | Ocorreu um erro ao processar a transação | Transitório — tente o pagamento novamente; se persistir, peça ao cliente para entrar em contato com seu banco |
-| `PROVIDER_UNSUPPORTED` | Dura | Não | O provedor de pagamento não suporta este tipo de transação | Peça ao cliente para usar outro método de pagamento |
-| `REENTER_TRANSACTION` | Suave | Sim | A transação precisa ser reentrada | Peça ao cliente para tentar o pagamento novamente |
-| `REVOCATION_OF_AUTHORIZATION` | Dura | Sim | A autorização para a transação foi revogada | Peça ao cliente para usar outro método de pagamento |
-| `STOLEN_CARD` | Dura | Sim | O cartão foi relatado como roubado | Mostre ao cliente uma mensagem genérica de recusa — não revele o motivo. Peça para usar outro cartão |
-| `SUBSCRIPTION_NOT_ACTIVE` | Dura | Não | A assinatura não está ativa, então a cobrança recorrente não pôde ser processada | Reative a assinatura (por exemplo, atualizando o método de pagamento) antes de tentar a cobrança novamente |
-| `TRANSACTION_NOT_ALLOWED` | Dura | Sim | A transação não é permitida para este cartão ou conta | Peça ao cliente para entrar em contato com seu banco para permitir este tipo de transação, ou usar outro cartão |
-| `TRANSACTION_NOT_APPROVED` | Dura | Sim | A transação não foi aprovada | Peça ao cliente para entrar em contato com seu banco ou tentar outro cartão |
-| `TRY_AGAIN_LATER` | Suave | Não | A transação deve ser tentada novamente mais tarde | Transitório — tente o pagamento novamente mais tarde |
-| `UNKNOWN_ERROR` | Suave | Não | Ocorreu um erro desconhecido | Tente o pagamento novamente; se persistir, entre em contato com o suporte |
+| Público | Onde aparece | O que informa |
+|----------|------------------|--------------|
+| **Você** | `error_message` no pagamento, na página de detalhes do pagamento no dashboard e no e-mail de falha de pagamento para o merchant | O motivo real e uma ação recomendada, por exemplo *"O cartão ainda não foi ativado pelo titular. Peça ao customer para ativá-lo com o banco e tente novamente."* |
+| **Seu customer** | Na tela de falha do checkout, no [Customer Portal](/features/customer-portal) e nos e-mails de [dunning](/features/recovery/subscription-dunning) | Uma explicação curta e simples que ele pode resolver, por exemplo *"Seu cartão ainda não foi ativado. Ative-o com o banco e tente novamente."* |
 
 <Note>
-**Erro do Usuário** indica se a recusa de pagamento pode ser resolvida pelo cliente. Quando `Yes`, o cliente pode tomar uma ação para resolver o problema (por exemplo, inserir detalhes corretos do cartão). Quando `No`, a recusa é devido a questões de nível de sistema ou restrições bancárias que o cliente não pode resolver diretamente.
+O Customer Portal retorna o texto voltado ao customer em `error_message`, enquanto a API do merchant retorna o texto voltado ao merchant para o mesmo pagamento. O `error_code` é idêntico em ambos.
+</Note>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Um guia de desenvolvimento passo a passo para ler esses códigos de webhooks e da API, exibi-los para os customers e decidir quando tentar novamente.
+</Card>
+
+## Recusas temporárias e permanentes
+
+Todo código de falha pertence a uma de duas categorias. Essa distinção determina se você deve tentar novamente com o mesmo meio de pagamento ou pedir ao customer que use outro.
+
+| Tipo de recusa | O que significa | O que fazer | Exemplos |
+|--------------|---------------|------------|----------|
+| **Recusa temporária** | Temporária ou corrigível — o mesmo cartão pode ser aprovado em uma tentativa posterior ou depois que o customer corrigir os dados. | É seguro tentar novamente (após um intervalo ou depois que o customer corrigir os dados). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
+| **Recusa permanente** | Definitiva — tentar novamente com o mesmo cartão não alterará o resultado. | **Não** tente novamente com o mesmo cartão. Peça ao customer que use outro meio de pagamento ou entre em contato com o banco. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
+
+Para renovações de assinaturas, Dodo Payments aplica essa distinção automaticamente: recusas temporárias são tentadas novamente pelo [Subscription Payment Retries](/features/recovery/payment-retries), enquanto recusas permanentes encerram imediatamente a cadeia de tentativas e são tratadas da melhor forma com [Subscription Dunning](/features/recovery/subscription-dunning).
+
+<Warning>
+**Nunca revele ao customer o motivo real de `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` ou `FRAUDULENT`.** Exibir esses motivos pode alertar um fraudador. Sempre mostre ao customer uma mensagem genérica de recusa (por exemplo, *"Seu cartão foi recusado. Entre em contato com o banco ou use outro cartão."*) e registre o código específico apenas internamente.
+
+Dodo Payments já aplica essa regra nas superfícies que controla: para esses quatro códigos, o checkout, o Customer Portal e os e-mails de dunning sempre recorrem a uma mensagem genérica de recusa, enquanto o seu texto mantém o motivo verdadeiro. Aplique a mesma regra em qualquer lugar onde você exibir `error_message` da API do merchant para um customer.
+</Warning>
+
+## Motivos de falha da transação
+
+A tabela a seguir lista todos os códigos de falha, seu tipo de recusa, se o customer pode resolvê-la, uma descrição e a ação recomendada.
+
+| Código de falha | Tipo | Erro do usuário | Descrição | Ação recomendada |
+|--------------|------|------------|-------------|--------------------|
+| `AUTHENTICATION_FAILURE` | Temporária | Sim | A autenticação falhou durante a transação | Peça ao customer para tentar novamente e concluir a autenticação 3DS ou usar outro cartão |
+| `AUTHENTICATION_REQUIRED` | Temporária | Sim | É necessária autenticação adicional para concluir a transação | Solicite ao customer que conclua a autenticação 3DS. Para renovações de assinaturas, peça ao customer que retorne e faça a autenticação |
+| `AUTHENTICATION_TIMEOUT` | Temporária | Sim | O processo de autenticação expirou | Peça ao customer para tentar novamente e concluir a autenticação prontamente |
+| `CARD_DECLINED` | Temporária | Não | O cartão foi recusado pelo banco emissor sem um motivo específico (recusa genérica) | Peça ao customer para tentar novamente, entrar em contato com o banco ou usar outro cartão |
+| `CARD_NOT_ACTIVATED` | Temporária | Sim | O cartão não foi ativado pelo titular | Peça ao customer para ativar o cartão com o banco e tentar novamente |
+| `CARD_VELOCITY_EXCEEDED` | Temporária | Sim | Muitas transações foram tentadas em um curto período | Peça ao customer para aguardar e tentar novamente mais tarde ou entrar em contato com o banco sobre os limites |
+| `CUSTOMER_CANCELLED` | Temporária | Sim | O customer cancelou a transação | Permita que o customer reinicie o checkout quando estiver pronto |
+| `DO_NOT_HONOR` | Permanente | Não | O banco emissor recusou explicitamente a transação (código ISO 8583 05 — não aceitar); as redes tratam isso como definitivo | Peça ao customer para entrar em contato com o banco; não tente novamente com o mesmo cartão |
+| `EXPIRED_CARD` | Permanente | Sim | O cartão expirou | Peça ao customer para usar um cartão com data de validade válida |
+| `FRAUDULENT` | Permanente | Sim | A transação foi sinalizada como potencialmente fraudulenta | Mostre ao customer uma mensagem genérica de recusa — não revele o motivo. Peça que use outro cartão |
+| `GENERIC_DECLINE` | Temporária | Não | A transação foi recusada por um motivo não especificado | Peça ao customer para entrar em contato com o banco ou tentar outro cartão |
+| `INCORRECT_CVC` | Temporária | Sim | O código CVC fornecido estava incorreto | Peça ao customer para inserir novamente o CVC correto |
+| `INCORRECT_NUMBER` | Temporária | Sim | O número do cartão foi inserido incorretamente | Peça ao customer para inserir novamente o número correto do cartão |
+| `INSUFFICIENT_FUNDS` | Temporária | Sim | A conta não tem fundos suficientes para concluir a transação | Peça ao customer para usar outro meio de pagamento ou tentar novamente quando houver fundos disponíveis |
+| `INVALID_ACCOUNT` | Permanente | Sim | Os dados da conta fornecidos são inválidos | Peça ao customer para entrar em contato com o banco ou usar outro cartão |
+| `INVALID_AMOUNT` | Temporária | Sim | O valor da transação é inválido | Verifique o valor e quaisquer limites de compra com o customer |
+| `INVALID_CARD_NUMBER` | Temporária | Sim | O formato do número do cartão é inválido | Peça ao customer para inserir novamente um número de cartão válido |
+| `INVALID_CARD_OWNER` | Temporária | Sim | As informações do titular do cartão são inválidas | Peça ao customer para corrigir o nome do titular do cartão |
+| `INVALID_CVC` | Temporária | Sim | O formato do CVC é inválido | Peça ao customer para inserir novamente um CVC válido |
+| `INVALID_EXPIRY_YEAR` | Temporária | Sim | O ano de validade do cartão é inválido | Peça ao customer para inserir uma data de validade válida |
+| `INVALID_PIN` | Temporária | Sim | O PIN fornecido está incorreto | Peça ao customer para inserir novamente o PIN correto |
+| `INVALID_REQUEST` | Temporária | Sim | A solicitação da transação contém dados inválidos | Verifique os campos da solicitação de pagamento e reenvie-a com dados válidos |
+| `INVALID_UPI_ID` | Temporária | Sim | O UPI ID fornecido é inválido | Peça ao customer para inserir um UPI ID válido |
+| `LIMIT_EXCEEDED` | Temporária | Sim | A transação excede o limite do cartão ou da conta | Peça ao customer para entrar em contato com o banco sobre os limites ou usar outro método |
+| `LIVE_MODE_TEST_CARD` | Permanente | Sim | Um cartão de teste foi usado no modo live | Use um cartão real — tentar novamente com o cartão de teste sempre falhará no modo live |
+| `LOST_CARD` | Permanente | Sim | O cartão foi reportado como perdido | Mostre ao customer uma mensagem genérica de recusa — não revele o motivo. Peça que use outro cartão |
+| `MANDATE_INVALID` | Temporária | Sim | O mandato de pagamento é inválido | Peça ao customer para configurar o mandato de pagamento novamente |
+| `MANDATE_REQUIRED` | Temporária | Sim | É necessário um mandato para esta transação | Configure um mandato e peça ao customer para autorizá-lo antes da cobrança |
+| `MANDATE_REQUIRED_SYSTEM` | Permanente | Não | O sistema exige um mandato para este tipo de transação | Certifique-se de que o fluxo de configuração do mandato seja concluído antes da cobrança |
+| `NETWORK_ERROR` | Temporária | Não | Ocorreu um erro de rede durante a transação | Transitório — tente o pagamento novamente após um breve intervalo |
+| `NETWORK_TIMEOUT` | Temporária | Não | A solicitação de rede expirou | Transitório — tente o pagamento novamente após um breve intervalo |
+| `ORDER_ALREADY_EXISTS` | Temporária | Não | Já existe um pedido para esta transação (criação de pedido duplicada) | Verifique o status do pedido existente antes de tentar novamente; entre em contato com o suporte se o problema persistir |
+| `ORDER_CREATION_FAILED` | Temporária | Não | Falha ao criar o pedido da transação | Erro transitório/do sistema — tente o pagamento novamente; entre em contato com o suporte se o problema persistir |
+| `PAYMENT_METHOD_PROVIDER_DECLINED` | Permanente | Sim | O provedor do meio de pagamento recusou a transação | Peça ao customer para entrar em contato com o provedor ou usar outro meio de pagamento |
+| `PAYMENT_METHOD_UNSUPPORTED` | Permanente | Sim | O meio de pagamento não é compatível com esta transação | Peça ao customer para usar um meio de pagamento compatível |
+| `PICKUP_CARD` | Permanente | Sim | O cartão foi reportado como perdido ou roubado e sinalizado para recolhimento | Mostre ao customer uma mensagem genérica de recusa — não revele o motivo. Peça que use outro cartão |
+| `PROCESSING_ERROR` | Temporária | Não | Ocorreu um erro ao processar a transação | Transitório — tente o pagamento novamente; se o problema persistir, peça ao customer para entrar em contato com o banco |
+| `PROVIDER_UNSUPPORTED` | Permanente | Não | O provedor de pagamento não oferece suporte a este tipo de transação | Peça ao customer para usar outro meio de pagamento |
+| `REENTER_TRANSACTION` | Temporária | Sim | É necessário inserir a transação novamente | Peça ao customer para tentar o pagamento novamente |
+| `REVOCATION_OF_AUTHORIZATION` | Permanente | Sim | A autorização da transação foi revogada | Peça ao customer para usar outro meio de pagamento |
+| `STOLEN_CARD` | Permanente | Sim | O cartão foi reportado como roubado | Mostre ao customer uma mensagem genérica de recusa — não revele o motivo. Peça que use outro cartão |
+| `SUBSCRIPTION_NOT_ACTIVE` | Permanente | Não | A assinatura não está ativa, portanto a cobrança recorrente não pôde ser processada | Reative a assinatura (por exemplo, atualizando o meio de pagamento) antes de tentar realizar a cobrança novamente |
+| `TRANSACTION_NOT_ALLOWED` | Permanente | Sim | A transação não é permitida para este cartão ou conta | Peça ao customer para entrar em contato com o banco para permitir este tipo de transação ou usar outro cartão |
+| `TRANSACTION_NOT_APPROVED` | Permanente | Sim | A transação não foi aprovada | Peça ao customer para entrar em contato com o banco ou tentar outro cartão |
+| `TRY_AGAIN_LATER` | Temporária | Não | A transação deve ser tentada novamente mais tarde | Transitório — tente o pagamento novamente mais tarde |
+| `UNKNOWN_ERROR` | Temporária | Não | Ocorreu um erro desconhecido | Tente o pagamento novamente; se o problema persistir, entre em contato com o suporte |
+
+<Note>
+**Erro do usuário** indica se a recusa do pagamento pode ser resolvida pelo customer. Quando `Yes`, o customer pode tomar medidas para corrigir o problema (por exemplo, inserir os dados corretos do cartão). Quando `No`, a recusa é causada por problemas no sistema ou restrições do banco que o customer não pode resolver diretamente.
 </Note>
 
 <Info>
-Um cartão também pode ser recusado quando o próprio mecanismo de risco do banco emissor classifica o portador do cartão como um cliente de alto risco — independentemente do comerciante ou dos detalhes da transação. Essas recusas geralmente aparecem como códigos genéricos, como `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED`, ou `FRAUDULENT`. Nesses casos, o banco não compartilha o motivo específico, e nem a Dodo Payments nem o comerciante podem anular a decisão. Peça ao cliente para entrar em contato com seu banco para resolver a sinalização, ou use um cartão ou método de pagamento diferente.
+Um cartão também pode ser recusado quando o próprio mecanismo de risco do banco emissor sinaliza o titular como um customer de alto risco — independentemente do merchant ou dos detalhes da transação. Essas recusas geralmente aparecem como códigos genéricos, como `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED` ou `FRAUDULENT`. Nesses casos, o banco não compartilha o motivo específico, e nem Dodo Payments nem o merchant podem substituir a decisão. Peça ao customer para entrar em contato com o banco a fim de resolver a sinalização ou usar outro cartão ou meio de pagamento.
 </Info>
 
-## Lidando com Falhas Programaticamente
+## Tratamento programático de falhas
 
-Leia `error_code` do webhook `payment.failed` ou do objeto de pagamento, mapeie para a ação recomendada acima e decida se deve tentar novamente. Para renovações de assinaturas, recusas suaves são tentadas novamente automaticamente — veja [Tentativas de Pagamento de Assinatura](/features/recovery/payment-retries).
+Leia `error_code` do webhook `payment.failed` ou do objeto de pagamento, associe-o à ação recomendada acima e decida se deve tentar novamente. Para renovações de assinaturas, recusas temporárias são tentadas novamente automaticamente para você — consulte [Subscription Payment Retries](/features/recovery/payment-retries).
 
-Para erros de nível de API e lógica de negócios (como `PAYMENT_NOT_SUCCEEDED` ou `REFUND_WINDOW_EXPIRED`) que não são recusas de cartão, consulte a referência de [Códigos de Erro](/api-reference/error-codes).
+Para erros no nível da API e da lógica de negócios (como `PAYMENT_NOT_SUCCEEDED` ou `REFUND_WINDOW_EXPIRED`) que não são recusas de cartão, consulte a referência de [Error Codes](/api-reference/error-codes).
 
-## Relacionado
+## Relacionados
 
 <CardGroup cols={2}>
 <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-Guia completo para detectar, identificar e tentar novamente pagamentos falhos.
+Guia completo para detectar, exibir e tentar novamente pagamentos com falha.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-Códigos de erro de API e lógica de negócios para falhas que não são recusas.
+Códigos de erro da API e da lógica de negócios para falhas que não são recusas.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Tentativas automáticas que recuperam recusas suaves em renovações de assinatura.
+Tentativas automáticas que recuperam recusas temporárias em renovações de assinaturas.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Sequências de e-mails que recuperam recusas duras, solicitando a atualização do método de pagamento.
+Sequências de e-mails que recuperam recusas permanentes ao solicitar a atualização do meio de pagamento.
 </Card>
 </CardGroup>
 
 ## Suporte
 
-Para ajuda adicional com falhas de transações ou problemas de integração, entre em contato com nossa equipe de suporte em support@dodopayments.com.
+Para obter ajuda adicional com falhas de transação ou problemas de integração, entre em contato com nossa equipe de suporte pelo e-mail support@dodopayments.com.

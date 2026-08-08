@@ -1,0 +1,197 @@
+---
+title: Rekomi
+description: 在您的 Dodo Payments 商店上运行联盟计划。只需粘贴一个 API key 即可连接两者，Rekomi 会跟踪销售并向您的联盟伙伴付款。
+icon: /images/logos/rekomi.svg
+keywords:
+  - Dodo Payments
+  - Rekomi
+  - 联盟跟踪
+  - 联盟计划
+  - 联盟付款
+---
+
+## 简介
+
+[Rekomi](https://rekomi.com) 是一个联盟跟踪和管理平台，原生集成 Dodo Payments。当有人分享联盟链接时，Rekomi 会记录点击；当该访客购买产品后，销售信息会从 Dodo Payments 到达，系统会自动将销售归因给正确的联盟伙伴。Rekomi 会计算佣金，并代表您向联盟伙伴付款，覆盖 150 多个国家/地区，并包括税务表格。
+
+连接只需粘贴一次：您向 Rekomi 提供一个启用了写入权限的 Dodo Payments API key，Rekomi 会验证该 key，在您的 Dodo Payments 账户中直接创建 webhook endpoint，并直接获取 signing secret。无需填写 webhook 表单，也无需将任何内容粘贴回 Dodo Payments。
+
+<Info>
+当被推荐的客户完成一次性付款、开始付费订阅或支付续订费用时，该“销售”会归因给联盟伙伴。退款和争议会自动追回相应佣金。
+</Info>
+
+## 工作原理
+
+Dodo Payments 在自己的域名上托管 checkout，因此联盟推荐信息会作为 checkout metadata 进入销售记录：
+
+1. 访客点击联盟链接并进入您的网站，Rekomi 脚本会将推荐信息存储在其浏览器中。
+2. 访客进入 checkout，您将该推荐信息作为 `rekomi_ref` metadata 附加到 payment 中。
+3. Dodo Payments 处理 payment，并将带签名的 `payment.succeeded` webhook 发送到 Rekomi 创建的 endpoint。
+4. Rekomi 将推荐信息匹配到联盟伙伴，按未含税销售金额计算佣金，并记录该佣金。
+
+Subscription renewal 会以相同方式到达，因此 recurring commission 无需额外操作；退款和争议也会通过同一个 endpoint 处理。
+
+## 前提条件
+
+在设置此集成之前，请确保您拥有：
+
+1. 一个处于 live mode 的 [Dodo Payments 账户](https://app.dodopayments.com)
+2. 一个 [Rekomi 账户](https://app.rekomi.com/sign-up)
+3. 一个启用了 **write access** 的 Dodo Payments API key（只读 key 无法创建 webhook）
+
+## 开始使用
+
+<Steps>
+<Step title="Create an API Key with Write Access">
+  在 Dodo Payments dashboard 中，前往 **Developer → API Keys**，创建一个启用了 **Enable write access** 的 key（将其命名为 "Rekomi"）。详细说明请参阅 [API key guide](/api-reference/introduction#api-key-management-and-authentication)。
+
+  <Warning>
+  在 key 上启用 write access：只读 key 可以通过验证，但无法创建 webhook endpoint，因此连接会在中途失败。
+  </Warning>
+</Step>
+
+<Step title="Paste the Key into Rekomi">
+  在 Rekomi 中打开 **Setup → Connect payment processor**，选择 Dodo Payments，然后粘贴 key。Rekomi 会实时验证该 key，在您的账户中创建 webhook endpoint，并自行获取其 signing secret。
+
+  <Frame>
+    <img src="/images/integrations/rekomi/connect.png" alt="Rekomi 的 Dodo Payments 设置页面，其中包含单个 API key 字段和连接按钮" style={{ maxHeight: '500px', width: 'auto' }} />
+  </Frame>
+
+  <Info>
+  连接后，该 key 仅用于管理 webhook endpoint 和执行定期健康检查。您的销售会通过带签名的 webhook 到达，而不会通过 API 到达。
+  </Info>
+</Step>
+
+<Step title="Install the Rekomi Script">
+  将 Rekomi tracking script 添加到您的营销网站，以便捕获联盟点击。填写 program ID 后的代码片段位于 Rekomi 的 **Setup → Install** 中。
+
+  ```html
+  <script
+    async
+    src="https://api.rekomi.com/api/v1/r/loader.js"
+    data-program-id="YOUR_PROGRAM_ID"
+  ></script>
+  ```
+
+</Step>
+
+<Step title="Pass the Referral into Checkout">
+  将捕获的推荐信息作为 `rekomi_ref` metadata 附加到每笔 payment 中。请参阅下方的实现示例。
+</Step>
+
+<Step title="Done!">
+  销售、续订、退款和争议现在都会自动计入或追回联盟佣金，Rekomi 负责向您的联盟伙伴付款。
+</Step>
+</Steps>
+
+## 实现指南
+
+### 通过 API 使用 Checkout Sessions
+
+在 frontend 中使用 `window.Rekomi.getReferral()` 读取推荐信息，将其随 checkout request 发送到 backend，并在 `metadata` 中设置：
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, rekomiRef?: string) {
+  const session = await client.checkoutSessions.create({
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    return_url: 'https://yoursite.com/success',
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return session.checkout_url;
+}
+```
+
+相同的 `metadata.rekomi_ref` 字段也适用于 subscription products，因此初始扣款和每次续订都会归因给同一个联盟伙伴。
+
+### Payments API
+
+<Note>
+以下示例使用 `POST /payments`，该字段已 **deprecated**。它仍适用于现有集成，但新集成应使用 [Checkout Sessions](/developer-resources/checkout-session)（`POST /checkouts`）——`metadata` 的传递方式相同。
+</Note>
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createPayment(productId: string, rekomiRef?: string) {
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    payment_link: true,
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return payment;
+}
+```
+
+### 静态 Payment Links
+
+使用扁平 metadata query parameter（而不是 bracket form）为链接添加参数：
+
+```javascript
+const ref = window.Rekomi?.getReferral?.();
+let url = 'https://checkout.dodopayments.com/buy/YOUR_PRODUCT_ID';
+if (ref) url += `?metadata_rekomi_ref=${encodeURIComponent(ref)}`;
+// use url as the href on your Buy button
+```
+
+Dodo Payments 会将 `metadata_*` query parameters 合并到 payment 的 metadata 中，Rekomi 会从中读取这些参数。
+
+## 跟踪内容
+
+| 事件 | 处理方式 |
+| -------------------- | ----------------------------------------------------------------------- |
+| 一次性 payment | 按未含税销售金额计入佣金 |
+| Subscription renewal | recurring commission，每次扣款都会作为独立的 payment event 到达 |
+| Refund | 自动追回佣金，追回金额不会超过已计入的佣金 |
+| Dispute | dispute 开始时立即追回佣金 |
+
+<Tip>
+佣金按未含税销售金额计算：Dodo Payments 是 Merchant of Record，负责收取税款，因此您的联盟伙伴基于销售本身获得收益，而不会基于买家所在国家/地区偶然加收的税款获得收益。
+</Tip>
+
+## 重要说明
+
+- Rekomi 会使用所需的准确事件注册 webhook endpoint。请避免在 Dodo Payments dashboard 中编辑该 endpoint 的事件列表；如果移除了事件，Rekomi 的健康检查会将该连接标记为异常。
+- Trial 结束前不会产生 payment，因此在首次实际扣款之前不会产生佣金。
+- 在 Rekomi 中断开连接后，webhook endpoint 也会从您的 Dodo Payments 账户中删除。
+
+## 其他资源
+
+<CardGroup cols={2}>
+  <Card title="Rekomi's Dodo Payments Guide" icon="book-open" href="https://rekomi.com/docs/brands/install/dodo">
+    Rekomi 文档中的完整设置指南、故障排除和安全详情。
+  </Card>
+  <Card title="Affiliates Feature Guide" icon="users" href="/features/affiliates">
+    Dodo Payments 的所有联盟集成选项。
+  </Card>
+</CardGroup>
+
+<Info>
+需要帮助？如需集成方面的协助，请通过 [support@rekomi.com](mailto:support@rekomi.com) 联系 Rekomi 支持团队，或通过 [support@dodopayments.com](mailto:support@dodopayments.com) 联系 Dodo Payments 支持团队。
+</Info>

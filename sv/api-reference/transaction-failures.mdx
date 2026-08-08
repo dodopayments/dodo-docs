@@ -23,117 +23,132 @@ Dodo Payments returnerar en detaljerad felorsak när ett betalningsförsök miss
 När en betalning misslyckas visar `payment.failed`-webhooken och betalningsobjektet:
 
 - `error_code` — en standardiserad felorsak från tabellen nedan.
-- `error_message` — en lättläst förklaring.
-- `retry_attempt` — `0` för den ursprungliga debiteringen, `1` eller högre för varje schemalagt prenumerationsförnyelsförsök.
+- `error_message` — en lättförståelig förklaring skriven för **dig**, handlaren. När `error_code` är en av koderna nedan består detta av en rubrik samt rekommenderad åtgärd i stället för den oförändrade texten från betalningsprocessorn.
+- `retry_attempt` — `0` för den ursprungliga debiteringen, `1` eller högre för varje schemalagt nytt försök av en prenumerationsförnyelse.
 
 Genom att förstå dessa felorsaker kan du ge kunder tydlig feedback, bestämma om ett nytt försök är värt det, och återfå mer intäkter.
 
-<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-En steg-för-steg-utvecklarguide för att läsa dessa koder från webbhooks och API:er, visa dem för kunder, och bestämma när ett nytt försök bör göras.
-</Card>
+### Text för handlare jämfört med text för kunder
 
-## Mjuk vs. Hård Avvisning
+Varje standardiserad felkod motsvarar två olika meddelanden, så rätt målgrupp ser rätt detaljnivå:
 
-Varje felkod faller i en av två kategorier. Denna åtskillnad avgör om du ska försöka med samma betalningsmetod igen eller be kunden om en ny.
-
-| Avvisningstyp | Vad det betyder | Vad man ska göra | Exempel |
-|--------------|---------------|------------|----------|
-| **Mjuk avvisning** | Tillfällig eller rättbar — samma kort kan lyckas vid ett senare försök eller när kunden rättar sina uppgifter. | Tryggt att försöka igen (efter en fördröjning eller när kunden har rättat sina uppgifter). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
-| **Hård avvisning** | Terminal — att försöka med samma kort igen förändrar inte resultatet. | Gör **inte** ett nytt försök med samma kort. Be kunden använda en annan betalningsmetod eller kontakta sin bank. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
-
-För prenumerationsförnyelser tillämpar Dodo Payments denna åtskillnad automatiskt: mjuka avvisningar försöks om på nytt av [Prenumerationsbetalningsförsök](/features/recovery/payment-retries), medan hårda avvisningar avslutar försökskedjan omedelbart och hanteras bäst med [Prenumerationshantering](/features/recovery/subscription-dunning).
-
-<Warning>
-**Avslöja aldrig den verkliga orsaken till `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, eller `FRAUDULENT` för kunden.** Att visa dessa kan tipsa en bedräglig aktör. Visa alltid kunden ett generiskt avslagsmeddelande (till exempel, *"Ditt kort avvisades. Vänligen kontakta din bank eller använd ett annat kort."*) och logga bara den specifika koden internt.
-</Warning>
-
-## Transaktionsmisslyckande Orsaker
-
-Följande tabell listar varje felkod, dess avvisningstyp, om kunden kan lösa det, en beskrivning och den rekommenderade åtgärden.
-
-| Felkod | Typ | Användarfel | Beskrivning | Rekommenderad åtgärd |
-|--------------|------|------------|-------------|--------------------|
-| `AUTHENTICATION_FAILURE` | Mjuk | Ja | Autentisering misslyckades under transaktionen | Be kunden försöka igen och slutföra 3DS-autentisering, eller använda ett annat kort |
-| `AUTHENTICATION_REQUIRED` | Mjuk | Ja | Ytterligare autentisering behövs för att slutföra transaktionen | Uppmana kunden att slutföra 3DS-autentisering. För prenumerationsförnyelser, be kunden att återvända och autentisera |
-| `AUTHENTICATION_TIMEOUT` | Mjuk | Ja | Autentiseringsprocessen gick ut på tid | Be kunden försöka igen och slutföra autentiseringen snabbt |
-| `CARD_DECLINED` | Mjuk | Nej | Kortet avvisades av den utfärdande banken utan en specifik anledning (generisk avvisning) | Be kunden försöka igen, kontakta sin bank, eller använda ett annat kort |
-| `CARD_NOT_ACTIVATED` | Mjuk | Ja | Kortet har inte aktiverats av kortinnehavaren | Be kunden aktivera kortet hos sin bank och försöka igen |
-| `CARD_VELOCITY_EXCEEDED` | Mjuk | Ja | För många transaktioner har försöks på kort tid | Be kunden vänta och försöka igen senare, eller kontakta sin bank om begränsningar |
-| `CUSTOMER_CANCELLED` | Mjuk | Ja | Kunden avbröt transaktionen | Låt kunden starta om betalningen när de är redo |
-| `DO_NOT_HONOR` | Hård | Nej | Den utfärdande banken avslog uttryckligen transaktionen (ISO 8583 kod 05 — hedra inte); nätverk behandlar detta som terminal | Be kunden kontakta sin bank; försök inte med samma kort igen |
-| `EXPIRED_CARD` | Hård | Ja | Kortet har gått ut | Be kunden använda ett kort med giltigt utgångsdatum |
-| `FRAUDULENT` | Hård | Ja | Transaktionen flaggades som potentiellt bedräglig | Visa kunden ett generiskt avvisningsmeddelande — avslöja inte orsaken. Be dem använda ett annat kort |
-| `GENERIC_DECLINE` | Mjuk | Nej | Transaktionen avvisades utan angiven anledning | Be kunden kontakta sin bank eller prova ett annat kort |
-| `INCORRECT_CVC` | Mjuk | Ja | Den angivna CVC-koden var felaktig | Be kunden ange korrekt CVC |
-| `INCORRECT_NUMBER` | Mjuk | Ja | Kortnumret var felaktigt angivet | Be kunden ange korrekt kortnummer |
-| `INSUFFICIENT_FUNDS` | Mjuk | Ja | Kontot har otillräckliga medel för att slutföra transaktionen | Be kunden använda en annan betalningsmetod eller försöka igen när medel är tillgängliga |
-| `INVALID_ACCOUNT` | Hård | Ja | De angivna kontouppgifterna är ogiltiga | Be kunden kontakta sin bank eller använda ett annat kort |
-| `INVALID_AMOUNT` | Mjuk | Ja | Transaktionsbeloppet är ogiltigt | Verifiera beloppet och eventuella inköpsgränser med kunden |
-| `INVALID_CARD_NUMBER` | Mjuk | Ja | Kortnummerformatet är ogiltigt | Be kunden ange ett giltigt kortnummer |
-| `INVALID_CARD_OWNER` | Mjuk | Ja | Kortinnehavarens information är ogiltig | Be kunden korrigera kortinnehavarnamnet |
-| `INVALID_CVC` | Mjuk | Ja | CVC-formatet är ogiltigt | Be kunden ange en giltig CVC |
-| `INVALID_EXPIRY_YEAR` | Mjuk | Ja | Kortets utgångsår är ogiltigt | Be kunden ange ett giltigt utgångsdatum |
-| `INVALID_PIN` | Mjuk | Ja | Den angivna PIN-koden är felaktig | Be kunden ange korrekt PIN-kod igen |
-| `INVALID_REQUEST` | Mjuk | Ja | Transaktionsförfrågan innehåller ogiltiga data | Kontrollera betalningsförfrågansfält och skicka in igen med giltiga data |
-| `INVALID_UPI_ID` | Mjuk | Ja | Det angivna UPI-ID:t är ogiltigt | Be kunden ange ett giltigt UPI-ID |
-| `LIMIT_EXCEEDED` | Mjuk | Ja | Transaktionen överskrider kort- eller kontogränsen | Be kunden kontakta sin bank om begränsningar, eller använda en annan metod |
-| `LIVE_MODE_TEST_CARD` | Hård | Ja | Ett testkort användes i live-läge | Använd ett riktigt kort — att försöka med testkortet igen kommer alltid att misslyckas i live-läge |
-| `LOST_CARD` | Hård | Ja | Kortet har rapporterats som förlorat | Visa kunden ett generiskt avvisningsmeddelande — avslöja inte orsaken. Be dem använda ett annat kort |
-| `MANDATE_INVALID` | Mjuk | Ja | Betalningsmandatet är ogiltigt | Be kunden ställa in betalningsmandatet igen |
-| `MANDATE_REQUIRED` | Mjuk | Ja | Ett mandat krävs för denna transaktion | Ställ in ett mandat och be kunden auktorisera det innan debitering |
-| `MANDATE_REQUIRED_SYSTEM` | Hård | Nej | Systemet kräver ett mandat för denna typ av transaktion | Se till att mandatinställningsflödet slutförs innan debitering |
-| `NETWORK_ERROR` | Mjuk | Nej | Ett nätverksfel inträffade under transaktionen | Tillfälligt — försök betalningen igen efter en kort fördröjning |
-| `NETWORK_TIMEOUT` | Mjuk | Nej | Nätverksförfrågan gick ut på tid | Tillfälligt — försök betalningen igen efter en kort fördröjning |
-| `ORDER_ALREADY_EXISTS` | Mjuk | Nej | En beställning finns redan för denna transaktion (dubbel beställningsskapande) | Kontrollera statusen för den befintliga beställningen innan försök igen; kontakta support om det kvarstår |
-| `ORDER_CREATION_FAILED` | Mjuk | Nej | Det gick inte att skapa beställningen för transaktionen | Tillfälligt/systemfel — försök betalningen igen; kontakta support om det kvarstår |
-| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hård | Ja | Betalningsmetodsleverantören avvisade transaktionen | Be kunden kontakta sin leverantör eller använda en annan betalningsmetod |
-| `PAYMENT_METHOD_UNSUPPORTED` | Hård | Ja | Betalningsmetoden stöds inte för denna transaktion | Be kunden använda en stödd betalningsmetod |
-| `PICKUP_CARD` | Hård | Ja | Kortet har rapporterats som förlorat eller stulet och flaggats för upphämtning | Visa kunden ett generiskt avvisningsmeddelande — avslöja inte orsaken. Be dem använda ett annat kort |
-| `PROCESSING_ERROR` | Mjuk | Nej | Ett fel inträffade vid behandlingen av transaktionen | Tillfälligt — försök betalningen igen; om det kvarstår, be kunden kontakta sin bank |
-| `PROVIDER_UNSUPPORTED` | Hård | Nej | Betalningsleverantören stöder inte denna typ av transaktion | Be kunden använda en annan betalningsmetod |
-| `REENTER_TRANSACTION` | Mjuk | Ja | Transaktionen behöver återinföras | Be kunden försöka betalningen igen |
-| `REVOCATION_OF_AUTHORIZATION` | Hård | Ja | Auktoriseringen för transaktionen återkallades | Be kunden använda en annan betalningsmetod |
-| `STOLEN_CARD` | Hård | Ja | Kortet har rapporterats som stulet | Visa kunden ett generiskt avvisningsmeddelande — avslöja inte orsaken. Be dem använda ett annat kort |
-| `SUBSCRIPTION_NOT_ACTIVE` | Hård | Nej | Prenumerationen är inte aktiv, så den återkommande debiteringen kunde inte behandlas | Återaktivera prenumerationen (till exempel genom att uppdatera betalningsmetoden) innan ett nytt försök görs |
-| `TRANSACTION_NOT_ALLOWED` | Hård | Ja | Transaktionen är inte tillåten för detta kort eller konto | Be kunden kontakta sin bank för att tillåta denna typ av transaktion, eller använd ett annat kort |
-| `TRANSACTION_NOT_APPROVED` | Hård | Ja | Transaktionen godkändes inte | Be kunden kontakta sin bank eller prova ett annat kort |
-| `TRY_AGAIN_LATER` | Mjuk | Nej | Transaktionen bör försöks igen senare | Tillfälligt — försök betalningen igen senare |
-| `UNKNOWN_ERROR` | Mjuk | Nej | Ett okänt fel inträffade | Försök betalningen igen; om det kvarstår, kontakta support |
+| Målgrupp | Var den visas | Vad den säger |
+|----------|----------------|---------------|
+| **Du** | `error_message` för betalningen, sidan med betalningsdetaljer i dashboarden och e-postmeddelandet om misslyckad betalning till handlaren | Den verkliga orsaken samt en rekommenderad åtgärd, till exempel *"Kortet har inte aktiverats av kortinnehavaren. Be kunden att aktivera det hos sin bank och försök sedan igen."* |
+| **Din kund** | Skärmen för misslyckad checkout, [Customer Portal](/features/customer-portal) och e-postmeddelanden om [påminnelser](/features/recovery/subscription-dunning) | En kort förklaring på vardagligt språk som kunden kan agera utifrån, till exempel *"Ditt kort har inte aktiverats ännu. Aktivera det hos din bank och försök igen."* |
 
 <Note>
-**Användarfel** indikerar om betalningsavvisning kan lösas av kunden. När `Yes` kan kunden vidta åtgärder för att lösa problemet (till exempel genom att ange korrekta kortuppgifter). När `No` beror avvisningen på systemnivåproblem eller bankbegränsningar som kunden inte kan lösa direkt.
+Customer Portal returnerar kundtexten i `error_message`, medan merchant API returnerar handlartexten för samma betalning. `error_code` är identisk i båda.
+</Note>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+En steg-för-steg-guide för utvecklare om hur du läser dessa koder från webhooks och API:t, visar dem för kunder och avgör när du ska försöka igen.
+</Card>
+
+## Mjuka och hårda avvisningar
+
+Varje felkod tillhör en av två kategorier. Denna skillnad avgör om du bör försöka igen med samma betalningsmetod eller be kunden använda en ny.
+
+| Typ av avvisning | Vad det betyder | Vad du ska göra | Exempel |
+|------------------|-----------------|----------------|----------|
+| **Mjuk avvisning** | Tillfällig eller korrigerbar — samma kort kan fungera vid ett senare försök eller när kunden har korrigerat sina uppgifter. | Det är säkert att försöka igen (efter en fördröjning eller när kunden har korrigerat sina uppgifter). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
+| **Hård avvisning** | Slutgiltig — ett nytt försök med samma kort kommer inte att ändra resultatet. | Försök **inte** igen med samma kort. Be kunden använda en annan betalningsmetod eller kontakta sin bank. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
+
+För prenumerationsförnyelser tillämpar Dodo Payments automatiskt denna skillnad: mjuka avvisningar försöks igen genom [Subscription Payment Retries](/features/recovery/payment-retries), medan hårda avvisningar omedelbart avslutar kedjan av nya försök och bäst hanteras med [Subscription Dunning](/features/recovery/subscription-dunning).
+
+<Warning>
+**Avslöja aldrig den verkliga orsaken till `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` eller `FRAUDULENT` för kunden.** Att visa dessa kan ge en bedragare information. Visa alltid kunden ett generiskt meddelande om avvisning (till exempel *"Ditt kort avvisades. Kontakta din bank eller använd ett annat kort."*) och logga endast den specifika koden internt.
+
+Dodo Payments tillämpar redan detta på de ytor som vi kontrollerar: för dessa fyra koder använder checkout, Customer Portal och e-postmeddelanden om påminnelser alltid ett generiskt meddelande om avvisning, medan din egen text behåller den verkliga orsaken. Tillämpa samma regel överallt där du visar `error_message` från merchant API för en kund.
+</Warning>
+
+## Orsaker till transaktionsfel
+
+Följande tabell listar alla felkoder, deras typ av avvisning, om kunden kan lösa problemet, en beskrivning och den rekommenderade åtgärden.
+
+| Felkod | Typ | Användarfel | Beskrivning | Rekommenderad åtgärd |
+|--------|-----|-------------|-------------|----------------------|
+| `AUTHENTICATION_FAILURE` | Mjuk | Ja | Autentiseringen misslyckades under transaktionen | Be kunden försöka igen och slutföra 3DS-autentiseringen, eller använda ett annat kort |
+| `AUTHENTICATION_REQUIRED` | Mjuk | Ja | Ytterligare autentisering krävs för att slutföra transaktionen | Be kunden slutföra 3DS-autentiseringen. För prenumerationsförnyelser ber du kunden återkomma och autentisera sig |
+| `AUTHENTICATION_TIMEOUT` | Mjuk | Ja | Autentiseringsprocessen tog för lång tid | Be kunden försöka igen och slutföra autentiseringen utan dröjsmål |
+| `CARD_DECLINED` | Mjuk | Nej | Kortet avvisades av den utfärdande banken utan en specifik orsak (generisk avvisning) | Be kunden försöka igen, kontakta sin bank eller använda ett annat kort |
+| `CARD_NOT_ACTIVATED` | Mjuk | Ja | Kortet har inte aktiverats av kortinnehavaren | Be kunden aktivera kortet hos sin bank och sedan försöka igen |
+| `CARD_VELOCITY_EXCEEDED` | Mjuk | Ja | För många transaktioner försöktes under en kort period | Be kunden vänta och försöka igen senare, eller kontakta sin bank om gränserna |
+| `CUSTOMER_CANCELLED` | Mjuk | Ja | Kunden avbröt transaktionen | Låt kunden starta om checkout när hen är redo |
+| `DO_NOT_HONOR` | Hård | Nej | Den utfärdande banken nekade uttryckligen transaktionen (ISO 8583-kod 05 — godkänn inte); nätverken behandlar detta som slutgiltigt | Be kunden kontakta sin bank; försök inte igen med samma kort |
+| `EXPIRED_CARD` | Hård | Ja | Kortet har gått ut | Be kunden använda ett kort med ett giltigt utgångsdatum |
+| `FRAUDULENT` | Hård | Ja | Transaktionen markerades som potentiellt bedräglig | Visa kunden ett generiskt meddelande om avvisning — avslöja inte orsaken. Be kunden använda ett annat kort |
+| `GENERIC_DECLINE` | Mjuk | Nej | Transaktionen avvisades av en ospecificerad anledning | Be kunden kontakta sin bank eller försöka med ett annat kort |
+| `INCORRECT_CVC` | Mjuk | Ja | Den angivna CVC-koden var felaktig | Be kunden ange rätt CVC igen |
+| `INCORRECT_NUMBER` | Mjuk | Ja | Kortnumret angavs felaktigt | Be kunden ange rätt kortnummer igen |
+| `INSUFFICIENT_FUNDS` | Mjuk | Ja | Kontot har inte tillräckliga medel för att slutföra transaktionen | Be kunden använda en annan betalningsmetod eller försöka igen när medel finns tillgängliga |
+| `INVALID_ACCOUNT` | Hård | Ja | De angivna kontouppgifterna är ogiltiga | Be kunden kontakta sin bank eller använda ett annat kort |
+| `INVALID_AMOUNT` | Mjuk | Ja | Transaktionsbeloppet är ogiltigt | Kontrollera beloppet och eventuella köpgränser med kunden |
+| `INVALID_CARD_NUMBER` | Mjuk | Ja | Kortnummerformatet är ogiltigt | Be kunden ange ett giltigt kortnummer igen |
+| `INVALID_CARD_OWNER` | Mjuk | Ja | Informationen om kortägaren är ogiltig | Be kunden korrigera kortinnehavarens namn |
+| `INVALID_CVC` | Mjuk | Ja | CVC-formatet är ogiltigt | Be kunden ange en giltig CVC igen |
+| `INVALID_EXPIRY_YEAR` | Mjuk | Ja | Kortets utgångsår är ogiltigt | Be kunden ange ett giltigt utgångsdatum |
+| `INVALID_PIN` | Mjuk | Ja | Den angivna PIN-koden är felaktig | Be kunden ange rätt PIN-kod igen |
+| `INVALID_REQUEST` | Mjuk | Ja | Transaktionsbegäran innehåller ogiltiga data | Kontrollera betalningsbegärans fält och skicka igen med giltiga data |
+| `INVALID_UPI_ID` | Mjuk | Ja | Det angivna UPI ID:t är ogiltigt | Be kunden ange ett giltigt UPI ID |
+| `LIMIT_EXCEEDED` | Mjuk | Ja | Transaktionen överskrider kortets eller kontots gräns | Be kunden kontakta sin bank om gränserna eller använda en annan metod |
+| `LIVE_MODE_TEST_CARD` | Hård | Ja | Ett testkort användes i live mode | Använd ett riktigt kort — nya försök med testkortet kommer alltid att misslyckas i live mode |
+| `LOST_CARD` | Hård | Ja | Kortet har rapporterats som borttappat | Visa kunden ett generiskt meddelande om avvisning — avslöja inte orsaken. Be kunden använda ett annat kort |
+| `MANDATE_INVALID` | Mjuk | Ja | Betalningsmandatet är ogiltigt | Be kunden konfigurera betalningsmandatet igen |
+| `MANDATE_REQUIRED` | Mjuk | Ja | Ett mandat krävs för denna transaktion | Konfigurera ett mandat och be kunden godkänna det innan debitering |
+| `MANDATE_REQUIRED_SYSTEM` | Hård | Nej | Systemet kräver ett mandat för denna transaktionstyp | Säkerställ att flödet för konfigurering av mandatet har slutförts innan debitering |
+| `NETWORK_ERROR` | Mjuk | Nej | Ett nätverksfel inträffade under transaktionen | Tillfälligt — försök igen med betalningen efter en kort fördröjning |
+| `NETWORK_TIMEOUT` | Mjuk | Nej | Nätverksbegäran tog för lång tid | Tillfälligt — försök igen med betalningen efter en kort fördröjning |
+| `ORDER_ALREADY_EXISTS` | Mjuk | Nej | En order finns redan för denna transaktion (dubbelt skapande av order) | Kontrollera statusen för den befintliga ordern innan du försöker igen; kontakta supporten om problemet kvarstår |
+| `ORDER_CREATION_FAILED` | Mjuk | Nej | Det gick inte att skapa ordern för transaktionen | Tillfälligt systemfel — försök igen med betalningen; kontakta supporten om problemet kvarstår |
+| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hård | Ja | Betalningsmetodens leverantör avvisade transaktionen | Be kunden kontakta sin leverantör eller använda en annan betalningsmetod |
+| `PAYMENT_METHOD_UNSUPPORTED` | Hård | Ja | Betalningsmetoden stöds inte för denna transaktion | Be kunden använda en betalningsmetod som stöds |
+| `PICKUP_CARD` | Hård | Ja | Kortet har rapporterats som borttappat eller stulet och markerats för insamling | Visa kunden ett generiskt meddelande om avvisning — avslöja inte orsaken. Be kunden använda ett annat kort |
+| `PROCESSING_ERROR` | Mjuk | Nej | Ett fel inträffade vid bearbetningen av transaktionen | Tillfälligt — försök igen med betalningen; om problemet kvarstår ber du kunden kontakta sin bank |
+| `PROVIDER_UNSUPPORTED` | Hård | Nej | Betalningsleverantören stöder inte denna transaktionstyp | Be kunden använda en annan betalningsmetod |
+| `REENTER_TRANSACTION` | Mjuk | Ja | Transaktionen måste anges igen | Be kunden försöka igen med betalningen |
+| `REVOCATION_OF_AUTHORIZATION` | Hård | Ja | Auktoriseringen för transaktionen återkallades | Be kunden använda en annan betalningsmetod |
+| `STOLEN_CARD` | Hård | Ja | Kortet har rapporterats som stulet | Visa kunden ett generiskt meddelande om avvisning — avslöja inte orsaken. Be kunden använda ett annat kort |
+| `SUBSCRIPTION_NOT_ACTIVE` | Hård | Nej | Prenumerationen är inte aktiv, så den återkommande debiteringen kunde inte behandlas | Återaktivera prenumerationen (till exempel genom att uppdatera betalningsmetoden) innan du försöker genomföra debiteringen igen |
+| `TRANSACTION_NOT_ALLOWED` | Hård | Ja | Transaktionen är inte tillåten för detta kort eller konto | Be kunden kontakta sin bank för att tillåta denna transaktionstyp eller använda ett annat kort |
+| `TRANSACTION_NOT_APPROVED` | Hård | Ja | Transaktionen godkändes inte | Be kunden kontakta sin bank eller försöka med ett annat kort |
+| `TRY_AGAIN_LATER` | Mjuk | Nej | Transaktionen bör försöks igen senare | Tillfälligt — försök igen med betalningen senare |
+| `UNKNOWN_ERROR` | Mjuk | Nej | Ett okänt fel inträffade | Försök igen med betalningen; kontakta supporten om problemet kvarstår |
+
+<Note>
+**Användarfel** anger om kunden kan lösa betalningsavvisningen. När `Yes` kan kunden vidta åtgärder för att lösa problemet (till exempel ange korrekta kortuppgifter). När `No` beror avvisningen på problem på systemnivå eller bankbegränsningar som kunden inte kan lösa direkt.
 </Note>
 
 <Info>
-Ett kort kan också nekas när den utfärdande bankens egen riskmotor flaggar kortinnehavaren som en högriskkund — oberoende av handlaren eller transaktionsdetaljerna. Dessa nekningar visas vanligtvis som generiska koder som `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED`, eller `FRAUDULENT`. I dessa fall delar inte banken den specifika anledningen, och varken Dodo Payments eller handlaren kan ändra beslutet. Be kunden kontakta sin bank för att lösa flaggan, eller använd ett annat kort eller betalningsmetod.
+Ett kort kan också avvisas när den utfärdande bankens egen riskmotor markerar kortinnehavaren som en högriskkund — oberoende av handlaren eller transaktionsuppgifterna. Dessa avvisningar visas vanligtvis som generiska koder, till exempel `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED` eller `FRAUDULENT`. I dessa fall delar banken inte den specifika orsaken, och varken Dodo Payments eller handlaren kan ändra beslutet. Be kunden kontakta sin bank för att lösa markeringen eller använda ett annat kort eller en annan betalningsmetod.
 </Info>
 
-## Hantering av fel programmatiskt
+## Hantera fel programmatiskt
 
-Läs `error_code` från `payment.failed` webhook eller betalningsobjektet, mappa det till den rekommenderade åtgärden ovan, och bestäm om det ska försöka igen. För förnyelser av prenumerationer, mjuka avslag försökas om automatiskt — se [Subscription Payment Retries](/features/recovery/payment-retries).
+Läs `error_code` från `payment.failed`-webhooken eller betalningsobjektet, koppla den till den rekommenderade åtgärden ovan och avgör om du ska försöka igen. För prenumerationsförnyelser försöks mjuka avvisningar automatiskt igen åt dig — se [Subscription Payment Retries](/features/recovery/payment-retries).
 
-För API-nivå och affärslogikfel (såsom `PAYMENT_NOT_SUCCEEDED` eller `REFUND_WINDOW_EXPIRED`) som inte är kortavslag, se [Error Codes](/api-reference/error-codes) referensen.
+För fel på API-nivå och i affärslogiken (till exempel `PAYMENT_NOT_SUCCEEDED` eller `REFUND_WINDOW_EXPIRED`) som inte är kortavvisningar, se referensen [Error Codes](/api-reference/error-codes).
 
-## Relaterad
+## Relaterat
 
 <CardGroup cols={2}>
 <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-Guide för att från början till slut upptäcka, visa och försöka igen underkända betalningar.
+En heltäckande guide för att upptäcka, visa och försöka igen med misslyckade betalningar.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-Fel koder för API och affärslogik för fel som inte är avslag.
+API- och affärslogikfelkoder för fel som inte gäller avvisningar.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Automatiska försök som återhämtar mjuka avslag på prenumerationsförnyelser.
+Automatiska nya försök som återställer mjuka avvisningar vid prenumerationsförnyelser.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-E-postsekvenser som återhämtar hårda avslag genom att uppmana till en uppdatering av betalningsmetod.
+E-postsekvenser som återställer hårda avvisningar genom att uppmana till uppdatering av betalningsmetoden.
 </Card>
 </CardGroup>
 
 ## Support
 
-För ytterligare hjälp med transaktionsfel eller integrationsfrågor, vänligen kontakta vårt supportteam på support@dodopayments.com.
+Om du behöver ytterligare hjälp med transaktionsfel eller integrationsproblem kan du kontakta vårt supportteam på support@dodopayments.com.
