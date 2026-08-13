@@ -177,7 +177,7 @@ Tạo một phiên thanh toán:
 session = client.checkout_sessions.create(
     product_cart=[
         {
-            "product_id": "prod_123",
+            "product_id": "pdt_123",
             "quantity": 1
         }
     ],
@@ -210,26 +210,48 @@ print(f"Customer: {customer.name} ({customer.email})")
 
 Tạo và quản lý các đăng ký định kỳ:
 
+<Warning>
+`POST /subscriptions` (the SDK's `subscriptions.create` method) đã **lỗi thời**. Phương thức này vẫn hoạt động đối với các tích hợp hiện có, nhưng các tích hợp mới nên tạo subscription thông qua [Checkout Session](/developer-resources/checkout-session).
+</Warning>
+
 ```python
 # Create a subscription
 subscription = client.subscriptions.create(
-    customer_id="cus_123",
-    product_id="prod_456",
-    price_id="price_789"
+    billing={
+        "country": "US",
+        "city": "San Francisco",
+        "state": "CA",
+        "street": "1 Market St",
+        "zipcode": "94105",
+    },
+    customer={"customer_id": "cus_123"},  # or {"email": "...", "name": "..."} for a new customer
+    product_id="pdt_456",
+    quantity=1,
 )
 
-# Retrieve usage history
+# Charge an on-demand subscription
+# product_price is in the lowest currency denomination (e.g., 2500 = $25.00 USD)
+charge_response = client.subscriptions.charge(
+    subscription_id=subscription.subscription_id,
+    product_price=2500,
+)
+
+# Retrieve usage history (for metered subscriptions)
 usage_history = client.subscriptions.retrieve_usage_history(
-    subscription.id,
-    start_date="2024-01-01T00:00:00Z"
+    subscription_id=subscription.subscription_id,
+    start_date="2024-01-01T00:00:00Z",
 )
 ```
 
-## Thanh toán dựa trên mức sử dụng
+<Info>
+`billing` yêu cầu tối thiểu mã quốc gia ISO gồm hai chữ cái. `customer` chấp nhận `{"customer_id": ...}` để gắn với customer hiện có hoặc `{"email": ..., "name": ...}` để tạo customer mới. `product_price` được tính theo mệnh giá tiền tệ nhỏ nhất.
+</Info>
 
-### Nhập sự kiện sử dụng
+## Tính phí dựa trên mức sử dụng
 
-Theo dõi các sự kiện tùy chỉnh cho thanh toán dựa trên mức sử dụng:
+### Tiếp nhận sự kiện sử dụng
+
+Theo dõi các sự kiện tùy chỉnh để tính phí dựa trên mức sử dụng:
 
 ```python
 response = client.usage_events.ingest(
@@ -259,21 +281,6 @@ event = client.usage_events.retrieve("api_call_12345")
 events = client.usage_events.list(
     customer_id="cus_abc123",
     event_name="api_request",
-    limit=20
-)
-
-for event in events.data:
-    print(f"Event: {event.event_id} at {event.timestamp}")
-```
-
-```python
-# Get a specific event
-event = client.usage_events.retrieve("api_call_12345")
-
-# List events with filtering
-events = client.usage_events.list(
-    customer_id="cus_abc123",
-    event_name="api_request",
     page_size=20
 )
 
@@ -281,9 +288,11 @@ for event in events.items:
     print(f"Event: {event.event_id} at {event.timestamp}")
 ```
 
-### Phân trang tự động
+## Phân trang
 
-Lặp qua tất cả các mục một cách tự động:
+### Tự động phân trang
+
+Tự động lặp qua tất cả các mục:
 
 ```python
 from dodopayments import DodoPayments
@@ -317,7 +326,7 @@ asyncio.run(main())
 
 ### Phân trang thủ công
 
-Để kiểm soát nhiều hơn về phân trang:
+Để kiểm soát tốt hơn việc phân trang:
 
 ```python
 # Access items from current page
@@ -333,7 +342,7 @@ if first_page.has_next_page():
 
 ## Cấu hình HTTP Client
 
-Customize the underlying `httpx` client:
+Tùy chỉnh client `httpx` nền tảng:
 
 ```python
 import httpx
@@ -348,7 +357,7 @@ client = DodoPayments(
 )
 ```
 
-## Async với aiohttp
+## Bất đồng bộ với aiohttp
 
 Sử dụng aiohttp để cải thiện hiệu suất bất đồng bộ:
 
@@ -377,49 +386,21 @@ asyncio.run(main())
 
 ## Ghi log
 
-Bật ghi log bằng cách thiết lập biến môi trường:
+Bật tính năng ghi log bằng cách thiết lập biến môi trường:
 
 ```bash
 export DODO_PAYMENTS_LOG=info
 ```
 
-Hoặc để ghi log ở mức độ gỡ lỗi:
+Hoặc để ghi log ở cấp độ debug:
 
 ```bash
 export DODO_PAYMENTS_LOG=debug
 ```
 
-## Tích hợp Framework
+## Tích hợp framework
 
 ### FastAPI
-
-```python
-from fastapi import FastAPI, HTTPException
-from dodopayments import AsyncDodoPayments
-from pydantic import BaseModel
-import os
-
-app = FastAPI()
-dodo = AsyncDodoPayments(bearer_token=os.getenv("DODO_API_KEY"))
-
-class CheckoutRequest(BaseModel):
-    product_id: str
-    quantity: int
-
-@app.post("/create-checkout")
-async def create_checkout(request: CheckoutRequest):
-    try:
-        session = await dodo.checkout_sessions.create(
-            product_cart=[{
-                "product_id": request.product_id,
-                "quantity": request.quantity
-            }],
-            return_url="https://yourdomain.com/return"
-        )
-        return {"checkout_url": session.url}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-```
 
 ```python
 from fastapi import FastAPI, HTTPException
@@ -449,39 +430,7 @@ async def create_checkout(request: CheckoutRequest):
         raise HTTPException(status_code=400, detail=str(e))
 ```
 
-```python
-from django.http import JsonResponse
-from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_exempt
-from dodopayments import DodoPayments
-import os
-import json
-
-client = DodoPayments(bearer_token=os.getenv("DODO_PAYMENTS_API_KEY"))
-
-@csrf_exempt
-@require_POST
-def create_checkout(request):
-    try:
-        data = json.loads(request.body)
-        session = client.checkout_sessions.create(
-            product_cart=[{
-                "product_id": data.get("product_id"),
-                "quantity": data.get("quantity", 1)
-            }],
-            return_url="https://yourdomain.com/return"
-        )
-        return JsonResponse({
-            "status": "success",
-            "checkout_url": session.url,
-            "session_id": session.session_id
-        })
-    except Exception as e:
-        return JsonResponse({
-            "status": "error",
-            "message": str(e)
-        }, status=400)
-```
+### Django
 
 ```python
 from django.http import JsonResponse
@@ -517,6 +466,8 @@ def create_checkout(request):
         }, status=400)
 ```
 
+## Tài nguyên
+
 <CardGroup cols={2}>
 <Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-python">
   Xem mã nguồn và đóng góp
@@ -527,24 +478,22 @@ def create_checkout(request):
 </Card>
 
 <Card title="Discord Community" icon="discord" href="https://discord.gg/bYqAp4ayYh">
-  Nhận trợ giúp và kết nối với các nhà phát triển
+  Nhận trợ giúp và kết nối với các developer
 </Card>
 
 <Card title="Report Issues" icon="bug" href="https://github.com/dodopayments/dodopayments-python/issues">
-  Báo lỗi hoặc yêu cầu tính năng
+  Báo cáo lỗi hoặc yêu cầu tính năng
 </Card>
 </CardGroup>
 
 ## Hỗ trợ
 
-Cần trợ giúp với SDK Python?
+Bạn cần trợ giúp về Python SDK?
 
-- **Discord**: Tham gia [máy chủ cộng đồng](https://discord.gg/bYqAp4ayYh) của chúng tôi để được hỗ trợ theo thời gian thực
-- **Email**: Liên hệ với chúng tôi tại support@dodopayments.com
-- **GitHub**: Mở một sự cố trên [kho lưu trữ](https://github.com/dodopayments/dodopayments-python)
+- **Discord**: Tham gia [server cộng đồng](https://discord.gg/bYqAp4ayYh) của chúng tôi để nhận hỗ trợ theo thời gian thực
+- **Email**: Liên hệ với chúng tôi qua support@dodopayments.com
+- **GitHub**: Tạo issue trên [repository](https://github.com/dodopayments/dodopayments-python)
 
 ## Đóng góp
 
-Chúng tôi hoan nghênh các đóng góp! Kiểm tra [hướng dẫn đóng góp](https://github.com/dodopayments/dodopayments-python/blob/main/CONTRIBUTING.md) để bắt đầu.
-
-Chúng tôi hoan nghênh các đóng góp! Hãy kiểm tra [hướng dẫn đóng góp](https://github.com/dodopayments/dodopayments-python/blob/main/CONTRIBUTING.md) để bắt đầu.
+Chúng tôi hoan nghênh mọi đóng góp! Hãy xem [hướng dẫn đóng góp](https://github.com/dodopayments/dodopayments-python/blob/main/CONTRIBUTING.md) để bắt đầu.
