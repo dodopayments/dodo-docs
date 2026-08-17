@@ -164,21 +164,43 @@ echo "Customer: {$customer->name} ({$customer->email})";
 
 أنشئ وادِر الاشتراكات المتكررة:
 
+<Warning>
+`POST /subscriptions` (the SDK's `subscriptions.create` method) مهمل. لا يزال يعمل مع عمليات التكامل الحالية، ولكن يجب أن تنشئ عمليات التكامل الجديدة الاشتراكات من خلال [Checkout Session](/developer-resources/checkout-session).
+</Warning>
+
 ```php
+use Dodopayments\Customers\AttachExistingCustomer;
+use Dodopayments\Payments\BillingAddress;
+
 // Create a subscription
 $subscription = $client->subscriptions->create(
-  customerID: "cus_123",
-  productID: "prod_456",
-  priceID: "price_789"
+  billing: BillingAddress::with(
+    country: 'US',
+    city: 'San Francisco',
+    state: 'CA',
+    street: '1 Market St',
+    zipcode: '94105',
+  ),
+  customer: AttachExistingCustomer::with(customerID: 'cus_123'),
+  productID: 'pdt_456',
+  quantity: 1,
 );
 
-// Cancel subscription
-$client->subscriptions->cancel($subscription->id);
+// Charge an on-demand subscription
+// productPrice is in the lowest currency denomination (e.g., 2500 = $25.00 USD)
+$charge = $client->subscriptions->charge(
+  $subscription->subscription_id,
+  productPrice: 2500,
+);
 ```
 
-## الترميز
+<Info>
+يتطلب `billing` على الأقل رمز ISO المكوّن من حرفين `country`. مرّر `AttachExistingCustomer::with(customerID: '...')` لإرفاق عميل حالي، أو `NewCustomer::with(email: '...', name: '...')` لإنشاء عميل. يوجد `productPrice` بأدنى فئة من فئات العملة.
+</Info>
 
-اعمل مع استجابات القوائم المقسمة إلى صفحات:
+## ترقيم الصفحات
+
+تعامل مع استجابات القوائم المرقّمة:
 
 ```php
 $page = $client->payments->list();
@@ -196,9 +218,9 @@ foreach ($page->pagingEachItem() as $item) {
 }
 ```
 
-## التعامل مع الأخطاء
+## معالجة الأخطاء
 
-عندما لا يستطيع المكتبة الاتصال بواجهة برمجة التطبيقات أو يتلقى رمز حالة غير ناجح (4xx أو 5xx)، يتم رمي فئة فرعية من `APIException`:
+عندما يتعذر على المكتبة الاتصال بـ API أو تتلقى رمز حالة غير ناجح (4xx أو 5xx)، يتم طرح فئة فرعية من `APIException`:
 
 ```php
 <?php
@@ -234,20 +256,20 @@ try {
 | HTTP 422         | `UnprocessableEntityException` |
 | HTTP 429         | `RateLimitException`           |
 | HTTP >= 500      | `InternalServerException`      |
-| خطأ HTTP آخر     | `APIStatusException`           |
-| انتهاء المهلة     | `APITimeoutException`          |
-| خطأ شبكة         | `APIConnectionException`       |
+| خطأ HTTP آخر | `APIStatusException`           |
+| انتهاء المهلة          | `APITimeoutException`          |
+| خطأ في الشبكة    | `APIConnectionException`       |
 
 <Tip>
-  احرص دائماً على تغليف استدعاءات واجهة برمجة التطبيقات في كتل try-catch لمعالجة الأخطاء المحتملة
-  برشاقة وتوفير تغذية راجعة ذات معنى للمستخدمين.
+  احرص دائمًا على تغليف استدعاءات API داخل كتل try-catch لمعالجة الأخطاء المحتملة
+  بسلاسة وتقديم ملاحظات مفيدة للمستخدمين.
 </Tip>
 
 ## الاستخدام المتقدم
 
-### نقاط نهاية غير موثقة
+### نقاط النهاية غير الموثّقة
 
-قم بإرسال طلبات إلى نقاط نهاية غير موثقة:
+أرسل طلبات إلى نقاط النهاية غير الموثّقة:
 
 ```php
 <?php
@@ -261,9 +283,9 @@ $response = $client->request(
 );
 ```
 
-### معلمات غير موثقة
+### المعلمات غير الموثّقة
 
-أرسل معلمات غير موثقة إلى أي نقطة نهاية أو اقرأ خصائص استجابة غير موثقة:
+أرسل معلمات غير موثّقة إلى أي نقطة نهاية أو اقرأ خصائص استجابة غير موثّقة:
 
 ```php
 <?php
@@ -281,42 +303,14 @@ $checkoutSessionResponse = $client->checkoutSessions->create(
 ```
 
 <Note>
-  المعلمات `extra*` ذات الاسم نفسه تُلغي المعلمات الموثقة.
+  تتجاوز معلمات `extra*` التي تحمل الاسم نفسه المعلمات الموثّقة.
 </Note>
 
-## التكامل مع الأُطر
+## التكامل مع أطر العمل
 
 ### Laravel
 
 أنشئ خدمة لتطبيقات Laravel:
-
-```php
-<?php
-
-namespace App\Services;
-
-use Dodopayments\Client;
-
-class PaymentService
-{
-    protected $client;
-
-    public function __construct()
-    {
-        $this->client = new Client(
-            bearerToken: config('services.dodo.api_key')
-        );
-    }
-
-    public function createCheckout(array $items)
-    {
-        return $this->client->checkoutSessions->create(
-            productCart: $items,
-            returnUrl: route('checkout.return')
-        );
-    }
-}
-```
 
 ```php
 <?php
@@ -346,12 +340,7 @@ class PaymentService
 }
 ```
 
-```php
-'dodo' => [
-    'api_key' => env('DODO_API_KEY'),
-    'environment' => env('DODO_ENVIRONMENT', 'sandbox')
-],
-```
+أضف الإعدادات في `config/services.php`:
 
 ```php
 'dodo' => [
@@ -360,34 +349,9 @@ class PaymentService
 ],
 ```
 
+### Symfony
+
 أنشئ خدمة في Symfony:
-
-```php
-<?php
-
-namespace App\Service;
-
-use Dodopayments\Client;
-
-class DodoPaymentService
-{
-    private Client $client;
-
-    public function __construct(string $apiKey)
-    {
-        $this->client = new Client(bearerToken: $apiKey);
-    }
-
-    public function createPayment(int $amount, string $currency, string $customerId): object
-    {
-        return $this->client->payments->create(
-            amount: $amount,
-            currency: $currency,
-            customerID: $customerId
-        );
-    }
-}
-```
 
 ```php
 <?php
@@ -416,6 +380,8 @@ class DodoPaymentService
 }
 ```
 
+سجّلها في `config/services.yaml`:
+
 ```yaml
 services:
   App\Service\DodoPaymentService:
@@ -427,11 +393,11 @@ services:
 
 <CardGroup cols={2}>
 <Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-php">
-  عرض شفرة المصدر والمساهمة
+  اطّلع على الشيفرة المصدرية وساهم
 </Card>
 
 <Card title="API Reference" icon="book" href="/api-reference/introduction">
-  توثيق API كامل
+  وثائق API الكاملة
 </Card>
 
 <Card
@@ -449,14 +415,12 @@ services:
 
 ## الدعم
 
-هل تحتاج مساعدة في SDK لـ PHP؟
+هل تحتاج إلى مساعدة بشأن PHP SDK؟
 
 - **Discord**: انضم إلى [خادم المجتمع](https://discord.gg/bYqAp4ayYh) للحصول على دعم فوري
-- **البريد الإلكتروني**: تواصل معنا عبر support@dodopayments.com
-- **GitHub**: افتح قضية في [المستودع](https://github.com/dodopayments/dodopayments-php)
+- **Email**: تواصل معنا عبر support@dodopayments.com
+- **GitHub**: افتح issue في [المستودع](https://github.com/dodopayments/dodopayments-php)
 
 ## المساهمة
 
-نرحب بالمساهمات! اطلع على [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-php/blob/main/CONTRIBUTING.md) للبدء.
-
-نرحب بالمساهمات! اطلع على [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-php/blob/main/CONTRIBUTING.md) للبدء.
+نرحّب بالمساهمات! اطّلع على [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-php/blob/main/CONTRIBUTING.md) لبدء الاستخدام.

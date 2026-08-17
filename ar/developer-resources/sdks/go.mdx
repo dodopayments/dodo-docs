@@ -171,7 +171,7 @@ client.CheckoutSessions.New(
 session, err := client.CheckoutSessions.New(ctx, dodopayments.CheckoutSessionNewParams{
 	CheckoutSessionRequest: dodopayments.CheckoutSessionRequestParam{
 		ProductCart: dodopayments.F([]dodopayments.ProductItemReqParam{{
-			ProductID: dodopayments.F("prod_123"),
+			ProductID: dodopayments.F("pdt_123"),
 			Quantity:  dodopayments.F(int64(1)),
 		}}),
 		ReturnURL: dodopayments.F("https://yourdomain.com/return"),
@@ -214,24 +214,52 @@ fmt.Printf("Customer: %s (%s)\n", customer.Name, customer.Email)
 
 قم بإنشاء وإدارة الاشتراكات المتكررة:
 
+<Warning>
+`POST /subscriptions` (طريقة `subscriptions.create` في SDK) **مهملة**. لا تزال تعمل مع عمليات التكامل الحالية، ولكن يجب أن تنشئ عمليات التكامل الجديدة الاشتراكات من خلال [Checkout Session](/developer-resources/checkout-session).
+</Warning>
+
 ```go
+import "time"
+
 // Create a subscription
 subscription, err := client.Subscriptions.New(ctx, dodopayments.SubscriptionNewParams{
-	CustomerID: dodopayments.F("cus_123"),
-	ProductID:  dodopayments.F("prod_456"),
-	PriceID:    dodopayments.F("price_789"),
+	Billing: dodopayments.F(dodopayments.BillingAddressParam{
+		Country: dodopayments.F(dodopayments.CountryCodeUs),
+		City:    dodopayments.F("San Francisco"),
+		State:   dodopayments.F("CA"),
+		Street:  dodopayments.F("1 Market St"),
+		Zipcode: dodopayments.F("94105"),
+	}),
+	Customer: dodopayments.F[dodopayments.CustomerRequestUnionParam](
+		dodopayments.AttachExistingCustomerParam{
+			CustomerID: dodopayments.F("cus_123"),
+		},
+	),
+	ProductID: dodopayments.F("pdt_456"),
+	Quantity:  dodopayments.F(int64(1)),
 })
 if err != nil {
 	log.Fatal(err)
 }
 
-// Get usage history
+// Charge an on-demand subscription
+// ProductPrice is in the lowest currency denomination (e.g., 2500 = $25.00 USD)
+chargeResponse, err := client.Subscriptions.Charge(ctx, subscription.SubscriptionID,
+	dodopayments.SubscriptionChargeParams{
+		ProductPrice: dodopayments.F(int64(2500)),
+	},
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+// Get usage history (for metered subscriptions)
 usageHistory, err := client.Subscriptions.GetUsageHistory(
 	ctx,
-	subscription.ID,
+	subscription.SubscriptionID,
 	dodopayments.SubscriptionGetUsageHistoryParams{
-		StartDate: dodopayments.F("2024-01-01T00:00:00Z"),
-		EndDate:   dodopayments.F("2024-03-31T23:59:59Z"),
+		StartDate: dodopayments.F(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:   dodopayments.F(time.Date(2024, 3, 31, 23, 59, 59, 0, time.UTC)),
 	},
 )
 if err != nil {
@@ -239,32 +267,15 @@ if err != nil {
 }
 ```
 
-## الفوترة بناءً على الاستخدام
+<Info>
+يتطلب `Billing` على الأقل رمز `Country` وفق معيار ISO مكوّنًا من حرفين. `Customer` هو `CustomerRequestUnionParam` — مرّر `AttachExistingCustomerParam{CustomerID: ...}` لعميل حالي أو `NewCustomerParam{Email: ..., Name: ...}` لعميل جديد. تكون قيمة `ProductPrice` بأدنى فئة من فئات العملة.
+</Info>
 
-### استيعاب أحداث الاستخدام
+## الفوترة حسب الاستخدام
 
-تتبع الأحداث المخصصة:
+### إدخال أحداث الاستخدام
 
-```go
-import "github.com/dodopayments/dodopayments-go"
-
-response, err := client.UsageEvents.Ingest(ctx, dodopayments.UsageEventIngestParams{
-	Events: dodopayments.F([]dodopayments.UsageEventIngestParamsEvent{{
-		EventID:    dodopayments.F("api_call_12345"),
-		CustomerID: dodopayments.F("cus_abc123"),
-		EventName:  dodopayments.F("api_request"),
-		Timestamp:  dodopayments.F("2024-01-15T10:30:00Z"),
-		Metadata: dodopayments.F(map[string]string{
-			"endpoint":     "/api/v1/users",
-			"method":       "GET",
-			"tokens_used":  "150",
-		}),
-	}}),
-})
-if err != nil {
-	log.Fatal(err)
-}
-```
+تتبّع الأحداث المخصّصة:
 
 ```go
 import "github.com/dodopayments/dodopayments-go"
@@ -282,22 +293,7 @@ if err != nil {
 }
 ```
 
-```go
-// List events with filters
-params := dodopayments.UsageEventListParams{
-	CustomerID: dodopayments.F("cus_abc123"),
-	EventName:  dodopayments.F("api_request"),
-}
-
-events, err := client.UsageEvents.List(ctx, params)
-if err != nil {
-	log.Fatal(err)
-}
-
-for _, event := range events.Data {
-	fmt.Printf("Event %s: %s at %s\n", event.EventID, event.EventName, event.Timestamp)
-}
-```
+### سرد أحداث الاستخدام
 
 ```go
 // List events with filters
@@ -316,11 +312,12 @@ for _, event := range events.Items {
 }
 ```
 
-تعامل مع أنواع الأخطاء المحددة:
+## معالجة الأخطاء
 
-عندما تقوم API بإرجاع رمز حالة غير ناجح، يعيد SDK خطأ من النوع
-`*dodopayments.Error`. يوفر `StatusCode`، وال`*http.Request` الأساسية و
-`*http.Response`، وJSON لجسم الخطأ. استخدم نمط `errors.As` لتفحصه، وتفرع على `StatusCode` للتعامل مع الحالات المحددة:
+عندما تُرجع API رمز حالة غير ناجح، يُرجع SDK خطأً من النوع
+`*dodopayments.Error`. ويكشف عن `StatusCode` و`*http.Request` الأساسي و
+`*http.Response`، بالإضافة إلى JSON لنص الخطأ. استخدم نمط `errors.As`
+لفحصه، وتفرّع استنادًا إلى `StatusCode` للتعامل مع حالات محددة:
 
 ```go
 payment, err := client.Payments.New(ctx, dodopayments.PaymentNewParams{
@@ -362,7 +359,9 @@ if err != nil {
 }
 ```
 
-أضف برمجيات وسيطة مخصصة للتسجيل أو القياسات:
+## Middleware
+
+أضف Middleware مخصّصًا للتسجيل أو المقاييس:
 
 ```go
 func Logger(req *http.Request, next option.MiddlewareNext) (res *http.Response, err error) {
@@ -388,44 +387,6 @@ client := dodopayments.NewClient(
 ## التزامن
 
 العميل آمن للاستخدام المتزامن:
-
-```go
-package main
-
-import (
-	"context"
-	"sync"
-	"log"
-
-	"github.com/dodopayments/dodopayments-go"
-)
-
-func main() {
-	client := dodopayments.NewClient()
-	
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			
-			payment, err := client.Payments.Create(context.Background(), dodopayments.PaymentCreateParams{
-				Amount:     1000,
-				Currency:   "USD",
-				CustomerID: "cus_123",
-			})
-			if err != nil {
-				log.Printf("Failed to create payment %d: %v", idx, err)
-				return
-			}
-			
-			log.Printf("Created payment %d: %s", idx, payment.ID)
-		}(i)
-	}
-	
-	wg.Wait()
-}
-```
 
 ```go
 package main
@@ -476,13 +437,15 @@ func main() {
 }
 ```
 
+## الموارد
+
 <CardGroup cols={2}>
 <Card title="GitHub Repository" icon="github" href="https://github.com/dodopayments/dodopayments-go">
-  اعرض شفرة المصدر وشارك في التطوير
+  عرض التعليمات البرمجية المصدر والمساهمة
 </Card>
 
 <Card title="API Reference" icon="book" href="/api-reference/introduction">
-  توثيق كامل لواجهة برمجة التطبيقات
+  وثائق API الكاملة
 </Card>
 
 <Card title="Discord Community" icon="discord" href="https://discord.gg/bYqAp4ayYh">
@@ -490,20 +453,18 @@ func main() {
 </Card>
 
 <Card title="Report Issues" icon="bug" href="https://github.com/dodopayments/dodopayments-go/issues">
-  أبلغ عن أخطاء أو اطلب ميزات
+  أبلغ عن الأخطاء أو اطلب ميزات جديدة
 </Card>
 </CardGroup>
 
 ## الدعم
 
-هل تحتاج إلى مساعدة بشأن SDK الخاص بـ Go؟
+هل تحتاج إلى مساعدة بشأن Go SDK؟
 
-- **Discord**: انضم إلى [خادم المجتمع](https://discord.gg/bYqAp4ayYh) للحصول على دعم في الوقت الحقيقي
-- **البريد الإلكتروني**: اتصل بنا على support@dodopayments.com
-- **GitHub**: افتح مشكلة على [المستودع](https://github.com/dodopayments/dodopayments-go)
+- **Discord**: انضم إلى [خادم مجتمعنا](https://discord.gg/bYqAp4ayYh) للحصول على دعم فوري
+- **البريد الإلكتروني**: تواصل معنا عبر support@dodopayments.com
+- **GitHub**: افتح مشكلة في [المستودع](https://github.com/dodopayments/dodopayments-go)
 
 ## المساهمة
 
-نرحب بالمساهمات! تحقق من [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-go/blob/main/CONTRIBUTING.md) للبدء.
-
-نرحب بالمساهمات! تحقق من [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-go/blob/main/CONTRIBUTING.md) للبدء.
+نرحّب بالمساهمات! راجع [إرشادات المساهمة](https://github.com/dodopayments/dodopayments-go/blob/main/CONTRIBUTING.md) للبدء.
