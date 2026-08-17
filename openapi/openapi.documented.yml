@@ -5,7 +5,7 @@ info:
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
-  version: 1.111.2
+  version: 1.112.13
 servers:
   - url: https://test.dodopayments.com/
     description: Test Mode Server Host
@@ -25181,6 +25181,7 @@ paths:
               - pending
               - active
               - on_hold
+              - paused
               - cancelled
               - failed
               - expired
@@ -26024,6 +26025,7 @@ paths:
                 ],
                 metadata: ['foo' => 'string'],
                 nextBillingDate: new \DateTimeImmutable('2019-12-27T18:11:19.117Z'),
+                pause: true,
                 status: SubscriptionStatus::PENDING,
                 subscriptionPeriodCount: 0,
                 subscriptionPeriodInterval: TimeInterval::DAY,
@@ -27947,6 +27949,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookDetails"
+        "503":
+          description: Webhook configuration temporarily frozen during instance migration
       security:
         - API_KEY: []
       x-codeSamples:
@@ -28307,6 +28311,8 @@ paths:
           description: Endpoint Not Found
         "500":
           description: Something went wrong.
+        "503":
+          description: Webhook configuration temporarily frozen during instance migration
       security:
         - API_KEY: []
       x-codeSamples:
@@ -28488,6 +28494,8 @@ paths:
           description: Webhook Not Found
         "500":
           description: Something went wrong.
+        "503":
+          description: Webhook configuration temporarily frozen during instance migration
       security:
         - API_KEY: []
       x-codeSamples:
@@ -28860,6 +28868,8 @@ paths:
           description: Webhook Not Found
         "500":
           description: Something went wrong.
+        "503":
+          description: Webhook configuration temporarily frozen during instance migration
       security:
         - API_KEY: []
       x-codeSamples:
@@ -29837,6 +29847,7 @@ components:
         - tax_category
         - tax_inclusive
         - tax_rate
+        - single_quantity_price
       properties:
         addon_id:
           type: string
@@ -29869,6 +29880,15 @@ components:
         quantity:
           type: integer
           format: int32
+          minimum: 0
+        single_quantity_price:
+          type: integer
+          format: int32
+          description: |-
+            Per-unit price in `currency`, converted and adaptive-priced but pre-tax
+            and pre-discount (both depend on quantity and the rest of the cart).
+            Set even when `quantity` is 0, so the checkout page can price the addon
+            before the buyer has selected any.
           minimum: 0
         tax:
           type:
@@ -33774,6 +33794,7 @@ components:
         - subscription.renewed
         - subscription.on_hold
         - subscription.paused
+        - subscription.unpaused
         - subscription.cancelled
         - subscription.failed
         - subscription.expired
@@ -36737,6 +36758,13 @@ components:
             - string
             - "null"
           format: date-time
+        pause:
+          type:
+            - boolean
+            - "null"
+          description: |-
+            `Some(true)` pauses an active subscription; `Some(false)` unpauses a
+            `Paused` (or abandoned `OnHold`) subscription. Exclusive of every other field.
         status:
           oneOf:
             - type: "null"
@@ -38215,6 +38243,14 @@ components:
         on_demand:
           type: boolean
           description: Wether the subscription is on-demand or not
+        paused_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: |-
+            Timestamp when the subscription was paused, if it currently is (or is
+            `OnHold` due to an unresolved pause settlement). `null` otherwise.
         payment_frequency_count:
           type: integer
           format: int32
@@ -38420,6 +38456,14 @@ components:
         on_demand:
           type: boolean
           description: Wether the subscription is on-demand or not
+        paused_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: |-
+            Timestamp when the subscription was paused, if it currently is (or is
+            `OnHold` due to an unresolved pause settlement). `null` otherwise.
         payment_frequency_count:
           type: integer
           format: int32
@@ -38493,6 +38537,7 @@ components:
         - pending
         - active
         - on_hold
+        - paused
         - cancelled
         - failed
         - expired
@@ -38504,6 +38549,7 @@ components:
         - saas
         - e_book
         - edtech
+        - live_tutoring
     ThemeConfig:
       type: object
       description: Custom theme configuration with colors for light and dark modes.
@@ -41521,6 +41567,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -41614,6 +41661,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -41707,6 +41755,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -41800,6 +41849,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -41893,6 +41943,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: 2025-07-23T12:01:51.506540Z
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -41945,6 +41996,100 @@ webhooks:
         "401":
           description: Invalid webhook signature
       summary: Subscription on hold webhook
+  subscription.paused:
+    post:
+      description: Sent when a subscription is paused
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                addons: []
+                billing:
+                  city: New York
+                  country: US
+                  state: New York
+                  street: 11th Main
+                  zipcode: "08002"
+                brand_id: brd_123
+                cancel_at_next_billing_date: false
+                cancellation_comment: null
+                cancellation_feedback: null
+                cancelled_at: null
+                created_at: 2025-06-23T11:57:59.125145Z
+                credit_entitlement_cart: []
+                currency: USD
+                custom_field_responses: null
+                customer:
+                  customer_id: cus_8VbC6JDZzPEqfBPUdpj0K
+                  email: test@acme.com
+                  metadata: {}
+                  name: Test user
+                  phone_number: null
+                customer_business_name: Example GmbH
+                discount_cycles_remaining: 3
+                discount_id: null
+                discounts: null
+                expires_at: null
+                metadata: {}
+                meter_credit_entitlement_cart: []
+                meters: []
+                next_billing_date: 2025-08-23T12:01:14.672875Z
+                on_demand: false
+                paused_at: 2025-07-23T12:01:51.506540Z
+                payload_type: Subscription
+                payment_frequency_count: 1
+                payment_frequency_interval: Month
+                payment_method_id: null
+                previous_billing_date: 2025-07-23T12:01:21.506021Z
+                product_id: pdt_RUST4raxbl0Rfe4VQi1z
+                quantity: 1
+                recurring_pre_tax_amount: 1000
+                scheduled_change: null
+                status: paused
+                subscription_id: sub_7EeHq2ewQuadropD2ra
+                subscription_period_count: 10
+                subscription_period_interval: Year
+                tax_id: DE999999999
+                tax_inclusive: false
+                trial_amount: null
+                trial_period_days: 0
+              timestamp: 2025-07-23T12:01:51.506540Z
+              type: subscription.paused
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/SubscriptionResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - subscription.paused
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: SubscriptionPausedPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Subscription paused webhook
   subscription.plan_changed:
     post:
       description: Sent when a subscription plan is changed
@@ -41986,6 +42131,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -42079,6 +42225,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -42131,6 +42278,100 @@ webhooks:
         "401":
           description: Invalid webhook signature
       summary: Subscription renewed webhook
+  subscription.unpaused:
+    post:
+      description: Sent when a subscription is unpaused
+      requestBody:
+        content:
+          application/json:
+            example:
+              business_id: bus_H4ekzPSlcg
+              data:
+                addons: []
+                billing:
+                  city: New York
+                  country: US
+                  state: New York
+                  street: 11th Main
+                  zipcode: "08002"
+                brand_id: brd_123
+                cancel_at_next_billing_date: false
+                cancellation_comment: null
+                cancellation_feedback: null
+                cancelled_at: null
+                created_at: 2025-06-23T11:57:59.125145Z
+                credit_entitlement_cart: []
+                currency: USD
+                custom_field_responses: null
+                customer:
+                  customer_id: cus_8VbC6JDZzPEqfBPUdpj0K
+                  email: test@acme.com
+                  metadata: {}
+                  name: Test user
+                  phone_number: null
+                customer_business_name: Example GmbH
+                discount_cycles_remaining: 3
+                discount_id: null
+                discounts: null
+                expires_at: null
+                metadata: {}
+                meter_credit_entitlement_cart: []
+                meters: []
+                next_billing_date: 2025-08-23T12:01:14.672875Z
+                on_demand: false
+                paused_at: null
+                payload_type: Subscription
+                payment_frequency_count: 1
+                payment_frequency_interval: Month
+                payment_method_id: null
+                previous_billing_date: 2025-07-23T12:01:21.506021Z
+                product_id: pdt_RUST4raxbl0Rfe4VQi1z
+                quantity: 1
+                recurring_pre_tax_amount: 1000
+                scheduled_change: null
+                status: active
+                subscription_id: sub_7EeHq2ewQuadropD2ra
+                subscription_period_count: 10
+                subscription_period_interval: Year
+                tax_id: DE999999999
+                tax_inclusive: false
+                trial_amount: null
+                trial_period_days: 0
+              timestamp: 2025-07-23T12:32:47.185692Z
+              type: subscription.unpaused
+            schema:
+              properties:
+                business_id:
+                  description: The business identifier
+                  type: string
+                data:
+                  $ref: "#/components/schemas/SubscriptionResponse"
+                timestamp:
+                  description: The timestamp of when the event occurred
+                  format: date-time
+                  type: string
+                type:
+                  description: The event type
+                  enum:
+                    - subscription.unpaused
+                  type: string
+                  x-stainless-const: true
+              required:
+                - business_id
+                - type
+                - timestamp
+                - data
+              title: SubscriptionUnpausedPayload
+              type: object
+        required: true
+      responses:
+        "200":
+          description: Webhook received successfully
+        "400":
+          description: Invalid request
+        "401":
+          description: Invalid webhook signature
+      summary: Subscription unpaused webhook
   subscription.update_payment_method:
     post:
       description: Sent when a subscription's payment method is updated. Carries the Subscription payload.
@@ -42172,6 +42413,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month
@@ -42265,6 +42507,7 @@ webhooks:
                 meters: []
                 next_billing_date: 2025-08-23T12:01:14.672875Z
                 on_demand: false
+                paused_at: null
                 payload_type: Subscription
                 payment_frequency_count: 1
                 payment_frequency_interval: Month

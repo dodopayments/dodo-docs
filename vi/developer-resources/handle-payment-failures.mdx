@@ -25,20 +25,24 @@ Khi một khoản thanh toán thất bại, Dodo Payments sẽ cho bạn biết 
 
 Mỗi thanh toán thất bại — dù là thanh toán một lần hay gia hạn đăng ký — đều mang cùng các trường thất bại trên đối tượng thanh toán:
 
-| Trường | Loại | Mô tả |
+| Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | `failed` cho một khoản thanh toán thất bại. Các trạng thái không thành công khác bao gồm `cancelled`, `requires_customer_action`, và `requires_payment_method`. |
-| `error_code` | string \| null | Lý do thất bại đã chuẩn hóa, ví dụ `INSUFFICIENT_FUNDS` hoặc `PROCESSING_ERROR`. Xem [Transaction Failures](/api-reference/transaction-failures) để biết danh sách đầy đủ. |
-| `error_message` | string \| null | Một giải thích có thể đọc được về thất bại. |
-| `retry_attempt` | integer | `0` cho khoảng phí gốc. `1` hoặc cao hơn xác định một thử lại gia hạn đăng ký đã lên lịch. |
+| `status` | string | `failed` cho một payment thất bại. Các trạng thái không thành công khác bao gồm `cancelled`, `requires_customer_action` và `requires_payment_method`. |
+| `error_code` | string \| null | Lý do thất bại được chuẩn hóa, chẳng hạn như `INSUFFICIENT_FUNDS` hoặc `PROCESSING_ERROR`. Xem tài liệu tham khảo [Transaction Failures](/api-reference/transaction-failures) để biết danh sách đầy đủ. |
+| `error_message` | string \| null | Nội dung giải thích dễ hiểu về lỗi, được viết cho bạn thay vì cho customer. Đối với `error_code` được chuẩn hóa, nội dung này là tiêu đề kèm hành động được đề xuất, không phải văn bản thô từ processor. |
+| `retry_attempt` | integer | `0` cho charge ban đầu. `1` hoặc cao hơn xác định một lần retry theo lịch cho renewal của subscription. |
 
 <Note>
 `error_code` và `error_message` là `null` cho đến khi khoản thanh toán thực sự thất bại. Luôn kiểm tra `status` trước, sau đó đọc các trường lỗi.
 </Note>
 
-## The `payment.failed` Webhook
+<Warning>
+`error_message` từ merchant API là **nội dung dành cho merchant**. Nội dung này có thể nêu lý do thực sự khiến payment bị từ chối, bao gồm cả các lý do liên quan đến fraud, vì vậy không bao giờ được hiển thị trực tiếp cho customer. Thay vào đó, hãy ánh xạ `error_code` sang nội dung an toàn cho customer của riêng bạn, như minh họa trong [Hiển thị lỗi an toàn cho customer](#surface-errors-to-customers-safely).
+</Warning>
 
-Cách đáng tin cậy nhất để phát hiện một thất bại là webhook `payment.failed`. Sự kiện bao bọc toàn bộ đối tượng thanh toán trong `data`:
+## Webhook `payment.failed`
+
+Cách đáng tin cậy nhất để phát hiện lỗi là webhook `payment.failed`. Event bao bọc toàn bộ payment object trong `data`:
 
 ```json payment.failed payload expandable
 {
@@ -68,7 +72,7 @@ Cách đáng tin cậy nhất để phát hiện một thất bại là webhook 
 }
 ```
 
-Một handler tối thiểu đọc `error_code` và định tuyến trên nó:
+Một handler tối thiểu sẽ đọc `error_code` và định tuyến dựa trên giá trị này:
 
 <CodeGroup>
 
@@ -146,53 +150,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-Luôn xác minh chữ ký webhook trước khi xử lý. Xem [Webhooks guide](/developer-resources/webhooks) để có thiết lập đầy đủ, bao gồm xác minh chữ ký và đảm bảo không trùng lặp.
+Luôn xác minh chữ ký của webhook trước khi xử lý. Xem [hướng dẫn Webhooks](/developer-resources/webhooks) để biết toàn bộ quy trình thiết lập, bao gồm xác minh chữ ký và idempotency.
 </Tip>
 
-## Quyết Định Thử Lại Hay Không: Từ Chối Nhẹ So Với Từ Chối Cứng
+## Quyết định có nên Retry hay không: Soft Decline và Hard Decline
 
-`error_code` cho bạn biết liệu việc thử lại cùng một phương thức thanh toán có đáng giá hay không.
+`error_code` cho biết việc retry cùng payment method có đáng thực hiện hay không.
 
-| Loại từ chối | Ý nghĩa | Phải làm gì |
+| Decline type | What it means | What to do |
 |--------------|---------------|------------|
-| **Từ chối nhẹ** | Tạm thời hoặc có thể sửa (ví dụ `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Thử lại — sau một khoảng thời gian chờ, hoặc khi khách hàng sửa đổi đầu vào — có thể thành công. |
-| **Từ chối cứng** | Không thể khắc phục (ví dụ `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | Đừng thử lại cùng thẻ đó. Yêu cầu khách hàng cung cấp phương thức thanh toán khác. |
+| **Soft decline** | Tạm thời hoặc có thể khắc phục (chẳng hạn như `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | Retry — sau một khoảng thời gian chờ hoặc sau khi customer sửa thông tin đã nhập — có thể thành công. |
+| **Hard decline** | Mang tính kết thúc (chẳng hạn như `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | **Không** retry cùng card. Yêu cầu customer sử dụng payment method khác. |
 
-[Transaction Failures](/api-reference/transaction-failures) liệt kê loại từ chối và hành động khuyến nghị cho mỗi `error_code`.
+Tài liệu tham khảo [Transaction Failures](/api-reference/transaction-failures) liệt kê loại decline và hành động được đề xuất cho mọi `error_code`.
 
-## Xử Lý Thất Bại Tại Checkout VS. Khi Gia Hạn
+## Xử lý lỗi tại Checkout và khi Renewal
 
-Cách bạn khôi phục phụ thuộc vào việc khách hàng có mặt hay không.
+Cách khôi phục phụ thuộc vào việc customer có đang hiện diện hay không.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-Khách hàng đang tích cực thanh toán. Hiển thị một thông điệp rõ ràng và cho phép họ thử lại ngay lập tức hoặc sử dụng thẻ khác.
+Customer đang chủ động thực hiện checkout. Hiển thị thông báo rõ ràng và cho phép họ retry ngay lập tức hoặc sử dụng card khác.
 
-- `requires_payment_method` — khách hàng chưa bao giờ cung cấp một phương thức thanh toán: họ không nhập chi tiết thẻ hoặc được nhắc nhập nhưng không thực hiện hành động nào. Đây thường là một **bỏ qua** tại checkout, không phải từ chối — tương tác lại với khách hàng để hoàn thành thanh toán (xem [Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery)).
-- `requires_customer_action` — cần thêm xác thực (như 3DS); yêu cầu khách hàng hoàn tất nó. Xem [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication). 
+- `requires_payment_method` — customer chưa từng cung cấp payment method: họ chưa nhập thông tin card hoặc được nhắc nhập nhưng không thực hiện hành động nào. Đây thường là **drop-off** trong checkout, không phải decline — hãy tiếp cận lại customer để hoàn tất payment (xem [Khôi phục giỏ hàng bị bỏ quên](/features/recovery/abandoned-cart-recovery)).
+- `requires_customer_action` — cần xác thực bổ sung (chẳng hạn như 3DS); yêu cầu customer hoàn tất bước này. Xem [Xử lý 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-Khách hàng không có mặt, nên bạn không thể nhắc nhở họ trong thời gian thực. Khi gia hạn thất bại, đăng ký di chuyển đến `on_hold` và `subscription.on_hold` được kích hoạt.
+Customer không hiện diện, vì vậy bạn không thể yêu cầu họ thực hiện thao tác theo thời gian thực. Khi renewal thất bại, subscription chuyển sang `on_hold` và `subscription.on_hold` được kích hoạt.
 
-- **Từ chối nhẹ** được thử lại tự động bằng [Subscription Payment Retries](/features/recovery/payment-retries).
-- **Từ chối cứng** (và các thử lại đã hết sức) thì tốt nhất được khôi phục bằng [Subscription Dunning](/features/recovery/subscription-dunning), cách này gửi email cho khách hàng để cập nhật phương thức thanh toán của họ.
+- **Soft decline** được tự động thử lại bằng [Subscription Payment Retries](/features/recovery/payment-retries).
+- **Hard decline** (và các lần retry đã hết) nên được khôi phục bằng [Subscription Dunning](/features/recovery/subscription-dunning), tính năng này gửi email cho customer để cập nhật payment method.
 
-Xem [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) để biết quy trình từ giữ chỗ đến kích hoạt lại hoàn toàn.
+Xem [Hướng dẫn tích hợp Subscription](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) để biết toàn bộ quy trình on-hold → reactivate.
 </Tab>
 </Tabs>
 
-## Thử Lại Một Khoản Thanh Toán Thất Bại
+## Retry Payment Thất bại
 
-- **Đăng ký:** Kích hoạt [Subscription Payment Retries](/features/recovery/payment-retries) để khôi phục các từ chối nhẹ mà không cần tích hợp. Bạn cũng có thể kích hoạt khôi phục bằng cách yêu cầu khách hàng cập nhật phương thức thanh toán của họ thông qua [Update Payment Method API](/api-reference/subscriptions/update-payment-method), mà sẽ tính phí bất kỳ khoản nợ nào.
+- **Subscriptions:** Bật [Subscription Payment Retries](/features/recovery/payment-retries) để khôi phục soft decline mà không cần thực hiện thêm công việc tích hợp. Bạn cũng có thể kích hoạt khôi phục bằng cách yêu cầu customer cập nhật payment method thông qua [Update Payment Method API](/api-reference/subscriptions/update-payment-method), API này sẽ charge mọi khoản còn nợ.
+- **One-time payments:** Gửi lại checkout hoặc `payment_link` để customer có thể thử lại bằng method khác. One-time payments không có cơ chế retry tự động.
 
 <Warning>
-Không thử lại các từ chối cứng trên cùng một thẻ. Mạng thẻ có thể gắn cờ những từ chối lặp lại là lạm dụng, điều này sẽ ảnh hưởng xấu đến tỷ lệ cho phép của bạn.
+Không retry hard decline với cùng card. Các card network có thể đánh dấu những lần decline lặp lại là hành vi lạm dụng, làm giảm authorization rate của bạn.
 </Warning>
 
-## Hiển Thị Lỗi Cho Khách Hàng Một Cách An Toàn
+## Hiển thị Lỗi an toàn cho Customer
 
-Hiển thị cho khách hàng một thông báo thân thiện — không bao giờ là lý do thô như `error_code`.
+Hiển thị cho customer một thông báo thân thiện — không bao giờ hiển thị `error_code` thô và cũng không bao giờ hiển thị `error_message` dành cho merchant.
+
+<Info>
+Trên các giao diện do Dodo Payments kiểm soát — checkout, [Customer Portal](/features/customer-portal) và email dunning — việc ánh xạ này đã được thực hiện sẵn cho bạn, bao gồm cả phương án dự phòng hiển thị thông báo chung cho các decline liên quan đến fraud. Bạn chỉ cần áp dụng ánh xạ dưới đây khi hiển thị lỗi trong sản phẩm của riêng mình.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -212,33 +221,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**Không bao giờ tiết lộ lý do thực sự cho `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, hoặc `FRAUDULENT`.** Việc hiển thị những thông tin này có thể cảnh báo kẻ lừa đảo. Hiển thị một thông báo từ chối chung và chỉ ghi lại nội bộ cụ thể về `error_code`.
+**Không bao giờ tiết lộ lý do thực sự của `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` hoặc `FRAUDULENT`.** Việc hiển thị các lý do này có thể cung cấp thông tin cho đối tượng gian lận. Hãy hiển thị thông báo decline chung và chỉ ghi log `error_code` cụ thể trong nội bộ.
 </Warning>
 
-## Liên Quan
+## Liên quan
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-Mã từ chối, loại của nó và hành động khuyến nghị.
+Mọi mã decline, loại decline và hành động được đề xuất.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-API và lỗi logic nghiệp vụ không phải là từ chối thẻ.
+Các lỗi API và logic nghiệp vụ không phải là card decline.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-Khôi phục tự động các từ chối nhẹ khi gia hạn đăng ký.
+Tự động khôi phục soft decline trong các lần renewal của subscription.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-Chuỗi email để khôi phục các từ chối cứng.
+Các chuỗi email giúp khôi phục hard decline.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-Schema đầy đủ của payload cho sự kiện thanh toán.
+Schema payload đầy đủ cho các event payment.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-Thẻ thử mô phỏng các từ chối và thất bại khi gia hạn.
+Các card kiểm thử mô phỏng decline và lỗi renewal.
 </Card>
 </CardGroup>

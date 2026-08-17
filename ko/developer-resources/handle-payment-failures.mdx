@@ -24,20 +24,24 @@ keywords:
 
 일회성 checkout이든 구독 갱신이든 모든 실패한 결제에는 payment object에 동일한 실패 필드가 포함됩니다.
 
-| 필드 | 유형 | 설명 |
+| Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | 실패한 결제의 `failed`입니다. 기타 비성공 상태에는 `cancelled`, `requires_customer_action` 및 `requires_payment_method`이 포함됩니다. |
-| `error_code` | string \| null | 표준화된 실패 이유입니다. 예: `INSUFFICIENT_FUNDS` 또는 `PROCESSING_ERROR`. 전체 목록은 [Transaction Failures](/api-reference/transaction-failures) reference를 참조하세요. |
-| `error_message` | string \| null | 실패에 대한 사람이 읽을 수 있는 설명입니다. |
-| `retry_attempt` | integer | 원래 charge에 대한 `0`입니다. `1` 이상이면 예약된 구독 갱신 재시도를 의미합니다. |
+| `status` | string | 실패한 결제의 `failed`입니다. 그 외의 비성공 상태로는 `cancelled`, `requires_customer_action`, `requires_payment_method`이 있습니다. |
+| `error_code` | string \| null | 표준화된 실패 사유입니다(예: `INSUFFICIENT_FUNDS` 또는 `PROCESSING_ERROR`). 전체 목록은 [Transaction Failures](/api-reference/transaction-failures) reference를 참조하세요. |
+| `error_message` | string \| null | 고객이 아닌 귀사를 대상으로 작성된, 사람이 읽을 수 있는 실패 설명입니다. 표준화된 `error_code`의 경우 원시 프로세서 텍스트가 아니라 제목과 권장 조치가 포함됩니다. |
+| `retry_attempt` | integer | 원래 청구에 대한 `0`입니다. `1` 이상이면 예약된 subscription renewal retry를 나타냅니다. |
 
 <Note>
 결제가 실제로 실패하기 전까지 `error_code`와 `error_message`는 `null`입니다. 먼저 항상 `status`을 확인한 다음 오류 필드를 읽으세요.
 </Note>
 
-## `payment.failed` webhook
+<Warning>
+merchant API의 `error_message`는 **merchant-facing copy**입니다. 사기와 관련된 경우를 포함해 거절의 실제 사유를 명시할 수 있으므로 고객에게 직접 표시해서는 안 됩니다. 대신 [Surface Errors to Customers Safely](#surface-errors-to-customers-safely)에 설명된 것처럼 `error_code`를 자체적으로 정의한 customer-safe 문구에 매핑하세요.
+</Warning>
 
-실패를 감지하는 가장 안정적인 방법은 `payment.failed` webhook입니다. 이 event는 전체 payment object를 `data`에 포함합니다:
+## `payment.failed` Webhook
+
+실패를 감지하는 가장 안정적인 방법은 `payment.failed` webhook입니다. 이벤트는 전체 payment object를 `data`로 감쌉니다:
 
 ```json payment.failed payload expandable
 {
@@ -67,7 +71,7 @@ keywords:
 }
 ```
 
-간단한 handler는 `error_code`을 읽고 해당 값에 따라 라우팅합니다:
+최소한의 handler는 `error_code`를 읽고 이를 기준으로 라우팅합니다:
 
 <CodeGroup>
 
@@ -145,54 +149,58 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-처리하기 전에 항상 webhook signature를 검증하세요. signature verification과 idempotency를 포함한 전체 설정 방법은 [Webhooks guide](/developer-resources/webhooks)를 참조하세요.
+처리하기 전에 항상 webhook signature를 확인하세요. signature verification과 idempotency를 포함한 전체 설정 방법은 [Webhooks guide](/developer-resources/webhooks)를 참조하세요.
 </Tip>
 
-## 재시도 여부 결정: 소프트 거절과 하드 거절
+## 재시도 여부 결정: Soft Declines와 Hard Declines
 
-`error_code`은 동일한 payment method로 재시도할 가치가 있는지 알려줍니다.
+`error_code`는 동일한 payment method로 재시도할 가치가 있는지 알려줍니다.
 
-| 거절 유형 | 의미 | 조치 |
+| Decline type | What it means | What to do |
 |--------------|---------------|------------|
-| **소프트 거절** | 일시적이거나 수정 가능한 상태입니다(예: `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | 일정 시간 후 또는 고객이 입력값을 수정한 후 재시도하면 성공할 수 있습니다. |
-| **하드 거절** | 최종적인 상태입니다(예: `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | 동일한 card로 **재시도하지 마세요**. 고객에게 다른 payment method를 요청하세요. |
+| **Soft decline** | 일시적이거나 수정 가능한 상태입니다(예: `INSUFFICIENT_FUNDS`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `TRY_AGAIN_LATER`). | 일정 시간 후 또는 고객이 입력 내용을 수정한 후 재시도하면 성공할 수 있습니다. |
+| **Hard decline** | 최종적인 상태입니다(예: `STOLEN_CARD`, `LOST_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`). | 동일한 card로 **재시도하지 마세요**. 고객에게 다른 payment method를 요청하세요. |
 
-[Transaction Failures](/api-reference/transaction-failures) reference에는 모든 `error_code`의 거절 유형과 권장 조치가 정리되어 있습니다.
+[Transaction Failures](/api-reference/transaction-failures) reference에는 모든 `error_code`에 대한 decline type과 권장 조치가 나와 있습니다.
 
-## checkout과 갱신 시 실패 처리
+## Checkout과 Renewal에서의 실패 처리
 
-복구 방법은 고객이 현재 उपस्थित한 상태인지에 따라 달라집니다.
+복구 방법은 고객이 현재 결제 과정에 참여하고 있는지에 따라 달라집니다.
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-고객이 checkout을 진행 중입니다. 명확한 메시지를 표시하고 즉시 재시도하거나 다른 card를 사용할 수 있도록 하세요.
+고객이 현재 checkout을 진행 중입니다. 명확한 메시지를 표시하고 즉시 재시도하거나 다른 card를 사용할 수 있도록 하세요.
 
-- `requires_payment_method` — 고객이 payment method를 제공하지 않았습니다. card details를 입력하지 않았거나, 입력하라는 안내를 받았지만 아무 작업도 하지 않은 경우입니다. 이는 일반적으로 거절이 아니라 checkout **이탈**입니다. 결제를 완료하도록 고객에게 다시 참여를 유도하세요([Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery) 참조).
+- `requires_payment_method` — 고객이 payment method를 제공하지 않았습니다. card details를 입력하지 않았거나 입력을 요청받고도 아무 작업을 하지 않은 경우입니다. 이는 일반적으로 decline이 아니라 checkout **drop-off**입니다. 고객이 결제를 완료하도록 다시 참여시키세요([Abandoned Cart Recovery](/features/recovery/abandoned-cart-recovery) 참조).
 - `requires_customer_action` — 추가 authentication(예: 3DS)이 필요합니다. 고객이 이를 완료하도록 안내하세요. [3D Secure handling](/features/payment-methods/cards#3d-secure-authentication)을 참조하세요.
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
-고객이 현재 자리에 없으므로 실시간으로 안내할 수 없습니다. 갱신이 실패하면 subscription은 `on_hold` 상태로 이동하고 `subscription.on_hold`가 실행됩니다.
+고객이 현재 자리에 없으므로 실시간으로 안내할 수 없습니다. renewal에 실패하면 subscription은 `on_hold`로 이동하고 `subscription.on_hold`가 실행됩니다.
 
-- **소프트 거절**은 [Subscription Payment Retries](/features/recovery/payment-retries)에 의해 자동으로 재시도됩니다.
-- **하드 거절**(및 재시도 소진)은 고객에게 payment method 업데이트를 요청하는 이메일을 보내는 [Subscription Dunning](/features/recovery/subscription-dunning)으로 복구하는 것이 가장 좋습니다.
+- **Soft declines**는 [Subscription Payment Retries](/features/recovery/payment-retries)에 의해 자동으로 재시도됩니다.
+- **Hard declines**(및 재시도 횟수를 모두 소진한 경우)는 [Subscription Dunning](/features/recovery/subscription-dunning)을 사용해 복구하는 것이 가장 좋습니다. 이 기능은 고객에게 payment method 업데이트를 요청하는 이메일을 보냅니다.
 
-전체 보류 → 재활성화 흐름은 [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)를 참조하세요.
+보류 상태에서 reactivate하는 전체 흐름은 [Subscription Integration Guide](/developer-resources/subscription-integration-guide#handling-subscription-on-hold)를 참조하세요.
 </Tab>
 </Tabs>
 
 ## 실패한 결제 재시도
 
-- **Subscriptions:** [Subscription Payment Retries](/features/recovery/payment-retries)를 활성화하면 별도의 integration 작업 없이 소프트 거절을 복구할 수 있습니다. 또한 [Update Payment Method API](/api-reference/subscriptions/update-payment-method)를 통해 고객이 payment method를 업데이트하도록 하여 복구를 트리거할 수도 있으며, 이 경우 미납금이 청구됩니다.
-- **One-time payments:** 고객이 다른 payment method로 다시 시도할 수 있도록 checkout 또는 `payment_link`을 다시 보내세요. 일회성 결제에는 자동 재시도가 없습니다.
+- **Subscriptions:** [Subscription Payment Retries](/features/recovery/payment-retries)를 활성화하면 별도의 integration 작업 없이 soft declines를 복구할 수 있습니다. 고객이 [Update Payment Method API](/api-reference/subscriptions/update-payment-method)를 통해 payment method를 업데이트하도록 하여 복구를 트리거할 수도 있으며, 이때 미결제 금액이 청구됩니다.
+- **One-time payments:** checkout 또는 `payment_link`를 다시 보내 고객이 다른 method로 다시 시도할 수 있도록 하세요. one-time payments에는 automatic retry가 없습니다.
 
 <Warning>
-동일한 card로 하드 거절을 재시도하지 마세요. card network는 반복된 거절을 악의적인 행위로 표시할 수 있으며, 이는 authorization rate에 악영향을 줍니다.
+동일한 card에 대해 hard declines를 재시도하지 마세요. Card networks는 반복적인 decline을 악의적인 행위로 표시할 수 있으며, 이는 authorization rate를 떨어뜨립니다.
 </Warning>
 
-## 고객에게 오류를 안전하게 표시하기
+## 고객에게 안전하게 오류 표시하기
 
-고객에게 친절한 메시지를 표시하고, 원시 `error_code`은 절대 표시하지 마세요.
+고객에게는 친절한 메시지를 표시하세요. 원시 `error_code`나 merchant-facing `error_message`를 표시해서는 안 됩니다.
+
+<Info>
+Dodo Payments가 관리하는 surface인 checkout, [Customer Portal](/features/customer-portal), dunning emails에서는 사기와 관련된 decline에 일반 메시지로 대체하는 처리를 포함해 이 매핑이 이미 완료되어 있습니다. 자체 product에서 실패를 렌더링할 때만 아래 매핑을 사용하면 됩니다.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -212,33 +220,33 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` 또는 `FRAUDULENT`의 실제 이유를 절대 공개하지 마세요.** 이러한 정보를 표시하면 사기 행위자에게 단서가 될 수 있습니다. 일반적인 거절 메시지를 표시하고, 구체적인 `error_code`은 내부적으로만 기록하세요.
+**`STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD` 또는 `FRAUDULENT`의 실제 사유를 절대 공개하지 마세요.** 이를 표시하면 사기 행위자에게 유용한 정보를 제공할 수 있습니다. 일반적인 decline 메시지를 표시하고 구체적인 `error_code`만 내부적으로 기록하세요.
 </Warning>
 
-## 관련 문서
+## 관련 항목
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-모든 거절 코드와 해당 유형 및 권장 조치입니다.
+모든 decline code, 해당 type 및 권장 조치입니다.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
-card 거절이 아닌 API 및 business logic 오류입니다.
+card decline이 아닌 API 및 business-logic errors입니다.
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-구독 갱신 시 소프트 거절을 자동으로 복구합니다.
+subscription renewals에서 soft declines를 자동으로 복구합니다.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-하드 거절을 복구하는 이메일 sequence입니다.
+hard declines를 복구하는 이메일 sequence입니다.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">
-payment event의 전체 payload schema입니다.
+payment events의 전체 payload schema입니다.
 </Card>
 
 <Card title="Testing Failures" icon="flask" href="/miscellaneous/testing-process">
-거절 및 갱신 실패를 시뮬레이션하는 test card입니다.
+decline과 renewal failures를 시뮬레이션하는 test cards입니다.
 </Card>
 </CardGroup>

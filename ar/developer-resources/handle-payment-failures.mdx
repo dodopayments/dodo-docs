@@ -26,18 +26,22 @@ keywords:
 
 | الحقل | النوع | الوصف |
 |-------|------|-------------|
-| `status` | string | `failed` لدفعة فاشلة. تشمل الحالات الأخرى غير الناجحة `cancelled` و`requires_customer_action` و`requires_payment_method`. |
+| `status` | string | `failed` لدفعة فاشلة. تتضمن الحالات الأخرى غير الناجحة `cancelled` و`requires_customer_action` و`requires_payment_method`. |
 | `error_code` | string \| null | سبب الفشل الموحّد، مثل `INSUFFICIENT_FUNDS` أو `PROCESSING_ERROR`. راجع مرجع [Transaction Failures](/api-reference/transaction-failures) للاطلاع على القائمة الكاملة. |
-| `error_message` | string \| null | شرح مفهوم للفشل. |
-| `retry_attempt` | integer | `0` للخصم الأصلي. يشير `1` أو رقم أعلى إلى إعادة محاولة مجدولة لتجديد الاشتراك. |
+| `error_message` | string \| null | شرح مفهوم للفشل، مكتوب لك وليس لعميلك. بالنسبة إلى `error_code` موحّد، يكون هذا عنوانًا رئيسيًا بالإضافة إلى الإجراء المقترح، وليس النص الخام من معالج الدفع. |
+| `retry_attempt` | integer | `0` للخصم الأصلي. يحدد `1` أو أعلى إعادة محاولة مجدولة لتجديد اشتراك. |
 
 <Note>
 يكون كل من `error_code` و`error_message` بقيمة `null` إلى أن تفشل الدفعة فعليًا. تحقق دائمًا من `status` أولًا، ثم اقرأ حقول الخطأ.
 </Note>
 
-## webhook الخاص بـ `payment.failed`
+<Warning>
+`error_message` من merchant API هو **نص موجّه للتاجر**. ويمكن أن يذكر السبب الحقيقي للرفض، بما في ذلك الأسباب المرتبطة بالاحتيال، لذلك لا تعرضه مباشرةً للعميل مطلقًا. اربط `error_code` بصياغتك الخاصة الآمنة للعميل بدلًا من ذلك، كما هو موضح في [عرض الأخطاء للعملاء بأمان](#surface-errors-to-customers-safely).
+</Warning>
 
-الطريقة الأكثر موثوقية لاكتشاف الفشل هي webhook الخاص بـ `payment.failed`. يغلّف الحدث كائن الدفعة الكامل داخل `data`:
+## Webhook الخاص بـ `payment.failed`
+
+الطريقة الأكثر موثوقية لاكتشاف الفشل هي webhook الخاص بـ `payment.failed`. يغلّف الحدث كائن الدفع الكامل في `data`:
 
 ```json payment.failed payload expandable
 {
@@ -67,7 +71,7 @@ keywords:
 }
 ```
 
-يقرأ المعالج الأساسي `error_code` ويوجّه المعالجة بناءً عليه:
+يقرأ المعالج الأساسي `error_code` ويوجّه المعالجة وفقًا له:
 
 <CodeGroup>
 
@@ -145,19 +149,19 @@ async def handle_webhook(request: Request):
 </CodeGroup>
 
 <Tip>
-تحقق دائمًا من توقيع webhook قبل المعالجة. راجع [دليل Webhooks](/developer-resources/webhooks) للاطلاع على الإعداد الكامل، بما في ذلك التحقق من التوقيع وضمان عدم تكرار المعالجة.
+تحقق دائمًا من توقيع webhook قبل معالجته. راجع [دليل Webhooks](/developer-resources/webhooks) للاطلاع على الإعداد الكامل، بما في ذلك التحقق من التوقيع وضمان عدم التكرار.
 </Tip>
 
-## تحديد ما إذا كانت إعادة المحاولة مناسبة: الرفض المؤقت مقابل الرفض النهائي
+## تحديد ما إذا كنت ستعيد المحاولة: حالات الرفض المؤقتة مقابل النهائية
 
-يخبرك `error_code` بما إذا كانت إعادة محاولة استخدام طريقة الدفع نفسها مجدية.
+يخبرك `error_code` ما إذا كانت إعادة المحاولة باستخدام طريقة الدفع نفسها تستحق العناء.
 
-| نوع الرفض | معناه | الإجراء المطلوب |
+| نوع الرفض | ما يعنيه | ما يجب فعله |
 |--------------|---------------|------------|
-| **الرفض المؤقت** | مؤقت أو قابل للتصحيح (مثل `INSUFFICIENT_FUNDS` و`PROCESSING_ERROR` و`NETWORK_ERROR` و`TRY_AGAIN_LATER`). | قد تنجح إعادة المحاولة — بعد فترة تأخير أو بعد تصحيح العميل لبياناته —. |
-| **الرفض النهائي** | نهائي (مثل `STOLEN_CARD` و`LOST_CARD` و`DO_NOT_HONOR` و`FRAUDULENT`). | **لا** تعاود المحاولة باستخدام البطاقة نفسها. اطلب من العميل استخدام طريقة دفع مختلفة. |
+| **رفض مؤقت** | مؤقت أو قابل للتصحيح (مثل `INSUFFICIENT_FUNDS` و`PROCESSING_ERROR` و`NETWORK_ERROR` و`TRY_AGAIN_LATER`). | قد تنجح إعادة المحاولة — بعد تأخير أو بعد تصحيح العميل لبياناته —. |
+| **رفض نهائي** | نهائي (مثل `STOLEN_CARD` و`LOST_CARD` و`DO_NOT_HONOR` و`FRAUDULENT`). | لا **تعِد المحاولة** باستخدام البطاقة نفسها. اطلب من العميل استخدام طريقة دفع مختلفة. |
 
-يسرد مرجع [Transaction Failures](/api-reference/transaction-failures) نوع الرفض والإجراء الموصى به لكل `error_code`.
+يسرد مرجع [Transaction Failures](/api-reference/transaction-failures) نوع الرفض والإجراء المقترح لكل `error_code`.
 
 ## معالجة حالات الفشل عند الدفع مقابل التجديد
 
@@ -165,34 +169,38 @@ async def handle_webhook(request: Request):
 
 <Tabs>
 <Tab title="At checkout (customer present)">
-العميل يُجري عملية الدفع حاليًا. اعرض رسالة واضحة، وأتِح له إعادة المحاولة فورًا أو استخدام بطاقة أخرى.
+العميل يجري عملية الدفع بنشاط. اعرض رسالة واضحة واسمح له بإعادة المحاولة فورًا أو باستخدام بطاقة أخرى.
 
-- `requires_payment_method` — لم يقدّم العميل طريقة دفع مطلقًا: إما أنه لم يُدخل بيانات البطاقة، أو طُلب منه إدخالها ولم يتخذ أي إجراء. هذه عادةً حالة **تخلٍّ** عن عملية الدفع وليست رفضًا — أعد إشراك العميل لإكمال الدفع (راجع [استرداد السلة المتروكة](/features/recovery/abandoned-cart-recovery)).
+- `requires_payment_method` — لم يقدّم العميل طريقة دفع مطلقًا: إما أنه لم يُدخل تفاصيل البطاقة، أو طُلبت منه ولم يتخذ أي إجراء. عادةً ما يكون هذا **تخلّيًا** عن عملية الدفع، وليس رفضًا — أعد إشراك العميل لإكمال الدفع (راجع [استرداد سلة التسوق المتروكة](/features/recovery/abandoned-cart-recovery)).
 - `requires_customer_action` — يلزم إجراء مصادقة إضافي (مثل 3DS)؛ اطلب من العميل إكماله. راجع [معالجة 3D Secure](/features/payment-methods/cards#3d-secure-authentication).
 </Tab>
 
 <Tab title="On subscription renewal (customer not present)">
 العميل غير حاضر، لذلك لا يمكنك مطالبته باتخاذ إجراء في الوقت الفعلي. عند فشل التجديد، ينتقل الاشتراك إلى `on_hold` ويتم تشغيل `subscription.on_hold`.
 
-- تتم إعادة محاولة **حالات الرفض المؤقت** تلقائيًا بواسطة [إعادة محاولات دفع الاشتراك](/features/recovery/payment-retries).
-- من الأفضل استرداد **حالات الرفض النهائي** (وإعادة المحاولات التي استُنفدت) باستخدام [متابعة تحصيل الاشتراك](/features/recovery/subscription-dunning)، التي ترسل إلى العميل رسالة بريد إلكتروني لتحديث طريقة الدفع.
+- يُعاد尝ى **الرفض المؤقت** تلقائيًا بواسطة [إعادة محاولات دفع الاشتراك](/features/recovery/payment-retries).
+- من الأفضل استرداد **حالات الرفض النهائية** (وإعادة المحاولات المستنفدة) باستخدام [متابعة تحصيل الاشتراك](/features/recovery/subscription-dunning)، التي ترسل بريدًا إلكترونيًا إلى العميل لتحديث طريقة الدفع.
 
-راجع [دليل دمج الاشتراكات](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) للاطلاع على التدفق الكامل من التعليق إلى إعادة التفعيل.
+راجع [دليل دمج الاشتراكات](/developer-resources/subscription-integration-guide#handling-subscription-on-hold) للاطلاع على التدفق الكامل من التعليق → إعادة التفعيل.
 </Tab>
 </Tabs>
 
 ## إعادة محاولة دفعة فاشلة
 
-- **الاشتراكات:** فعّل [إعادة محاولات دفع الاشتراك](/features/recovery/payment-retries) لاسترداد حالات الرفض المؤقت دون الحاجة إلى أي عمل على مستوى الدمج. يمكنك أيضًا تشغيل الاسترداد عبر مطالبة العميل بتحديث طريقة الدفع من خلال [Update Payment Method API](/api-reference/subscriptions/update-payment-method)، الذي يخصم أي مستحقات معلّقة.
+- **الاشتراكات:** فعّل [إعادة محاولات دفع الاشتراك](/features/recovery/payment-retries) لاسترداد حالات الرفض المؤقتة دون الحاجة إلى أعمال دمج. يمكنك أيضًا تشغيل الاسترداد من خلال مطالبة العميل بتحديث طريقة الدفع عبر [Update Payment Method API](/api-reference/subscriptions/update-payment-method)، الذي يخصم أي مستحقات معلّقة.
 - **الدفعات لمرة واحدة:** أعد إرسال صفحة الدفع أو `payment_link` حتى يتمكن العميل من المحاولة مجددًا باستخدام طريقة مختلفة. لا توجد إعادة محاولة تلقائية للدفعات لمرة واحدة.
 
 <Warning>
-لا تعاود محاولة حالات الرفض النهائي باستخدام البطاقة نفسها. قد تعتبر شبكات البطاقات تكرار حالات الرفض سلوكًا مسيئًا، مما يضر بمعدل التفويض لديك.
+لا تعِد محاولة حالات الرفض النهائية باستخدام البطاقة نفسها. قد تعتبر شبكات البطاقات عمليات الرفض المتكررة مسيئة، مما يضر بمعدل التفويض لديك.
 </Warning>
 
 ## عرض الأخطاء للعملاء بأمان
 
-اعرض للعملاء رسالة ودية — وليس `error_code` الخام مطلقًا.
+اعرض للعملاء رسالة ودية — وليس `error_code` الخام مطلقًا، ولا `error_message` الموجّه للتاجر مطلقًا.
+
+<Info>
+في الواجهات التي تتحكم بها Dodo Payments — صفحة الدفع و[Customer Portal](/features/customer-portal) ورسائل البريد الإلكتروني لمتابعة التحصيل — تم تنفيذ هذا الربط نيابةً عنك بالفعل، بما في ذلك الرجوع إلى رسالة عامة لحالات الرفض المرتبطة بالاحتيال. لا تحتاج إلى الربط أدناه إلا عندما تعرض حالات الفشل في منتجك الخاص.
+</Info>
 
 ```javascript Customer-facing messaging expandable
 const CUSTOMER_MESSAGES = {
@@ -212,14 +220,14 @@ function customerMessage(errorCode) {
 ```
 
 <Warning>
-**لا تكشف مطلقًا السبب الحقيقي لـ `STOLEN_CARD` أو `LOST_CARD` أو `PICKUP_CARD` أو `FRAUDULENT`.** قد يؤدي عرض هذه المعلومات إلى تنبيه جهة احتيالية. اعرض رسالة رفض عامة، وسجّل `error_code` المحدد داخليًا فقط.
+**لا تكشف مطلقًا السبب الحقيقي لـ `STOLEN_CARD` أو `LOST_CARD` أو `PICKUP_CARD` أو `FRAUDULENT`.** قد يؤدي عرض هذه الأسباب إلى تنبيه جهة احتيالية. اعرض رسالة رفض عامة، وسجّل فقط `error_code` المحدد داخليًا.
 </Warning>
 
 ## ذات صلة
 
 <CardGroup cols={2}>
 <Card title="Transaction Failures" icon="circle-exclamation" href="/api-reference/transaction-failures">
-كل رمز من رموز الرفض، ونوعه، والإجراء الموصى به.
+كل رمز رفض ونوعه والإجراء المقترح.
 </Card>
 
 <Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
@@ -227,11 +235,11 @@ function customerMessage(errorCode) {
 </Card>
 
 <Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
-الاسترداد التلقائي لحالات الرفض المؤقت أثناء تجديد الاشتراكات.
+الاسترداد التلقائي لحالات الرفض المؤقتة عند تجديد الاشتراكات.
 </Card>
 
 <Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
-تسلسلات البريد الإلكتروني التي تسترد حالات الرفض النهائي.
+تسلسلات البريد الإلكتروني التي تسترد حالات الرفض النهائية.
 </Card>
 
 <Card title="Payment Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/payment">

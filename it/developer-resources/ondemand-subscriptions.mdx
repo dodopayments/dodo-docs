@@ -253,8 +253,12 @@ Campi chiave della richiesta (corpo):
       Se true, include le commissioni in valuta adattiva all’interno di <code>product_price</code>. Se false, le commissioni vengono aggiunte sopra.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Specifica come utilizzare il saldo del wallet del cliente per saldare questo addebito.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Metadata aggiuntivi per il pagamento. Se omessi, vengono usati i metadata dell’abbonamento.
+      Metadati aggiuntivi per il pagamento. Se omessi, vengono utilizzati i metadati della subscription.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -336,94 +340,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Addebitare un abbonamento che non è on-demand potrebbe fallire. Assicurati che l’abbonamento abbia `on_demand: true` nei suoi dettagli prima dell’addebito.
+L'addebito di una subscription che non è on-demand potrebbe non riuscire. Assicurati che la subscription includa `on_demand: true` nei propri dettagli prima di effettuare l'addebito.
 </Warning>
 
-## Gestione delle transazioni fallite
+## Gestire gli addebiti non riusciti
 
-Quando un addebito per un abbonamento su richiesta fallisce, decidi tu cosa succede dopo. A differenza degli abbonamenti programmati — dove un rinnovo fallito interrompe ulteriori addebiti automatici — **gli abbonamenti su richiesta rimangono addebitabili dopo un fallimento**. Puoi richiamare l'endpoint di addebito come parte della tua logica di ripetizione.
+Quando un addebito su una subscription on-demand non riesce, decidi tu cosa succede dopo. A differenza delle subscription pianificate — per le quali un rinnovo non riuscito interrompe la fatturazione automatica successiva — **le subscription on-demand restano addebitabili dopo un errore**. Puoi chiamare nuovamente l'endpoint di addebito nell'ambito della tua logica di retry.
 
-### Cosa succede in caso di fallimento
+### Cosa succede in caso di errore
 
 <Steps>
 <Step title="Charge attempt fails">
-La richiesta `POST /subscriptions/{subscription_id}/charge` restituisce una risposta di errore oppure si completa in modo asincrono ed emette un webhook `payment.failed` con il motivo del rifiuto.
+La richiesta `POST /subscriptions/{subscription_id}/charge` restituisce una risposta di errore oppure viene completata in modo asincrono ed emette un webhook `payment.failed` con il motivo del rifiuto.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-L'abbonamento può passare allo stato `on_hold` ed emettere un webhook `subscription.on_hold` (vedi [Statuti degli abbonamenti → In sospeso](/features/subscription#on-hold-state)). Questo è un segnale — non un blocco. Per gli abbonamenti su richiesta, `on_hold` **non** impedisce di effettuare nuovamente l'addebito.
+La subscription potrebbe passare allo stato `on_hold` ed emettere un webhook `subscription.on_hold` (vedi [Stati della subscription → On Hold](/features/subscription#on-hold-state)). Si tratta di un segnale, non di un blocco. Per le subscription on-demand, `on_hold` **non impedisce** di effettuare nuovamente un addebito.
 </Step>
 
 <Step title="Retry the charge (your call)">
-Per i flussi su richiesta, Dodo **non** riprova automaticamente. Puoi richiamare `POST /subscriptions/{subscription_id}/charge` in qualsiasi momento per riprovare. Applica la [politica di ripetizione sicura](#payment-retries) qui sotto — utilizza esponenziale backoff, salta i rifiuti rigidi e evita schemi di burst — in modo che le ripetizioni non vengano segnalate dai nostri sistemi di frode e rischio.
+Per i flussi on-demand, Dodo **non effettua retry automatici**. Puoi chiamare nuovamente `POST /subscriptions/{subscription_id}/charge` in qualsiasi momento per riprovare. Applica la [policy di retry sicuro](#payment-retries) riportata di seguito — utilizza un backoff esponenziale, ignora i rifiuti definitivi ed evita i pattern di richieste ravvicinate — in modo che i retry non vengano segnalati dai nostri sistemi antifrode e di gestione del rischio.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-Se i tentativi di nuovo falliscono perché il metodo di pagamento stesso è malfunzionante (carta scaduta, conto chiuso, ecc.), utilizza [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) per raccoglierne uno nuovo dal cliente. Al successo, l'abbonamento ritorna a `active` e vengono emessi `payment.succeeded` seguiti da `subscription.active` webhooks.
+Se i retry continuano a non riuscire perché il metodo di pagamento presenta un problema (carta scaduta, conto chiuso e così via), utilizza [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) per raccoglierne uno nuovo dal cliente. In caso di successo, la subscription torna a `active` e vengono emessi webhook `payment.succeeded` e successivamente `subscription.active`.
 </Step>
 </Steps>
 
 <Info>
-**Su richiesta vs programmato**: Per gli abbonamenti programmati, Dodo esegue i propri rinnovi e dunning. Per gli abbonamenti su richiesta, tu possiedi la politica di ripetizione perché solo tu sai quando dovrebbe avvenire il prossimo addebito (è guidato dai tuoi eventi di utilizzo, non da un calendario).
+**On-demand vs pianificate**: per le subscription pianificate, Dodo gestisce i propri retry del rinnovo e il dunning. Per le subscription on-demand, la policy di retry è sotto la tua responsabilità, perché solo tu sai quando deve avvenire il prossimo addebito (dipende dai tuoi eventi di utilizzo, non da un calendario).
 </Info>
 
-### Sequenza di webhook su un addebito su richiesta fallito
+### Sequenza dei webhook per un addebito on-demand non riuscito
 
 | Ordine | Evento | Significato |
 |-------|-------|---------|
-| 1 | `payment.failed` | Il tentativo di addebito su richiesta non è riuscito (include il motivo del rifiuto) |
-| 2 | `subscription.on_hold` | L'abbonamento è stato sospeso (informativo; non blocca ulteriori addebiti) |
-| 3* | `payment.succeeded` | Un addebito successivo — sia la tua ripetizione che dopo un aggiornamento del metodo di pagamento — è riuscito |
-| 4* | `subscription.active` | L'abbonamento è tornato a `active` dopo un addebito riuscito |
+| 1 | `payment.failed` | Il tentativo di addebito on-demand non è riuscito (include il motivo del rifiuto) |
+| 2 | `subscription.on_hold` | La subscription è stata messa in sospeso (informativo; non blocca gli addebiti successivi) |
+| 3* | `payment.succeeded` | Un addebito successivo — effettuato tramite un tuo retry o dopo un aggiornamento del metodo di pagamento — è riuscito |
+| 4* | `subscription.active` | La subscription è tornata a `active` dopo un addebito riuscito |
 
 <Info>
-Gli eventi 3 e 4 si verificano solo dopo che un addebito di follow-up ha successo.
+Gli eventi 3 e 4 vengono attivati solo dopo il successo di un addebito successivo.
 </Info>
 
-### Responsabilità della ripetizione
+### Responsabilità dei retry
 
 <Warning>
-Dodo Payments **non ripete automaticamente gli addebiti su richiesta falliti**. Tu possiedi la politica di ripetizione. Segui le linee guida di ripetizione sicura qui sotto per evitare di essere segnalato dai nostri sistemi di rilevamento delle frodi come test di carte.
+Dodo Payments **non effettua retry automatici degli addebiti on-demand non riusciti**. La policy di retry è sotto la tua responsabilità. Segui le linee guida per retry sicuri riportate di seguito per evitare che i nostri sistemi di rilevamento delle frodi ti segnalino come attività di card testing.
 </Warning>
 
-[Gestione delle insolvenze degli abbonamenti](/features/recovery/subscription-dunning) — la sequenza di recupero tramite email incorporata — è limitata ai pagamenti di *rinnovo* falliti su abbonamenti programmati e cancellazioni avviate dal cliente. Non è progettata per fallimenti di addebiti su richiesta. Comunica direttamente con il cliente (ad esempio, email transazionale o prompt in-app) quando decidi che il metodo di pagamento deve essere aggiornato.
+[Dunning delle subscription](/features/recovery/subscription-dunning) — la sequenza integrata di email per il recupero — riguarda i pagamenti di *rinnovo* non riusciti delle subscription pianificate e le cancellazioni avviate dal cliente. Non è progettata per gli addebiti on-demand non riusciti. Quando ritieni necessario aggiornare il metodo di pagamento, comunica direttamente con il cliente (ad esempio tramite un'email transazionale o una richiesta nell'app).
 
-## Ripetizione dei pagamenti
+## Retry dei pagamenti
 
-Il nostro sistema di rilevamento delle frodi può bloccare schemi di ripetizione aggressivi (e può segnalarli come potenziale test di carte). Segui una politica di ripetizione sicura.
+Il nostro sistema di rilevamento delle frodi potrebbe bloccare pattern di retry aggressivi (e segnalarli come potenziale card testing). Segui una policy di retry sicura.
 
 <Warning>
-Gli schemi di ripetizione a raffica possono essere segnalati come fraudolenti o sospetti test di carte dai nostri sistemi di rischio e dai processori. Evita ripetizioni raggruppate; segui il programma di backoff e le linee guida di allineamento temporale di seguito.
+I pattern di retry ravvicinati possono essere segnalati come fraudolenti o come sospetto card testing dai nostri sistemi di gestione del rischio e dai processor. Evita retry raggruppati; segui la pianificazione del backoff e le indicazioni sull'allineamento temporale riportate di seguito.
 </Warning>
 
-### Principi per politiche di ripetizione sicure
+### Principi per policy di retry sicure
 
-- **Meccanismo di backoff**: Usa un backoff esponenziale tra le ripetizioni.
-- **Limiti di ripetizione**: Limita le ripetizioni totali (max 3–4 tentativi).
-- **Filtraggio intelligente**: Ripeti solo su fallimenti ripetibili (ad esempio, errori di rete/emittente, fondi insufficienti); non riprovare mai per rifiuti rigidi.
-- **Prevenzione del test di carte**: Non riprovare fallimenti come `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Varietà di metadata (opzionale)**: Se mantieni il tuo sistema di ripetizione, differenzia le ripetizioni tramite metadata (ad esempio, `retry_attempt`).
+- **Meccanismo di backoff**: utilizza un backoff esponenziale tra i retry.
+- **Limiti dei retry**: limita il numero totale di retry (massimo 3–4 tentativi).
+- **Filtraggio intelligente**: effettua retry solo per gli errori che possono essere risolti con un retry (ad esempio errori di rete o dell'issuer, fondi insufficienti); non effettuare mai retry per i rifiuti definitivi.
+- **Prevenzione del card testing**: non effettuare retry per errori come `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Variazione dei metadati (facoltativa)**: se gestisci un tuo sistema di retry, differenzia i retry tramite i metadati (ad esempio `retry_attempt`).
 
-### Programma di ripetizione suggerito (abbonamenti)
+### Pianificazione dei retry consigliata (subscription)
 
-- **1º tentativo**: Immediato quando crei l'addebito
-- **2º tentativo**: Dopo 3 giorni
-- **3º tentativo**: Dopo altri 7 giorni (10 giorni totali)
-- **4º tentativo (finale)**: Dopo altri 7 giorni (17 giorni totali)
+- **1° tentativo**: immediatamente, quando crei l'addebito
+- **2° tentativo**: dopo 3 giorni
+- **3° tentativo**: dopo altri 7 giorni (10 giorni totali)
+- **4° tentativo (finale)**: dopo altri 7 giorni (17 giorni totali)
 
-Passo finale: se ancora non pagato, segna l'abbonamento come non pagato o annullalo, in base alla tua politica. Notifica il cliente durante la finestra per aggiornare il metodo di pagamento.
+Passaggio finale: se il pagamento non è ancora stato effettuato, contrassegna la subscription come non pagata o cancellala, in base alla tua policy. Avvisa il cliente durante l'intervallo disponibile affinché aggiorni il metodo di pagamento.
 
-### Evitare ripetizioni a raffica; allinea al tempo di autorizzazione
+### Evita retry ravvicinati; allineali all'orario dell'autorizzazione
 
-- Ancora le ripetizioni al timestamp di autorizzazione originale per evitare comportamenti a "raffica" su tutto il portafoglio.
-- Esempio: Se il cliente avvia una prova o un mandato alle 13:10 di oggi, programma le ripetizioni successive alle 13:10 nei giorni successivi secondo il tuo backoff (ad esempio, +3 giorni → 13:10, +7 giorni → 13:10).
-- In alternativa, se memorizzi l'ora dell'ultimo pagamento riuscito `T`, programma il tentativo successivo a `T + X days` per preservare l'allineamento dell'orario.
+- Ancora i retry al timestamp dell'autorizzazione originale per evitare comportamenti "ravvicinati" nell'intero portafoglio.
+- Esempio: se il cliente avvia un periodo di prova o un mandato oggi alle 13:10, pianifica i retry successivi alle 13:10 dei giorni seguenti in base al tuo backoff (ad esempio +3 giorni → 13:10, +7 giorni → 13:10).
+- In alternativa, se memorizzi l'orario dell'ultimo pagamento riuscito `T`, pianifica il tentativo successivo alle `T + X days` per mantenere l'allineamento dell'orario.
 
 <Note>
-Fuso orario e DST: usa un standard di tempo coerente per la pianificazione e converti per la visualizzazione solo per mantenere gli intervalli.
+Fuso orario e DST: utilizza uno standard temporale coerente per la pianificazione e converti l'orario solo per la visualizzazione, così da mantenere gli intervalli.
 </Note>
 
-### Codici di declino che non dovresti riprovare
+### Codici di rifiuto per i quali non dovresti effettuare retry
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -433,52 +437,52 @@ Fuso orario e DST: usa un standard di tempo coerente per la pianificazione e con
 - `LOST_CARD`
 
 <Note>
-Per un elenco completo delle motivazioni di declino e se sono correggibili dall'utente, vedi la documentazione su
-[Fallimenti delle transazioni](/api-reference/transaction-failures).
+Per un elenco completo dei motivi di rifiuto e per sapere se possono essere corretti dall'utente, consulta la documentazione
+[Transaction Failures](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Ripeti solo su problemi soft/temporanei (ad esempio, `insufficient_funds`, `issuer_unavailable`, `processing_error`, timeout di rete). Se lo stesso declino si ripete, sospendi ulteriori ripetizioni.
+Effettua retry solo per problemi temporanei o risolvibili (ad esempio `insufficient_funds`, `issuer_unavailable`, `processing_error` e timeout di rete). Se lo stesso rifiuto si ripete, interrompi i retry successivi.
 </Tip>
 
-### Linee guida per l'implementazione (senza codice)
+### Linee guida di implementazione (senza codice)
 
-- Utilizza un gestore di code che mantiene timestamp precisi; calcola il tentativo successivo all'esatto offset orario (ad esempio, `T + 3 days` alla stessa HH:MM).
-- Mantieni e riferisci il timestamp dell'ultimo pagamento riuscito `T` per calcolare il tentativo successivo; non raggruppare più abbonamenti allo stesso istante.
-- Valuta sempre il motivo dell'ultimo declino; interrompi le ripetizioni per declini rigidi nella lista di skip sopra.
-- Limita le ripetizioni concorrenti per cliente e per account per prevenire picchi accidentali.
-- Comunica proattivamente: invia email/SMS al cliente per aggiornare il metodo di pagamento prima del prossimo tentativo programmato.
-- Usa metadata solo per osservabilità (ad esempio, `retry_attempt`); non cercare mai di "evadere" i sistemi di frode/rischio ruotando campi irrilevanti.
+- Utilizza uno scheduler o una coda che mantenga timestamp precisi; calcola il tentativo successivo all'orario esatto dell'offset (ad esempio `T + 3 days` alla stessa HH:MM).
+- Mantieni e consulta il timestamp dell'ultimo pagamento riuscito `T` per calcolare il tentativo successivo; non raggruppare più subscription nello stesso istante.
+- Valuta sempre l'ultimo motivo del rifiuto; interrompi i retry per i rifiuti definitivi presenti nell'elenco da ignorare riportato sopra.
+- Limita i retry simultanei per cliente e per account per evitare picchi accidentali.
+- Comunica in modo proattivo: invia un'email o un SMS al cliente chiedendogli di aggiornare il metodo di pagamento prima del tentativo pianificato successivo.
+- Utilizza i metadati solo per l'osservabilità (ad esempio `retry_attempt`); non cercare mai di "eludere" i sistemi antifrode o di gestione del rischio ruotando campi irrilevanti.
 
-## Annullamento
+## Cancellazione
 
-Gli abbonamenti on-demand seguono un flusso di annullamento diverso rispetto agli abbonamenti programmati perché non esiste un ciclo di fatturazione fisso per ancorare una data di fine immediata.
+Le subscription on-demand seguono un flusso di cancellazione diverso da quello delle subscription pianificate, perché non esiste un ciclo di fatturazione fisso a cui ancorare una data di fine immediata.
 
-### Comportamento del portale clienti
+### Comportamento del customer portal
 
-Quando un cliente annulla un abbonamento on-demand dal [Portale Clienti](/features/customer-portal), l'annullamento è **programmato per la prossima data di fatturazione** per impostazione predefinita. L'opzione **Annulla Ora** non viene intenzionalmente mostrata per gli abbonamenti on-demand.
+Quando un cliente cancella una subscription on-demand dal [Customer Portal](/features/customer-portal), la cancellazione viene **pianificata per la data di fatturazione successiva** per impostazione predefinita. L'opzione **Cancella ora** non viene mostrata intenzionalmente per le subscription on-demand.
 
-La ragione è che gli abbonamenti on-demand non hanno date di rinnovo ricorrenti prevedibili — il prossimo tempo di addebito è guidato interamente dai tuoi eventi di utilizzo. Programmare l'annullamento alla prossima data di fatturazione mantiene il mandato attivo fino al limite del periodo in modo che qualsiasi utilizzo in corso possa ancora essere addebitato, quindi termina l'abbonamento in modo pulito.
+Il motivo è il seguente: le subscription on-demand non hanno date di rinnovo ricorrenti prevedibili; l'orario del prossimo addebito dipende interamente dai tuoi eventi di utilizzo. Pianificare la cancellazione alla data di fatturazione successiva mantiene attivo il mandato fino alla fine del periodo, consentendo di addebitare l'eventuale utilizzo in corso e terminando poi la subscription correttamente.
 
-Dopo che il cliente conferma l'annullamento:
-- L'abbonamento rimane `active` e rimane addebitabile tramite `POST /subscriptions/{id}/charge` fino alla data di annullamento programmata.
-- `cancel_at_next_billing_date` è impostato su `true` sull'abbonamento.
-- Viene emesso un webhook `subscription.cancelled` quando l'annullamento ha effetto.
+Dopo che il cliente conferma la cancellazione:
+- La subscription resta `active` e continua a essere addebitabile tramite `POST /subscriptions/{id}/charge` fino alla data di cancellazione pianificata.
+- `cancel_at_next_billing_date` viene impostato su `true` nella subscription.
+- Viene emesso un webhook `subscription.cancelled` quando la cancellazione diventa effettiva.
 
 <Info>
-Se hai bisogno di terminare l'abbonamento immediatamente (ad esempio, in risposta a un rimborso o a una richiesta di supporto), annullalo in modo programmatico tramite l'API invece di fare affidamento sul flusso del portale clienti.
+Se devi terminare immediatamente la subscription (ad esempio in risposta a un rimborso o a una richiesta di assistenza), cancellala programmaticamente tramite l'API invece di affidarti al flusso del customer portal.
 </Info>
 
-### Annullare programmaticamente
+### Cancellare programmaticamente
 
-Puoi annullare un abbonamento on-demand tramite l'API in qualsiasi momento. Controlli se l'annullamento è immediato o programmato.
+Puoi cancellare una subscription on-demand tramite l'API in qualsiasi momento. Sei tu a controllare se la cancellazione è immediata o pianificata.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Imposta l'abbonamento `status` su `cancelled` per terminarlo subito. Il mandato è revocato e non possono essere creati ulteriori addebiti.
+Imposta `status` della subscription su `cancelled` per terminarla immediatamente. Il mandato viene revocato e non è possibile creare ulteriori addebiti.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -500,7 +504,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Rispecchia il comportamento del portale clienti — mantieni l'abbonamento attivo fino alla data di annullamento programmata, quindi concludilo.
+Replica il comportamento del customer portal: mantieni attiva la subscription fino alla data di cancellazione pianificata, quindi terminala.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -522,48 +526,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhook su annullamento
+### Webhook alla cancellazione
 
 | Evento | Quando viene attivato |
-|-------|---------------------|
-| `subscription.cancelled` | Abbonamento completamente annullato e non più addebitabile |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` è stato attivato (annullamento programmato impostato o annullato) |
+|-------|---------------|
+| `subscription.cancelled` | La subscription è completamente cancellata e non è più addebitabile |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` è stato modificato (cancellazione pianificata impostata o annullata) |
 
 <Tip>
-Per distinguere gli annullamenti on-demand dagli annullamenti degli abbonamenti programmati nel tuo handler, verifica il flag `on_demand` dell'abbonamento durante l'elaborazione del webhook.
+Per distinguere le cancellazioni on-demand da quelle delle subscription pianificate nel tuo handler, controlla il flag `on_demand` della subscription durante l'elaborazione del webhook.
 </Tip>
 
-## Monitora i risultati con i webhook
+## Monitorare gli esiti con i webhook
 
-Implementa la gestione dei webhook per tracciare il percorso del cliente. Vedi [Implementazione dei Webhook](/developer-resources/integration-guide#implementing-webhooks).
+Implementa la gestione dei webhook per monitorare il percorso del cliente. Vedi [Implementazione dei webhook](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Mandato autorizzato e abbonamento attivato
-- **subscription.failed**: Creazione fallita (es. fallimento del mandato)
-- **subscription.on_hold**: Abbonamento posto in sospeso (es. stato non pagato)
-- **subscription.cancelled**: Abbonamento completamente annullato (vedi [Annullamento](#cancellation))
-- **payment.succeeded**: Addebito riuscito
-- **payment.failed**: Addebito fallito
+- **subscription.active**: mandato autorizzato e subscription attivata
+- **subscription.failed**: creazione non riuscita (ad esempio, errore del mandato)
+- **subscription.on_hold**: subscription messa in sospeso (ad esempio, stato non pagato)
+- **subscription.cancelled**: subscription completamente cancellata (vedi [Cancellazione](#cancellation))
+- **payment.succeeded**: addebito riuscito
+- **payment.failed**: addebito non riuscito
 
 <Tip>
-Per i flussi on-demand, concentrati su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull'uso. Quando `payment.failed` è seguito da `subscription.on_hold`, vedi [Gestione degli addebiti falliti](#handling-failed-charges) per recuperare l'abbonamento.
+Per i flussi on-demand, concentrati su `payment.succeeded` e `payment.failed` per riconciliare gli addebiti basati sull'utilizzo. Quando `payment.failed` è seguito da `subscription.on_hold`, consulta [Gestire gli addebiti non riusciti](#handling-failed-charges) per recuperare la subscription.
 </Tip>
 
-## Test e prossimi passi
+## Test e passaggi successivi
 
 <Steps>
 <Step title="Create in test mode">
-Usa la tua chiave API di test per creare l'abbonamento, quindi apri il `checkout_url` restituito e completa il mandato.
+Utilizza la tua API key di test per creare la subscription, quindi apri `checkout_url` restituito e completa il mandato.
 </Step>
 <Step title="Trigger a charge">
-Chiama l'endpoint di addebito con un piccolo `product_price` (ad esempio, `100`) e verifica di ricevere `payment.succeeded`.
+Chiama l'endpoint di addebito con un `product_price` ridotto (ad esempio `100`) e verifica di ricevere `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Passa alla tua chiave API live una volta che hai validato gli eventi e gli aggiornamenti dello stato interno.
+Passa alla tua API key live dopo aver convalidato gli eventi e gli aggiornamenti dello stato interno.
 </Step>
 </Steps>
 
 ## Risoluzione dei problemi
 
-- **422 Richiesta Non Valida**: Assicurati che `on_demand.mandate_only` sia fornito alla creazione e `product_price` sia fornito per gli addebiti.
-- **Errori di valuta**: Se sovrascrivi `product_currency`, conferma che sia supportata per il tuo account e cliente.
-- **Nessun webhook ricevuto**: Verifica la tua configurazione dell'URL e del segreto di firma del webhook.
+- **422 Invalid Request**: assicurati che `on_demand.mandate_only` sia fornito durante la creazione e che `product_price` sia fornito per gli addebiti.
+- **Errori di valuta**: se sostituisci `product_currency`, verifica che sia supportato per il tuo account e il tuo cliente.
+- **Nessun webhook ricevuto**: verifica la configurazione dell'URL del webhook e del secret della firma.

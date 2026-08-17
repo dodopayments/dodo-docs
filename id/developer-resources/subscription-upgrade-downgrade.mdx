@@ -271,13 +271,14 @@ Gunakan API Perubahan Paket untuk memodifikasi produk, kuantitas, dan perilaku p
     });
 
     async function changePlan() {
-      const result = await client.subscriptions.changePlan('sub_123', {
-        product_id: 'prod_new',
+      // change-plan returns 200 with an empty body.
+      await client.subscriptions.changePlan('sub_123', {
+        product_id: 'pdt_new',
         quantity: 3,
         proration_billing_mode: 'prorated_immediately',
         on_payment_failure: 'prevent_change', // Optional: control behavior on payment failure
       });
-      console.log(result.status, result.invoice_id, result.payment_id);
+      console.log('Plan change accepted; awaiting webhooks');
     }
 
     changePlan();
@@ -295,14 +296,15 @@ Gunakan API Perubahan Paket untuk memodifikasi produk, kuantitas, dan perilaku p
         environment="test_mode",  # defaults to "live_mode"
     )
 
-    result = client.subscriptions.change_plan(
+    # change_plan returns 200 with an empty body.
+    client.subscriptions.change_plan(
         subscription_id="sub_123",
-        product_id="prod_new",
+        product_id="pdt_new",
         quantity=3,
         proration_billing_mode="prorated_immediately",
         on_payment_failure="prevent_change",  # Optional: control behavior on payment failure
     )
-    print(result.status, result.get("invoice_id"), result.get("payment_id"))
+    print("Plan change accepted; awaiting webhooks")
     ```
 
   </Tab>
@@ -352,18 +354,10 @@ Gunakan API Perubahan Paket untuk memodifikasi produk, kuantitas, dan perilaku p
   </Tab>
 </Tabs>
 
-```json Success
-{
-  "status": "processing",
-  "subscription_id": "sub_123",
-  "invoice_id": "inv_789",
-  "payment_id": "pay_456",
-  "proration_billing_mode": "prorated_immediately"
-}
-```
+Perubahan paket yang berhasil mengembalikan `200 OK` dengan **body respons kosong**.
 
 <Note>
-Fields seperti <code>invoice_id</code> dan <code>payment_id</code> hanya dikembalikan ketika biaya langsung dan/atau faktur dibuat selama perubahan paket. Selalu andalkan acara webhook (misalnya, <code>payment.succeeded</code>, <code>subscription.plan_changed</code>) untuk mengonfirmasi hasil.
+Karena tidak ada payload respons, selalu andalkan event webhook (misalnya <code>subscription.plan_changed</code>, <code>payment.succeeded</code>, <code>payment.failed</code>) untuk mengonfirmasi hasilnya, atau baca ulang subscription dengan <code>GET /subscriptions/&#123;subscription_id&#125;</code>.
 </Note>
 
 <Warning>
@@ -1025,8 +1019,7 @@ Untuk mengaktifkan kembali langganan dari status `on_hold` setelah perubahan pak
 async function reactivateAfterFailedPlanChange(subscriptionId) {
   // Update payment method - automatically creates charge for remaining dues
   const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-    type: 'new',
-    return_url: 'https://example.com/return'
+    payment_method: { type: 'new', return_url: 'https://example.com/return' }
   });
   
   if (response.payment_id) {
@@ -1045,8 +1038,7 @@ async function reactivateAfterFailedPlanChange(subscriptionId) {
 // Or use existing payment method if available
 async function reactivateWithExistingPaymentMethod(subscriptionId, paymentMethodId) {
   const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-    type: 'existing',
-    payment_method_id: paymentMethodId
+    payment_method: { type: 'existing', payment_method_id: paymentMethodId }
   });
   
   // Monitor webhooks for payment.succeeded and subscription.active
@@ -1060,8 +1052,7 @@ def reactivate_after_failed_plan_change(subscription_id):
     # Update payment method - automatically creates charge for remaining dues
     response = client.subscriptions.update_payment_method(
         subscription_id=subscription_id,
-        type="new",
-        return_url="https://example.com/return"
+        payment_method={"type": "new", "return_url": "https://example.com/return"},
     )
     
     if response.payment_id:
@@ -1079,8 +1070,7 @@ def reactivate_after_failed_plan_change(subscription_id):
 def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
     response = client.subscriptions.update_payment_method(
         subscription_id=subscription_id,
-        type="existing",
-        payment_method_id=payment_method_id
+        payment_method={"type": "existing", "payment_method_id": payment_method_id},
     )
     
     # Monitor webhooks for payment.succeeded and subscription.active
@@ -1156,7 +1146,7 @@ Tangani kesalahan API umum dengan baik dalam implementasi Anda:
 
 <AccordionGroup>
 <Accordion title="200 OK">
-Permintaan perubahan paket diproses dengan sukses. Langganan sedang diperbarui dan pemrosesan pembayaran telah dimulai.
+Permintaan perubahan paket berhasil diproses. Body respons kosong. Jika `on_payment_failure=prevent_change`, perubahan paket tetap tertunda hingga pembayaran berhasil.
 </Accordion>
 
 <Accordion title="400 Bad Request">
@@ -1171,16 +1161,20 @@ Kunci API tidak valid atau hilang. Verifikasi `DODO_PAYMENTS_API_KEY` Anda benar
 ID langganan tidak ditemukan atau tidak milik akun Anda.
 </Accordion>
 
+<Accordion title="409 Conflict">
+Perubahan paket yang tertunda sudah ada untuk subscription ini (`PendingPlanChangeExists`). Batalkan perubahan terjadwal dengan `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` sebelum mengirimkan perubahan baru.
+</Accordion>
+
 <Accordion title="422 Unprocessable Entity">
-Langganan tidak dapat diubah (misal, sudah dibatalkan, produk tidak tersedia, dll.).
+Subscription tidak aktif atau on-demand; perubahan paket tidak didukung.
 </Accordion>
 
 <Accordion title="500 Internal Server Error">
-Terjadi kesalahan server. Coba kembali permintaan setelah jeda singkat.
+Terjadi kesalahan server. Coba lagi permintaan tersebut setelah jeda singkat.
 </Accordion>
 </AccordionGroup>
 
-### Format Respons Kesalahan
+### Format Respons Error
 
 ```json
 {
@@ -1197,6 +1191,6 @@ Terjadi kesalahan server. Coba kembali permintaan setelah jeda singkat.
 ## Langkah berikutnya
 
 - Tinjau <a href="/api-reference/subscriptions/change-plan">API Perubahan Paket</a>
-- Eksplorasi <a href="/features/credit-based-billing">Penagihan Berbasis Kredit</a>
+- Pelajari <a href="/features/credit-based-billing">Penagihan Berbasis Kredit</a>
 - Terapkan peringatan untuk `subscription.on_hold`
-- Lihat <a href="/developer-resources/webhooks">Panduan Integrasi Webhook kami</a>
+- Lihat <a href="/developer-resources/webhooks">Panduan Integrasi Webhook</a>

@@ -251,8 +251,12 @@ Endpoint: [POST /subscriptions/\{subscription_id\}/charge](/api-reference/subscr
       true인 경우 <code>product_price</code>에 Adaptive Currency 수수료가 포함됩니다. false인 경우 수수료가 별도로 추가됩니다.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      이 청구를 정산하는 데 고객의 wallet balance가 어떻게 사용되는지 지정합니다.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      결제에 대한 추가 metadata입니다. 생략하면 구독 metadata가 사용됩니다.
+      결제에 대한 추가 metadata입니다. 생략하면 subscription metadata가 사용됩니다.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -334,94 +338,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-주문형이 아닌 구독에 청구하면 실패할 수 있습니다. 청구하기 전에 구독 세부 정보에 `on_demand: true`가 있는지 확인하세요.
+온디맨드가 아닌 subscription에 청구하면 실패할 수 있습니다. 청구하기 전에 subscription의 세부 정보에 `on_demand: true`이 있는지 확인하세요.
 </Warning>
 
 ## 실패한 청구 처리
 
-주문형 구독에 대한 청구가 실패하면 다음에 수행할 작업을 직접 결정합니다. 예약된 구독에서는 실패한 갱신으로 인해 이후 자동 결제가 중지되지만, **주문형 구독은 실패 후에도 청구할 수 있습니다**. 자체 재시도 로직의 일부로 charge endpoint를 다시 호출할 수 있습니다.
+온디맨드 subscription에 대한 청구가 실패하면 다음에 수행할 작업을 직접 결정합니다. 예약된 subscription에서는 갱신 실패 시 이후 자동 billing이 중단되지만, **온디맨드 subscription은 실패 후에도 청구할 수 있습니다**. 자체 retry 로직의 일부로 charge endpoint를 다시 호출할 수 있습니다.
 
-### 실패 시 동작
+### 실패 시 발생하는 일
 
 <Steps>
 <Step title="Charge attempt fails">
-`POST /subscriptions/{subscription_id}/charge` request는 오류 응답을 반환하거나 비동기적으로 완료된 후 거절 사유가 포함된 `payment.failed` webhook을 발생시킵니다.
+`POST /subscriptions/{subscription_id}/charge` 요청은 error response를 반환하거나 비동기적으로 완료되며, 거절 사유가 포함된 `payment.failed` webhook을 발생시킵니다.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-구독이 `on_hold` 상태로 전환되고 `subscription.on_hold` webhook을 발생시킬 수 있습니다([Subscription States → On Hold](/features/subscription#on-hold-state) 참조). 이는 신호일 뿐 잠금이 아닙니다. 주문형 구독에서는 `on_hold` 상태여도 다시 청구할 수 있습니다.
+subscription이 `on_hold` 상태로 이동하고 `subscription.on_hold` webhook을 발생시킬 수 있습니다([Subscription States → On Hold](/features/subscription#on-hold-state) 참조). 이는 신호일 뿐 잠금이 아닙니다. 온디맨드 subscription에서는 `on_hold`이 **다시 청구하는 것을 방지하지 않습니다**.
 </Step>
 
 <Step title="Retry the charge (your call)">
-주문형 flow에서는 Dodo가 자동으로 재시도하지 않습니다. 언제든 `POST /subscriptions/{subscription_id}/charge`를 다시 호출하여 재시도할 수 있습니다. 아래의 [안전한 재시도 정책](#payment-retries)을 적용하세요. 지수 백오프를 사용하고, 영구 거절을 건너뛰며, 일괄 재시도 패턴을 피해야 당사의 fraud 및 risk 시스템에 의해 플래그되지 않습니다.
+온디맨드 flow에서는 Dodo가 자동 retry를 수행하지 않습니다. 언제든 `POST /subscriptions/{subscription_id}/charge`을 다시 호출하여 retry할 수 있습니다. 아래의 [safe retry policy](#payment-retries)를 적용하세요. exponential backoff를 사용하고, hard decline은 건너뛰며, burst pattern을 피해야 fraud 및 risk system에서 retry를 플래그하지 않습니다.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-결제 수단 자체의 문제(만료된 카드, 폐쇄된 계정 등)로 인해 재시도가 계속 실패하면 [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method)를 사용하여 고객으로부터 새 결제 수단을 수집하세요. 성공하면 구독이 `active`로 돌아가고 `payment.succeeded`에 이어 `subscription.active` webhook이 발생합니다.
+결제 수단 자체의 문제(만료된 카드, 폐쇄된 계정 등)로 retry가 계속 실패하면 [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method)을 사용하여 고객으로부터 새 결제 수단을 수집하세요. 성공하면 subscription이 `active`으로 돌아가고, `payment.succeeded` webhook과 `subscription.active` webhook이 차례로 발생합니다.
 </Step>
 </Steps>
 
 <Info>
-**주문형과 예약형 비교**: 예약된 구독에서는 Dodo가 자체 갱신 재시도와 dunning을 실행합니다. 주문형 구독에서는 다음 청구가 언제 발생해야 하는지 사용자만 알고 있으므로 재시도 정책을 직접 관리해야 합니다(달력이 아니라 사용량 이벤트에 의해 결정됨).
+**온디맨드와 예약 방식 비교**: 예약된 subscription에서는 Dodo가 자체 renewal retry와 dunning을 수행합니다. 온디맨드 subscription에서는 다음 청구가 언제 이루어져야 하는지 아는 주체가 여러분뿐이므로 retry policy를 직접 관리합니다(달력이 아니라 usage event에 의해 결정됨).
 </Info>
 
-### 주문형 청구 실패 시 webhook 순서
+### 실패한 온디맨드 청구의 Webhook sequence
 
 | 순서 | Event | 의미 |
 |-------|-------|---------|
-| 1 | `payment.failed` | 주문형 청구 시도가 성공하지 않음(거절 사유 포함) |
-| 2 | `subscription.on_hold` | 구독이 보류됨(정보 제공용이며 이후 청구를 차단하지 않음) |
-| 3* | `payment.succeeded` | 후속 청구(재시도 또는 결제 수단 업데이트 후)가 성공함 |
-| 4* | `subscription.active` | 성공적인 청구 후 구독이 `active`로 돌아감 |
+| 1 | `payment.failed` | 온디맨드 청구 시도가 성공하지 않음(거절 사유 포함) |
+| 2 | `subscription.on_hold` | subscription이 보류 상태가 됨(정보 제공용이며 이후 청구를 차단하지 않음) |
+| 3* | `payment.succeeded` | 후속 청구(직접 수행한 retry 또는 결제 수단 업데이트 후 청구)가 성공함 |
+| 4* | `subscription.active` | 성공적인 청구 후 subscription이 `active`으로 돌아감 |
 
 <Info>
-3번과 4번 이벤트는 후속 청구가 성공한 후에만 발생합니다.
+Event 3과 4는 후속 청구가 성공한 경우에만 발생합니다.
 </Info>
 
-### 재시도 책임
+### Retry 책임
 
 <Warning>
-Dodo Payments **는 실패한 주문형 청구를 자동으로 재시도하지 않습니다**. 재시도 정책은 사용자가 관리합니다. 아래의 안전한 재시도 지침을 따라 fraud detection 시스템에 의해 card testing으로 플래그되지 않도록 하세요.
+Dodo Payments는 **실패한 온디맨드 청구를 자동으로 retry하지 않습니다**. retry policy는 여러분이 관리합니다. 아래의 safe retry 가이드라인을 따라 fraud detection system에서 card testing으로 플래그되지 않도록 하세요.
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning)(내장된 이메일 복구 sequence)은 예약된 구독의 실패한 *갱신* 결제와 고객이 시작한 취소에 적용됩니다. 주문형 청구 실패를 위한 기능이 아닙니다. 결제 수단을 업데이트해야 한다고 판단되면 고객에게 직접(예: transactional email 또는 인앱 prompt) 안내하세요.
+[Subscription Dunning](/features/recovery/subscription-dunning)(기본 제공 email recovery sequence)은 예약된 subscription의 실패한 *renewal* payment와 고객이 시작한 cancellation에 적용됩니다. 온디맨드 청구 실패를 위한 기능은 아닙니다. 결제 수단을 업데이트해야 한다고 판단되면 고객에게 직접(예: transactional email 또는 인앱 prompt) 안내하세요.
 
-## 결제 재시도
+## Payment retry
 
-당사의 fraud detection 시스템은 공격적인 재시도 패턴을 차단할 수 있으며 이를 잠재적인 card testing으로 플래그할 수 있습니다. 안전한 재시도 정책을 따르세요.
+fraud detection system은 공격적인 retry pattern을 차단할 수 있으며, 이를 잠재적인 card testing으로 플래그할 수도 있습니다. safe retry policy를 따르세요.
 
 <Warning>
-일괄 재시도 패턴은 당사의 risk 시스템과 processor에 의해 사기 또는 card testing 의심으로 플래그될 수 있습니다. 재시도가 집중되지 않도록 하고, 아래의 백오프 일정과 시간 정렬 지침을 따르세요.
+Burst retry pattern은 risk system과 processor에 의해 fraud 또는 의심스러운 card testing으로 플래그될 수 있습니다. retry를 집중적으로 실행하지 말고, 아래의 backoff schedule과 time alignment 가이드를 따르세요.
 </Warning>
 
-### 안전한 재시도 정책의 원칙
+### Safe retry policy의 원칙
 
-- **백오프 메커니즘**: 재시도 사이에 지수 백오프를 사용합니다.
-- **재시도 한도**: 총 재시도 횟수를 제한합니다(최대 3~4회).
-- **지능형 필터링**: 재시도 가능한 실패(예: network/issuer 오류, 잔액 부족)에만 재시도하고, 영구 거절은 절대 재시도하지 않습니다.
-- **Card testing 방지**: `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`와 같은 실패는 재시도하지 않습니다.
-- **metadata 변경(선택 사항)**: 자체 재시도 시스템을 운영하는 경우 metadata(예: `retry_attempt`)를 통해 재시도를 구분합니다.
+- **Backoff mechanism**: retry 사이에 exponential backoff를 사용합니다.
+- **Retry limits**: 전체 retry 횟수를 제한합니다(최대 3~4회 시도).
+- **Intelligent filtering**: retry 가능한 실패(예: network/issuer error, insufficient funds)에만 retry하고, hard decline은 절대 retry하지 않습니다.
+- **Card testing 방지**: `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`과 같은 실패에는 retry하지 않습니다.
+- **Metadata 변경(선택 사항)**: 자체 retry system을 운영하는 경우 metadata를 사용하여 retry를 구분합니다(예: `retry_attempt`).
 
-### 권장 재시도 일정(구독)
+### 권장 retry schedule (subscription)
 
-- **1차 시도**: 청구 생성 시 즉시
+- **1차 시도**: charge 생성 시 즉시
 - **2차 시도**: 3일 후
 - **3차 시도**: 추가 7일 후(총 10일)
 - **4차 시도(최종)**: 다시 7일 후(총 17일)
 
-최종 단계: 여전히 결제가 이루어지지 않으면 정책에 따라 구독을 미납 상태로 표시하거나 취소합니다. 고객이 결제 수단을 업데이트할 수 있도록 해당 기간에 안내하세요.
+최종 단계: 여전히 미납 상태라면 policy에 따라 subscription을 unpaid로 표시하거나 취소합니다. 고객이 결제 수단을 업데이트할 수 있도록 해당 기간에 안내하세요.
 
-### 일괄 재시도를 피하고 승인 시간에 맞추기
+### Burst retry를 피하고 authorization 시간에 맞추기
 
-- 전체 포트폴리오에서 "일괄" 동작이 발생하지 않도록 재시도를 최초 승인 timestamp에 맞춥니다.
-- 예: 고객이 오늘 오후 1시 10분에 trial 또는 mandate를 시작했다면 백오프에 따라 이후 날짜의 오후 1시 10분에 후속 재시도를 예약합니다(예: +3일 → 오후 1시 10분, +7일 → 오후 1시 10분).
-- 또는 마지막 성공 결제 시간을 `T`에 저장하는 경우, 시간대 정렬을 유지하도록 `T + X days`에 다음 시도를 예약합니다.
+- portfolio 전체에서 "burst" 동작을 피하려면 retry를 최초 authorization timestamp에 맞춥니다.
+- 예: 고객이 오늘 오후 1시 10분에 trial 또는 mandate를 시작했다면 backoff에 따라 이후 날짜의 오후 1시 10분에 후속 retry를 예약합니다(예: +3일 → 오후 1시 10분, +7일 → 오후 1시 10분).
+- 또는 마지막 성공 payment time을 `T`에 저장한다면, 시간대 정렬을 유지하도록 다음 시도를 `T + X days`에 예약합니다.
 
 <Note>
-Time-zone 및 DST: 일정을 예약할 때 일관된 시간 표준을 사용하고, 간격을 유지하기 위해 표시할 때만 변환합니다.
+Time zone 및 DST: schedule에 일관된 time standard를 사용하고, 간격을 유지하기 위해 표시할 때만 변환합니다.
 </Note>
 
-### 재시도하지 않아야 하는 거절 코드
+### Retry하지 않아야 하는 Decline code
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -431,52 +435,52 @@ Time-zone 및 DST: 일정을 예약할 때 일관된 시간 표준을 사용하�
 - `LOST_CARD`
 
 <Note>
-거절 사유의 전체 목록과 사용자가 수정할 수 있는 사유인지 여부는
+전체 decline reason 목록과 사용자가 수정할 수 있는지 여부는
 [Transaction Failures](/api-reference/transaction-failures) 문서를 참조하세요.
 </Note>
 
 <Tip>
-일시적/임시 문제(예: `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeout)에만 재시도하세요. 동일한 거절이 반복되면 추가 재시도를 중지합니다.
+soft/temporary issue(예: `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeout)에만 retry하세요. 동일한 decline이 반복되면 추가 retry를 중단합니다.
 </Tip>
 
-### 구현 지침(코드 없음)
+### Implementation guideline (code 없음)
 
-- 정확한 timestamp를 유지하는 scheduler/queue를 사용하고, 정확한 시간대 오프셋에 다음 시도를 계산합니다(예: 동일한 HH:MM의 `T + 3 days`).
-- 마지막 성공 결제 timestamp `T`를 유지하고 참조하여 다음 시도를 계산합니다. 여러 구독을 동일한 순간에 몰아서 처리하지 마세요.
-- 항상 마지막 거절 사유를 평가하고, 위의 건너뛰기 목록에 있는 영구 거절에 대해서는 재시도를 중지합니다.
-- 고객 및 계정별 동시 재시도 수를 제한하여 우발적인 급증을 방지합니다.
-- 사전에 안내하세요. 다음 예약 시도 전에 고객에게 email/SMS로 결제 수단 업데이트를 요청합니다.
-- metadata는 관찰 가능성 확보 용도로만 사용하고(예: `retry_attempt`), 중요하지 않은 필드를 변경하여 fraud/risk 시스템을 "회피"하려고 하지 마세요.
+- 정확한 timestamp를 유지하는 scheduler/queue를 사용하고, 정확한 시간대 offset에 다음 시도를 계산합니다(예: 같은 HH:MM의 `T + 3 days`).
+- 마지막 성공 payment timestamp `T`을 유지하고 참조하여 다음 시도를 계산합니다. 여러 subscription을 동일한 시각에 몰아서 처리하지 마세요.
+- 항상 마지막 decline reason을 평가하고, 위 skip list의 hard decline에 대해서는 retry를 중단합니다.
+- 우발적인 surge를 방지하기 위해 고객별 및 account별 동시 retry 수를 제한합니다.
+- 선제적으로 안내합니다. 다음 예정된 시도 전에 고객에게 email/SMS를 보내 결제 수단을 업데이트하도록 합니다.
+- metadata는 observability 용도로만 사용합니다(예: `retry_attempt`). 중요하지 않은 field를 변경하여 fraud/risk system을 "회피"하려고 해서는 안 됩니다.
 
-## 취소
+## Cancellation
 
-주문형 구독은 즉시 종료 시점을 고정된 billing cycle에 맞출 수 없기 때문에 예약된 구독과 다른 취소 flow를 따릅니다.
+온디맨드 subscription은 즉시 종료 날짜를 정할 기준이 되는 고정 billing cycle이 없으므로 예약된 subscription과 다른 cancellation flow를 따릅니다.
 
-### Customer Portal 동작
+### Customer portal 동작
 
-고객이 [Customer Portal](/features/customer-portal)에서 주문형 구독을 취소하면 기본적으로 취소가 **다음 billing date에 예약**됩니다. **Cancel Now** 옵션은 주문형 구독에 의도적으로 표시되지 않습니다.
+고객이 [Customer Portal](/features/customer-portal)에서 온디맨드 subscription을 취소하면 기본적으로 **다음 billing date에 cancellation이 예약됩니다**. 온디맨드 subscription에는 **Cancel Now** option이 의도적으로 표시되지 않습니다.
 
-그 이유는 주문형 구독에 예측 가능한 반복 갱신 날짜가 없기 때문입니다. 다음 청구 시간은 전적으로 사용량 이벤트에 의해 결정됩니다. 다음 billing date에 취소를 예약하면 period boundary까지 mandate가 활성 상태로 유지되어 진행 중인 사용량을 계속 청구할 수 있고, 이후 구독이 정상적으로 종료됩니다.
+그 이유는 온디맨드 subscription에는 예측 가능한 반복 renewal date가 없고, 다음 charge time이 전적으로 usage event에 의해 결정되기 때문입니다. 다음 billing date에 cancellation을 예약하면 period boundary까지 mandate가 활성 상태로 유지되어 진행 중인 usage도 계속 청구할 수 있으며, 이후 subscription이 정상적으로 종료됩니다.
 
-고객이 취소를 확인한 후:
-- 구독은 `active` 상태를 유지하며 예약된 취소 날짜까지 `POST /subscriptions/{id}/charge`를 통해 계속 청구할 수 있습니다.
-- 구독의 `cancel_at_next_billing_date`가 `true`로 설정됩니다.
-- 취소가 적용되면 `subscription.cancelled` webhook이 발생합니다.
+고객이 cancellation을 확인한 후:
+- subscription은 `active` 상태를 유지하며, 예약된 cancellation date까지 `POST /subscriptions/{id}/charge`를 통해 계속 청구할 수 있습니다.
+- subscription의 `cancel_at_next_billing_date`이 `true`로 설정됩니다.
+- cancellation이 적용되면 `subscription.cancelled` webhook이 발생합니다.
 
 <Info>
-구독을 즉시 종료해야 하는 경우(예: 환불 또는 support request에 대한 대응), Customer Portal flow에 의존하지 말고 API를 통해 프로그래밍 방식으로 취소하세요.
+subscription을 즉시 종료해야 하는 경우(예: refund 또는 support request에 대한 대응), customer portal flow에 의존하지 말고 API를 통해 programmatically 취소하세요.
 </Info>
 
-### 프로그래밍 방식으로 취소
+### Programmatically 취소
 
-언제든지 API를 통해 주문형 구독을 취소할 수 있습니다. 취소를 즉시 처리할지 예약할지 직접 제어합니다.
+언제든 API를 통해 온디맨드 subscription을 취소할 수 있습니다. cancellation을 즉시 적용할지 예약할지 직접 제어합니다.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-구독의 `status`를 `cancelled`로 설정하여 즉시 종료합니다. mandate가 취소되고 더 이상 청구를 생성할 수 없습니다.
+subscription의 `status`을 `cancelled`로 설정하면 즉시 종료됩니다. mandate가 취소되고 더 이상 charge를 생성할 수 없습니다.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -498,7 +502,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Customer Portal 동작을 따르려면 예약된 취소 날짜까지 구독을 활성 상태로 유지한 후 종료합니다.
+Customer portal 동작을 그대로 반영하려면 예약된 cancellation date까지 subscription을 활성 상태로 유지한 다음 종료합니다.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -520,48 +524,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### 취소 시 webhook
+### Cancellation 시 Webhook
 
 | Event | 발생 시점 |
 |-------|---------------|
-| `subscription.cancelled` | 구독이 완전히 취소되어 더 이상 청구할 수 없을 때 |
-| `subscription.plan_changed` | `cancel_at_next_billing_date`가 전환될 때(예약된 취소가 설정되거나 취소됨) |
+| `subscription.cancelled` | subscription이 완전히 취소되어 더 이상 청구할 수 없을 때 |
+| `subscription.plan_changed` | `cancel_at_next_billing_date`이 전환될 때(예약된 cancellation이 설정되거나 취소됨) |
 
 <Tip>
-handler에서 주문형 취소와 예약된 구독의 취소를 구분하려면 webhook을 처리할 때 구독의 `on_demand` flag를 확인하세요.
+handler에서 온디맨드 cancellation과 예약된 subscription의 cancellation을 구분하려면 webhook을 처리할 때 subscription의 `on_demand` flag를 확인하세요.
 </Tip>
 
-## webhook으로 결과 추적
+## Webhook으로 결과 추적
 
-고객 journey를 추적할 수 있도록 webhook 처리를 구현하세요. [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks)을 참조하세요.
+고객 여정을 추적할 수 있도록 webhook handling을 구현하세요. [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks)을 참조하세요.
 
-- **subscription.active**: mandate가 승인되고 구독이 활성화됨
-- **subscription.failed**: 생성에 실패함(예: mandate 실패)
-- **subscription.on_hold**: 구독이 보류됨(예: 미납 상태)
-- **subscription.cancelled**: 구독이 완전히 취소됨([취소](#cancellation) 참조)
-- **payment.succeeded**: 청구가 성공함
-- **payment.failed**: 청구가 실패함
+- **subscription.active**: Mandate가 authorization되고 subscription이 활성화됨
+- **subscription.failed**: 생성 실패(예: mandate failure)
+- **subscription.on_hold**: subscription이 보류 상태가 됨(예: unpaid state)
+- **subscription.cancelled**: subscription이 완전히 취소됨([Cancellation](#cancellation) 참조)
+- **payment.succeeded**: charge 성공
+- **payment.failed**: charge 실패
 
 <Tip>
-주문형 flow에서는 사용량 기반 청구를 대조하기 위해 `payment.succeeded`와 `payment.failed`에 집중하세요. `payment.failed` 다음에 `subscription.on_hold`가 발생하면 [실패한 청구 처리](#handling-failed-charges)를 참조하여 구독을 복구하세요.
+온디맨드 flow에서는 usage 기반 charge를 조정하기 위해 `payment.succeeded`과 `payment.failed`에 집중하세요. `payment.failed` 다음에 `subscription.on_hold`이 발생하면 [Handling failed charges](#handling-failed-charges)를 참조하여 subscription을 복구하세요.
 </Tip>
 
-## 테스트 및 다음 단계
+## Testing 및 다음 단계
 
 <Steps>
 <Step title="Create in test mode">
-test API key를 사용하여 구독을 생성한 다음 반환된 `checkout_url`를 열고 mandate를 완료하세요.
+test API key를 사용하여 subscription을 생성한 다음 반환된 `checkout_url`을 열고 mandate를 완료하세요.
 </Step>
 <Step title="Trigger a charge">
-소액의 `product_price`(예: `100`)으로 charge endpoint를 호출하고 `payment.succeeded`를 수신하는지 확인하세요.
+작은 `product_price`(예: `100`)로 charge endpoint를 호출하고 `payment.succeeded`을 수신하는지 확인하세요.
 </Step>
 <Step title="Go live">
-이벤트와 내부 상태 업데이트를 검증한 후 live API key로 전환하세요.
+Event와 내부 state update를 검증한 후 live API key로 전환하세요.
 </Step>
 </Steps>
 
-## 문제 해결
+## Troubleshooting
 
-- **422 Invalid Request**: `on_demand.mandate_only`가 생성 시 제공되고 `product_price`가 청구 시 제공되는지 확인하세요.
-- **통화 오류**: `product_currency`를 재정의하는 경우 해당 통화가 계정과 고객에게 지원되는지 확인하세요.
-- **webhook을 수신하지 못함**: webhook URL과 signature secret 구성을 확인하세요.
+- **422 Invalid Request**: `on_demand.mandate_only`이 생성 시 제공되고, `product_price`가 charge에 제공되는지 확인하세요.
+- **Currency error**: `product_currency`을 override하는 경우 account와 customer에 지원되는 currency인지 확인하세요.
+- **Webhook을 수신하지 못함**: webhook URL과 signature secret configuration을 확인하세요.

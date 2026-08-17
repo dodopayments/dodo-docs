@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Payout
+description: Payload được gửi đến webhook endpoint của bạn khi một payout được
+  tạo hoặc thay đổi trạng thái, cùng cách đối soát từng sự kiện trong vòng đời
+  của payout.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - payout webhook
+  - payout events
+  - webhook integration
+  - payout
+  - payout.success
+---
+
+<Info>
+Payout webhook thông báo cho bạn khi tiền của chính bạn được chuyển từ Dodo Payments đến tài khoản ngân hàng. Sử dụng chúng để đối soát payout trong các hệ thống kế toán mà không cần polling endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Các sự kiện Payout Webhook
+
+Một payout phát sinh một sự kiện ở mỗi giai đoạn trong vòng đời. Các giai đoạn này tương ứng với [trạng thái payout](/features/payouts/payout-structure) hiển thị trong dashboard của bạn.
+
+| Sự kiện | Phát sinh khi | Ý nghĩa thông thường |
+|-------|-----------|-----------------------|
+| `payout.created` | Một payout được tạo, bởi chu kỳ payout tự động hoặc ngoài chu kỳ | Payout đã tồn tại nhưng chưa bắt đầu được chuyển |
+| `payout.in_progress` | Đến ngày đến hạn của payout và quá trình xử lý bắt đầu | Tiền đang được chuyển đến tài khoản ngân hàng của bạn |
+| `payout.on_hold` | Payout bị tạm dừng hoặc được đưa vào diện xem xét | Bạn có thể cần cung cấp thêm thông tin |
+| `payout.success` | Payout đến tài khoản ngân hàng của bạn được hoàn tất | Tiền sẽ có sẵn trong tài khoản của bạn |
+| `payout.failed` | Payout không thành công | Số tiền và phí được ghi có trở lại wallet của bạn |
+
+<Note>
+`payout.created` trước đây được phát sinh dưới dạng `payout.not_initiated`. Nếu một endpoint hiện có đang lọc theo `payout.not_initiated`, hãy cập nhật bộ lọc thành `payout.created` để bộ lọc tiếp tục khớp. Trường `status` trong payload vẫn báo cáo `not_initiated` ở giai đoạn này.
+</Note>
+
+## Xử lý các sự kiện Payout
+
+Payout liên quan đến tiền của chính bạn thay vì tiền của khách hàng, vì vậy các sự kiện này thường được dùng cho việc ghi sổ kế toán và cảnh báo nội bộ thay vì các flow hướng đến khách hàng.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Luôn xác minh chữ ký webhook trước khi xử lý — xem [hướng dẫn Webhooks](/developer-resources/webhooks) để biết cách thiết lập. Handler ở trên lược bỏ bước xác minh để nội dung ngắn gọn hơn.
+</Tip>
+
+<Warning>
+Các sự kiện payout không phải là terminal và cũng không nhất thiết được sắp xếp theo thứ tự. `payout.failed` có thể đến sau `payout.success` khi ngân hàng hoàn trả giao dịch chuyển tiền, và `payout.success` có thể đến sau `payout.failed` khi một payout không thành công sau đó được khôi phục. Hãy coi trường `status` trong payload là trạng thái hiện tại thay vì mặc định rằng sự kiện cuối cùng bạn nhận được là trạng thái cuối cùng.
+</Warning>
+
+## Trạng thái Payout
+
+Đối tượng payout báo cáo tiến trình của mình thông qua một trường duy nhất:
+
+| Trường | Giá trị |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` và `tax` trong payload đã deprecated. Thay vào đó, hãy sử dụng [payout breakup endpoints](/api-reference/payouts/retrieve-breakup) để xem phân tích chi tiết.
+</Note>
+
+## Liên quan
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Cách payout được lên lịch và tính toán, cùng ý nghĩa của từng trạng thái payout.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Theo dõi số dư wallet và sổ cái phía sau từng payout.
+</Card>
+</CardGroup>
+
+## Schema Payload Webhook

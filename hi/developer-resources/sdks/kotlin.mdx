@@ -176,20 +176,26 @@ println("Checkout URL: ${session.checkoutUrl()}")
 विस्तृत कॉन्फ़िगरेशन के साथ उत्पाद बनाएं:
 
 ```kotlin
+import com.dodopayments.api.models.products.Price
 import com.dodopayments.api.models.products.Product
 import com.dodopayments.api.models.products.ProductCreateParams
 import com.dodopayments.api.models.misc.Currency
 import com.dodopayments.api.models.misc.TaxCategory
+import com.dodopayments.api.models.misc.TimeInterval
 
 val createParams = ProductCreateParams.builder()
     .name("Premium Subscription")
     .description("Monthly subscription with all features")
     .price(
-        ProductCreateParams.RecurringPrice.builder()
+        Price.RecurringPrice.builder()
             .currency(Currency.USD)
-            .preTaxAmount(2999) // $29.99 in cents
-            .paymentFrequencyInterval(ProductCreateParams.RecurringPrice.TimeInterval.MONTH)
+            .price(2999) // $29.99 in cents
+            .discount(0L)
+            .purchasingPowerParity(false)
             .paymentFrequencyCount(1)
+            .paymentFrequencyInterval(TimeInterval.MONTH)
+            .subscriptionPeriodCount(1)
+            .subscriptionPeriodInterval(TimeInterval.MONTH)
             .build()
     )
     .taxCategory(TaxCategory.DIGITAL_PRODUCTS)
@@ -209,7 +215,7 @@ import com.dodopayments.api.models.licenses.LicenseActivateResponse
 
 val activateParams = LicenseActivateParams.builder()
     .licenseKey("XXXX-XXXX-XXXX-XXXX")
-    .instanceName("user-laptop-01")
+    .name("user-laptop-01")
     .build()
 
 try {
@@ -217,8 +223,8 @@ try {
         .activate(activateParams)
 
     println("License activated successfully")
-    println("Instance ID: ${activationResult.instanceId()}")
-    println("Expires at: ${activationResult.expiresAt()}")
+    println("Instance ID: ${activationResult.id()}")
+    println("License key ID: ${activationResult.licenseKeyId()}")
 } catch (e: UnprocessableEntityException) {
     println("License activation failed: ${e.message}")
 }
@@ -228,7 +234,42 @@ try {
 
 ### उपयोग घटनाओं को रिकॉर्ड करें
 
-मीटर के लिए उपयोग को ट्रैक करें:
+```kotlin
+import com.dodopayments.api.models.payments.AttachExistingCustomer
+import com.dodopayments.api.models.payments.BillingAddress
+import com.dodopayments.api.models.misc.CountryCode
+import com.dodopayments.api.models.subscriptions.SubscriptionChargeParams
+import com.dodopayments.api.models.subscriptions.SubscriptionCreateParams
+
+// Create a subscription
+val subscriptionParams = SubscriptionCreateParams.builder()
+    .billing(BillingAddress.builder()
+        .city("San Francisco")
+        .country(CountryCode.US)
+        .state("CA")
+        .street("1 Market St")
+        .zipcode("94105")
+        .build())
+    .customer(AttachExistingCustomer.builder()
+        .customerId("cus_123")
+        .build())
+    .productId("pdt_456")
+    .quantity(1)
+    .build()
+
+val subscription = client.subscriptions().create(subscriptionParams)
+println("Subscription ID: ${subscription.subscriptionId()}")
+
+// Charge an on-demand subscription
+// productPrice is in the lowest currency denomination (e.g., 2500 = $25.00 USD)
+val chargeParams = SubscriptionChargeParams.builder()
+    .subscriptionId(subscription.subscriptionId())
+    .productPrice(2500)
+    .build()
+
+val chargeResponse = client.subscriptions().charge(chargeParams)
+println("Payment ID: ${chargeResponse.paymentId()}")
+```
 
 ```kotlin
 import com.dodopayments.api.models.usageevents.UsageEventCreateParams
@@ -304,38 +345,37 @@ safeCreatePayment(client)
     .onFailure { error -> println("Error: ${error.message}") }
 ```
 
-<Tip>
-Result प्रकारों के साथ त्रुटि हैंडलिंग के लिए अधिक कार्यात्मक दृष्टिकोण के लिए Kotlin के `runCatching` का उपयोग करें।
-</Tip>
+```kotlin
+import com.dodopayments.api.errors.*
+
+try {
+    val payment = client.payments().create(params)
+    println("Success: ${payment.paymentId()}")
+} catch (e: AuthenticationException) {
+    println("Authentication failed: ${e.message}")
+} catch (e: InvalidRequestException) {
+    println("Invalid request: ${e.message}")
+    e.parameter?.let { println("Parameter: $it") }
+} catch (e: RateLimitException) {
+    println("Rate limit exceeded, retry after: ${e.retryAfter}")
+} catch (e: DodoPaymentsServiceException) {
+    println("API error: ${e.statusCode()} - ${e.message}")
+}
+```
 
 ## एंड्रॉइड एकीकरण
 
 एंड्रॉइड अनुप्रयोगों के साथ उपयोग करें:
 
 ```kotlin
-import android.app.Application
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.dodopayments.api.client.DodoPaymentsClient
-import kotlinx.coroutines.launch
-
-class PaymentViewModel(application: Application) : ViewModel() {
-    private val client = DodoPaymentsOkHttpClient.builder()
-        .bearerToken(BuildConfig.DODO_API_KEY)
-        .build()
-    
-    fun createCheckout(productId: String) {
-        viewModelScope.launch {
-            try {
-                val session = client.async().checkoutSessions().create(params)
-                // Open checkout URL in browser or WebView
-                openUrl(session.url())
-            } catch (e: Exception) {
-                handleError(e)
-            }
-        }
-    }
+fun safeCreatePayment(client: DodoPaymentsClient): Result<Payment> = runCatching {
+    client.payments().create(params)
 }
+
+// Usage
+safeCreatePayment(client)
+    .onSuccess { payment -> println("Created: ${payment.paymentId()}") }
+    .onFailure { error -> println("Error: ${error.message}") }
 ```
 
 ## प्रतिक्रिया सत्यापन

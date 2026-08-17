@@ -1,0 +1,104 @@
+---
+openapi-schema: PayoutsResponse
+title: الدفعة
+description: الحمولة المُرسلة إلى نقطة نهاية webhook الخاصة بك عند إنشاء دفعة أو
+  تغيير حالتها، وكيفية مطابقة كل حدث من أحداث دورة حياة الدفعة.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook للدفعات
+  - أحداث الدفعات
+  - تكامل webhook
+  - دفعة
+  - payout.success
+---
+
+<Info>
+تُعلمك webhooks الخاصة بالدفعات بموعد انتقال أموالك من Dodo Payments إلى حسابك المصرفي. استخدمها لمطابقة الدفعات في أنظمة المحاسبة لديك دون إجراء polling لنقطة النهاية [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## أحداث webhook للدفعات
+
+تُصدر الدفعة حدثًا في كل مرحلة من دورة حياتها. وتتطابق المراحل مع [حالات الدفعات](/features/payouts/payout-structure) المعروضة في لوحة التحكم لديك.
+
+| الحدث | يحدث عند | ما يعنيه عادةً |
+|-------|-----------|-----------------------|
+| `payout.created` | إنشاء دفعة، سواء عبر دورة الدفعات التلقائية أو خارج الدورة | الدفعة موجودة، لكنها لم تبدأ بالتحرك بعد |
+| `payout.in_progress` | حلول تاريخ استحقاق الدفعة وبدء المعالجة | الأموال في طريقها إلى حسابك المصرفي |
+| `payout.on_hold` | إيقاف الدفعة مؤقتًا أو وضعها قيد المراجعة | قد تحتاج إلى تقديم معلومات إضافية |
+| `payout.success` | تسوية الدفعة إلى حسابك المصرفي | يُفترض أن تصبح الأموال متاحة في حسابك |
+| `payout.failed` | فشل الدفعة | يُعاد قيد المبلغ والرسوم إلى محفظتك |
+
+<Note>
+كان `payout.created` يُصدر سابقًا باسم `payout.not_initiated`. إذا كانت نقطة نهاية موجودة تُجري تصفيةً حسب `payout.not_initiated`، فحدّث عامل التصفية إلى `payout.created` ليواصل المطابقة. يظل الحقل `status` في الحمولة يُبلغ عن `not_initiated` في هذه المرحلة.
+</Note>
+
+## معالجة أحداث الدفعات
+
+تتعلق الدفعات بأموالك الخاصة، لا بأموال العميل، ولذلك تُستخدم هذه الأحداث عادةً في مسك الدفاتر والتنبيهات الداخلية بدلًا من التدفقات التي يواجهها العملاء.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+تحقق دائمًا من توقيع webhook قبل المعالجة — راجع [دليل Webhooks](/developer-resources/webhooks) لمعرفة الإعداد. يتجاهل المعالج أعلاه التحقق للاختصار.
+</Tip>
+
+<Warning>
+أحداث الدفعات ليست نهائية ولا مرتبة ترتيبًا صارمًا. قد يصل `payout.failed` بعد `payout.success` عندما يعيد أحد البنوك التحويل، وقد يصل `payout.success` بعد `payout.failed` عندما تتم استعادة دفعة فاشلة لاحقًا. تعامل مع الحقل `status` في الحمولة باعتباره الحالة الحالية، بدلًا من افتراض أن آخر حدث تلقيته هو الحدث النهائي.
+</Warning>
+
+## حالة الدفعة
+
+يعرض كائن الدفعة تقدمه من خلال حقل واحد:
+
+| الحقل | القيم |
+|-------|--------|
+| `status` | `not_initiated`، `in_progress`، `on_hold`، `success`، `failed` |
+
+<Note>
+الحقول `refunds` و`chargebacks` و`tax` في الحمولة مهملة. استخدم [نقاط نهاية تفصيل الدفعات](/api-reference/payouts/retrieve-breakup) للحصول على تفصيل شامل بدلًا من ذلك.
+</Note>
+
+## ذات صلة
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+كيفية جدولة الدفعات واحتسابها، وما الذي تعنيه كل حالة من حالات الدفعات.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+تتبّع أرصدة المحفظة ودفتر الأستاذ الذي يقف وراء كل دفعة.
+</Card>
+</CardGroup>
+
+## مخطط حمولة webhook

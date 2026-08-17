@@ -18,10 +18,10 @@ keywords:
 
 | 事件 | 描述 |
 |-------|-------------|
-| `entitlement_grant.created` | 创建了新的授权行。对于自动获取的许可证密钥，状态立即为 `delivered`，手动获取许可证密钥及其他集成则为 `pending`。|
-| `entitlement_grant.delivered` | 授权状态转为已交付。客户现在可以访问授权的平台、文件或许可证密钥。|
-| `entitlement_grant.failed` | 交付失败且不再重试。检查 `error_code` 和 `error_message`。|
-| `entitlement_grant.revoked` | 访问被撤销。检查 `revocation_reason` 了解原因。|
+| `entitlement_grant.created` | 已创建新的 grant 行。对于自动履行的 License Key，状态会立即变为 `Delivered`；对于手动履行的 License Key 以及其他所有集成，状态会变为 `Pending`。 |
+| `entitlement_grant.delivered` | grant 已转换为已交付状态。客户现在可以访问被授予权限的平台、文件或 License Key。 |
+| `entitlement_grant.failed` | 交付失败且不会重试。请检查 `error_code` 和 `error_message`。 |
+| `entitlement_grant.revoked` | 访问权限已被撤销。请检查 `revocation_reason` 以了解原因。 |
 
 所有四个事件共享相同的 `EntitlementGrantResponse` 负载，如下模式所述。
 
@@ -33,20 +33,20 @@ keywords:
 
 授予行刚刚插入。从此时起，即使状态发生变化，授予始终具有稳定的 `id`。使用此事件记录履行正在进行中。
 
-对于**自动获取的许可证密钥**，授权行直接插入，填充了 `status: "delivered"` 和 `delivered_at`，因此只能由一个 `created` 事件跟随，除非授权后来被撤销，否则不会有进一步的状态变化。
+对于**自动履行的 License Key**，该行会直接插入，并填充 `status: "Delivered"` 和 `delivered_at`，因此单个 `created` 事件之后不会再有其他状态变更，除非该 grant 随后被撤销。
 
-对于**手动获取的许可证密钥**（使用 `fulfillment_mode: manual` 的授权），授权行到达时有 `status: "pending"` 但没有 `license_key` 对象 — 还没有密钥。此事件表示有一个密钥等待获取；通过[`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key)提供它，随后触发 `entitlement_grant.delivered`。查看[手动获取](/features/license-keys#manual-fulfillment)。
+对于**手动履行的 License Key**（包含 `fulfillment_mode: manual` 的 entitlement），该行到达时会包含 `status: "Pending"`，但不包含 `license_key` 对象——此时还没有 License Key。此事件表示有一个 License Key 正在等待履行；请通过 [`POST /grants/{grant_id}/license-key`](/api-reference/entitlements/fulfill-license-key) 提供 License Key，随后系统会触发 `entitlement_grant.delivered`。请参阅[手动履行](/features/license-keys#manual-fulfillment)。
 
-对于**其他集成**，授权行到达带有 `status: "pending"`。完成交付后，紧跟着发生 `delivered` 或 `failed` 事件：
+对于**其他所有集成**，该行到达时会包含 `status: "Pending"`。交付完成后会触发 `delivered` 或 `failed` 事件：
 
-- **基于 OAuth 的集成**（Discord、GitHub、Notion）包括一个顾客必须访问的 `oauth_url` 来完成许可。授权保持为 `pending`，直到顾客授权。
-- **平台直接集成**（Telegram、Framer、数字文件）仅在平台调用运行时短暂保持 `pending`，然后转为 `delivered`。
+- **基于 OAuth 的集成**（Discord、GitHub、Notion）会包含一个 `oauth_url`，客户必须访问该链接以完成授权同意。在客户完成授权之前，grant 会保持为 `Pending`。
+- **平台直连集成**（Telegram、Framer、Digital Files）只会在平台调用执行期间短暂处于 `Pending`，随后转换为 `Delivered`。
 
 ### entitlement_grant.delivered
 
-授权由 `pending` 转为 `delivered`。客户现在拥有所描述的授权访问。使用此事件解锁你自己的系统中的依赖功能，例如配置工作区、发送自定义欢迎邮件或标记为 "已完成"。
+grant 已从 `Pending` 转换为 `Delivered`。客户现在可以获得 entitlement 所描述的访问权限。使用此事件在自己的系统中解锁依赖功能，例如配置工作区、发送自定义欢迎邮件，或将 "fulfilled" 标记设为已完成。
 
-负载的 `delivered_at` 字段记录了交付完成的时间。对于已在创建时到达 `delivered` 的授权，你将连续收到 `created` 和 `delivered` 事件。
+payload 的 `delivered_at` 字段记录了交付完成的时间。对于创建时即处于 `Delivered` 的 grant，您会连续收到 `created` 和 `delivered` 事件。
 
 ### entitlement_grant.failed
 
@@ -75,12 +75,13 @@ keywords:
 
 ## 负载变体
 
-`data` 字段始终是一个 `EntitlementGrantResponse` 对象。负载带有 `integration_type` 字段（例如 `license_key`, `digital_files`, `discord`），以便你可以直接识别授权类型。两种集成类型还附加了额外的嵌套对象：
+`data` 字段始终是一个 `EntitlementGrantResponse` 对象。payload 包含一个 `integration_type` 字段（例如 `license_key`、`digital_files`、`discord`），因此您可以直接识别 grant 类型。三种集成类型还会附加额外的嵌套对象：
 
-- 当 `integration_type` 是 `license_key` **且已发布密钥**时，包括 **`license_key`**。它包含生成的密钥、过期时间和激活使用情况。对于仍在 `pending` 的手动获取的授权，此对象为 `null`，直到你完成授权。
-- 当 `integration_type` 是 `digital_files` 时，包括 **`digital_product_delivery`**。它包含预签名的下载网址、可选的 `instructions` 和可选的 `external_url`。
+- 当 `integration_type` 为 `license_key` **且已签发 License Key** 时，会包含 **`license_key`**。其中包含生成的 License Key、到期时间和激活使用情况。对于仍处于 `Pending` 的手动履行 grant，在您履行该 grant 之前，此对象为 `null`。
+- 当 `integration_type` 为 `digital_files` 时，会包含 **`digital_product_delivery`**。其中包含预签名下载 URL、可选的 `instructions` 以及可选的 `external_url`。
+- 当 `integration_type` 为 `feature_flag` 时，会包含 **`feature`**。其中包含 grant 所授予能力的 `feature_type` 和 `feature_id`。
 
-对于所有其他集成类型（Discord、GitHub、Telegram、Framer、Notion），两个嵌套字段均为 `null`；相关的配置记录在授权本身中，而不是在授权行中。
+对于其他所有集成类型（Discord、GitHub、Telegram、Figma、Framer、Notion），这些嵌套字段均为 `null`；相关配置记录在 entitlement 本身中，而不是 grant 中。
 
 ---
 
@@ -94,14 +95,15 @@ keywords:
   "type": "entitlement_grant.delivered",
   "timestamp": "2026-05-01T10:25:33.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
     "customer_id": "cus_abc123",
-    "external_id": "lk_AAA111BBB222",
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "delivered",
+    "status": "Delivered",
     "integration_type": "license_key",
     "license_key": {
       "key": "PRO-AAAA-BBBB-CCCC-DDDD",
@@ -126,7 +128,7 @@ keywords:
 
 ### 许可证密钥等待手动获取 (`entitlement_grant.created`)
 
-当顾客购买了一个使用 `fulfillment_mode: manual` 的许可证密钥授权的产品时触发。授权行 `pending` 尚无 `license_key` 对象 — 商家必须提供密钥。
+当客户购买的产品包含使用 `fulfillment_mode: manual` 的 License Key entitlement 时触发。此时 grant 为 `Pending`，尚无 `license_key` 对象——商户必须提供 License Key。
 
 ```json theme={null}
 {
@@ -134,14 +136,15 @@ keywords:
   "type": "entitlement_grant.created",
   "timestamp": "2026-05-01T10:24:00.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
     "customer_id": "cus_abc123",
-    "external_id": null,
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "pending",
+    "status": "Pending",
     "integration_type": "license_key",
     "license_key": null,
     "digital_product_delivery": null,
@@ -167,14 +170,15 @@ keywords:
   "type": "entitlement_grant.delivered",
   "timestamp": "2026-05-01T10:30:12.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_2P9rQwYvMxTnKoCb4",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_files_J3kLmN4oP5",
     "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "delivered",
+    "status": "Delivered",
     "integration_type": "digital_files",
     "license_key": null,
     "digital_product_delivery": {
@@ -213,14 +217,15 @@ keywords:
   "type": "entitlement_grant.created",
   "timestamp": "2026-05-01T10:31:00.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_DiscordPending5L",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_discord_patrons",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "pending",
+    "status": "Pending",
     "integration_type": "discord",
     "license_key": null,
     "digital_product_delivery": null,
@@ -246,14 +251,15 @@ keywords:
   "type": "entitlement_grant.revoked",
   "timestamp": "2026-06-15T08:12:44.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_8VbC6JDZzPEqfBPUdpj0K",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_9xY2bKwQn5MjRpL8d",
     "customer_id": "cus_abc123",
-    "external_id": "sub_pro_monthly_001",
     "payment_id": null,
     "subscription_id": "sub_pro_monthly_001",
-    "status": "revoked",
+    "status": "Revoked",
     "integration_type": "license_key",
     "revocation_reason": "subscription_cancelled",
     "license_key": {
@@ -284,14 +290,15 @@ keywords:
   "type": "entitlement_grant.failed",
   "timestamp": "2026-05-01T10:36:21.000000Z",
   "data": {
+    "payload_type": "EntitlementGrant",
     "id": "grant_GhFailed7Z",
     "business_id": "bus_H4ekzPSlcg",
+    "brand_id": "brd_123",
     "entitlement_id": "ent_github_repo",
     "customer_id": "cus_abc123",
-    "external_id": "pay_a1b2c3d4",
     "payment_id": "pay_a1b2c3d4",
     "subscription_id": null,
-    "status": "failed",
+    "status": "Failed",
     "integration_type": "github",
     "license_key": null,
     "digital_product_delivery": null,
@@ -313,8 +320,8 @@ keywords:
 
 ## 集成提示
 
-- **在解锁依赖功能之前等待 `entitlement_grant.delivered`。** 一个 `payment.succeeded` 事件告诉你资金已到位；但并不表示客户已经拥有 GitHub 仓库或 Discord 角色。`delivered` 事件是获取的可信来源。
-- **将 `revocation_reason` 映射到保留流程。** `subscription_on_hold` 撤销通常意味着客户的信用卡失败，下一次续订将重新授予访问权限。`manual` 或 `subscription_cancelled` 撤销是有意的。在客户消息中区别对待。
-- **使用授权 `id` 作为幂等性密钥。** 单个授权最多发出一个 `created` 事件和最多一个终端事件（`delivered` 或 `failed`），最多发出一个 `revoked` 事件。来自 webhook 系统的重新交付可以重复事件；去重使用授权 `id` 加上 `type`。
-- **读取 `integration_type` 以识别授权类型。** 负载直接携带 `integration_type`（例如 `license_key`, `digital_files`, `discord`）。`license_key` 和 `digital_product_delivery` 嵌套对象在相应的授权完成后填充；手动获取的许可证密钥授权在你完成前保持 `pending` 带有 `integration_type: "license_key"` 和 `null` `license_key`。
-- **对于基于 OAuth 的授权，将 `oauth_url` 显示给客户。** Discord、GitHub 或 Notion 订阅流的 `entitlement_grant.created` 事件包括 `oauth_url` 和 `oauth_expires_at`。将其通过电子邮件发送给客户或在你的应用中显示以解除交付阻塞。
+- **在解锁依赖功能之前，等待 `entitlement_grant.delivered`。** `payment.succeeded` 事件表示款项已结算，但不表示客户已经获得 GitHub 仓库或 Discord 角色。`delivered` 事件才是履行完成的事实来源。
+- **将 `revocation_reason` 映射到留存流程。** `subscription_on_hold` 撤销通常表示客户的银行卡扣款失败，下一次续期时会重新授予访问权限。`manual` 或 `subscription_cancelled` 撤销则是有意执行的。请在客户沟通中区别对待。
+- **使用 grant 的 `id` 作为幂等键。** 单个 grant 最多会发出一个 `created` 事件、一个终止事件（`delivered` 或 `failed`），以及一个 `revoked` 事件。Webhook 系统的重新交付可能会重复事件；请根据 grant 的 `id` 和 `type` 进行去重。
+- **读取 `integration_type` 以识别 grant 类型。** payload 会直接携带 `integration_type`（例如 `license_key`、`digital_files`、`discord`）。相应的 grant 完成交付后，`license_key` 和 `digital_product_delivery` 嵌套对象会被填充；手动履行的 License Key grant 在您履行之前，会保持为 `Pending`，并带有 `integration_type: "license_key"` 以及一个为 `null` 的 `license_key`。
+- **对于基于 OAuth 的 grant，向客户展示 `oauth_url`。** Discord、GitHub 或 Notion 订阅者流程中的 `entitlement_grant.created` 事件包含 `oauth_url` 和 `oauth_expires_at`。请将其通过电子邮件发送给客户，或在您的应用中显示，以解除交付阻塞。

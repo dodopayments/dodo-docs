@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: भुगतान
+description: जब कोई payout बनाया जाता है या उसका status बदलता है, तब आपके
+  webhook endpoint पर भेजा जाने वाला payload, और payout lifecycle के प्रत्येक
+  event का मिलान कैसे करें।
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - payout webhook
+  - payout events
+  - webhook integration
+  - payout
+  - payout.success
+---
+
+<Info>
+Payout webhook आपको बताते हैं कि आपका अपना पैसा Dodo Payments से आपके bank account में कब स्थानांतरित होता है। Accounting systems में payouts का मिलान करने के लिए इनका उपयोग करें, ताकि [List Payouts](/api-reference/payouts/get-payouts) endpoint को बार-बार poll न करना पड़े।
+</Info>
+
+## Payout Webhook Events
+
+Payout अपने lifecycle के प्रत्येक चरण पर एक event emit करता है। ये चरण आपके dashboard में दिखाए गए [payout statuses](/features/payouts/payout-structure) से मेल खाते हैं।
+
+| Event | कब जारी होता है | आम तौर पर इसका अर्थ |
+|-------|-----------|-----------------------|
+| `payout.created` | जब payout बनाया जाता है, चाहे automatic payout cycle से या off-cycle | Payout मौजूद है, लेकिन अभी स्थानांतरित होना शुरू नहीं हुआ है |
+| `payout.in_progress` | जब payout की due date आती है और processing शुरू होती है | धनराशि आपके bank account की ओर भेजी जा रही है |
+| `payout.on_hold` | जब payout को रोका जाता है या review के लिए रखा जाता है | आपको अतिरिक्त जानकारी देनी पड़ सकती है |
+| `payout.success` | जब आपके bank account में payout का settlement हो जाता है | धनराशि आपके account में उपलब्ध हो जानी चाहिए |
+| `payout.failed` | जब payout विफल हो जाता है | राशि और fees आपके wallet में वापस credit कर दी जाती हैं |
+
+<Note>
+`payout.created` को पहले `payout.not_initiated` के रूप में emit किया जाता था। यदि कोई मौजूदा endpoint `payout.not_initiated` पर filter करता है, तो filter को `payout.created` पर अपडेट करें, ताकि उसका मिलान जारी रहे। Payload में मौजूद `status` field इस चरण पर भी `not_initiated` report करती है।
+</Note>
+
+## Payout Events को संभालना
+
+Payout आपके अपने पैसे से संबंधित होते हैं, customer के पैसे से नहीं। इसलिए ये events आम तौर पर customer-facing flows के बजाय bookkeeping और internal alerting में उपयोग किए जाते हैं।
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Processing से पहले हमेशा webhook signature verify करें — setup के लिए [Webhooks guide](/developer-resources/webhooks) देखें। संक्षिप्तता के लिए ऊपर दिए गए handler में verification शामिल नहीं है।
+</Tip>
+
+<Warning>
+Payout events न तो terminal होते हैं और न ही इनका क्रम सख्ती से निश्चित होता है। जब कोई bank transfer वापस करता है, तो `payout.failed`, `payout.success` के बाद आ सकता है; और जब कोई failed payout बाद में recover हो जाता है, तो `payout.success`, `payout.failed` के बाद आ सकता है। Payload में मौजूद `status` field को current state मानें, न कि यह मानें कि आपको प्राप्त हुआ अंतिम event ही final है।
+</Warning>
+
+## Payout Status
+
+Payout object एक single field के माध्यम से अपनी progress report करता है:
+
+| Field | Values |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+Payload में मौजूद `refunds`, `chargebacks` और `tax` deprecated हैं। इसके बजाय विस्तृत breakdown के लिए [payout breakup endpoints](/api-reference/payouts/retrieve-breakup) का उपयोग करें।
+</Note>
+
+## संबंधित
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Payouts कैसे schedule और calculate किए जाते हैं, और प्रत्येक payout status का क्या अर्थ है।
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Wallet balances और प्रत्येक payout के पीछे मौजूद ledger को track करें।
+</Card>
+</CardGroup>
+
+## Webhook Payload Schema

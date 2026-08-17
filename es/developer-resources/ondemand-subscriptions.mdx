@@ -253,8 +253,12 @@ Campos clave de la solicitud (cuerpo):
       Si es verdadero, incluye tarifas de moneda adaptativa dentro de <code>product_price</code>. Si es falso, las tarifas se agregan encima.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Especifica cómo se utiliza el saldo de la billetera del cliente para liquidar este cargo.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Metadatos adicionales para el pago. Si se omite, se utilizan los metadatos de la suscripción.
+      Metadatos adicionales para el pago. Si se omiten, se utilizan los metadatos de la suscripción.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -336,94 +340,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Cobrar una suscripción que no es bajo demanda puede fallar. Asegúrate de que la suscripción tenga `on_demand: true` en sus detalles antes de cobrar.
+Cobrar una suscripción que no sea bajo demanda puede fallar. Asegúrate de que la suscripción tenga `on_demand: true` en sus detalles antes de cobrar.
 </Warning>
 
-## Manejo de cargos fallidos
+## Gestión de cargos fallidos
 
-Cuando un cargo contra una suscripción bajo demanda falla, decides qué ocurre a continuación. A diferencia de las suscripciones programadas — donde una renovación fallida detiene la facturación automática — **las suscripciones bajo demanda permanecen cargables tras un fallo**. Puedes llamar al endpoint de carga nuevamente como parte de tu propia lógica de reintento.
+Cuando falla un cargo contra una suscripción bajo demanda, tú decides qué sucede después. A diferencia de las suscripciones programadas —donde una renovación fallida detiene la facturación automática posterior—, **las suscripciones bajo demanda siguen pudiendo cobrarse después de un fallo**. Puedes volver a llamar al endpoint de cargos como parte de tu propia lógica de reintentos.
 
-### Qué sucede en caso de fallo
+### Qué sucede cuando falla
 
 <Steps>
 <Step title="Charge attempt fails">
-La solicitud `POST /subscriptions/{subscription_id}/charge` ya sea devuelve una respuesta de error o se completa de forma asincrónica y emite un webhook `payment.failed` con la razón del rechazo.
+La solicitud `POST /subscriptions/{subscription_id}/charge` devuelve una respuesta de error o se completa de forma asíncrona y emite un webhook `payment.failed` con el motivo del rechazo.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-La suscripción puede pasar al estado `on_hold` y emitir un webhook `subscription.on_hold` (ver [Estados de Suscripción → En Espera](/features/subscription#on-hold-state)). Esto es una señal, no un bloqueo. Para suscripciones bajo demanda, `on_hold` **no** impide que vuelvas a cobrar.
+La suscripción puede pasar al estado `on_hold` y emitir un webhook `subscription.on_hold` (consulta [Estados de la suscripción → En espera](/features/subscription#on-hold-state)). Esto es una señal, no un bloqueo. En las suscripciones bajo demanda, `on_hold` **no** impide que vuelvas a cobrar.
 </Step>
 
 <Step title="Retry the charge (your call)">
-Para flujos bajo demanda, Dodo **no** realiza reintentos automáticos. Puedes llamar a `POST /subscriptions/{subscription_id}/charge` en cualquier momento para intentar de nuevo. Aplica la [política de reintentos segura](#payment-retries) a continuación: usa retroceso exponencial, omite rechazos fuertes y evita patrones de ráfaga, para que los reintentos no sean señalados por nuestros sistemas de fraude y riesgo.
+En los flujos bajo demanda, Dodo **no reintenta automáticamente**. Puedes volver a llamar a `POST /subscriptions/{subscription_id}/charge` en cualquier momento para reintentar. Aplica la [política de reintentos seguros](#payment-retries) que aparece a continuación —usa un retroceso exponencial, omite los rechazos definitivos y evita los patrones de ráfaga— para que nuestros sistemas de fraude y riesgo no marquen los reintentos.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-Si los reintentos siguen fallando porque el método de pago en sí está roto (tarjeta expirada, cuenta cerrada, etc.), utiliza [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) para recopilar uno nuevo del cliente. Si tiene éxito, la suscripción vuelve a `active` y `payment.succeeded` seguido de `subscription.active` se emiten webhooks.
+Si los reintentos siguen fallando porque el método de pago está dañado (tarjeta vencida, cuenta cerrada, etc.), utiliza [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) para recopilar uno nuevo del cliente. Tras completarse correctamente, la suscripción vuelve a `active` y se emiten los webhooks `payment.succeeded` seguidos de `subscription.active`.
 </Step>
 </Steps>
 
 <Info>
-**Bajo demanda vs programadas**: Para suscripciones programadas, Dodo gestiona sus propios reintentos de renovación y gestión del cobro. Para suscripciones bajo demanda, tú controlas la política de reintentos porque solo tú sabes cuándo debe ocurrir el siguiente cobro (está impulsado por tus eventos de uso, no por un calendario).
+**Bajo demanda frente a programadas**: Para las suscripciones programadas, Dodo ejecuta sus propios reintentos de renovación y gestión de morosidad. Para las suscripciones bajo demanda, tú administras la política de reintentos porque solo tú sabes cuándo debe producirse el siguiente cargo (depende de tus eventos de uso, no de un calendario).
 </Info>
 
-### Secuencia de webhook en un cobro fallido bajo demanda
+### Secuencia de webhooks tras un cargo bajo demanda fallido
 
 | Orden | Evento | Significado |
 |-------|-------|---------|
-| 1 | `payment.failed` | El intento de cobro bajo demanda no tuvo éxito (incluye la razón del rechazo) |
-| 2 | `subscription.on_hold` | La suscripción fue puesta en espera (informativo; no bloquea más cargos) |
-| 3* | `payment.succeeded` | Un cobro posterior, ya sea tu reintento o después de una actualización del método de pago, tuvo éxito |
-| 4* | `subscription.active` | La suscripción regresó a `active` después de un cobro exitoso |
+| 1 | `payment.failed` | El intento de cargo bajo demanda no se completó correctamente (incluye el motivo del rechazo) |
+| 2 | `subscription.on_hold` | La suscripción se puso en espera (informativo; no bloquea cargos posteriores) |
+| 3* | `payment.succeeded` | Un cargo posterior —ya sea tu reintento o uno realizado tras actualizar el método de pago— se completó correctamente |
+| 4* | `subscription.active` | La suscripción volvió a `active` después de un cargo correcto |
 
 <Info>
-Los eventos 3 y 4 solo se activan después de que un cobro de seguimiento tiene éxito.
+Los eventos 3 y 4 solo se activan después de que un cargo posterior se complete correctamente.
 </Info>
 
-### Responsabilidad de reintentos
+### Responsabilidad de los reintentos
 
 <Warning>
-Dodo Payments **no realiza reintentos automáticos de cargos fallidos bajo demanda**. Tú controlas la política de reintentos. Sigue las pautas de reintentos seguros a continuación para evitar ser señalado por nuestros sistemas de detección de fraude como prueba de tarjetas.
+Dodo Payments **no reintenta automáticamente los cargos bajo demanda fallidos**. Tú administras la política de reintentos. Sigue las directrices de reintentos seguros que aparecen a continuación para evitar que nuestros sistemas de detección de fraude te marquen por probar tarjetas.
 </Warning>
 
-[Gestión del Cobro de Suscripciones](/features/recovery/subscription-dunning) — la secuencia de recuperación por correo electrónico integrada — se aplica a pagos de *renovación* fallidos en suscripciones programadas y cancelaciones iniciadas por el cliente. No está diseñada para fallos de cargos bajo demanda. Comunícate con el cliente directamente (por ejemplo, correo electrónico transaccional o mensaje en app) cuando decidas que se necesita actualizar el método de pago.
+[Gestión de morosidad de suscripciones](/features/recovery/subscription-dunning) —la secuencia integrada de recuperación por correo electrónico— se limita a pagos de *renovación* fallidos en suscripciones programadas y a cancelaciones iniciadas por el cliente. No está diseñada para fallos de cargos bajo demanda. Comunícate directamente con el cliente (por ejemplo, mediante un correo transaccional o un aviso en la aplicación) cuando decidas que es necesario actualizar el método de pago.
 
 ## Reintentos de pago
 
-Nuestro sistema de detección de fraude puede bloquear patrones de reintento agresivos (y puede señalarlos como posible prueba de tarjetas). Sigue una política de reintentos segura.
+Nuestro sistema de detección de fraude puede bloquear patrones de reintentos agresivos (y marcarlos como posibles pruebas de tarjetas). Sigue una política de reintentos seguros.
 
 <Warning>
-Patrones de reintentos en ráfaga pueden ser señalados como fraudulentos o sospechosos de ser pruebas de tarjetas por nuestros sistemas de riesgo y procesadores. Evita reintentos agrupados; sigue las guías de horario de retroceso y alineación de tiempo a continuación.
+Nuestros sistemas de riesgo y procesadores pueden marcar los patrones de reintentos en ráfaga como fraudulentos o como posibles pruebas de tarjetas. Evita los reintentos agrupados; sigue el calendario de retroceso y las indicaciones de sincronización que aparecen a continuación.
 </Warning>
 
 ### Principios para políticas de reintentos seguros
 
-- **Mecanismo de retroceso**: Usa retroceso exponencial entre reintentos.
-- **Límites de reintentos**: Limita los reintentos totales (máximo 3–4 intentos).
-- **Filtrado inteligente**: Reintenta solo en fallos que se pueden reintentar (por ejemplo, errores de red/emisor, fondos insuficientes); nunca reintentes rechazos fuertes.
+- **Mecanismo de retroceso**: Utiliza un retroceso exponencial entre reintentos.
+- **Límites de reintentos**: Limita el total de reintentos (3–4 intentos como máximo).
+- **Filtrado inteligente**: Reintenta solo los fallos que admiten reintento (por ejemplo, errores de red o del emisor, fondos insuficientes); nunca reintentes rechazos definitivos.
 - **Prevención de pruebas de tarjetas**: No reintentes fallos como `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Varía metadatos (opcional)**: Si mantienes tu propio sistema de reintentos, diferencia los reintentos mediante metadatos (por ejemplo, `retry_attempt`).
+- **Variar los metadatos (opcional)**: Si mantienes tu propio sistema de reintentos, diferencia los reintentos mediante metadatos (por ejemplo, `retry_attempt`).
 
-### Horario de reintentos sugerido (suscripciones)
+### Calendario de reintentos sugerido (suscripciones)
 
-- **1er intento**: Inmediato cuando creas el cargo
-- **2º intento**: Después de 3 días
-- **3er intento**: Después de 7 días más (10 días en total)
-- **4º intento (final)**: Después de otros 7 días (17 días en total)
+- **1.er intento**: Inmediatamente al crear el cargo
+- **2.º intento**: Después de 3 días
+- **3.er intento**: Después de 7 días más (10 días en total)
+- **4.º intento (final)**: Después de otros 7 días (17 días en total)
 
-Paso final: si aún está impago, marca la suscripción como impaga o cancélala, según tu política. Notifica al cliente durante el intervalo para que actualice su método de pago.
+Paso final: si el pago sigue pendiente, marca la suscripción como impaga o cancélala, según tu política. Notifica al cliente durante el periodo disponible para actualizar su método de pago.
 
-### Evita reintentos en ráfaga; alinea con el tiempo de autorización
+### Evita los reintentos en ráfaga; alinéate con la hora de autorización
 
-- Ancla los reintentos a la marca de tiempo de la autorización original para evitar comportamiento de "ráfaga" en tu portafolio.
-- Ejemplo: Si el cliente inicia una prueba o mandato a la 1:10 pm hoy, programa reintentos de seguimiento a la 1:10 pm en días posteriores según tu retroceso (por ejemplo, +3 días → 1:10 pm, +7 días → 1:10 pm).
-- Alternativamente, si almacenas el tiempo del último pago exitoso `T`, programa el siguiente intento en `T + X days` para preservar la alineación del tiempo del día.
+- Basa los reintentos en la marca de tiempo de la autorización original para evitar un comportamiento de «ráfaga» en tu cartera.
+- Ejemplo: Si el cliente inicia una prueba o un mandato hoy a la 1:10 p. m., programa los reintentos posteriores a la 1:10 p. m. de los días siguientes según tu retroceso (por ejemplo, +3 días → 1:10 p. m., +7 días → 1:10 p. m.).
+- Como alternativa, si almacenas la hora del último pago correcto `T`, programa el siguiente intento en `T + X days` para conservar la alineación horaria.
 
 <Note>
-Zona horaria y DST: usa un estándar de tiempo consistente para programar y convierte para mostrar solo para mantener los intervalos.
+Zona horaria y horario de verano (DST): utiliza un estándar horario coherente para la programación y conviértelo únicamente para mostrarlo, a fin de mantener los intervalos.
 </Note>
 
-### Códigos de rechazo que no deberías volver a intentar
+### Códigos de rechazo que no debes reintentar
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -433,51 +437,52 @@ Zona horaria y DST: usa un estándar de tiempo consistente para programar y conv
 - `LOST_CARD`
 
 <Note>
-Para una lista completa de razones de rechazo y si son corregibles por el usuario, consulta la documentación de [Fallos de Transacciones](/api-reference/transaction-failures).
+Para consultar una lista completa de los motivos de rechazo y saber si el usuario puede corregirlos, consulta la documentación de
+[Fallos de transacciones](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Solo reintente en problemas suaves/temporales (por ejemplo, `insufficient_funds`, `issuer_unavailable`, `processing_error`, tiempos de espera de red). Si el mismo rechazo se repite, pausa más reintentos.
+Reintenta únicamente problemas temporales o leves (por ejemplo, `insufficient_funds`, `issuer_unavailable`, `processing_error`, tiempos de espera de red). Si se repite el mismo rechazo, pausa los reintentos posteriores.
 </Tip>
 
-### Pautas de implementación (sin código)
+### Directrices de implementación (sin código)
 
-- Usa un programador/cola que persista marcas de tiempo precisas; calcula el próximo intento con el mismo desfase de hora del día (por ejemplo, `T + 3 days` a la misma HH:MM).
-- Mantén y consulta la última marca de tiempo de pago exitoso `T` para calcular el próximo intento; no agrupe múltiples suscripciones al mismo instante.
-- Siempre evalúa la última razón de rechazo; detén los reintentos para rechazos fuertes en la lista de omisión arriba.
-- Límite de reintentos concurrentes por cliente y por cuenta para prevenir aumentos accidentales.
-- Comunica proactivamente: envía correo electrónico/SMS al cliente para actualizar su método de pago antes del próximo intento programado.
-- Usa metadatos solo para observabilidad (por ejemplo, `retry_attempt`); nunca intentes "evadir" sistemas de fraude/riesgo rotando campos inconsecuentes.
+- Utiliza un programador o una cola que conserve marcas de tiempo precisas; calcula el siguiente intento exactamente en el desplazamiento horario correspondiente (por ejemplo, `T + 3 days` a la misma hora HH:MM).
+- Mantén y consulta la marca de tiempo del último pago correcto `T` para calcular el siguiente intento; no agrupes varias suscripciones en el mismo instante.
+- Evalúa siempre el último motivo de rechazo; detén los reintentos para los rechazos definitivos de la lista anterior.
+- Limita los reintentos simultáneos por cliente y por cuenta para evitar aumentos repentinos accidentales.
+- Comunícate de forma proactiva: envía un correo electrónico o SMS al cliente para que actualice su método de pago antes del siguiente intento programado.
+- Utiliza los metadatos únicamente para observabilidad (por ejemplo, `retry_attempt`); nunca intentes «evadir» los sistemas de fraude o riesgo rotando campos irrelevantes.
 
 ## Cancelación
 
-Las suscripciones a demanda siguen un flujo de cancelación diferente al de las suscripciones programadas porque no hay un ciclo de facturación fijo para determinar una fecha de finalización inmediata.
+Las suscripciones bajo demanda siguen un flujo de cancelación distinto al de las suscripciones programadas porque no existe un ciclo de facturación fijo que sirva de referencia para una fecha de finalización inmediata.
 
-### Comportamiento del portal del cliente
+### Comportamiento del Customer Portal
 
-Cuando un cliente cancela una suscripción a demanda desde el [Portal del Cliente](/features/customer-portal), la cancelación se **programa para la próxima fecha de facturación** por defecto. La opción **Cancelar ahora** no se muestra intencionadamente para suscripciones a demanda.
+Cuando un cliente cancela una suscripción bajo demanda desde el [Customer Portal](/features/customer-portal), la cancelación se **programa para la siguiente fecha de facturación** de forma predeterminada. La opción **Cancelar ahora** no se muestra intencionadamente para las suscripciones bajo demanda.
 
-La razón: las suscripciones a demanda no tienen fechas de renovación recurrentes predecibles; el tiempo del próximo cargo se determina completamente por los eventos de uso. Programar la cancelación en la próxima fecha de facturación mantiene el mandato activo hasta el límite del período, de modo que cualquier uso en curso aún puede ser cobrado, y luego la suscripción termina limpiamente.
+El motivo es que las suscripciones bajo demanda no tienen fechas de renovación recurrentes predecibles: la hora del siguiente cargo depende completamente de tus eventos de uso. Programar la cancelación para la siguiente fecha de facturación mantiene activo el mandato hasta el límite del periodo, de modo que cualquier uso en curso aún pueda cobrarse; después, finaliza la suscripción correctamente.
 
-Después de que el cliente confirma la cancelación:
-- La suscripción permanece `active` y continúa siendo cobrada a través de `POST /subscriptions/{id}/charge` hasta la fecha de cancelación programada.
+Después de que el cliente confirme la cancelación:
+- La suscripción permanece en `active` y se puede seguir cobrando mediante `POST /subscriptions/{id}/charge` hasta la fecha de cancelación programada.
 - `cancel_at_next_billing_date` se establece en `true` en la suscripción.
 - Se emite un webhook `subscription.cancelled` cuando la cancelación entra en vigor.
 
 <Info>
-Si necesitas terminar la suscripción inmediatamente (por ejemplo, en respuesta a un reembolso o una solicitud de soporte), cancélala programáticamente a través de la API en lugar de depender del flujo del portal del cliente.
+Si necesitas finalizar la suscripción de inmediato (por ejemplo, en respuesta a un reembolso o una solicitud de asistencia), cancélala mediante la API de forma programática en lugar de depender del flujo del portal del cliente.
 </Info>
 
-### Cancelar programáticamente
+### Cancelar mediante programación
 
-Puedes cancelar una suscripción a demanda a través de la API en cualquier momento. Tú controlas si la cancelación es inmediata o programada.
+Puedes cancelar una suscripción bajo demanda mediante la API en cualquier momento. Tú decides si la cancelación es inmediata o programada.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Establece la suscripción `status` en `cancelled` para finalizarla de inmediato. El mandato es revocado y no se pueden crear más cargos.
+Establece `status` de la suscripción en `cancelled` para finalizarla de inmediato. El mandato se revoca y no se pueden crear más cargos.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -499,7 +504,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Sigue el comportamiento del portal del cliente: mantén la suscripción activa hasta la fecha de cancelación programada y luego termínala.
+Replica el comportamiento del portal del cliente: mantén activa la suscripción hasta la fecha de cancelación programada y, después, finalízala.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -521,48 +526,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhooks en la cancelación
+### Webhooks durante la cancelación
 
-| Evento | Cuándo se dispara |
+| Evento | Cuándo se activa |
 |-------|---------------|
-| `subscription.cancelled` | La suscripción está completamente cancelada y ya no es cobrable |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` fue activado (cancelación programada establecida o deshecha) |
+| `subscription.cancelled` | La suscripción se cancela por completo y deja de poder cobrarse |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` se activó o desactivó (se estableció o anuló la cancelación programada) |
 
 <Tip>
-Para distinguir las cancelaciones a demanda de las cancelaciones de suscripciones programadas en tu manejador, verifica la marca `on_demand` de la suscripción al procesar el webhook.
+Para distinguir las cancelaciones bajo demanda de las cancelaciones de suscripciones programadas en tu controlador, comprueba el indicador `on_demand` de la suscripción al procesar el webhook.
 </Tip>
 
 ## Seguimiento de resultados con webhooks
 
-Implementa el manejo de webhooks para seguir el recorrido del cliente. Consulta [Implementación de Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Implementa la gestión de webhooks para seguir el recorrido del cliente. Consulta [Implementación de webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
 - **subscription.active**: Mandato autorizado y suscripción activada
-- **subscription.failed**: Creación fallida (por ejemplo, fallo de mandato)
-- **subscription.on_hold**: Suscripción en espera (por ejemplo, estado impago)
-- **subscription.cancelled**: Suscripción completamente cancelada (ver [Cancelación](#cancellation))
-- **payment.succeeded**: Cobro exitoso
-- **payment.failed**: Cobro fallido
+- **subscription.failed**: Error en la creación (por ejemplo, fallo del mandato)
+- **subscription.on_hold**: Suscripción puesta en espera (por ejemplo, estado impago)
+- **subscription.cancelled**: Suscripción cancelada por completo (consulta [Cancelación](#cancellation))
+- **payment.succeeded**: Cargo completado correctamente
+- **payment.failed**: Cargo fallido
 
 <Tip>
-Para flujos a demanda, concéntrate en `payment.succeeded` e `payment.failed` para conciliar los cargos basados en el uso. Cuando `payment.failed` es seguido por `subscription.on_hold`, consulta [Manejo de cobros fallidos](#handling-failed-charges) para recuperar la suscripción.
+En los flujos bajo demanda, céntrate en `payment.succeeded` y `payment.failed` para conciliar los cargos basados en el uso. Cuando `payment.failed` va seguido de `subscription.on_hold`, consulta [Gestión de cargos fallidos](#handling-failed-charges) para recuperar la suscripción.
 </Tip>
 
 ## Pruebas y próximos pasos
 
 <Steps>
 <Step title="Create in test mode">
-Usa tu clave API de prueba para crear la suscripción, luego abre el `checkout_url` devuelto y completa el mandato.
+Utiliza tu clave de API de prueba para crear la suscripción; después, abre el `checkout_url` devuelto y completa el mandato.
 </Step>
 <Step title="Trigger a charge">
-Llama al endpoint de cobro con un pequeño `product_price` (por ejemplo, `100`) y verifica que recibas `payment.succeeded`.
+Llama al endpoint de cargos con un `product_price` pequeño (por ejemplo, `100`) y comprueba que recibes `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Cambia a tu clave API en vivo una vez que hayas validado eventos y actualizaciones de estado interno.
+Cambia a tu clave de API activa una vez que hayas validado los eventos y las actualizaciones del estado interno.
 </Step>
 </Steps>
 
 ## Solución de problemas
 
-- **422 Solicitud inválida**: Asegúrate de que `on_demand.mandate_only` se proporcione al crear y `product_price` se proporcione para los cargos.
-- **Errores de moneda**: Si sobrescribes `product_currency`, confirma que está soportado para tu cuenta y cliente.
-- **No se reciben webhooks**: Verifica la configuración de tu URL de webhook y el secreto de la firma.
+- **422 Invalid Request**: Asegúrate de proporcionar `on_demand.mandate_only` al crear la suscripción y `product_price` para los cargos.
+- **Errores de moneda**: Si anulas `product_currency`, confirma que sea compatible con tu cuenta y tu cliente.
+- **No se recibieron webhooks**: Verifica la configuración de la URL del webhook y del secreto de firma.

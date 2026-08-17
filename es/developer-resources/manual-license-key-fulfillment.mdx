@@ -13,7 +13,7 @@ keywords:
   - derechos
 ---
 
-Esta guía recorre la construcción de un sistema de **cumplimiento manual de claves de licencia** de principio a fin. En lugar de que Dodo Payments auto-genere una clave al momento del pago, cada compra crea una concesión `pending` y espera a que *tú* suministres el valor de la clave desde tu propio sistema, un proveedor externo o un conjunto finito de códigos.
+Esta guía explica cómo crear un sistema completo de **entrega manual de claves de licencia**. En lugar de que Dodo Payments genere automáticamente una clave al realizar el pago, cada compra crea una concesión `Pending` y espera a que *tú* proporciones el valor de la clave desde tu propio sistema, un proveedor externo o un conjunto finito de códigos.
 
 Al final tendrás:
 
@@ -38,8 +38,8 @@ sequenceDiagram
     participant D as Dodo Payments
     participant M as Your Backend
     C->>D: Purchase (manual-mode License Key product)
-    D->>D: Create grant (status: pending, no key)
-    D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
+    D->>D: Create grant (status: Pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: Pending)
     M->>M: Obtain key from own system / vendor
     M->>D: POST /grants/{grant_id}/license-key { key }
     D->>C: Deliver license key to customer
@@ -79,11 +79,11 @@ Selecciona **Clave de Licencia** como la integración y dale un **Nombre**. El f
 - **Mensaje de Activación** — mensaje opcional de cara al cliente que se muestra cuando activan la clave.
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="Formulario de nuevo derecho de clave de licencia con nombre, modo de cumplimiento, duración de la licencia, límite de activaciones y mensaje de activación" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="New License Key entitlement form with name, fulfillment mode, license length, activations limit, and activation message" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 <Step title="Set Fulfillment Mode to Manual">
-Abre el menú desplegable **Modo de Cumplimiento** y cámbialo de **Automático** a **Manual**. Esta es la configuración que impulsa toda esta guía — sin ella, las claves se generan y envían por correo electrónico automáticamente y no se crea ninguna concesión pendiente. Con **Manual** seleccionado, cada compra crea una concesión `pending` para que tú la cumplas. Haz clic en **Crear Derecho** para guardar.
+Abre el menú desplegable **Fulfillment Mode** y cámbialo de **Automatic** a **Manual**. Este es el ajuste que determina toda esta guía: sin él, las claves se generan y envían por correo electrónico automáticamente y no se crea ninguna concesión pendiente. Con **Manual** seleccionado, cada compra crea una concesión `Pending` que debes completar. Haz clic en **Create Entitlement** para guardar.
 </Step>
 </Steps>
 </Tab>
@@ -173,15 +173,15 @@ Abre el producto que deseas vender, expande **Configuración Avanzada → Derech
 El modo de cumplimiento es una propiedad del **derecho**, no del producto. Debido a que lo configuraste en **Manual** en el Paso 1, cada producto al que se adjunta este derecho crea concesiones de clave de licencia `pending` en la compra — no hay nada extra que configurar aquí.
 </Note>
 
- <Tip>
-Si aún no tienes un producto, crea uno primero (único o suscripción). Consulta la [Guía de Integración de Pagos Únicos](/developer-resources/integration-guide) para vender el producto a través del pago.
-</Tip>
+<Note>
+El modo de entrega es una propiedad de la **concesión**, no del producto. Como lo estableciste en **Manual** en el Paso 1, cada producto al que esté asociada esta concesión crea concesiones de claves de licencia `Pending` al realizar la compra; no hay nada más que configurar aquí.
+</Note>
 
 ## Paso 3 — Detectar Concesiones Pendientes
 
 Cuando un cliente compra el producto, Dodo Payments crea una concesión en estado `pending` **sin clave adjunta** y activa un webhook `entitlement_grant.created`. Esta es tu señal de que un cliente está esperando una clave.
 
-### Escucha el webhook
+Cuando un cliente compra el producto, Dodo Payments crea una concesión con estado `Pending` **sin ninguna clave asociada** y activa un webhook `entitlement_grant.created`. Esta es la señal de que un cliente está esperando una clave.
 
 Configura un punto final de webhook (Desarrollador → Webhooks en el panel de control) y actúa sobre concesiones de claves de licencia pendientes. La implementación sigue la especificación de [Standard Webhooks](https://standardwebhooks.com/).
 
@@ -217,7 +217,37 @@ export async function POST(request: Request) {
 }
 ```
 
-El payload de la concesión lleva `integration_type: "license_key"`, para que puedas reconocer una concesión de clave de licencia sin una búsqueda adicional. Consulta la [Referencia del webhook de Concesión de Derechos](/developer-resources/webhooks/intents/entitlement-grant) para ver el payload completo.
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
+
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'Pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
 
 ### O consulta la API de Listado de Concesiones
 
@@ -286,15 +316,32 @@ async function fulfill(grantId: string, key: string) {
 }
 ```
 
-```bash cURL theme={null}
-curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
-  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
-    "activations_limit": 5,
-    "expires_at": "2027-05-01T00:00:00Z"
-  }'
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
+
+  return res.json(); // updated grant, now status: "Delivered"
+}
 ```
 
  </CodeGroup>
@@ -315,7 +362,7 @@ Vencimiento por clave (ISO 8601). Vuelve a la duración de la configuración del
 
 Al tener éxito, la concesión pasa a `delivered`, el cliente recibe automáticamente la clave (el mismo correo electrónico que recibiría bajo cumplimiento automático), y se activa `entitlement_grant.delivered`.
 
-El cliente recibe un correo electrónico con la clave de licencia, el producto, el límite de activación, el vencimiento y tus instrucciones de activación:
+Cuando la operación tiene éxito, la concesión pasa a `Delivered`, el cliente recibe la clave automáticamente (el mismo correo electrónico que recibiría con la entrega automática) y se activan los eventos de webhook `license_key.created` y `entitlement_grant.delivered`.
 
  <Frame caption="The license key email the customer receives once you fulfill the grant.">
 <img src="/images/entitlements/license-keys/customer-email.png" alt="Correo electrónico de clave de licencia al cliente mostrando la clave, producto, límite de activación, vencimiento e instrucciones de activación" style={{ maxHeight: '500px', width: 'auto' }} />
@@ -337,9 +384,13 @@ El punto final valida la concesión antes de entregar nada. Maneja estas respues
 | `409` | Concesión no está esperando cumplimiento (ya entregada o ya tiene una clave), **o** el valor de la clave ya existe. | Si ya se entregó, trata como éxito. Si es una clave duplicada, proporciona una clave diferente. |
 | `422` | El cuerpo de la solicitud falló en la validación (por ejemplo, `activations_limit < 1`). | Corrige el campo y reintenta. |
 
- <Warning>
-El cumplimiento es seguro para reintentar en errores transitorios (tiempos de espera, `5xx`). Cada concesión solo puede cumplirse una vez, por lo que un reintento después de una llamada exitosa pero no reconocida devuelve `409` en lugar de emitir una segunda clave o enviar un correo electrónico duplicado. Usa el `id` de la concesión como tu clave de idempotencia.
-</Warning>
+| Estado | Significado | Qué hacer |
+|---|---|---|
+| `200` | Clave entregada; la concesión ahora está en `Delivered`. | Listo. |
+| `400` | No es una concesión de clave de licencia, o la clave está vacía o contiene solo espacios en blanco. | Corrige la solicitud; no la reintentes tal cual. |
+| `404` | No existe ninguna concesión con ese ID para tu empresa. | Verifica el `grant_id`. |
+| `409` | La concesión no está esperando la entrega (ya se entregó o ya tiene una clave), **o** el valor de la clave ya existe. | Si ya se entregó, trátalo como un éxito. Si la clave está duplicada, proporciona otra clave. |
+| `422` | El cuerpo de la solicitud no superó la validación (por ejemplo, `activations_limit < 1`). | Corrige el campo y vuelve a intentarlo. |
 
 ## Verifica el Flujo
 
@@ -348,9 +399,10 @@ El cumplimiento es seguro para reintentar en errores transitorios (tiempos de es
 3. Llama al punto final de cumplimiento con una clave de prueba.
 4. Confirma que la respuesta muestra `status: "delivered"` con `license_key` poblado, el cliente recibe el correo electrónico con la clave y se activa `entitlement_grant.delivered`.
 
- <Check>
-Una vez entregada, el cliente puede [activar y validar](/features/license-keys#activation-validation-deactivation) la clave contra los puntos finales públicos de licencia exactamente como una clave auto-generada.
-</Check>
+1. Compra el producto en modo de prueba (consulta las [guías de checkout](/developer-resources/integration-guide)).
+2. Confirma que tu webhook recibió `entitlement_grant.created` con `status: "Pending"` y `integration_type: "license_key"`, o que la concesión aparece en la respuesta de List Grants con esos filtros.
+3. Llama al endpoint de entrega con una clave de prueba.
+4. Confirma que la respuesta muestra `status: "Delivered"` con un `license_key` completado, que el cliente recibe el correo electrónico con la clave y que se activa `entitlement_grant.delivered`.
 
 ## Referencia de API Relacionada
 
@@ -371,15 +423,15 @@ Los eventos `entitlement_grant.*` que indican concesiones pendientes y entregada
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Create the License Key entitlement with `fulfillment_mode: manual`.
+Crea la concesión de License Key con `fulfillment_mode: manual`.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Filter by `integration_type` and `status` to find pending grants.
+Filtra por `status` y `customer_id` para encontrar las concesiones pendientes.
 </Card>
 <Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
-Deliver the key value and transition the grant to delivered.
+Entrega el valor de la clave y cambia la concesión al estado entregado.
 </Card>
 <Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
-The `entitlement_grant.*` events that signal pending and delivered grants.
+Los eventos `entitlement_grant.*` que indican que las concesiones están pendientes y entregadas.
 </Card>
 </CardGroup>

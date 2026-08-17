@@ -1,0 +1,199 @@
+---
+title: Rekomi
+description: Jalankan program afiliasi di toko Dodo Payments Anda dengan Rekomi.
+  Satu API key yang ditempelkan menghubungkan keduanya, dan Rekomi melacak
+  penjualan serta membayar afiliasi Anda.
+icon: /images/logos/rekomi.svg
+keywords:
+  - Dodo Payments
+  - Rekomi
+  - pelacakan afiliasi
+  - program afiliasi
+  - pembayaran afiliasi
+---
+
+## Pendahuluan
+
+[Rekomi](https://rekomi.com) adalah platform pelacakan dan pengelolaan afiliasi dengan integrasi native Dodo Payments. Seseorang membagikan tautan afiliasi, Rekomi mencatat klik tersebut, dan ketika pengunjung itu membeli, penjualan diterima dari Dodo Payments dan afiliasi yang tepat otomatis mendapatkan kredit. Rekomi menghitung komisi dan juga membayar afiliasi Anda, di lebih dari 150 negara, termasuk formulir pajak.
+
+Koneksinya hanya perlu satu kali paste: Anda memberikan Rekomi API key Dodo Payments dengan akses tulis yang diaktifkan, lalu Rekomi memvalidasinya, membuat endpoint webhook di akun Dodo Payments Anda, dan mengambil signing secret secara langsung. Tidak ada formulir webhook yang perlu diisi dan tidak ada apa pun yang perlu ditempelkan kembali ke Dodo Payments.
+
+<Info>
+Sebuah "penjualan" dikreditkan kepada afiliasi ketika pelanggan yang dirujuk menyelesaikan pembayaran satu kali, memulai langganan berbayar, atau membayar perpanjangan. Pengembalian dana dan sengketa secara otomatis menarik kembali komisi tersebut.
+</Info>
+
+## Cara Kerjanya
+
+Dodo Payments meng-host checkout di domainnya sendiri, sehingga rujukan afiliasi masuk ke penjualan sebagai metadata checkout:
+
+1. Pengunjung mengeklik tautan afiliasi dan tiba di situs Anda, tempat skrip Rekomi menyimpan rujukan tersebut di browser mereka.
+2. Mereka membuka checkout, lalu Anda melampirkan rujukan tersebut ke pembayaran sebagai metadata `rekomi_ref`.
+3. Dodo Payments memproses pembayaran dan mengirimkan webhook `payment.succeeded` yang ditandatangani ke endpoint yang dibuat Rekomi.
+4. Rekomi mencocokkan rujukan dengan afiliasi, menghitung komisi berdasarkan jumlah penjualan sebelum pajak, dan mencatatnya.
+
+Perpanjangan langganan diterima dengan cara yang sama, sehingga komisi berulang tidak memerlukan pekerjaan tambahan, dan pengembalian dana serta sengketa mengalir melalui endpoint yang sama.
+
+## Prasyarat
+
+Sebelum menyiapkan integrasi ini, pastikan Anda memiliki:
+
+1. [Akun Dodo Payments](https://app.dodopayments.com) dalam live mode
+2. [Akun Rekomi](https://app.rekomi.com/sign-up)
+3. API key Dodo Payments dengan **akses tulis** yang diaktifkan (key hanya baca tidak dapat membuat webhook)
+
+## Memulai
+
+<Steps>
+<Step title="Create an API Key with Write Access">
+  Di dashboard Dodo Payments Anda, buka **Developer → API Keys** dan buat key (beri nama "Rekomi") dengan mencentang **Enable write access**. Lihat [panduan API key](/api-reference/introduction#api-key-management-and-authentication) untuk petunjuk terperinci.
+
+  <Warning>
+  Aktifkan akses tulis pada key: key hanya baca lolos validasi tetapi tidak dapat membuat endpoint webhook, sehingga koneksi akan gagal di tengah proses.
+  </Warning>
+</Step>
+
+<Step title="Paste the Key into Rekomi">
+  Di Rekomi, buka **Setup → Connect payment processor**, pilih Dodo Payments, lalu tempelkan key tersebut. Rekomi memvalidasinya secara langsung, membuat endpoint webhook di akun Anda, dan mengambil signing secret secara mandiri.
+
+  <Frame>
+    <img src="/images/integrations/rekomi/connect.png" alt="Halaman penyiapan Dodo Payments Rekomi dengan satu kolom API key dan tombol koneksi" style={{ maxHeight: '500px', width: 'auto' }} />
+  </Frame>
+
+  <Info>
+  Setelah terhubung, key hanya digunakan untuk mengelola endpoint webhook dan menjalankan pemeriksaan kesehatan berkala. Penjualan Anda diterima melalui webhook yang ditandatangani, bukan melalui API.
+  </Info>
+</Step>
+
+<Step title="Install the Rekomi Script">
+  Tambahkan skrip pelacakan Rekomi ke situs pemasaran Anda agar klik afiliasi dapat ditangkap. Snippet Anda dengan ID program yang sudah diisi tersedia di **Setup → Install** dalam Rekomi.
+
+  ```html
+  <script
+    async
+    src="https://api.rekomi.com/api/v1/r/loader.js"
+    data-program-id="YOUR_PROGRAM_ID"
+  ></script>
+  ```
+
+</Step>
+
+<Step title="Pass the Referral into Checkout">
+  Lampirkan rujukan yang ditangkap ke setiap pembayaran sebagai metadata `rekomi_ref`. Lihat contoh implementasi di bawah.
+</Step>
+
+<Step title="Done!">
+  Penjualan, perpanjangan, pengembalian dana, dan sengketa kini secara otomatis memberikan dan menarik kembali komisi afiliasi, sementara Rekomi menangani pembayaran kepada afiliasi Anda.
+</Step>
+</Steps>
+
+## Panduan Implementasi
+
+### Checkout Sessions melalui API
+
+Baca rujukan tersebut di frontend Anda dengan `window.Rekomi.getReferral()`, kirimkan ke backend bersama permintaan checkout, lalu tetapkan di `metadata`:
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createCheckout(productId: string, rekomiRef?: string) {
+  const session = await client.checkoutSessions.create({
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    return_url: 'https://yoursite.com/success',
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return session.checkout_url;
+}
+```
+
+Field `metadata.rekomi_ref` yang sama dapat digunakan pada produk langganan, sehingga tagihan awal dan setiap perpanjangan mengkreditkan afiliasi yang sama.
+
+### Payments API
+
+<Note>
+Contoh di bawah menggunakan `POST /payments`, yang **deprecated**. Fitur ini masih berfungsi untuk integrasi yang sudah ada, tetapi integrasi baru sebaiknya menggunakan [Checkout Sessions](/developer-resources/checkout-session) (`POST /checkouts`) — `metadata` diteruskan dengan cara yang sama.
+</Note>
+
+```typescript Node.js
+import DodoPayments from 'dodopayments';
+
+const client = new DodoPayments();
+
+export async function createPayment(productId: string, rekomiRef?: string) {
+  const payment = await client.payments.create({
+    billing: {
+      city: 'New York',
+      country: 'US',
+      state: 'NY',
+      street: '123 Main St',
+      zipcode: '10001',
+    },
+    customer: {
+      email: 'customer@example.com',
+      name: 'John Doe',
+    },
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    payment_link: true,
+    metadata: {
+      ...(rekomiRef ? { rekomi_ref: rekomiRef } : {}),
+    },
+  });
+
+  return payment;
+}
+```
+
+### Tautan Pembayaran Statis
+
+Tambahkan parameter query metadata datar ke tautan (bukan bentuk bracket):
+
+```javascript
+const ref = window.Rekomi?.getReferral?.();
+let url = 'https://checkout.dodopayments.com/buy/YOUR_PRODUCT_ID';
+if (ref) url += `?metadata_rekomi_ref=${encodeURIComponent(ref)}`;
+// use url as the href on your Buy button
+```
+
+Dodo Payments memasukkan parameter query `metadata_*` ke dalam metadata pembayaran, tempat Rekomi membacanya.
+
+## Yang Dilacak
+
+| Peristiwa            | Yang terjadi                                                            |
+| -------------------- | ----------------------------------------------------------------------- |
+| Pembayaran satu kali | Komisi dikreditkan berdasarkan jumlah penjualan sebelum pajak          |
+| Perpanjangan langganan | Komisi berulang, setiap tagihan diterima sebagai event pembayaran tersendiri |
+| Pengembalian dana    | Komisi ditarik kembali secara otomatis, tidak pernah melebihi jumlah yang telah dikreditkan |
+| Sengketa             | Komisi ditarik kembali saat sengketa dibuka                            |
+
+<Tip>
+Komisi dihitung berdasarkan jumlah penjualan sebelum pajak: Dodo Payments adalah Merchant of Record dan memungut pajak, sehingga afiliasi Anda mendapatkan penghasilan dari penjualan itu sendiri, bukan dari pajak yang kebetulan ditambahkan oleh negara pembeli.
+</Tip>
+
+## Catatan Penting
+
+- Rekomi mendaftarkan endpoint webhook hanya dengan event yang diperlukan. Hindari mengedit daftar event endpoint tersebut di dashboard Dodo Payments; pemeriksaan kesehatan Rekomi akan menandai koneksi jika ada event yang dihapus.
+- Uji coba tidak memicu pembayaran hingga masa uji coba berakhir, sehingga tidak ada komisi sampai tagihan nyata pertama dibuat.
+- Memutuskan koneksi di Rekomi akan kembali menghapus endpoint webhook dari akun Dodo Payments Anda.
+
+## Sumber Daya Tambahan
+
+<CardGroup cols={2}>
+  <Card title="Rekomi's Dodo Payments Guide" icon="book-open" href="https://rekomi.com/docs/brands/install/dodo">
+    Panduan penyiapan lengkap, pemecahan masalah, dan detail keamanan di dokumentasi Rekomi.
+  </Card>
+  <Card title="Affiliates Feature Guide" icon="users" href="/features/affiliates">
+    Semua opsi integrasi afiliasi untuk Dodo Payments.
+  </Card>
+</CardGroup>
+
+<Info>
+Butuh bantuan? Hubungi dukungan Rekomi di [support@rekomi.com](mailto:support@rekomi.com) atau dukungan Dodo Payments di [support@dodopayments.com](mailto:support@dodopayments.com) untuk mendapatkan bantuan terkait integrasi.
+</Info>

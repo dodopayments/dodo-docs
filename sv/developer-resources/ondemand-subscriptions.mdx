@@ -252,8 +252,12 @@ Key request fields (body):
       If true, includes adaptive currency fees within <code>product_price</code>. If false, fees are added on top.
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      Ange hur kundens wallet-saldo ska användas för att reglera denna debitering.
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      Additional metadata for the payment. If omitted, the subscription metadata is used.
+      Ytterligare metadata för betalningen. Om den utelämnas används prenumerationens metadata.
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -335,94 +339,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-Charging a subscription that is not on-demand may fail. Ensure the subscription has `on_demand: true` in its details before charging.
+Det kan misslyckas att debitera en prenumeration som inte är on-demand. Kontrollera att prenumerationen har `on_demand: true` i sina detaljer innan du debiterar den.
 </Warning>
 
-## Handling failed charges
+## Hantera misslyckade debiteringar
 
-When a charge against an on-demand subscription fails, you decide what happens next. Unlike scheduled subscriptions — where a failed renewal stops further automatic billing — **on-demand subscriptions remain chargeable after a failure**. You can call the charge endpoint again as part of your own retry logic.
+När en debitering av en on-demand-prenumeration misslyckas avgör du vad som händer härnäst. Till skillnad från schemalagda prenumerationer – där en misslyckad förnyelse stoppar all fortsatt automatisk fakturering – **kan on-demand-prenumerationer fortfarande debiteras efter ett misslyckande**. Du kan anropa debiteringsendpointen igen som en del av din egen retry-logik.
 
-### What happens on failure
+### Vad händer vid ett misslyckande
 
 <Steps>
 <Step title="Charge attempt fails">
-The `POST /subscriptions/{subscription_id}/charge` request either returns an error response or completes asynchronously and emits a `payment.failed` webhook with the decline reason.
+Begäran `POST /subscriptions/{subscription_id}/charge` returnerar antingen ett felsvar eller slutförs asynkront och skickar en `payment.failed`-webhook med orsaken till avslaget.
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-The subscription may move to the `on_hold` state and emit a `subscription.on_hold` webhook (see [Subscription States → On Hold](/features/subscription#on-hold-state)). This is a signal — not a lock. For on-demand subscriptions, `on_hold` does **not** prevent you from charging again.
+Prenumerationen kan övergå till tillståndet `on_hold` och skicka en `subscription.on_hold`-webhook (se [Prenumerationstillstånd → On Hold](/features/subscription#on-hold-state)). Detta är en signal – inte ett lås. För on-demand-prenumerationer hindrar `on_hold` **inte** att du debiterar igen.
 </Step>
 
 <Step title="Retry the charge (your call)">
-For on-demand flows, Dodo does **not** auto-retry. You can call `POST /subscriptions/{subscription_id}/charge` again at any time to retry. Apply the [safe retry policy](#payment-retries) below — use exponential backoff, skip hard declines, and avoid burst patterns — so retries are not flagged by our fraud and risk systems.
+För on-demand-flöden gör Dodo **ingen automatisk retry**. Du kan anropa `POST /subscriptions/{subscription_id}/charge` igen när som helst för att försöka på nytt. Tillämpa den [säkra retry-policyn](#payment-retries) nedan – använd exponentiell backoff, hoppa över hårda avslag och undvik burst-mönster – så att retry-försöken inte flaggas av våra bedrägeri- och risksystem.
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-If retries keep failing because the payment method itself is broken (expired card, closed account, etc.), use [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) to collect a new one from the customer. On success, the subscription returns to `active` and `payment.succeeded` followed by `subscription.active` webhooks are emitted.
+Om retry-försöken fortsätter att misslyckas eftersom själva betalningsmetoden är ogiltig (utgånget kort, stängt konto osv.), använd [`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) för att samla in en ny från kunden. När det lyckas återgår prenumerationen till `active` och `payment.succeeded` följt av `subscription.active`-webhooks skickas.
 </Step>
 </Steps>
 
 <Info>
-**On-demand vs scheduled**: For scheduled subscriptions, Dodo runs its own renewal retries and dunning. For on-demand subscriptions, you own the retry policy because only you know when the next charge should occur (it's driven by your usage events, not a calendar).
+**On-demand jämfört med schemalagda**: För schemalagda prenumerationer hanterar Dodo egna retry-försök och kravhantering. För on-demand-prenumerationer ansvarar du för retry-policyn, eftersom bara du vet när nästa debitering ska ske (den styrs av dina användningshändelser, inte av en kalender).
 </Info>
 
-### Webhook sequence on a failed on-demand charge
+### Webhook-sekvens vid en misslyckad on-demand-debitering
 
-| Order | Event | Meaning |
+| Ordning | Händelse | Betydelse |
 |-------|-------|---------|
-| 1 | `payment.failed` | The on-demand charge attempt did not succeed (includes the decline reason) |
-| 2 | `subscription.on_hold` | The subscription was placed on hold (informational; does not block further charges) |
-| 3* | `payment.succeeded` | A subsequent charge — either your retry or after a payment method update — succeeded |
-| 4* | `subscription.active` | The subscription returned to `active` after a successful charge |
+| 1 | `payment.failed` | On-demand-debiteringsförsöket lyckades inte (inkluderar orsaken till avslaget) |
+| 2 | `subscription.on_hold` | Prenumerationen sattes på hold (information; blockerar inte ytterligare debiteringar) |
+| 3* | `payment.succeeded` | En efterföljande debitering – antingen din retry eller efter en uppdatering av betalningsmetoden – lyckades |
+| 4* | `subscription.active` | Prenumerationen återgick till `active` efter en lyckad debitering |
 
 <Info>
-Events 3 and 4 only fire after a follow-up charge succeeds.
+Händelserna 3 och 4 utlöses endast efter att en efterföljande debitering har lyckats.
 </Info>
 
-### Retry responsibility
+### Ansvar för retry
 
 <Warning>
-Dodo Payments **does not auto-retry failed on-demand charges**. You own the retry policy. Follow the safe retry guidelines below to avoid being flagged by our fraud detection systems as card testing.
+Dodo Payments **gör inga automatiska retry-försök för misslyckade on-demand-debiteringar**. Du ansvarar för retry-policyn. Följ riktlinjerna för säkra retry-försök nedan för att undvika att våra system för bedrägeridetektering flaggar dem som korttestning.
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning) — the built-in email recovery sequence — is scoped to failed *renewal* payments on scheduled subscriptions and customer-initiated cancellations. It is not designed for on-demand charge failures. Communicate with the customer directly (e.g., transactional email or in-app prompt) when you decide the payment method needs to be updated.
+[Subscription Dunning](/features/recovery/subscription-dunning) – den inbyggda e-postbaserade återhämtningssekvensen – gäller misslyckade *förnyelsebetalningar* för schemalagda prenumerationer och uppsägningar som initierats av kunden. Den är inte utformad för misslyckade on-demand-debiteringar. Kommunicera direkt med kunden (t.ex. via transaktionell e-post eller en uppmaning i appen) när du avgör att betalningsmetoden behöver uppdateras.
 
-## Payment retries
+## Retry-försök för betalningar
 
-Our fraud detection system may block aggressive retry patterns (and can flag them as potential card testing). Follow a safe retry policy.
+Vårt system för bedrägeridetektering kan blockera aggressiva retry-mönster (och flagga dem som möjlig korttestning). Följ en säker retry-policy.
 
 <Warning>
-Burst retry patterns can be flagged as fraudulent or suspected card testing by our risk systems and processors. Avoid clustered retries; follow the backoff schedule and time alignment guidance below.
+Burst-mönster vid retry kan flaggas som bedrägliga eller som misstänkt korttestning av våra risksystem och betalningsprocessorer. Undvik klustrade retry-försök; följ schemat för backoff och riktlinjerna för tidsanpassning nedan.
 </Warning>
 
-### Principles for safe retry policies
+### Principer för säkra retry-policyer
 
-- **Backoff mechanism**: Use exponential backoff between retries.
-- **Retry limits**: Cap total retries (3–4 attempts max).
-- **Intelligent filtering**: Retry only on retryable failures (e.g., network/issuer errors, insufficient funds); never retry hard declines.
-- **Card testing prevention**: Do not retry failures like `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
-- **Vary metadata (optional)**: If you maintain your own retry system, differentiate retries via metadata (e.g., `retry_attempt`).
+- **Backoff-mekanism**: Använd exponentiell backoff mellan retry-försök.
+- **Retry-gränser**: Begränsa det totala antalet retry-försök (högst 3–4 försök).
+- **Intelligent filtrering**: Försök endast igen vid fel som kan göras om (t.ex. nätverks-/issuer-fel, otillräckliga medel); försök aldrig igen vid hårda avslag.
+- **Förhindra korttestning**: Försök inte igen vid fel som `DO_NOT_HONOR`, `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `FRAUDULENT`, `AUTHENTICATION_FAILURE`.
+- **Variera metadata (valfritt)**: Om du underhåller ett eget retry-system kan du särskilja retry-försök via metadata (t.ex. `retry_attempt`).
 
-### Suggested retry schedule (subscriptions)
+### Föreslaget retry-schema (prenumerationer)
 
-- **1st attempt**: Immediate when you create the charge
-- **2nd attempt**: After 3 days
-- **3rd attempt**: After 7 more days (10 days total)
-- **4th attempt (final)**: After another 7 days (17 days total)
+- **1:a försöket**: Omedelbart när du skapar debiteringen
+- **2:a försöket**: Efter 3 dagar
+- **3:e försöket**: Efter ytterligare 7 dagar (10 dagar totalt)
+- **4:e försöket (sista)**: Efter ytterligare 7 dagar (17 dagar totalt)
 
-Final step: if still unpaid, mark the subscription as unpaid or cancel it, based on your policy. Notify the customer during the window to update their payment method.
+Sista steget: om betalningen fortfarande inte har genomförts, markera prenumerationen som obetald eller avsluta den enligt din policy. Meddela kunden under perioden att betalningsmetoden behöver uppdateras.
 
-### Avoid burst retries; align to authorization time
+### Undvik burst-retry; anpassa till auktoriseringstiden
 
-- Anchor retries to the original authorization timestamp to avoid "burst" behavior across your portfolio.
-- Example: If the customer starts a trial or mandate at 1:10 pm today, schedule follow-up retries at 1:10 pm on subsequent days per your backoff (e.g., +3 days → 1:10 pm, +7 days → 1:10 pm).
-- Alternatively, if you store the last successful payment time `T`, schedule the next attempt at `T + X days` to preserve time-of-day alignment.
+- Förankra retry-försöken i den ursprungliga auktoriseringstidpunkten för att undvika "burst"-beteende i din portfölj.
+- Exempel: Om kunden startar en provperiod eller ett mandat kl. 13:10 i dag, schemalägg efterföljande retry-försök kl. 13:10 under följande dagar enligt din backoff (t.ex. +3 dagar → 13:10, +7 dagar → 13:10).
+- Om du i stället sparar tiden för den senaste lyckade betalningen `T`, schemalägg nästa försök till `T + X days` för att bevara anpassningen till tid på dagen.
 
 <Note>
-Time-zone and DST: use a consistent time standard for scheduling and convert for display only to maintain intervals.
+Tidszon och DST: använd en konsekvent tidsstandard för schemaläggning och konvertera endast för visning för att bibehålla intervallen.
 </Note>
 
-### Decline codes you should not retry
+### Avslagskoder som du inte bör försöka igen med
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -432,52 +436,52 @@ Time-zone and DST: use a consistent time standard for scheduling and convert for
 - `LOST_CARD`
 
 <Note>
-For a comprehensive list of decline reasons and whether they are user-correctable, see the
-[Transaction Failures](/api-reference/transaction-failures) documentation.
+För en fullständig lista över avslagsorsaker och om de kan korrigeras av användaren, se dokumentationen om
+[Transaktionsfel](/api-reference/transaction-failures).
 </Note>
 
 <Tip>
-Only retry on soft/temporary issues (e.g., `insufficient_funds`, `issuer_unavailable`, `processing_error`, network timeouts). If the same decline repeats, pause further retries.
+Försök endast igen vid mjuka/tillfälliga problem (t.ex. `insufficient_funds`, `issuer_unavailable`, `processing_error`, nätverkstimeouts). Om samma avslag upprepas ska du pausa ytterligare retry-försök.
 </Tip>
 
-### Implementation guidelines (no code)
+### Implementeringsriktlinjer (ingen kod)
 
-- Use a scheduler/queue that persists precise timestamps; compute next attempt at the exact time-of-day offset (e.g., `T + 3 days` at the same HH:MM).
-- Maintain and reference the last successful payment timestamp `T` to compute the next attempt; do not bunch multiple subscriptions at the same instant.
-- Always evaluate the last decline reason; stop retries for hard declines in the skip list above.
-- Cap concurrent retries per customer and per account to prevent accidental surges.
-- Communicate proactively: email/SMS the customer to update their payment method before the next scheduled attempt.
-- Use metadata only for observability (e.g., `retry_attempt`); never try to "evade" fraud/risk systems by rotating inconsequential fields.
+- Använd en schemaläggare/kö som sparar exakta tidsstämplar; beräkna nästa försök vid exakt samma förskjutning i tid på dagen (t.ex. `T + 3 days` vid samma HH:MM).
+- Underhåll och använd tidsstämpeln för den senaste lyckade betalningen `T` för att beräkna nästa försök; samla inte flera prenumerationer till samma tidpunkt.
+- Utvärdera alltid den senaste avslagsorsaken; stoppa retry-försök vid hårda avslag i listan ovan.
+- Begränsa samtidiga retry-försök per kund och konto för att förhindra oavsiktliga toppar.
+- Kommunicera proaktivt: skicka e-post/SMS till kunden för att uppdatera betalningsmetoden före nästa schemalagda försök.
+- Använd endast metadata för observerbarhet (t.ex. `retry_attempt`); försök aldrig att "undvika" bedrägeri-/risksystem genom att rotera obetydliga fält.
 
-## Cancellation
+## Avslut
 
-On-demand subscriptions follow a different cancellation flow from scheduled subscriptions because there is no fixed billing cycle to anchor an immediate end date.
+On-demand-prenumerationer följer ett annat avslutningsflöde än schemalagda prenumerationer, eftersom det inte finns någon fast faktureringscykel att förankra ett omedelbart slutdatum i.
 
-### Customer portal behavior
+### Beteende i kundportalen
 
-When a customer cancels an on-demand subscription from the [Customer Portal](/features/customer-portal), the cancellation is **scheduled for the next billing date** by default. The **Cancel Now** option is intentionally not shown for on-demand subscriptions.
+När en kund avslutar en on-demand-prenumeration från [Customer Portal](/features/customer-portal) **schemaläggs avslutet som standard till nästa faktureringsdatum**. Alternativet **Avsluta nu** visas avsiktligt inte för on-demand-prenumerationer.
 
-The reason: on-demand subscriptions do not have predictable recurring renewal dates — the next charge time is driven entirely by your usage events. Scheduling cancellation at the next billing date keeps the mandate active until the period boundary so any in-flight usage can still be charged, then ends the subscription cleanly.
+Anledningen är att on-demand-prenumerationer inte har förutsägbara återkommande förnyelsedatum – tiden för nästa debitering styrs helt av dina användningshändelser. Genom att schemalägga avslutet till nästa faktureringsdatum förblir mandatet aktivt fram till periodens slut, så att användning som redan pågår fortfarande kan debiteras, varefter prenumerationen avslutas korrekt.
 
-After the customer confirms cancellation:
-- The subscription stays `active` and remains chargeable via `POST /subscriptions/{id}/charge` until the scheduled cancellation date.
-- `cancel_at_next_billing_date` is set to `true` on the subscription.
-- A `subscription.cancelled` webhook is emitted when the cancellation takes effect.
+Efter att kunden har bekräftat avslutet:
+- Prenumerationen förblir `active` och kan fortfarande debiteras via `POST /subscriptions/{id}/charge` fram till det schemalagda avslutsdatumet.
+- `cancel_at_next_billing_date` sätts till `true` för prenumerationen.
+- En `subscription.cancelled`-webhook skickas när avslutet träder i kraft.
 
 <Info>
-If you need to end the subscription immediately (for example, in response to a refund or a support request), cancel it programmatically via the API instead of relying on the customer portal flow.
+Om du behöver avsluta prenumerationen omedelbart (till exempel som svar på en återbetalning eller en supportbegäran), avslutar du den programmatiskt via API i stället för att förlita dig på flödet i kundportalen.
 </Info>
 
-### Cancel programmatically
+### Avsluta programmatiskt
 
-You can cancel an on-demand subscription via the API at any time. You control whether the cancellation is immediate or scheduled.
+Du kan avsluta en on-demand-prenumeration via API när som helst. Du styr om avslutet ska ske omedelbart eller enligt ett schema.
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-Set the subscription `status` to `cancelled` to end it right away. The mandate is revoked and no further charges can be created.
+Ange prenumerationens `status` till `cancelled` för att avsluta den omedelbart. Mandatet återkallas och inga ytterligare debiteringar kan skapas.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -499,7 +503,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Mirror the customer portal behavior — keep the subscription active until the scheduled cancellation date, then end it.
+Återskapa kundportalens beteende – håll prenumerationen aktiv fram till det schemalagda avslutsdatumet och avsluta den därefter.
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -521,48 +525,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### Webhooks on cancellation
+### Webhooks vid avslut
 
-| Event | When it fires |
+| Händelse | När den utlöses |
 |-------|---------------|
-| `subscription.cancelled` | Subscription is fully cancelled and no longer chargeable |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` was toggled (scheduled cancellation set or undone) |
+| `subscription.cancelled` | Prenumerationen är helt avslutad och kan inte längre debiteras |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` ändrades (schemalagt avslut angavs eller ångrades) |
 
 <Tip>
-To distinguish on-demand cancellations from scheduled-subscription cancellations in your handler, check the subscription's `on_demand` flag when processing the webhook.
+För att skilja on-demand-avslut från avslut av schemalagda prenumerationer i din handler kontrollerar du prenumerationens `on_demand`-flagga när du behandlar webhooken.
 </Tip>
 
-## Track outcomes with webhooks
+## Spåra resultat med webhooks
 
-Implement webhook handling to track the customer journey. See [Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks).
+Implementera webhook-hantering för att spåra kundresan. Se [Implementera Webhooks](/developer-resources/integration-guide#implementing-webhooks).
 
-- **subscription.active**: Mandate authorized and subscription activated
-- **subscription.failed**: Creation failed (e.g., mandate failure)
-- **subscription.on_hold**: Subscription placed on hold (e.g., unpaid state)
-- **subscription.cancelled**: Subscription fully cancelled (see [Cancellation](#cancellation))
-- **payment.succeeded**: Charge succeeded
-- **payment.failed**: Charge failed
+- **subscription.active**: Mandatet auktoriserades och prenumerationen aktiverades
+- **subscription.failed**: Skapandet misslyckades (t.ex. mandatfel)
+- **subscription.on_hold**: Prenumerationen sattes på hold (t.ex. obetalt tillstånd)
+- **subscription.cancelled**: Prenumerationen avslutades helt (se [Avslut](#cancellation))
+- **payment.succeeded**: Debiteringen lyckades
+- **payment.failed**: Debiteringen misslyckades
 
 <Tip>
-For on-demand flows, focus on `payment.succeeded` and `payment.failed` to reconcile usage-based charges. When `payment.failed` is followed by `subscription.on_hold`, see [Handling failed charges](#handling-failed-charges) to recover the subscription.
+För on-demand-flöden fokuserar du på `payment.succeeded` och `payment.failed` för att stämma av användningsbaserade debiteringar. När `payment.failed` följs av `subscription.on_hold`, se [Hantera misslyckade debiteringar](#handling-failed-charges) för att återställa prenumerationen.
 </Tip>
 
-## Testing and next steps
+## Testning och nästa steg
 
 <Steps>
 <Step title="Create in test mode">
 Använd din test-API-nyckel för att skapa prenumerationen, öppna sedan den returnerade `checkout_url` och slutför mandatet.
 </Step>
 <Step title="Trigger a charge">
-Anropa debiteringsendpunkten med en liten `product_price` (t.ex. `100`) och verifiera att du får `payment.succeeded`.
+Anropa debiteringsendpointen med ett litet `product_price` (t.ex. `100`) och kontrollera att du tar emot `payment.succeeded`.
 </Step>
 <Step title="Go live">
-Byt till din live-API-nyckel när du har validerat händelser och interna tillståndsuppdateringar.
+Byt till din live-API-nyckel när du har validerat händelser och uppdateringar av internt tillstånd.
 </Step>
 </Steps>
 
-## Troubleshooting
+## Felsökning
 
-- **422 Invalid Request**: Ensure `on_demand.mandate_only` is provided on creation and `product_price` is provided for charges.
-- **Currency errors**: If you override `product_currency`, confirm it's supported for your account and customer.
-- **No webhooks received**: Verify your webhook URL and signature secret configuration.
+- **422 Invalid Request**: Kontrollera att `on_demand.mandate_only` anges när prenumerationen skapas och att `product_price` anges för debiteringar.
+- **Valutafel**: Om du åsidosätter `product_currency` ska du bekräfta att den stöds för ditt konto och din kund.
+- **Inga webhooks tas emot**: Kontrollera konfigurationen av webhook-URL:en och signaturhemligheten.

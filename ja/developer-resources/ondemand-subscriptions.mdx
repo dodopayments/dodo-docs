@@ -251,8 +251,12 @@ Endpoint: [POST /subscriptions/\{subscription_id\}/charge](/api-reference/subscr
       true の場合、Adaptive Currency の手数料を <code>product_price</code> に含めます。false の場合、手数料は上乗せされます。
     </ParamField>
 
+    <ParamField body="customer_balance_config" type="object">
+      顧客のウォレット残高をこの請求の決済に使用する方法を指定します。
+    </ParamField>
+
     <ParamField body="metadata" type="object">
-      支払いに関する追加 metadata。省略した場合は、subscription の metadata が使用されます。
+      支払いに関する追加のメタデータ。省略した場合は、サブスクリプションのメタデータが使用されます。
     </ParamField>
   </Accordion>
 </AccordionGroup>
@@ -334,94 +338,94 @@ curl -X POST "$DODO_API/subscriptions/sub_123/charge" \
 ```
 
 <Warning>
-オンデマンドではない subscription に請求すると失敗する可能性があります。請求する前に、subscription の details に `on_demand: true` があることを確認してください。
+オンデマンドではないサブスクリプションへの請求は失敗する可能性があります。請求を行う前に、サブスクリプションの詳細に `on_demand: true` が含まれていることを確認してください。
 </Warning>
 
-## 失敗した請求の処理
+## 請求失敗への対応
 
-オンデマンドサブスクリプションに対する請求が失敗した場合、次に何をするかはあなたが決定します。スケジュールされたサブスクリプションでは、更新に失敗すると以降の自動課金が停止しますが、**オンデマンドサブスクリプションは失敗後も請求可能な状態を維持します**。独自の retry ロジックの一部として、charge endpoint を再度呼び出せます。
+オンデマンドサブスクリプションへの請求が失敗した場合、次に何をするかはあなたが決定します。スケジュールされたサブスクリプションでは、更新に失敗すると以降の自動請求が停止しますが、**オンデマンドサブスクリプションは失敗後も請求できます**。独自の retry ロジックの一部として、請求エンドポイントを再度呼び出せます。
 
 ### 失敗時の動作
 
 <Steps>
 <Step title="Charge attempt fails">
-`POST /subscriptions/{subscription_id}/charge` request は、error response を返すか、非同期で完了して、decline reason を含む `payment.failed` webhook を発行します。
+`POST /subscriptions/{subscription_id}/charge` リクエストはエラーレスポンスを返すか、非同期で完了し、拒否理由を含む `payment.failed` webhook を発行します。
 </Step>
 
 <Step title="Subscription may transition to on_hold">
-subscription が `on_hold` state に移行し、`subscription.on_hold` webhook を発行することがあります（[Subscription States → On Hold](/features/subscription#on-hold-state)を参照）。これはシグナルであり、ロックではありません。オンデマンドサブスクリプションでは、`on_hold` によって再度請求できなくなることはありません。
+サブスクリプションは `on_hold` 状態に移行し、`subscription.on_hold` webhook を発行することがあります（[Subscription States → On Hold](/features/subscription#on-hold-state) を参照）。これはシグナルであり、ロックではありません。オンデマンドサブスクリプションでは、`on_hold` になっても、再度請求することを妨げません。
 </Step>
 
 <Step title="Retry the charge (your call)">
-オンデマンドフローでは、Dodo は自動 retry を行いません。`POST /subscriptions/{subscription_id}/charge` はいつでも再度呼び出して retry できます。以下の [safe retry policy](#payment-retries) を適用してください。exponential backoff を使用し、hard decline をスキップし、burst パターンを避けることで、retry が当社の fraud および risk system によって検知されないようにします。
+オンデマンドフローでは、Dodo は自動 retry を行いません。いつでも `POST /subscriptions/{subscription_id}/charge` を再度呼び出して retry できます。下記の [安全な retry ポリシー](#payment-retries) に従い、exponential backoff を使用し、hard decline をスキップして、burst パターンを避けてください。これにより、retry が当社の fraud および risk システムによってフラグ付けされるのを防げます。
 </Step>
 
 <Step title="Optionally, ask the customer for a new payment method">
-支払い方法自体に問題があるため retry が続けて失敗する場合（カードの有効期限切れ、アカウント閉鎖など）は、[`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) を使用して、顧客から新しい支払い方法を収集します。成功すると subscription は `active` に戻り、`payment.succeeded` に続いて `subscription.active` webhook が発行されます。
+支払い方法自体に問題があるために retry が繰り返し失敗する場合（カードの有効期限切れ、アカウントの閉鎖など）は、[`POST /subscriptions/{subscription_id}/update-payment-method`](/api-reference/subscriptions/update-payment-method) を使用して、顧客から新しい支払い方法を取得します。成功すると、サブスクリプションは `active` に戻り、続けて `payment.succeeded` および `subscription.active` webhook が発行されます。
 </Step>
 </Steps>
 
 <Info>
-**オンデマンドとスケジュールの違い**：スケジュールされたサブスクリプションでは、Dodo が独自の更新 retry と dunning を実行します。オンデマンドサブスクリプションでは、次の請求をいつ行うべきかを把握しているのはあなただけです（カレンダーではなく usage event に基づくため）、retry ポリシーをあなたが管理します。
+**オンデマンドとスケジュール型の違い**：スケジュールされたサブスクリプションでは、Dodo が独自に更新 retry と督促を実行します。オンデマンドサブスクリプションでは、次の請求をいつ行うべきかを把握しているのはあなただけです（カレンダーではなく利用イベントによって決まるため）、retry ポリシーを管理します。
 </Info>
 
-### オンデマンド請求が失敗した場合の webhook sequence
+### オンデマンド請求が失敗した場合の webhook シーケンス
 
 | 順序 | Event | 意味 |
 |-------|-------|---------|
-| 1 | `payment.failed` | オンデマンド請求の試行が成功しなかった（decline reason を含む） |
-| 2 | `subscription.on_hold` | subscription が hold された（情報提供のみで、以降の請求をブロックしない） |
-| 3* | `payment.succeeded` | 後続の請求（retry、または支払い方法の更新後）が成功した |
-| 4* | `subscription.active` | 請求の成功後、subscription が `active` に戻った |
+| 1 | `payment.failed` | オンデマンド請求の試行が成功しなかった（拒否理由を含む） |
+| 2 | `subscription.on_hold` | サブスクリプションが保留になった（情報提供のみで、以降の請求をブロックしない） |
+| 3* | `payment.succeeded` | その後の請求（retry または支払い方法の更新後）が成功した |
+| 4* | `subscription.active` | 請求の成功後、サブスクリプションが `active` に戻った |
 
 <Info>
-3 と 4 の event は、後続の請求が成功した場合にのみ発生します。
+Event 3 と 4 は、後続の請求が成功した後にのみ発行されます。
 </Info>
 
 ### retry の責任
 
 <Warning>
-Dodo Payments **失敗したオンデマンド請求を自動 retry しません**。retry ポリシーはあなたが管理します。カードテストとして当社の fraud detection system に検知されないよう、以下の安全な retry ガイドラインに従ってください。
+Dodo Payments は、**失敗したオンデマンド請求を自動 retry しません**。retry ポリシーはあなたが管理します。当社の fraud detection システムによって card testing としてフラグ付けされるのを避けるため、以下の安全な retry ガイドラインに従ってください。
 </Warning>
 
-[Subscription Dunning](/features/recovery/subscription-dunning)（組み込みの email recovery sequence）は、スケジュールされたサブスクリプションの失敗した *renewal* payment と、顧客が開始した cancellation を対象とします。オンデマンド請求の失敗向けには設計されていません。支払い方法を更新する必要があると判断した場合は、顧客に直接（transactional email やアプリ内 prompt などで）連絡してください。
+[Subscription Dunning](/features/recovery/subscription-dunning) — 組み込みのメールによる回収シーケンス — は、スケジュールされたサブスクリプションの *更新* 支払いの失敗と、顧客が開始したキャンセルを対象としています。オンデマンド請求の失敗向けには設計されていません。支払い方法を更新する必要があると判断した場合は、顧客に直接（transactional email やアプリ内プロンプトなどで）連絡してください。
 
-## Payment retries
+## 支払いの retry
 
-当社の fraud detection system は、積極的な retry パターンをブロックすることがあり（card testing の可能性としてフラグを付けることもあります）、安全な retry ポリシーに従ってください。
+当社の fraud detection システムは、積極的な retry パターンをブロックすることがあり（potential card testing としてフラグ付けする場合もあります）、安全な retry ポリシーに従ってください。
 
 <Warning>
-短時間に集中した retry パターンは、当社の risk system や processor によって不正または card testing の疑いとしてフラグ付けされることがあります。retry を集中させず、以下の backoff schedule と時刻の整合に関するガイダンスに従ってください。
+burst retry パターンは、当社の risk システムや processor によって fraud または card testing の疑いとしてフラグ付けされる可能性があります。retry が集中しないようにし、以下の backoff スケジュールと時刻合わせのガイダンスに従ってください。
 </Warning>
 
 ### 安全な retry ポリシーの原則
 
 - **Backoff mechanism**：retry の間隔には exponential backoff を使用します。
 - **Retry limits**：retry の合計回数を制限します（最大 3～4 回）。
-- **Intelligent filtering**：retry 可能な失敗（network/issuer error、残高不足など）の場合のみ retry し、hard decline は決して retry しません。
+- **Intelligent filtering**：retry 可能な失敗（network/issuer error、残高不足など）の場合にのみ retry し、hard decline は決して retry しません。
 - **Card testing prevention**：`DO_NOT_HONOR`、`STOLEN_CARD`、`LOST_CARD`、`PICKUP_CARD`、`FRAUDULENT`、`AUTHENTICATION_FAILURE` などの失敗は retry しないでください。
-- **Vary metadata（任意）**：独自の retry system を運用している場合は、metadata（例：`retry_attempt`）で retry を区別します。
+- **Vary metadata (optional)**：独自の retry システムを管理している場合は、メタデータ（例：`retry_attempt`）で retry を区別します。
 
-### 推奨 retry schedule（subscriptions）
+### 推奨 retry スケジュール（サブスクリプション）
 
-- **1 回目**：charge の作成時に即時実行
+- **1 回目**：請求を作成した直後
 - **2 回目**：3 日後
 - **3 回目**：さらに 7 日後（合計 10 日後）
 - **4 回目（最終）**：さらに 7 日後（合計 17 日後）
 
-最終手順：それでも未払いの場合は、ポリシーに基づいて subscription を unpaid としてマークするか、cancel します。支払い方法を更新できる期間中に顧客へ通知してください。
+最終ステップ：それでも未払いの場合は、ポリシーに基づいてサブスクリプションを未払いとしてマークするか、キャンセルします。支払い方法を更新できる期間中に顧客へ通知してください。
 
-### burst retry を避け、承認時刻に合わせる
+### burst retry を避け、authorization 時刻に合わせる
 
-- portfolio 全体で「burst」動作が発生しないよう、retry の基準を元の authorization timestamp に合わせます。
-- 例：顧客が今日の午後 1:10 に trial または mandate を開始した場合、backoff（例：+3 日 → 午後 1:10、+7 日 → 午後 1:10）に従い、後続の retry を各日の午後 1:10 にスケジュールします。
-- または、最後に成功した支払い時刻を `T` に保存している場合は、時刻の整合性を維持するため、次の試行を `T + X days` にスケジュールします。
+- portfolio 全体で「burst」動作が発生しないよう、retry の基準を元の authorization timestamp にします。
+- 例：顧客が本日午後 1:10 に trial または mandate を開始した場合、backoff（例：+3 日 → 午後 1:10、+7 日 → 午後 1:10）に従い、後続の retry を各日の午後 1:10 にスケジュールします。
+- または、最後に成功した支払い時刻 `T` を保存している場合は、時刻を合わせるため、次の試行を `T + X days` にスケジュールします。
 
 <Note>
-Time-zone と DST：スケジュールには一貫した time standard を使用し、interval を維持するため、表示時のみ変換します。
+Time-zone と DST：スケジュールには一貫した time standard を使用し、間隔を維持するため、表示時にのみ変換します。
 </Note>
 
-### retry すべきでない decline codes
+### retry すべきでない decline code
 
 - `STOLEN_CARD`
 - `DO_NOT_HONOR`
@@ -431,51 +435,51 @@ Time-zone と DST：スケジュールには一貫した time standard を使用
 - `LOST_CARD`
 
 <Note>
-decline reason の包括的な一覧と、ユーザーが修正可能かどうかについては、[Transaction Failures](/api-reference/transaction-failures) のドキュメントを参照してください。
+decline reason の包括的な一覧と、ユーザーが修正可能かどうかについては、[Transaction Failures](/api-reference/transaction-failures) ドキュメントを参照してください。
 </Note>
 
 <Tip>
-soft/temporary issue（例：`insufficient_funds`、`issuer_unavailable`、`processing_error`、network timeout）の場合のみ retry します。同じ decline が繰り返される場合は、それ以上の retry を一時停止してください。
+soft/temporary issue（例：`insufficient_funds`、`issuer_unavailable`、`processing_error`、network timeout）の場合にのみ retry します。同じ decline が繰り返される場合は、それ以上の retry を一時停止してください。
 </Tip>
 
 ### 実装ガイドライン（コードなし）
 
-- 正確な timestamp を永続化する scheduler/queue を使用し、時刻単位の offset（例：同じ HH:MM の `T + 3 days`）で次の試行時刻を計算します。
-- 最後に成功した支払いの timestamp `T` を保持・参照して次の試行を計算し、複数の subscription を同じ時刻に集中させないでください。
+- 正確な timestamp を永続化する scheduler/queue を使用し、正確な時刻の offset（例：同じ HH:MM の `T + 3 days`）で次の試行を計算します。
+- 最後に成功した支払いの timestamp `T` を保持・参照して次の試行を計算します。複数のサブスクリプションを同じ時刻に集中させないでください。
 - 常に最後の decline reason を評価し、上記の skip list にある hard decline の retry を停止します。
-- 偶発的な急増を防ぐため、顧客ごとおよびアカウントごとの同時 retry 数を制限します。
-- 事前に連絡します。次回の scheduled attempt より前に、顧客へ email/SMS で支払い方法の更新を依頼してください。
-- metadata は observability の目的にのみ使用し（例：`retry_attempt`）、意味のない field を変更して fraud/risk system を「回避」しようとしないでください。
+- 意図しない surge を防ぐため、顧客ごと、アカウントごとに同時 retry 数を制限します。
+- 事前に連絡します：次回のスケジュールされた試行の前に、支払い方法を更新するよう顧客へ email/SMS で通知します。
+- メタデータは observability のみに使用し（例：`retry_attempt`）、意味のないフィールドをローテーションして fraud/risk システムを「回避」しようとしないでください。
 
-## Cancellation
+## キャンセル
 
-オンデマンドサブスクリプションでは、即時の終了日を基準にする固定の billing cycle がないため、スケジュールされたサブスクリプションとは異なる cancellation flow に従います。
+オンデマンドサブスクリプションでは、即時の終了日を決める基準となる固定の billing cycle がないため、スケジュールされたサブスクリプションとは異なるキャンセルフローに従います。
 
 ### Customer Portal の動作
 
-顧客が [Customer Portal](/features/customer-portal) からオンデマンドサブスクリプションを cancel すると、デフォルトでは **次の billing date に cancellation がスケジュールされます**。オンデマンドサブスクリプションでは、**Cancel Now** option は意図的に表示されません。
+顧客が [Customer Portal](/features/customer-portal) からオンデマンドサブスクリプションをキャンセルすると、デフォルトではキャンセルが**次回の billing date にスケジュール**されます。オンデマンドサブスクリプションでは、**Cancel Now** オプションは意図的に表示されません。
 
-理由は、オンデマンドサブスクリプションには予測可能な定期更新日がなく、次の請求時刻が完全に usage event によって決まるためです。次の billing date に cancellation をスケジュールすることで、period boundary まで mandate を有効に保ち、進行中の usage を請求してから subscription を正常に終了できます。
+理由は、オンデマンドサブスクリプションには予測可能な定期更新日がなく、次回の請求時刻が完全に利用イベントによって決まるためです。次回の billing date にキャンセルをスケジュールすることで、期間の境界まで mandate を有効なまま維持し、進行中の利用分を請求できるようにしてから、サブスクリプションを適切に終了できます。
 
-顧客が cancellation を確認した後：
-- subscription は `active` のままとなり、scheduled cancellation date まで `POST /subscriptions/{id}/charge` を介して引き続き請求できます。
-- subscription の `cancel_at_next_billing_date` は `true` に設定されます。
-- cancellation が有効になった時点で `subscription.cancelled` webhook が発行されます。
+顧客がキャンセルを確定した後：
+- サブスクリプションは `active` のままとなり、スケジュールされたキャンセル日まで `POST /subscriptions/{id}/charge` を介して引き続き請求できます。
+- サブスクリプションの `cancel_at_next_billing_date` に `true` が設定されます。
+- キャンセルが有効になった時点で `subscription.cancelled` webhook が発行されます。
 
 <Info>
-subscription を直ちに終了する必要がある場合（たとえば refund や support request への対応時）は、Customer Portal flow に頼らず、API を介して programmatically に cancel してください。
+サブスクリプションを直ちに終了する必要がある場合（返金やサポートリクエストへの対応など）は、Customer Portal のフローに依存せず、API を介してプログラムでキャンセルしてください。
 </Info>
 
-### Programmatically に cancel する
+### プログラムでキャンセルする
 
-API を介して、いつでもオンデマンドサブスクリプションを cancel できます。cancellation を即時に行うか、スケジュールするかを制御できます。
+オンデマンドサブスクリプションは、いつでも API を介してキャンセルできます。キャンセルを即時に行うか、スケジュールするかを制御できます。
 
 Endpoint: [PATCH /subscriptions/\{subscription_id\}](/api-reference/subscriptions/patch-subscriptions)
 
 <Tabs>
 <Tab title="Cancel immediately">
 
-subscription の `status` を `cancelled` に設定すると、直ちに終了します。mandate は revoked になり、それ以降の charge は作成できません。
+サブスクリプションの `status` を `cancelled` に設定すると、直ちに終了します。mandate は revoke され、それ以降の請求は作成できません。
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -497,7 +501,7 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 <Tab title="Cancel at next billing date">
 
-Customer Portal の動作に合わせ、scheduled cancellation date まで subscription を active に保ち、その後終了します。
+Customer Portal の動作に合わせ、スケジュールされたキャンセル日までサブスクリプションを有効なまま維持し、その後終了します。
 
 ```javascript
 import DodoPayments from 'dodopayments';
@@ -519,48 +523,48 @@ curl -X PATCH "$DODO_API/subscriptions/sub_123" \
 </Tab>
 </Tabs>
 
-### cancellation 時の webhook
+### キャンセル時の webhook
 
-| Event | 発生するタイミング |
+| Event | 発行されるタイミング |
 |-------|---------------|
-| `subscription.cancelled` | subscription が完全に cancel され、請求できなくなったとき |
-| `subscription.plan_changed` | `cancel_at_next_billing_date` が切り替えられたとき（scheduled cancellation が設定または取り消されたとき） |
+| `subscription.cancelled` | サブスクリプションが完全にキャンセルされ、請求できなくなったとき |
+| `subscription.plan_changed` | `cancel_at_next_billing_date` が切り替えられたとき（スケジュールされたキャンセルが設定または取り消されたとき） |
 
 <Tip>
-handler でオンデマンドの cancellation とスケジュールされた subscription の cancellation を区別するには、webhook の処理時に subscription の `on_demand` flag を確認してください。
+handler でオンデマンドのキャンセルとスケジュールされたサブスクリプションのキャンセルを区別するには、webhook の処理時にサブスクリプションの `on_demand` flag を確認してください。
 </Tip>
 
 ## webhook で結果を追跡する
 
-顧客の journey を追跡するため、webhook handling を実装します。[Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks)を参照してください。
+顧客の journey を追跡するため、webhook handling を実装します。[Implementing Webhooks](/developer-resources/integration-guide#implementing-webhooks) を参照してください。
 
-- **subscription.active**：mandate が承認され、subscription が有効化された
+- **subscription.active**：Mandate が authorized になり、サブスクリプションが有効化された
 - **subscription.failed**：作成に失敗した（例：mandate failure）
-- **subscription.on_hold**：subscription が hold された（例：unpaid state）
-- **subscription.cancelled**：subscription が完全に cancel された（[Cancellation](#cancellation)を参照）
-- **payment.succeeded**：charge が成功した
-- **payment.failed**：charge が失敗した
+- **subscription.on_hold**：サブスクリプションが保留になった（例：unpaid state）
+- **subscription.cancelled**：サブスクリプションが完全にキャンセルされた（[Cancellation](#cancellation) を参照）
+- **payment.succeeded**：請求が成功した
+- **payment.failed**：請求が失敗した
 
 <Tip>
-オンデマンドフローでは、usage-based charge を照合するため、`payment.succeeded` と `payment.failed` に注目します。`payment.failed` の後に `subscription.on_hold` が続く場合は、[失敗した請求の処理](#handling-failed-charges)を参照して subscription を復旧してください。
+オンデマンドフローでは、利用量ベースの請求を照合するため、`payment.succeeded` と `payment.failed` に注目します。`payment.failed` に続いて `subscription.on_hold` が発生した場合は、サブスクリプションを回復するために [Handling failed charges](#handling-failed-charges) を参照してください。
 </Tip>
 
 ## テストと次のステップ
 
 <Steps>
 <Step title="Create in test mode">
-test API key を使用して subscription を作成し、返された `checkout_url` を開いて mandate を完了します。
+test API key を使用してサブスクリプションを作成し、返された `checkout_url` を開いて mandate を完了します。
 </Step>
 <Step title="Trigger a charge">
-小さな `product_price`（例：`100`）で charge endpoint を呼び出し、`payment.succeeded` を受信したことを確認します。
+少額の `product_price`（例：`100`）を指定して請求エンドポイントを呼び出し、`payment.succeeded` を受信したことを確認します。
 </Step>
 <Step title="Go live">
-event と内部 state の更新を検証したら、live API key に切り替えます。
+Event と内部 state の更新を検証したら、live API key に切り替えます。
 </Step>
 </Steps>
 
 ## トラブルシューティング
 
-- **422 Invalid Request**：作成時に `on_demand.mandate_only` が提供され、charge に `product_price` が提供されていることを確認してください。
-- **Currency errors**：`product_currency` を override する場合、アカウントと顧客でサポートされていることを確認してください。
-- **webhook を受信できない**：webhook URL と signature secret の設定を確認してください。
+- **422 Invalid Request**：作成時に `on_demand.mandate_only` が、請求時に `product_price` が指定されていることを確認してください。
+- **Currency errors**：`product_currency` を上書きする場合は、アカウントと顧客でサポートされていることを確認してください。
+- **No webhooks received**：webhook URL と signature secret の設定を確認してください。

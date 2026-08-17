@@ -22,100 +22,133 @@ Dodo Payments mengembalikan alasan kegagalan yang mendetail setiap kali percobaa
 
 Ketika pembayaran gagal, webhook `payment.failed` dan objek pembayaran menampilkan:
 
-- `error_code` — alasan kegagalan yang distandarisasi dari tabel di bawah.
-- `error_message` — penjelasan yang dapat dibaca manusia.
-- `retry_attempt` — `0` untuk biaya asli, `1` atau lebih tinggi untuk setiap percobaan pembaruan langganan berjadwal.
+- `error_code` — alasan kegagalan terstandarisasi dari tabel di bawah.
+- `error_message` — penjelasan yang mudah dipahami manusia dan ditulis untuk **Anda**, merchant. Jika `error_code` merupakan salah satu kode terstandarisasi di bawah, ini berupa judul utama serta tindakan yang direkomendasikan, bukan teks mentah dari pemroses pembayaran.
+- `retry_attempt` — `0` untuk tagihan asli, `1` atau lebih tinggi untuk setiap percobaan ulang perpanjangan langganan terjadwal.
 
 Memahami alasan kegagalan ini memungkinkan Anda memberikan umpan balik yang jelas kepada pelanggan, memutuskan apakah percobaan ulang layak dilakukan, dan memulihkan lebih banyak pendapatan.
 
-A step-by-step developer guide for reading these codes from webhooks and the API, surfacing them to customers, and deciding when to retry.
+### Teks untuk Merchant vs. Teks untuk Customer
 
-## Soft vs. Hard Declines
+Setiap kode kegagalan terstandarisasi dipetakan ke dua pesan yang berbeda, sehingga audiens yang tepat melihat tingkat detail yang sesuai:
 
-Setiap kode kegagalan masuk ke dalam salah satu dari dua kategori. Perbedaan ini menentukan apakah Anda harus mencoba kembali metode pembayaran yang sama atau meminta pelanggan untuk metode baru.
+| Audiens | Tempat ditampilkan | Isi pesan |
+|----------|------------------|--------------|
+| **Anda** | `error_message` pada pembayaran, halaman detail pembayaran di dashboard, dan email pembayaran gagal untuk merchant | Alasan sebenarnya beserta tindakan yang direkomendasikan, misalnya *"Kartu belum diaktifkan oleh pemegang kartu. Minta customer mengaktifkannya melalui bank mereka, lalu coba lagi."* |
+| **Customer Anda** | Layar kegagalan checkout, [Customer Portal](/features/customer-portal), dan email [dunning](/features/recovery/subscription-dunning) | Penjelasan singkat dengan bahasa sederhana yang dapat ditindaklanjuti, misalnya *"Kartu Anda belum diaktifkan. Silakan aktifkan melalui bank Anda dan coba lagi."* |
 
-| Decline type | What it means | What to do | Examples |
+<Note>
+Customer Portal mengembalikan teks yang ditujukan kepada customer dalam `error_message`, sedangkan merchant API mengembalikan teks untuk merchant pada pembayaran yang sama. `error_code` identik pada keduanya.
+</Note>
+
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Panduan developer langkah demi langkah untuk membaca kode ini dari webhook dan API, menampilkannya kepada customer, serta menentukan kapan harus mencoba kembali.
+</Card>
+
+## Soft Decline vs. Hard Decline
+
+Setiap kode kegagalan termasuk dalam salah satu dari dua kategori. Pembedaan ini menentukan apakah Anda harus mencoba kembali dengan metode pembayaran yang sama atau meminta customer menggunakan metode baru.
+
+| Jenis decline | Artinya | Tindakan | Contoh |
 |--------------|---------------|------------|----------|
-| **Soft decline** | Sementara atau dapat diperbaiki — kartu yang sama dapat berhasil pada percobaan berikutnya atau setelah pelanggan memperbaiki pengisian mereka. | Aman untuk mencoba lagi (setelah jeda, atau setelah pelanggan memperbaiki detailnya). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
-| **Hard decline** | Terminal — mencoba kembali dengan kartu yang sama tidak akan mengubah hasilnya. | Jangan mencoba kembali dengan kartu yang sama. Minta pelanggan menggunakan metode pembayaran lain atau hubungi bank mereka. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
+| **Soft decline** | Bersifat sementara atau dapat diperbaiki — kartu yang sama dapat berhasil pada percobaan berikutnya atau setelah customer memperbaiki input mereka. | Aman untuk dicoba kembali (setelah jeda atau setelah customer memperbaiki detail mereka). | `INSUFFICIENT_FUNDS`, `GENERIC_DECLINE`, `CARD_VELOCITY_EXCEEDED`, `PROCESSING_ERROR`, `NETWORK_ERROR`, `NETWORK_TIMEOUT`, `TRY_AGAIN_LATER` |
+| **Hard decline** | Bersifat final — mencoba kembali dengan kartu yang sama tidak akan mengubah hasil. | **Jangan** mencoba kembali dengan kartu yang sama. Minta customer menggunakan metode pembayaran lain atau menghubungi bank mereka. | `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, `DO_NOT_HONOR`, `FRAUDULENT`, `INVALID_ACCOUNT` |
 
-Untuk pembaharuan langganan, Dodo Payments menerapkan perbedaan ini secara otomatis: soft declines dicoba ulang oleh [Subscription Payment Retries](/features/recovery/payment-retries), sedangkan hard declines mengakhiri rantai percobaan ulang segera dan sebaiknya ditangani dengan [Subscription Dunning](/features/recovery/subscription-dunning).
+Untuk perpanjangan langganan, Dodo Payments menerapkan pembedaan ini secara otomatis: soft decline dicoba kembali oleh [Subscription Payment Retries](/features/recovery/payment-retries), sedangkan hard decline langsung mengakhiri rangkaian percobaan ulang dan sebaiknya ditangani dengan [Subscription Dunning](/features/recovery/subscription-dunning).
 
-**Never reveal the real reason for `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, or `FRAUDULENT` to the customer.** Surfacing these can tip off a fraudulent actor. Always show the customer a generic decline message (for example, *"Your card was declined. Please contact your bank or use another card."*) and only log the specific code internally.
+<Warning>
+**Jangan pernah mengungkapkan alasan sebenarnya untuk `STOLEN_CARD`, `LOST_CARD`, `PICKUP_CARD`, atau `FRAUDULENT` kepada customer.** Menampilkan informasi ini dapat memberi petunjuk kepada pelaku penipuan. Selalu tampilkan pesan decline umum kepada customer (misalnya, *"Kartu Anda ditolak. Silakan hubungi bank Anda atau gunakan kartu lain."*) dan catat kode spesifik hanya secara internal.
 
-## Transaction Failure Reasons
+Dodo Payments sudah menerapkan aturan ini pada permukaan yang dikontrolnya: untuk keempat kode ini, checkout, Customer Portal, dan email dunning selalu menggunakan pesan decline umum sebagai fallback, sedangkan teks Anda tetap menyimpan alasan sebenarnya. Terapkan aturan yang sama di mana pun Anda menampilkan `error_message` dari merchant API kepada customer.
+</Warning>
 
-Tabel berikut daftar setiap kode kegagalan, jenis penolakan, apakah pelanggan dapat menyelesaikannya, deskripsi, dan tindakan yang direkomendasikan.
+## Alasan Kegagalan Transaksi
 
-| Failure Code | Type | User Error | Description | Recommended Action |
+Tabel berikut mencantumkan setiap kode kegagalan, jenis decline, apakah customer dapat menyelesaikannya, deskripsi, dan tindakan yang direkomendasikan.
+
+| Kode Kegagalan | Jenis | Kesalahan User | Deskripsi | Tindakan yang Direkomendasikan |
 |--------------|------|------------|-------------|--------------------|
-| `AUTHENTICATION_FAILURE` | Soft | Yes | Authentication failed during the transaction | Ask the customer to retry and complete 3DS authentication, or use another card |
-| `AUTHENTICATION_REQUIRED` | Soft | Yes | Additional authentication is needed to complete the transaction | Prompt the customer to complete 3DS authentication. For subscription renewals, ask the customer to return and authenticate |
-| `AUTHENTICATION_TIMEOUT` | Soft | Yes | The authentication process timed out | Ask the customer to retry and complete authentication promptly |
-| `CARD_DECLINED` | Soft | No | The card was declined by the issuing bank without a specific reason (generic decline) | Ask the customer to retry, contact their bank, or use another card |
-| `CARD_NOT_ACTIVATED` | Soft | Yes | The card has not been activated by the cardholder | Ask the customer to activate the card with their bank, then retry |
-| `CARD_VELOCITY_EXCEEDED` | Soft | Yes | Too many transactions attempted in a short period | Ask the customer to wait and retry later, or contact their bank about limits |
-| `CUSTOMER_CANCELLED` | Soft | Yes | The customer cancelled the transaction | Let the customer restart checkout when they are ready |
-| `DO_NOT_HONOR` | Hard | No | The issuing bank explicitly refused the transaction (ISO 8583 code 05 — do not honor); networks treat this as terminal | Ask the customer to contact their bank; do not retry the same card |
-| `EXPIRED_CARD` | Hard | Yes | The card has expired | Ask the customer to use a card with a valid expiry date |
-| `FRAUDULENT` | Hard | Yes | The transaction was flagged as potentially fraudulent | Show the customer a generic decline message — do not reveal the reason. Ask them to use another card |
-| `GENERIC_DECLINE` | Soft | No | The transaction was declined for an unspecified reason | Ask the customer to contact their bank or try another card |
-| `INCORRECT_CVC` | Soft | Yes | The provided CVC code was incorrect | Ask the customer to re-enter the correct CVC |
-| `INCORRECT_NUMBER` | Soft | Yes | The card number was entered incorrectly | Ask the customer to re-enter the correct card number |
-| `INSUFFICIENT_FUNDS` | Soft | Yes | The account has insufficient funds to complete the transaction | Ask the customer to use another payment method or retry once funds are available |
-| `INVALID_ACCOUNT` | Hard | Yes | The account details provided are invalid | Ask the customer to contact their bank or use another card |
-| `INVALID_AMOUNT` | Soft | Yes | The transaction amount is invalid | Verify the amount and any purchase limits with the customer |
-| `INVALID_CARD_NUMBER` | Soft | Yes | The card number format is invalid | Ask the customer to re-enter a valid card number |
-| `INVALID_CARD_OWNER` | Soft | Yes | The card owner information is invalid | Ask the customer to correct the cardholder name |
-| `INVALID_CVC` | Soft | Yes | The CVC format is invalid | Ask the customer to re-enter a valid CVC |
-| `INVALID_EXPIRY_YEAR` | Soft | Yes | The card expiry year is invalid | Ask the customer to enter a valid expiry date |
-| `INVALID_PIN` | Soft | Yes | The provided PIN is incorrect | Ask the customer to re-enter the correct PIN |
-| `INVALID_REQUEST` | Soft | Yes | The transaction request contains invalid data | Check the payment request fields and resubmit with valid data |
-| `INVALID_UPI_ID` | Soft | Yes | The UPI ID provided is invalid | Ask the customer to enter a valid UPI ID |
-| `LIMIT_EXCEEDED` | Soft | Yes | The transaction exceeds the card or account limit | Ask the customer to contact their bank about limits, or use another method |
-| `LIVE_MODE_TEST_CARD` | Hard | Yes | A test card was used in live mode | Use a real card — retrying the test card will always fail in live mode |
-| `LOST_CARD` | Hard | Yes | The card has been reported as lost | Show the customer a generic decline message — do not reveal the reason. Ask them to use another card |
-| `MANDATE_INVALID` | Soft | Yes | The payment mandate is invalid | Ask the customer to set up the payment mandate again |
-| `MANDATE_REQUIRED` | Soft | Yes | A mandate is required for this transaction | Set up a mandate and ask the customer to authorize it before charging |
-| `MANDATE_REQUIRED_SYSTEM` | Hard | No | The system requires a mandate for this transaction type | Ensure the mandate setup flow is completed before charging |
-| `NETWORK_ERROR` | Soft | No | A network error occurred during the transaction | Transient — retry the payment after a short delay |
-| `NETWORK_TIMEOUT` | Soft | No | The network request timed out | Transient — retry the payment after a short delay |
-| `ORDER_ALREADY_EXISTS` | Soft | No | An order already exists for this transaction (duplicate order creation) | Check the status of the existing order before retrying; contact support if it persists |
-| `ORDER_CREATION_FAILED` | Soft | No | Failed to create the order for the transaction | Transient/system error — retry the payment; contact support if it persists |
-| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hard | Yes | The payment method provider declined the transaction | Ask the customer to contact their provider or use another payment method |
-| `PAYMENT_METHOD_UNSUPPORTED` | Hard | Yes | The payment method is not supported for this transaction | Ask the customer to use a supported payment method |
-| `PICKUP_CARD` | Hard | Yes | The card has been reported as lost or stolen and flagged for pickup | Show the customer a generic decline message — do not reveal the reason. Ask them to use another card |
-| `PROCESSING_ERROR` | Soft | No | An error occurred while processing the transaction | Transient — retry the payment; if it persists, ask the customer to contact their bank |
-| `PROVIDER_UNSUPPORTED` | Hard | No | The payment provider does not support this transaction type | Ask the customer to use another payment method |
-| `REENTER_TRANSACTION` | Soft | Yes | The transaction needs to be re-entered | Ask the customer to retry the payment |
-| `REVOCATION_OF_AUTHORIZATION` | Hard | Yes | The authorization for the transaction was revoked | Ask the customer to use another payment method |
-| `STOLEN_CARD` | Hard | Yes | The card has been reported as stolen | Show the customer a generic decline message — do not reveal the reason. Ask them to use another card |
-| `SUBSCRIPTION_NOT_ACTIVE` | Hard | No | The subscription is not active, so the recurring charge could not be processed | Reactivate the subscription (for example, by updating the payment method) before attempting the charge again |
-| `TRANSACTION_NOT_ALLOWED` | Hard | Yes | The transaction is not allowed for this card or account | Ask the customer to contact their bank to allow this transaction type, or use another card |
-| `TRANSACTION_NOT_APPROVED` | Hard | Yes | The transaction was not approved | Ask the customer to contact their bank or try another card |
-| `TRY_AGAIN_LATER` | Soft | No | The transaction should be retried later | Transient — retry the payment later |
-| `UNKNOWN_ERROR` | Soft | No | An unknown error occurred | Retry the payment; if it persists, contact support |
+| `AUTHENTICATION_FAILURE` | Soft | Ya | Autentikasi gagal selama transaksi | Minta customer mencoba lagi dan menyelesaikan autentikasi 3DS, atau menggunakan kartu lain |
+| `AUTHENTICATION_REQUIRED` | Soft | Ya | Autentikasi tambahan diperlukan untuk menyelesaikan transaksi | Minta customer menyelesaikan autentikasi 3DS. Untuk perpanjangan langganan, minta customer kembali dan melakukan autentikasi |
+| `AUTHENTICATION_TIMEOUT` | Soft | Ya | Proses autentikasi kehabisan waktu | Minta customer mencoba lagi dan segera menyelesaikan autentikasi |
+| `CARD_DECLINED` | Soft | Tidak | Kartu ditolak oleh bank penerbit tanpa alasan spesifik (generic decline) | Minta customer mencoba lagi, menghubungi bank mereka, atau menggunakan kartu lain |
+| `CARD_NOT_ACTIVATED` | Soft | Ya | Kartu belum diaktifkan oleh pemegang kartu | Minta customer mengaktifkan kartu melalui bank mereka, lalu coba lagi |
+| `CARD_VELOCITY_EXCEEDED` | Soft | Ya | Terlalu banyak transaksi dicoba dalam waktu singkat | Minta customer menunggu dan mencoba lagi nanti, atau menghubungi bank mereka terkait limit |
+| `CUSTOMER_CANCELLED` | Soft | Ya | Customer membatalkan transaksi | Biarkan customer memulai ulang checkout saat mereka siap |
+| `DO_NOT_HONOR` | Hard | Tidak | Bank penerbit secara eksplisit menolak transaksi (kode ISO 8583 05 — do not honor); jaringan pembayaran menganggapnya final | Minta customer menghubungi bank mereka; jangan mencoba kembali dengan kartu yang sama |
+| `EXPIRED_CARD` | Hard | Ya | Masa berlaku kartu telah berakhir | Minta customer menggunakan kartu dengan tanggal kedaluwarsa yang valid |
+| `FRAUDULENT` | Hard | Ya | Transaksi ditandai berpotensi sebagai penipuan | Tampilkan pesan decline umum kepada customer — jangan ungkapkan alasannya. Minta mereka menggunakan kartu lain |
+| `GENERIC_DECLINE` | Soft | Tidak | Transaksi ditolak karena alasan yang tidak ditentukan | Minta customer menghubungi bank mereka atau mencoba kartu lain |
+| `INCORRECT_CVC` | Soft | Ya | Kode CVC yang diberikan salah | Minta customer memasukkan kembali CVC yang benar |
+| `INCORRECT_NUMBER` | Soft | Ya | Nomor kartu dimasukkan secara tidak benar | Minta customer memasukkan kembali nomor kartu yang benar |
+| `INSUFFICIENT_FUNDS` | Soft | Ya | Saldo rekening tidak mencukupi untuk menyelesaikan transaksi | Minta customer menggunakan metode pembayaran lain atau mencoba lagi setelah dana tersedia |
+| `INVALID_ACCOUNT` | Hard | Ya | Detail rekening yang diberikan tidak valid | Minta customer menghubungi bank mereka atau menggunakan kartu lain |
+| `INVALID_AMOUNT` | Soft | Ya | Jumlah transaksi tidak valid | Verifikasi jumlah dan batas pembelian dengan customer |
+| `INVALID_CARD_NUMBER` | Soft | Ya | Format nomor kartu tidak valid | Minta customer memasukkan kembali nomor kartu yang valid |
+| `INVALID_CARD_OWNER` | Soft | Ya | Informasi pemilik kartu tidak valid | Minta customer memperbaiki nama pemegang kartu |
+| `INVALID_CVC` | Soft | Ya | Format CVC tidak valid | Minta customer memasukkan kembali CVC yang valid |
+| `INVALID_EXPIRY_YEAR` | Soft | Ya | Tahun kedaluwarsa kartu tidak valid | Minta customer memasukkan tanggal kedaluwarsa yang valid |
+| `INVALID_PIN` | Soft | Ya | PIN yang diberikan salah | Minta customer memasukkan kembali PIN yang benar |
+| `INVALID_REQUEST` | Soft | Ya | Permintaan transaksi berisi data yang tidak valid | Periksa field permintaan pembayaran dan kirim ulang dengan data yang valid |
+| `INVALID_UPI_ID` | Soft | Ya | UPI ID yang diberikan tidak valid | Minta customer memasukkan UPI ID yang valid |
+| `LIMIT_EXCEEDED` | Soft | Ya | Transaksi melebihi limit kartu atau rekening | Minta customer menghubungi bank mereka terkait limit, atau menggunakan metode lain |
+| `LIVE_MODE_TEST_CARD` | Hard | Ya | Kartu pengujian digunakan dalam live mode | Gunakan kartu sungguhan — mencoba kembali dengan kartu pengujian akan selalu gagal dalam live mode |
+| `LOST_CARD` | Hard | Ya | Kartu dilaporkan hilang | Tampilkan pesan decline umum kepada customer — jangan ungkapkan alasannya. Minta mereka menggunakan kartu lain |
+| `MANDATE_INVALID` | Soft | Ya | Mandat pembayaran tidak valid | Minta customer menyiapkan ulang mandat pembayaran |
+| `MANDATE_REQUIRED` | Soft | Ya | Mandat diperlukan untuk transaksi ini | Siapkan mandat dan minta customer mengotorisasinya sebelum melakukan penagihan |
+| `MANDATE_REQUIRED_SYSTEM` | Hard | Tidak | Sistem memerlukan mandat untuk jenis transaksi ini | Pastikan alur penyiapan mandat selesai sebelum melakukan penagihan |
+| `NETWORK_ERROR` | Soft | Tidak | Terjadi kesalahan jaringan selama transaksi | Bersifat sementara — coba kembali pembayaran setelah jeda singkat |
+| `NETWORK_TIMEOUT` | Soft | Tidak | Permintaan jaringan kehabisan waktu | Bersifat sementara — coba kembali pembayaran setelah jeda singkat |
+| `ORDER_ALREADY_EXISTS` | Soft | Tidak | Pesanan sudah ada untuk transaksi ini (pembuatan pesanan duplikat) | Periksa status pesanan yang sudah ada sebelum mencoba lagi; hubungi support jika masalah berlanjut |
+| `ORDER_CREATION_FAILED` | Soft | Tidak | Gagal membuat pesanan untuk transaksi | Kesalahan sementara/sistem — coba kembali pembayaran; hubungi support jika masalah berlanjut |
+| `PAYMENT_METHOD_PROVIDER_DECLINED` | Hard | Ya | Penyedia metode pembayaran menolak transaksi | Minta customer menghubungi penyedia mereka atau menggunakan metode pembayaran lain |
+| `PAYMENT_METHOD_UNSUPPORTED` | Hard | Ya | Metode pembayaran tidak didukung untuk transaksi ini | Minta customer menggunakan metode pembayaran yang didukung |
+| `PICKUP_CARD` | Hard | Ya | Kartu dilaporkan hilang atau dicuri dan ditandai untuk diambil | Tampilkan pesan decline umum kepada customer — jangan ungkapkan alasannya. Minta mereka menggunakan kartu lain |
+| `PROCESSING_ERROR` | Soft | Tidak | Terjadi kesalahan saat memproses transaksi | Bersifat sementara — coba kembali pembayaran; jika berlanjut, minta customer menghubungi bank mereka |
+| `PROVIDER_UNSUPPORTED` | Hard | Tidak | Penyedia pembayaran tidak mendukung jenis transaksi ini | Minta customer menggunakan metode pembayaran lain |
+| `REENTER_TRANSACTION` | Soft | Ya | Transaksi perlu dimasukkan kembali | Minta customer mencoba kembali pembayaran |
+| `REVOCATION_OF_AUTHORIZATION` | Hard | Ya | Otorisasi untuk transaksi telah dicabut | Minta customer menggunakan metode pembayaran lain |
+| `STOLEN_CARD` | Hard | Ya | Kartu dilaporkan dicuri | Tampilkan pesan decline umum kepada customer — jangan ungkapkan alasannya. Minta mereka menggunakan kartu lain |
+| `SUBSCRIPTION_NOT_ACTIVE` | Hard | Tidak | Langganan tidak aktif, sehingga tagihan berulang tidak dapat diproses | Aktifkan kembali langganan (misalnya dengan memperbarui metode pembayaran) sebelum mencoba melakukan penagihan lagi |
+| `TRANSACTION_NOT_ALLOWED` | Hard | Ya | Transaksi tidak diizinkan untuk kartu atau rekening ini | Minta customer menghubungi bank mereka agar mengizinkan jenis transaksi ini, atau menggunakan kartu lain |
+| `TRANSACTION_NOT_APPROVED` | Hard | Ya | Transaksi tidak disetujui | Minta customer menghubungi bank mereka atau mencoba kartu lain |
+| `TRY_AGAIN_LATER` | Soft | Tidak | Transaksi harus dicoba kembali nanti | Bersifat sementara — coba kembali pembayaran nanti |
+| `UNKNOWN_ERROR` | Soft | Tidak | Terjadi kesalahan yang tidak diketahui | Coba kembali pembayaran; jika berlanjut, hubungi support |
 
-**User Error** menunjukkan apakah penolakan pembayaran dapat diselesaikan oleh pelanggan. Ketika `Yes`, pelanggan dapat mengambil tindakan untuk memperbaiki masalah (misalnya, memasukkan detail kartu yang benar). Ketika `No`, penolakan disebabkan oleh masalah di tingkat sistem atau pembatasan bank yang tidak dapat diselesaikan langsung oleh pelanggan.
+<Note>
+**Kesalahan User** menunjukkan apakah decline pembayaran dapat diselesaikan oleh customer. Jika `Yes`, customer dapat mengambil tindakan untuk memperbaiki masalah (misalnya, memasukkan detail kartu yang benar). Jika `No`, decline disebabkan oleh masalah tingkat sistem atau pembatasan bank yang tidak dapat diselesaikan langsung oleh customer.
+</Note>
 
-## Handling Failures Programmatically
+<Info>
+Kartu juga dapat ditolak ketika risk engine milik bank penerbit menandai pemegang kartu sebagai customer berisiko tinggi — terlepas dari merchant atau detail transaksi. Decline ini biasanya muncul sebagai kode umum seperti `DO_NOT_HONOR`, `GENERIC_DECLINE`, `CARD_DECLINED`, `TRANSACTION_NOT_APPROVED`, atau `FRAUDULENT`. Dalam kasus ini, bank tidak membagikan alasan spesifiknya, dan Dodo Payments maupun merchant tidak dapat membatalkan keputusan tersebut. Minta customer menghubungi bank mereka untuk menyelesaikan penandaan ini, atau menggunakan kartu maupun metode pembayaran lain.
+</Info>
 
-Baca `error_code` dari webhook `payment.failed` atau objek pembayaran, memetakan ke tindakan yang direkomendasikan di atas, dan memutuskan apakah akan mencoba kembali. Untuk pembaruan langganan, soft declines secara otomatis dicoba ulang untuk Anda — lihat [Subscription Payment Retries](/features/recovery/payment-retries).
+## Menangani Kegagalan Secara Terprogram
 
-Untuk kesalahan tingkat API dan logika bisnis (seperti `PAYMENT_NOT_SUCCEEDED` atau `REFUND_WINDOW_EXPIRED`) yang bukan penolakan kartu, lihat referensi [Error Codes](/api-reference/error-codes).
+Baca `error_code` dari webhook `payment.failed` atau objek pembayaran, petakan ke tindakan yang direkomendasikan di atas, lalu tentukan apakah perlu mencoba kembali. Untuk perpanjangan langganan, soft decline otomatis dicoba kembali untuk Anda — lihat [Subscription Payment Retries](/features/recovery/payment-retries).
 
-## Related
+Untuk error tingkat API dan logika bisnis (seperti `PAYMENT_NOT_SUCCEEDED` atau `REFUND_WINDOW_EXPIRED`) yang bukan merupakan card decline, lihat referensi [Error Codes](/api-reference/error-codes).
 
-End-to-end guide to detecting, surfacing, and retrying failed payments.
+## Terkait
 
-API and business-logic error codes for non-decline failures.
+<CardGroup cols={2}>
+<Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
+Panduan menyeluruh untuk mendeteksi, menampilkan, dan mencoba kembali pembayaran yang gagal.
+</Card>
 
-Automatic retries that recover soft declines on subscription renewals.
+<Card title="Error Codes" icon="triangle-exclamation" href="/api-reference/error-codes">
+Kode error API dan logika bisnis untuk kegagalan selain decline.
+</Card>
 
-Email sequences that recover hard declines by prompting a payment method update.
+<Card title="Subscription Payment Retries" icon="arrow-rotate-right" href="/features/recovery/payment-retries">
+Percobaan ulang otomatis yang memulihkan soft decline pada perpanjangan langganan.
+</Card>
 
-## Support
+<Card title="Subscription Dunning" icon="repeat" href="/features/recovery/subscription-dunning">
+Rangkaian email yang memulihkan hard decline dengan meminta pembaruan metode pembayaran.
+</Card>
+</CardGroup>
 
-Untuk bantuan lebih lanjut dengan kegagalan transaksi atau masalah integrasi, silakan hubungi tim dukungan kami di support@dodopayments.com.
+## Dukungan
 
-Untuk bantuan tambahan terkait kegagalan transaksi atau masalah integrasi, silakan hubungi tim dukungan kami di support@dodopayments.com.
+Untuk bantuan tambahan terkait kegagalan transaksi atau masalah integrasi, silakan hubungi tim support kami di support@dodopayments.com.

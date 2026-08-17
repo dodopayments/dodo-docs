@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Auszahlung
+description: Die an Ihren Webhook-Endpunkt gesendeten Daten, wenn eine
+  Auszahlung erstellt wird oder ihren Status ändert, sowie Informationen zum
+  Abgleich der einzelnen Ereignisse im Auszahlungslebenszyklus.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - Auszahlungs-Webhook
+  - Auszahlungsereignisse
+  - Webhook-Integration
+  - Auszahlung
+  - payout.success
+---
+
+<Info>
+Auszahlungs- Webhooks informieren Sie darüber, wann Ihre eigenen Gelder von Dodo Payments auf Ihr Bankkonto überwiesen werden. Verwenden Sie sie, um Auszahlungen in Ihren Buchhaltungssystemen abzugleichen, ohne den Endpunkt [Auszahlungen auflisten](/api-reference/payouts/get-payouts) per Polling abzufragen.
+</Info>
+
+## Webhook-Ereignisse für Auszahlungen
+
+Bei jeder Phase ihres Lebenszyklus löst eine Auszahlung ein Ereignis aus. Die Phasen entsprechen den [Auszahlungsstatus](/features/payouts/payout-structure) in Ihrem Dashboard.
+
+| Ereignis | Wird ausgelöst, wenn | Was es normalerweise bedeutet |
+|-------|-----------|-----------------------|
+| `payout.created` | eine Auszahlung durch den automatischen Auszahlungszyklus oder außerplanmäßig erstellt wird | die Auszahlung existiert, wurde aber noch nicht in Bewegung gesetzt |
+| `payout.in_progress` | das Fälligkeitsdatum der Auszahlung erreicht ist und die Verarbeitung beginnt | die Gelder sind auf dem Weg zu Ihrem Bankkonto |
+| `payout.on_hold` | die Auszahlung pausiert oder zur Prüfung zurückgestellt wird | möglicherweise müssen Sie zusätzliche Informationen bereitstellen |
+| `payout.success` | die Auszahlung auf Ihr Bankkonto abgewickelt wird | die Gelder sollten auf Ihrem Konto verfügbar sein |
+| `payout.failed` | die Auszahlung fehlschlägt | der Betrag und die Gebühren werden Ihrem Wallet wieder gutgeschrieben |
+
+<Note>
+`payout.created` wurde zuvor als `payout.not_initiated` ausgelöst. Wenn ein bestehender Endpunkt nach `payout.not_initiated` filtert, aktualisieren Sie den Filter auf `payout.created`, damit er weiterhin passende Ergebnisse liefert. Das Feld `status` in den Daten meldet in dieser Phase weiterhin `not_initiated`.
+</Note>
+
+## Verarbeiten von Auszahlungsereignissen
+
+Da es bei Auszahlungen um Ihr eigenes Geld und nicht um das eines Kunden geht, werden diese Ereignisse normalerweise in die Buchhaltung und interne Benachrichtigungen eingespeist und nicht in kundenorientierte Abläufe.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Überprüfen Sie immer die Webhook-Signatur, bevor Sie die Verarbeitung durchführen — Informationen zur Einrichtung finden Sie im [Webhooks-Leitfaden](/developer-resources/webhooks). Der obige Handler lässt die Überprüfung der Kürze halber aus.
+</Tip>
+
+<Warning>
+Auszahlungsereignisse sind weder final noch streng geordnet. `payout.failed` kann nach `payout.success` eintreffen, wenn eine Bank die Überweisung zurückgibt, und `payout.success` kann nach `payout.failed` eintreffen, wenn eine fehlgeschlagene Auszahlung später wiederhergestellt wird. Behandeln Sie das Feld `status` in den Daten als den aktuellen Status, anstatt davon auszugehen, dass das zuletzt empfangene Ereignis endgültig ist.
+</Warning>
+
+## Auszahlungsstatus
+
+Das Auszahlungsobjekt meldet seinen Fortschritt über ein einzelnes Feld:
+
+| Feld | Werte |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` und `tax` in den Daten sind veraltet. Verwenden Sie stattdessen die [Endpunkte zur Aufschlüsselung von Auszahlungen](/api-reference/payouts/retrieve-breakup), um eine detaillierte Aufschlüsselung zu erhalten.
+</Note>
+
+## Verwandte Themen
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Wie Auszahlungen geplant und berechnet werden und was die einzelnen Auszahlungsstatus bedeuten.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Verfolgen Sie Wallet-Guthaben und das Ledger hinter jeder Auszahlung.
+</Card>
+</CardGroup>
+
+## Schema der Webhook-Daten

@@ -13,7 +13,7 @@ keywords:
   - rättigheter
 ---
 
-Denna guide går igenom att bygga ett system för **manuell leverans av licensnycklar** från början till slut. Istället för att Dodo Payments auto-genererar en nyckel vid betalning, skapar varje köp ett `pending`-beviljande och väntar på att *du* ska leverera nyckelvärdet från ditt eget system, en tredjepartsleverantör eller en begränsad mängd koder.
+Den här guiden går igenom hur du bygger ett system för **manuell leverans av licensnycklar** från början till slut. I stället för att Dodo Payments automatiskt genererar en nyckel vid betalning skapar varje köp en `Pending` grant och väntar på att *du* ska ange nyckelvärdet från ditt eget system, en tredjepartsleverantör eller en begränsad pool av koder.
 
 När du är klar kommer du att ha:
 
@@ -38,8 +38,8 @@ sequenceDiagram
     participant D as Dodo Payments
     participant M as Your Backend
     C->>D: Purchase (manual-mode License Key product)
-    D->>D: Create grant (status: pending, no key)
-    D->>M: entitlement_grant.created (integration_type: license_key, status: pending)
+    D->>D: Create grant (status: Pending, no key)
+    D->>M: entitlement_grant.created (integration_type: license_key, status: Pending)
     M->>M: Obtain key from own system / vendor
     M->>D: POST /grants/{grant_id}/license-key { key }
     D->>C: Deliver license key to customer
@@ -79,11 +79,11 @@ Välj **Licensnyckel** som integration och ge den ett **Namn**. Formuläret expo
 - **Aktiveringsmeddelande** — valfritt kundriktat meddelande som visas när de aktiverar nyckeln.
 
 <Frame>
-<img src="/images/entitlements/license-keys/create.png" alt="Nytt formulär för licensnyckelrättighet med namn, leveransläge, licensens längd, aktiveringsgräns och aktiveringsmeddelande" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/entitlements/license-keys/create.png" alt="New License Key entitlement form with name, fulfillment mode, license length, activations limit, and activation message" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 </Step>
 <Step title="Set Fulfillment Mode to Manual">
-Öppna dropdown-menyn för **Leveransläge** och ändra från **Automatisk** till **Manuell**. Detta är inställningen som driver hela denna guide — utan den genereras och skickas nycklar automatiskt och inget väntande beviljande skapas. Med **Manuell** valt skapar varje köp ett `pending`-beviljande för dig att fullgöra. Klicka på **Skapa rättighet** för att spara.
+Öppna rullgardinsmenyn **Fulfillment Mode** och ändra den från **Automatic** till **Manual**. Detta är inställningen som styr hela guiden — utan den genereras och skickas nycklar automatiskt via e-post och inget väntande grant skapas. När **Manual** är valt skapar varje köp ett `Pending` grant som du ska leverera. Klicka på **Create Entitlement** för att spara.
 </Step>
 </Steps>
 </Tab>
@@ -173,15 +173,15 @@ curl -X POST https://test.dodopayments.com/entitlements \
 Leveransläge är en egenskap hos **rättigheten**, inte produkten. Eftersom du satte den till **Manuell** i Steg 1 skapar varje produkt denna rättighet är fäst vid `pending` licensnyckel-beviljanden vid köp — det finns inget extra att konfigurera här.
 </Note>
 
-<Tip>
-Om du inte har en produkt ännu, skapa en först (engångs- eller prenumeration). Se [Guiden för engångsbetalningsintegrationer](/developer-resources/integration-guide) för att sälja produkten via kassan.
-</Tip>
+<Note>
+Leveransläget är en egenskap hos **entitlement**, inte produkten. Eftersom du angav **Manual** i steg 1 skapar varje produkt som detta entitlement är kopplat till `Pending` license-key grants vid köp — inget ytterligare behöver konfigureras här.
+</Note>
 
 ## Steg 3 — Detektera väntande beviljanden
 
 När en kund köper produkten skapar Dodo Payments ett beviljande i `pending`-status utan **nyckel bifogad** och skickar en `entitlement_grant.created`-webhook. Detta är din signal att en kund väntar på en nyckel.
 
-### Lyssna efter webhooks
+När en kund köper produkten skapar Dodo Payments ett grant med statusen `Pending`, **utan någon kopplad nyckel**, och skickar en `entitlement_grant.created` webhook. Detta är din signal om att en kund väntar på en nyckel.
 
 Ställ in en webhook-slutpunkt (Utvecklare → Webhooks i instrumentpanelen) och agera på väntande licensnyckel-beviljanden. Implementationen följer specifikationen [Standard Webhooks](https://standardwebhooks.com/).
 
@@ -217,7 +217,37 @@ export async function POST(request: Request) {
 }
 ```
 
-Beviljande nyttolasten bär `integration_type: "license_key"`, så att du kan känna igen ett licensnyckel-beviljande utan ett extra uppslag. Se [Referensen för Entitlement Grant-webhook](/developer-resources/webhooks/intents/entitlement-grant) för hela nyttolasten.
+```typescript theme={null}
+import { Webhook } from 'standardwebhooks';
+
+const webhook = new Webhook(process.env.DODO_WEBHOOK_KEY!);
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = {
+    'webhook-id': request.headers.get('webhook-id') || '',
+    'webhook-signature': request.headers.get('webhook-signature') || '',
+    'webhook-timestamp': request.headers.get('webhook-timestamp') || '',
+  };
+
+  await webhook.verify(rawBody, headers);
+  const event = JSON.parse(rawBody);
+
+  // A customer bought a manual-mode license key and is waiting for it.
+  if (
+    event.type === 'entitlement_grant.created' &&
+    event.data.integration_type === 'license_key' &&
+    event.data.status === 'Pending'
+  ) {
+    await queueLicenseKeyFulfillment({
+      grantId: event.data.id,
+      customerId: event.data.customer_id,
+    });
+  }
+
+  return new Response('ok');
+}
+```
 
 ### Eller fråga List Grants API
 
@@ -286,15 +316,32 @@ async function fulfill(grantId: string, key: string) {
 }
 ```
 
-```bash cURL theme={null}
-curl -X POST https://test.dodopayments.com/grants/grant_8VbC6JDZ/license-key \
-  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "key": "PRO-AAAA-BBBB-CCCC-DDDD",
-    "activations_limit": 5,
-    "expires_at": "2027-05-01T00:00:00Z"
-  }'
+```typescript Node.js theme={null}
+async function fulfill(grantId: string, key: string) {
+  const res = await fetch(
+    `https://test.dodopayments.com/grants/${grantId}/license-key`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        key,
+        // Optional — fall back to the entitlement config when omitted
+        activations_limit: 5,
+        expires_at: '2027-05-01T00:00:00Z',
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    // See the status code table below for handling
+    throw new Error(`Fulfillment failed: ${res.status}`);
+  }
+
+  return res.json(); // updated grant, now status: "Delivered"
+}
 ```
 
 </CodeGroup>
@@ -315,7 +362,7 @@ Förfallodatum per nyckel (ISO 8601). Återgår till rättighetskonfigurationens
 
 Vid framgång flyttas beviljandet till `delivered`, kunden skickas automatiskt nyckeln (samma e-post som de skulle ha fått under automatisk leverans), och `entitlement_grant.delivered` utlöses.
 
-Kunden får ett e-postmeddelande med licensnyckeln, produkten, aktiveringsgränsen, utgången och dina aktiveringsinstruktioner:
+När operationen lyckas övergår grant till `Delivered`, kunden får nyckeln automatiskt (samma e-postmeddelande som kunden skulle ha fått vid automatisk leverans), och webhook-händelserna `license_key.created` och `entitlement_grant.delivered` utlöses.
 
 <Frame caption="The license key email the customer receives once you fulfill the grant.">
 <img src="/images/entitlements/license-keys/customer-email.png" alt="Kunds licensnyckel e-post som visar nyckeln, produkten, aktiveringsgränsen, utgången och aktiveringsinstruktionerna" style={{ maxHeight: '500px', width: 'auto' }} />
@@ -337,9 +384,13 @@ Slutpunkten validerar beviljandet innan något levereras. Hantera dessa svar:
 | `409` | Beviljande väntar inte på leverans (redan levererad eller har redan en nyckel), **eller** nyckelvärdet finns redan. | Om redan levererad, behandla som framgång. Om det är en duplikerad nyckel, ange en annan nyckel. |
 | `422` | Begär kroppen misslyckades med validering (t.ex. `activations_limit < 1`). | Korrigera fältet och försök igen. |
 
-<Warning>
-Leveransen är säker att försöka igen vid tillfälliga fel (tidsgränser, `5xx`). Varje beviljande kan fullgöras endast en gång, så en omförsökning efter ett framgångsrikt-men-okänt anrop returnerar `409` istället för att utfärda en andra nyckel eller skicka en duplikerad e-post. Använd beviljandet `id` som din idempotensnyckel.
-</Warning>
+| Status | Betydelse | Åtgärd |
+|---|---|---|
+| `200` | Nyckeln har levererats och grant har nu statusen `Delivered`. | Klart. |
+| `400` | Inte ett license-key grant, eller så är nyckeln tom eller består endast av blanksteg. | Korrigera begäran; försök inte igen som den är. |
+| `404` | Det finns inget grant med det ID:t för ditt företag. | Verifiera `grant_id`. |
+| `409` | Grant väntar inte på leverans (har redan levererats eller har redan en nyckel), **eller så finns nyckelvärdet redan**. | Om den redan har levererats ska du behandla det som en lyckad operation. Om nyckeln är en dubblett anger du en annan nyckel. |
+| `422` | Begärans body klarade inte valideringen (t.ex. `activations_limit < 1`). | Korrigera fältet och försök igen. |
 
 ## Verifiera flödet
 
@@ -348,9 +399,10 @@ Leveransen är säker att försöka igen vid tillfälliga fel (tidsgränser, `5x
 3. Anropa fullgörande slutpunkt med en testnyckel.
 4. Bekräfta att svaret visar `status: "delivered"` med ett ifyllt `license_key`, att kunden får nyckel-e-postmeddelandet, och `entitlement_grant.delivered` utlöses.
 
-<Check>
-När den väl är levererad kan kunden [aktivera och validera](/features/license-keys#activation-validation-deactivation) nyckeln mot de offentliga licens-slutpunkterna precis som en auto-genererad nyckel.
-</Check>
+1. Köp produkten i testläge (se [guiderna för checkout](/developer-resources/integration-guide)).
+2. Bekräfta att din webhook tog emot `entitlement_grant.created` med `status: "Pending"` och `integration_type: "license_key"`, eller att grant visas i svaret från List Grants med dessa filter.
+3. Anropa fulfill-endpointen med en testnyckel.
+4. Bekräfta att svaret visar `status: "Delivered"` med ett ifyllt `license_key`, att kunden får e-postmeddelandet med nyckeln och att `entitlement_grant.delivered` utlöses.
 
 ## Relaterad API-referens
 
@@ -371,15 +423,15 @@ Leverera nyckelvärdet och överför beviljandet till levererat.
 
 <CardGroup cols={2}>
 <Card title="Create Entitlement" icon="plus" href="/api-reference/entitlements/create-entitlement">
-Create the License Key entitlement with `fulfillment_mode: manual`.
+Skapa License Key-entitlementet med `fulfillment_mode: manual`.
 </Card>
 <Card title="List Grants" icon="users" href="/api-reference/entitlements/list-grants">
-Filter by `integration_type` and `status` to find pending grants.
+Filtrera efter `status` och `customer_id` för att hitta väntande grants.
 </Card>
 <Card title="Fulfill License Key Grant" icon="code" href="/api-reference/entitlements/fulfill-license-key">
-Deliver the key value and transition the grant to delivered.
+Leverera nyckelvärdet och ändra grantets status till levererad.
 </Card>
 <Card title="Entitlement Grant Webhooks" icon="webhook" href="/developer-resources/webhooks/intents/entitlement-grant">
-The `entitlement_grant.*` events that signal pending and delivered grants.
+Händelserna `entitlement_grant.*` som signalerar väntande och levererade grants.
 </Card>
 </CardGroup>

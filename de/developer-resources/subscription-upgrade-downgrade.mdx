@@ -135,7 +135,7 @@ The new product ID to change the subscription to.
 </ParamField>
 
 <ParamField path="quantity" type="integer" required>
-Anzahl der Einheiten für den neuen Plan (für sitzbasierte Produkte).
+Number of units for the new plan (for seat-based products).
 </ParamField>
 
 <ParamField path="proration_billing_mode" type="string" required>
@@ -271,13 +271,14 @@ Use the Change Plan API to modify product, quantity, and proration behavior for 
     });
 
     async function changePlan() {
-      const result = await client.subscriptions.changePlan('sub_123', {
-        product_id: 'prod_new',
+      // change-plan returns 200 with an empty body.
+      await client.subscriptions.changePlan('sub_123', {
+        product_id: 'pdt_new',
         quantity: 3,
         proration_billing_mode: 'prorated_immediately',
         on_payment_failure: 'prevent_change', // Optional: control behavior on payment failure
       });
-      console.log(result.status, result.invoice_id, result.payment_id);
+      console.log('Plan change accepted; awaiting webhooks');
     }
 
     changePlan();
@@ -295,14 +296,15 @@ Use the Change Plan API to modify product, quantity, and proration behavior for 
         environment="test_mode",  # defaults to "live_mode"
     )
 
-    result = client.subscriptions.change_plan(
+    # change_plan returns 200 with an empty body.
+    client.subscriptions.change_plan(
         subscription_id="sub_123",
-        product_id="prod_new",
+        product_id="pdt_new",
         quantity=3,
         proration_billing_mode="prorated_immediately",
         on_payment_failure="prevent_change",  # Optional: control behavior on payment failure
     )
-    print(result.status, result.get("invoice_id"), result.get("payment_id"))
+    print("Plan change accepted; awaiting webhooks")
     ```
 
   </Tab>
@@ -352,18 +354,10 @@ Use the Change Plan API to modify product, quantity, and proration behavior for 
   </Tab>
 </Tabs>
 
-```json Success
-{
-  "status": "processing",
-  "subscription_id": "sub_123",
-  "invoice_id": "inv_789",
-  "payment_id": "pay_456",
-  "proration_billing_mode": "prorated_immediately"
-}
-```
+A successful plan change returns `200 OK` with an **empty response body**.
 
 <Note>
-Fields like <code>invoice_id</code> and <code>payment_id</code> are returned only when an immediate charge and/or invoice is created during the plan change. Always rely on webhook events (e.g., <code>payment.succeeded</code>, <code>subscription.plan_changed</code>) to confirm outcomes.
+Because there is no response payload, always rely on webhook events (e.g. <code>subscription.plan_changed</code>, <code>payment.succeeded</code>, <code>payment.failed</code>) to confirm the outcome, or re-read the subscription with <code>GET /subscriptions/&#123;subscription_id&#125;</code>.
 </Note>
 
 <Warning>
@@ -494,7 +488,7 @@ Credits created by downgrades using <code>difference_immediately</code> are subs
 |---------|----------------------|------------------------|-------------------|--------------|
 | **Upgrade charge** | Prorated difference for remaining days | Full price difference between plans | Full new plan price | No charge |
 | **Downgrade credit** | Prorated credit for remaining days | Full price difference as credit | No credit | No credit |
-| **Billing cycle** | Unchanged | Unchanged | Resets to today | Unchanged |
+| **Billing cycle** | Resets to today | Resets to today | Resets to today | Unchanged |
 | **Trial behavior** | Ends trial, charges immediately | Ends trial, charges immediately | Ends trial, charges full amount | Ends trial, no charge |
 | **Best for** | Fair time-based billing | Simple upgrade/downgrade math | Resetting billing cycles | Free migrations or courtesy switches |
 | **Complexity** | Medium (day calculation) | Low (simple subtraction) | Low (full charge) | None |
@@ -535,7 +529,8 @@ Use these canonical numbers consistently:
       Charge = $40.00 − $15.00 = $25.00
 
     → Customer pays $25.00 now
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -563,9 +558,10 @@ Use these canonical numbers consistently:
       Credit = $40.00 − $10.00 = $30.00
 
     → No charge — $30.00 credit added to subscription
+    → Billing cycle resets to today (January 16)
     → Credit auto-applies to future renewals
-    → Next renewal (Feb 1): $20.00 − $30.00 credit = $0.00
-    → Following renewal (Mar 1): $20.00 − $10.00 remaining credit = $10.00
+    → Next renewal (Feb 15): $20.00 − $20.00 (from credit) = $0.00 ($10.00 credit remaining)
+    → Following renewal (Mar 15): $20.00 − $10.00 remaining credit = $10.00
     ```
 
     ```javascript
@@ -586,7 +582,8 @@ Use these canonical numbers consistently:
                      = $50.00
 
     → Customer pays $50.00 now (regardless of cycle position)
-    → Next renewal (Feb 1): $80.00/month
+    → Billing cycle resets to today (January 16)
+    → Next renewal (Feb 15): $80.00/month
     ```
 
     ```javascript
@@ -687,14 +684,16 @@ flowchart LR
     A[Plan Change] --> B{Proration Mode}
     B -->|prorated| C[Calculate remaining days]
     C --> D[Charge prorated diff]
-    D --> E[Keep billing date]
+    D --> E[Reset billing date]
     B -->|difference| F[Price difference]
     F -->|Upgrade| G[Charge diff]
     F -->|Downgrade| H[Add credit]
     G --> E
     H --> E
     B -->|full| I[Charge full price]
-    I --> J[Reset billing date]
+    I --> E
+    B -->|do_not_bill| J[No charge / no credit]
+    J --> K[Keep billing date]
 ```
 
 <Tip>
@@ -760,6 +759,36 @@ If not specified, the `on_payment_failure` parameter uses your business-level de
 | Downgrading plans | `apply_change` | Customer is reducing spend |
 | Trusted enterprise customers | `apply_change` | Lower risk of non-payment |
 | Trial to paid conversion | `prevent_change` | Critical payment moment |
+
+## Business & Collection Defaults
+
+Instead of passing proration parameters on every plan change, you can set **default upgrade & downgrade behavior** once at the business level. These defaults apply to all customer-portal plan changes, and can be **overridden per product collection**.
+
+There are separate defaults for upgrades and downgrades:
+
+| Setting | Field (upgrade / downgrade) | Default (upgrade) | Default (downgrade) |
+|---------|-----------------------------|-------------------|---------------------|
+| When the new plan starts | `effective_at_on_upgrade` / `effective_at_on_downgrade` | `immediately` | `next_billing_date` |
+| How the customer is charged | `proration_billing_mode_on_upgrade` / `proration_billing_mode_on_downgrade` | `difference_immediately` | `difference_immediately` |
+| If the customer's payment fails | `on_payment_failure` | `apply_change` | `apply_change` |
+
+Configure business defaults under **Settings → Subscriptions**, and collection overrides on each product collection. Each collection field is independent — leave it unset to **inherit from the business default**, or set a value to override it for that collection only.
+
+### Resolution order
+
+For any given plan change, each setting resolves in this order:
+
+```
+per-request value (Change Plan API) → collection field (if set) → business field → system default
+```
+
+<Info>
+A value passed explicitly to the [Change Plan API](/api-reference/subscriptions/change-plan) always wins. The business and collection defaults only take effect when no explicit value is supplied — which is the case for all plan changes initiated from the customer portal.
+</Info>
+
+<Tip>
+A common setup: keep upgrades `immediately` + `difference_immediately` so customers pay the difference and get access right away, and keep downgrades on `next_billing_date` so customers keep their current plan until the cycle ends.
+</Tip>
 
 ## Handling webhooks
 
@@ -990,8 +1019,7 @@ To reactivate a subscription from `on_hold` state after a failed plan change:
 async function reactivateAfterFailedPlanChange(subscriptionId) {
   // Update payment method - automatically creates charge for remaining dues
   const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-    type: 'new',
-    return_url: 'https://example.com/return'
+    payment_method: { type: 'new', return_url: 'https://example.com/return' }
   });
   
   if (response.payment_id) {
@@ -1010,8 +1038,7 @@ async function reactivateAfterFailedPlanChange(subscriptionId) {
 // Or use existing payment method if available
 async function reactivateWithExistingPaymentMethod(subscriptionId, paymentMethodId) {
   const response = await client.subscriptions.updatePaymentMethod(subscriptionId, {
-    type: 'existing',
-    payment_method_id: paymentMethodId
+    payment_method: { type: 'existing', payment_method_id: paymentMethodId }
   });
   
   // Monitor webhooks for payment.succeeded and subscription.active
@@ -1025,8 +1052,7 @@ def reactivate_after_failed_plan_change(subscription_id):
     # Update payment method - automatically creates charge for remaining dues
     response = client.subscriptions.update_payment_method(
         subscription_id=subscription_id,
-        type="new",
-        return_url="https://example.com/return"
+        payment_method={"type": "new", "return_url": "https://example.com/return"},
     )
     
     if response.payment_id:
@@ -1044,8 +1070,7 @@ def reactivate_after_failed_plan_change(subscription_id):
 def reactivate_with_existing_payment_method(subscription_id, payment_method_id):
     response = client.subscriptions.update_payment_method(
         subscription_id=subscription_id,
-        type="existing",
-        payment_method_id=payment_method_id
+        payment_method={"type": "existing", "payment_method_id": payment_method_id},
     )
     
     # Monitor webhooks for payment.succeeded and subscription.active
@@ -1121,7 +1146,7 @@ Handle common API errors gracefully in your implementation:
 
 <AccordionGroup>
 <Accordion title="200 OK">
-Plan change request processed successfully. The subscription is being updated and payment processing has begun.
+Plan change request processed successfully. The response body is empty. If `on_payment_failure=prevent_change`, the plan change stays pending until payment succeeds.
 </Accordion>
 
 <Accordion title="400 Bad Request">
@@ -1136,8 +1161,12 @@ Invalid or missing API key. Verify your `DODO_PAYMENTS_API_KEY` is correct and h
 Subscription ID not found or doesn't belong to your account.
 </Accordion>
 
+<Accordion title="409 Conflict">
+A pending plan change already exists for this subscription (`PendingPlanChangeExists`). Cancel the scheduled change with `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` before submitting a new one.
+</Accordion>
+
 <Accordion title="422 Unprocessable Entity">
-The subscription cannot be changed (e.g., already cancelled, product not available, etc.).
+The subscription is inactive or on-demand; plan change is not supported.
 </Accordion>
 
 <Accordion title="500 Internal Server Error">
@@ -1165,50 +1194,3 @@ Server error occurred. Retry the request after a brief delay.
 - Explore <a href="/features/credit-based-billing">Credit-Based Billing</a>
 - Implement alerts for `subscription.on_hold`
 - Check out our <a href="/developer-resources/webhooks">Webhook Integration Guide</a>
-
-<AccordionGroup>
-<Accordion title="200 OK">
-Anfrage zur Planänderung erfolgreich verarbeitet. Das Abonnement wird aktualisiert und die Zahlung wird bearbeitet.
-</Accordion>
-
-<Accordion title="400 Bad Request">
-Ungültige Anfrageparameter. Überprüfen Sie, ob alle erforderlichen Felder bereitgestellt und richtig formatiert sind.
-</Accordion>
-
-<Accordion title="401 Unauthorized">
-Ungültiger oder fehlender API-Schlüssel. Überprüfen Sie, ob Ihr `DODO_PAYMENTS_API_KEY` korrekt ist und die richtigen Berechtigungen hat.
-</Accordion>
-
-<Accordion title="404 Not Found">
-Abonnement-ID nicht gefunden oder gehört nicht zu Ihrem Konto.
-</Accordion>
-
-<Accordion title="422 Unprocessable Entity">
-Das Abonnement kann nicht geändert werden (z.B. bereits gekündigt, Produkt nicht verfügbar usw.).
-</Accordion>
-
-<Accordion title="500 Internal Server Error">
-Es ist ein Serverfehler aufgetreten. Wiederholen Sie die Anfrage nach einer kurzen Verzögerung.
-</Accordion>
-</AccordionGroup>
-
-### Fehlerantwortformat
-
-```json
-{
-  "error": {
-    "code": "subscription_not_found",
-    "message": "The subscription with ID 'sub_123' was not found",
-    "details": {
-      "subscription_id": "sub_123"
-    }
-  }
-}
-```
-
-## Nächste Schritte
-
-- Überprüfen Sie die <a href="/api-reference/subscriptions/change-plan">Change Plan API</a>
-- Entdecken Sie <a href="/features/credit-based-billing">Credit-Based Billing</a>
-- Implementieren Sie Warnungen für `subscription.on_hold`
-- Sehen Sie sich unseren <a href="/developer-resources/webhooks">Webhook-Integrationsleitfaden</a> an

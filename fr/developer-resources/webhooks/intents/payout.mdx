@@ -1,0 +1,105 @@
+---
+openapi-schema: PayoutsResponse
+title: Versement
+description: La charge utile envoyée à votre endpoint webhook lorsque un
+  versement est créé ou change de statut, et comment rapprocher chaque événement
+  du cycle de vie d’un versement.
+icon: money-bill-transfer
+keywords:
+  - Dodo Payments
+  - webhook de versement
+  - événements de versement
+  - intégration webhook
+  - versement
+  - payout.success
+---
+
+<Info>
+Les webhooks de versement vous indiquent quand vos propres fonds sont transférés de Dodo Payments vers votre compte bancaire. Utilisez-les pour rapprocher les versements dans vos systèmes comptables sans interroger l’endpoint [List Payouts](/api-reference/payouts/get-payouts).
+</Info>
+
+## Événements webhook de versement
+
+Un versement émet un événement à chaque étape de son cycle de vie. Les étapes correspondent aux [statuts des versements](/features/payouts/payout-structure) affichés dans votre tableau de bord.
+
+| Événement | Déclenché lorsque | Ce que cela signifie généralement |
+|-------|-----------|-----------------------|
+| `payout.created` | Un versement est créé, par le cycle de versement automatique ou en dehors du cycle | Le versement existe, mais n’a pas encore commencé à être transféré |
+| `payout.in_progress` | La date d’échéance du versement arrive et le traitement commence | Les fonds sont en route vers votre compte bancaire |
+| `payout.on_hold` | Le versement est suspendu ou placé sous examen | Vous devrez peut-être fournir des informations supplémentaires |
+| `payout.success` | Le versement vers votre compte bancaire est réglé | Les fonds devraient être disponibles sur votre compte |
+| `payout.failed` | Le versement échoue | Le montant et les frais sont recrédités sur votre portefeuille |
+
+<Note>
+`payout.created` était précédemment émis sous le nom `payout.not_initiated`. Si un endpoint existant utilise un filtre sur `payout.not_initiated`, mettez à jour le filtre vers `payout.created` afin qu’il continue de fonctionner. Le champ `status` de la charge utile indique toujours `not_initiated` à cette étape.
+</Note>
+
+## Gestion des événements de versement
+
+Les versements concernent votre propre argent plutôt que celui d’un client. Ces événements alimentent donc généralement la comptabilité et les alertes internes, plutôt que des flux destinés aux clients.
+
+```javascript Handling payout events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payout.created': {
+      const payout = event.data;
+      // Record the expected payout so finance can reconcile it later
+      await recordPayout(payout.payout_id, payout.amount, payout.currency);
+      break;
+    }
+    case 'payout.success': {
+      // Funds settled — mark the payout as received
+      await markPayoutSettled(event.data.payout_id, event.data.updated_at);
+      break;
+    }
+    case 'payout.failed': {
+      // Funds and fees are credited back to your wallet — alert finance
+      await alertPayoutFailed(event.data.payout_id, event.data.remarks);
+      break;
+    }
+    case 'payout.on_hold': {
+      // Review may be required before the payout can continue
+      await alertPayoutOnHold(event.data.payout_id, event.data.remarks);
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Vérifiez toujours la signature du webhook avant le traitement — consultez le [guide Webhooks](/developer-resources/webhooks) pour la configuration. Le gestionnaire ci-dessus omet la vérification par souci de concision.
+</Tip>
+
+<Warning>
+Les événements de versement ne sont ni définitifs ni strictement ordonnés. `payout.failed` peut arriver après `payout.success` lorsqu’une banque retourne le transfert, et `payout.success` peut arriver après `payout.failed` lorsqu’un versement ayant échoué est ensuite récupéré. Considérez le champ `status` de la charge utile comme l’état actuel, plutôt que de supposer que le dernier événement reçu est définitif.
+</Warning>
+
+## Statut du versement
+
+L’objet de versement indique sa progression au moyen d’un seul champ :
+
+| Champ | Valeurs |
+|-------|--------|
+| `status` | `not_initiated`, `in_progress`, `on_hold`, `success`, `failed` |
+
+<Note>
+`refunds`, `chargebacks` et `tax` de la charge utile sont obsolètes. Utilisez plutôt les [endpoints de ventilation des versements](/api-reference/payouts/retrieve-breakup) pour obtenir une ventilation détaillée.
+</Note>
+
+## Voir aussi
+
+<CardGroup cols={2}>
+<Card title="Payout Structure" icon="money-bill-transfer" href="/features/payouts/payout-structure">
+Comment les versements sont planifiés et calculés, et ce que signifie chaque statut de versement.
+</Card>
+
+<Card title="Balances & Wallets" icon="file-invoice-dollar" href="/features/account-summary-payout-wallet">
+Suivez les soldes du portefeuille et le registre derrière chaque versement.
+</Card>
+</CardGroup>
+
+## Schéma de la charge utile du webhook
