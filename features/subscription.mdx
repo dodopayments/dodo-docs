@@ -415,6 +415,98 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Preview plan changes before committing to them.
 </Card>
 
+## Pausing and Resuming Subscriptions
+
+Pausing freezes a subscription instead of ending it. Billing stops, access is revoked, and the subscription keeps its plan and history so the customer can pick up exactly where they left off. Use it as a retention alternative to cancellation.
+
+Open any active subscription under **Sales → Subscriptions** and click **Pause subscription**. The status changes to `paused` and renewals stop until the subscription is resumed.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Subscription details page in the dashboard showing the Update, Pause subscription, and Cancel Subscription buttons" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### What Happens When You Pause
+
+- **Renewals stop.** No invoice is generated and no renewal charge is attempted while the subscription is paused.
+- **Access is revoked immediately.** Pausing revokes every delivered and pending [entitlement grant](/features/entitlements/introduction) on the subscription, which disables its [license keys](/features/license-keys) and stops new [digital product](/features/digital-product-delivery) download URLs from being issued. Resuming re-grants them, the same way recovering from `on_hold` does.
+- **The billing clock freezes.** `next_billing_date` and `expires_at` both move forward by the exact length of the pause, so the customer keeps the time they already paid for.
+- **There is no pause duration limit.** A paused subscription stays paused until someone resumes it. You do not set a pause length upfront.
+
+<Warning>
+Pausing revokes access straight away, not at the end of the billing period. If a subscription gates your product, make that clear to the customer before they confirm.
+</Warning>
+
+Resuming returns the subscription to `active` and restores its entitlements. Because the clock was frozen, the next renewal lands the paused duration later than originally scheduled — a subscription paused for 12 days renews 12 days late.
+
+### Pausing Usage-Based Subscriptions
+
+A [usage-based](/features/usage-based-billing/introduction) subscription can have usage that is recorded but not yet billed at the moment it is paused. **Bill Usage at Pause** under **Settings → Subscriptions** decides what happens to it:
+
+| Setting | Behavior |
+|---------|----------|
+| **On** (default) | Dodo Payments raises an invoice for the usage accrued since the last billing date and collects it right away. |
+| **Off** | The owed usage is carried forward and billed on the subscription's next regular invoice. |
+
+Only metered usage is settled this way — the recurring base fee is never charged at pause time. Standard and on-demand subscriptions have nothing to settle, so this setting does not affect them.
+
+<Info>
+**Bill Usage at Pause** is recorded per billing cycle. Changing it mid-cycle does not change how the cycle already in progress settles; the new value applies from the next cycle onward.
+</Info>
+
+<Warning>
+The settlement invoice is collected like any other invoice, so it can fail. If it goes unpaid past the [dunning](/features/recovery/subscription-dunning) grace period, the subscription moves to `on_hold` while remaining flagged as paused.
+</Warning>
+
+A subscription in that state has two ways out, and they differ in who absorbs the owed usage:
+
+| Exit | Result |
+|------|--------|
+| The settlement invoice is paid | The subscription returns to `paused`, not `active`. Resume it explicitly when the customer is ready. |
+| You resume it directly | The subscription goes straight to `active` and the unpaid settlement invoice is **voided**, along with its pending retries. The owed usage is written off. |
+
+<Info>
+Resuming is a valid exit from this hold — you do not have to collect the settlement invoice first. Just be aware that resuming forgives the outstanding usage rather than deferring it.
+</Info>
+
+### Letting Customers Pause Their Own Subscriptions
+
+**Allow Subscription Pause** under **Settings → Subscriptions** controls whether customers can pause and resume from the Customer Portal. It is **off by default**, so self-service pause is opt-in.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Subscriptions settings tab showing the Allow Subscription Pause and Bill Usage at Pause toggles" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+This setting only governs the Customer Portal. You can always pause and resume from the dashboard or the API, whichever way the toggle is set.
+
+Turning it off stops new customer pauses, but it does not trap a customer who is already paused — they can still resume a pause they started themselves. Pauses you started stay under your control.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+See what the customer sees, including the confirmation dialog.
+</Card>
+
+### Pausing via API
+
+Pause and resume are a single `pause` field on the update subscription endpoint. There is no separate pause endpoint.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` is exclusive of every other field — sending it alongside anything else is rejected with `422`. Setting `status` to `paused` does **not** pause a subscription; use the `pause` field instead.
+</Warning>
+
+Pausing emits `subscription.paused` and resuming emits `subscription.unpaused`. Both carry the full subscription object, with `paused_at` set while paused and `null` once resumed.
+
+### Pause and Other Subscription Actions
+
+- **Cancellation still works.** You can cancel a paused subscription exactly as you would an active one. Any open settlement invoice from the pause is voided when you do.
+- **Scheduled plan changes are delayed, not dropped.** A [plan change](#subscription-plan-changes) scheduled for the next billing date sits untouched while the subscription is paused, then applies at the shifted billing date once it resumes. Its `scheduled_change.effective_at` is a snapshot from when it was scheduled and is not adjusted for the pause, so it can show a date in the past — read it as "was scheduled for", not as a guaranteed date. To drop the change instead of letting it ride, use [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
 ## Subscription States
 
 A subscription moves through a defined set of statuses over its lifetime. This table is the reference for every status, what causes it, and how (or whether) you can recover it.
@@ -423,8 +515,8 @@ A subscription moves through a defined set of statuses over its lifetime. This t
 |--------|---------------|--------------|---------------------------|
 | `pending` | The subscription is being created or processed | — | Wait for `subscription.active` (or `subscription.failed`) |
 | `active` | The subscription is active and will renew automatically | — | No action needed |
-| `on_hold` | A renewal payment (or plan-change charge) failed; the subscription is paused | **Yes** | Update the payment method to reactivate — automatically via [Payment Retries](/features/recovery/payment-retries) and [Dunning](/features/recovery/subscription-dunning), or manually via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
-| `paused` | The subscription was explicitly paused and will not renew until it is resumed | **Yes** | Unpause via [Update Subscription](/api-reference/subscriptions/patch-subscriptions) with `pause: false` |
+| `on_hold` | A renewal payment (or plan-change charge) failed; renewals have stopped | **Yes** | Update the payment method to reactivate — automatically via [Payment Retries](/features/recovery/payment-retries) and [Dunning](/features/recovery/subscription-dunning), or manually via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | The subscription was deliberately paused by you or the customer; billing is frozen and access is revoked | **Yes** | Resume it with `pause: false`, or from the Customer Portal when self-service pause is enabled — see [Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) |
 | `cancelled` | The subscription was cancelled and will not renew | Re-purchase only | Customer must start a new subscription; [Dunning](/features/recovery/subscription-dunning) can prompt a re-purchase |
 | `failed` | Subscription **creation** failed (the initial mandate or payment did not succeed) | **No — terminal** | Customer must create a new subscription with a working payment method |
 | `expired` | The subscription reached the end of its term | — | Customer must start a new subscription if desired |
@@ -432,6 +524,10 @@ A subscription moves through a defined set of statuses over its lifetime. This t
 <Warning>
 `on_hold` and `failed` are often confused. `on_hold` is a **recoverable** state for an already-active subscription whose renewal failed. `failed` is a **terminal** state that only occurs when the **initial** subscription creation fails — it cannot be reactivated.
 </Warning>
+
+<Info>
+`on_hold` and `paused` are also distinct. `on_hold` is involuntary — a payment failed. `paused` is deliberate — you or the customer chose to freeze the subscription, and no renewal is attempted while it stays paused. A usage-based subscription can still owe a one-off settlement invoice at the moment it is paused; see [Pausing Usage-Based Subscriptions](#pausing-usage-based-subscriptions).
+</Info>
 
 ### State Machine
 
@@ -442,8 +538,10 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
-    active --> paused: Paused via API
-    paused --> active: Unpaused via API
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
     paused --> cancelled: Cancelled
@@ -460,6 +558,7 @@ A subscription enters `on_hold` state when:
 - A renewal payment fails (insufficient funds, expired card, etc.)
 - A plan change charge fails
 - Payment method authorization fails
+- A [pause settlement invoice](#pausing-usage-based-subscriptions) for a usage-based subscription goes unpaid
 
 <Warning>
 When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
@@ -473,6 +572,10 @@ To reactivate a subscription from `on_hold` state, update the payment method. Th
 2. Generates an invoice
 3. Processes the payment using the new payment method
 4. Reactivates the subscription to `active` state upon successful payment
+
+<Note>
+The one exception is a hold caused by an unpaid pause settlement invoice. Clearing that invoice returns the subscription to `paused`, not `active`, because pause is where it was before the payment failed. Resume it explicitly once the invoice is settled.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -503,7 +606,7 @@ Each transition emits a webhook so you can drive entitlement logic without polli
 |------------|-------|
 | Subscription activated | `subscription.active` |
 | Renewal succeeds | `subscription.renewed` |
-| Renewal fails → paused | `subscription.on_hold` |
+| Renewal fails → on hold | `subscription.on_hold` |
 | Subscription paused | `subscription.paused` |
 | Paused subscription resumed | `subscription.unpaused` |
 | Creation fails | `subscription.failed` |
@@ -536,6 +639,14 @@ Use `PATCH /subscriptions/{subscription_id}` to cancel at the next billing date,
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Learn how to update subscription details.
+</Card>
+</Accordion>
+
+<Accordion title="Pause and resume subscriptions">
+Pause and resume run through the same `PATCH /subscriptions/{subscription_id}` endpoint using the `pause` field: `pause: true` pauses an active subscription and `pause: false` resumes it. The field cannot be combined with any other field in the same request. For the full behavior, billing effects, and related business settings, see [Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+View the update subscription API, including the `pause` field.
 </Card>
 </Accordion>
 
