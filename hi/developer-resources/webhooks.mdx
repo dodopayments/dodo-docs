@@ -352,20 +352,45 @@ If you are not using an SDK, you can verify signatures yourself following the St
   We follow the Standard Webhooks specification. You can use their libraries to verify signatures: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). For event payload formats, see the [Webhook Payload](/developer-resources/webhooks/intents/payment).
 </Info>
 
-### Responding to Webhooks
+### स्रोत IP पते
 
-* Your webhook handler must return a `2xx status code` to acknowledge receipt of the event.
-* Any other response will be treated as a failure, and the webhook will be retried.
+Webhook को authenticate करने के लिए Signature verification समर्थित तरीका है। यह साबित करता है कि request आपके webhook secret के साथ sign की गई थी, जो network-level check नहीं कर सकता।
 
-### Best Practices
+Webhook deliveries हमारे delivery infrastructure से संबंधित source IP addresses के एक pool से भेजी जाती हैं। यह pool समय-समय पर बदलता रहता है, इसलिए इन addresses को integration की स्थायी property के बजाय operational detail मानें।
+
+<Warning>
+Authentication mechanism के रूप में source IP allowlist का उपयोग न करें। Allowlist केवल यह दिखाती है कि request कहाँ से आई है, यह नहीं कि वह वास्तविक या अपरिवर्तित है — हर request पर `webhook-signature` header को verify करें, जैसा कि [Signatures verify करना](#verifying-signatures) में बताया गया है।
+</Warning>
+
+यदि आपका infrastructure ऐसे firewall के पीछे है जिसके लिए explicit allowlist आवश्यक है, तो निम्न बातों का ध्यान रखें:
+
+- **Addresses को स्थायी रूप से hardcode न करें।** Ranges समय के साथ जोड़ी और हटाई जाती हैं, और पुराना rule deliveries को चुपचाप block कर देता है।
+- Firewall को lock down करने से पहले [support@dodopayments.com](mailto:support@dodopayments.com) से **current ranges का अनुरोध करें**, ताकि आपके पास updated list हो।
+- **Change notices पर नज़र रखें।** जब delivery addresses बदलते हैं, तो हम प्रभावित merchants को email से सूचित करते हैं — deliveries छूटने से बचने के लिए बताई गई तारीख से पहले वे updates लागू करें।
+- आपके द्वारा जोड़े गए network rules की परवाह किए बिना **signature verification enabled रखें**।
+
+<Tip>
+Serverless और managed hosting platforms पर inbound IP filtering अक्सर उपलब्ध नहीं होती या इसे बनाए रखना व्यावहारिक नहीं होता। इन environments में signature verification सही control है और किसी allowlist की आवश्यकता नहीं है।
+</Tip>
+
+<Info>
+Blocked delivery को किसी अन्य failure की तरह ही माना जाता है और [Automatic Retries](#automatic-retries) में बताए गए schedule के अनुसार retry किया जाता है। यदि firewall rules के कारण deliveries fail हुई थीं, तो rules ठीक करने के बाद उन्हें फिर से भेज सकते हैं — [Messages को replay और recover करना](#replaying-and-recovering-messages) देखें।
+</Info>
+
+### Webhooks का उत्तर देना
+
+* Event प्राप्त होने की पुष्टि करने के लिए आपके webhook handler को `2xx status code` return करना होगा।
+* किसी भी अन्य response को failure माना जाएगा और webhook को retry किया जाएगा।
+
+### सर्वोत्तम प्रथाएँ
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  Always use HTTPS URLs for webhook endpoints. HTTP endpoints are vulnerable to man-in-the-middle attacks and expose your webhook data.
+  Webhook endpoints के लिए हमेशा HTTPS URLs का उपयोग करें। HTTP endpoints man-in-the-middle attacks के प्रति vulnerable होते हैं और आपका webhook data expose करते हैं।
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  Return a `200` status code immediately upon receiving the webhook. Process the event asynchronously to avoid timeouts.
+  Webhook प्राप्त होते ही तुरंत `200` status code return करें। Timeouts से बचने के लिए event को asynchronously process करें।
   
 
   ```javascript
@@ -381,17 +406,17 @@ If you are not using an SDK, you can verify signatures yourself following the St
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  Implement idempotency using the `webhook-id` header to safely process the same event multiple times without side effects.
+  `webhook-id` header का उपयोग करके idempotency लागू करें, ताकि side effects के बिना उसी event को कई बार सुरक्षित रूप से process किया जा सके।
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  Store your webhook secret securely using environment variables or a secrets manager. Never commit secrets to version control.
+  Environment variables या secrets manager का उपयोग करके अपना webhook secret सुरक्षित रूप से store करें। Secrets को कभी भी version control में commit न करें।
 </Accordion>
 </AccordionGroup>
 
-## Webhook Payload Structure
+## Webhook Payload की संरचना
 
-Understanding the webhook payload structure helps you parse and process events correctly.
+Webhook payload की संरचना समझने से आपको events को सही ढंग से parse और process करने में सहायता मिलती है।
 
 ### Request Format
 
@@ -403,40 +428,40 @@ Content-Type: application/json
 ### Headers
 
 <ParamField header="webhook-id" type="string" required>
-Unique identifier for this webhook event. Use this for idempotency checks.
+इस webhook event का unique identifier। Idempotency checks के लिए इसका उपयोग करें।
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
-HMAC SHA256 signature for verifying the webhook authenticity.
+Webhook की authenticity verify करने के लिए HMAC SHA256 signature।
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
-Unix timestamp (in seconds) when the webhook was sent.
+Webhook भेजे जाने का Unix timestamp (seconds में)।
 </ParamField>
 
 ### Request Body
 
 <ResponseField name="business_id" type="string" required>
-Your Dodo Payments business identifier.
+आपका Dodo Payments business identifier।
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-Event type that triggered this webhook (e.g., `payment.succeeded`, `subscription.active`).
+इस webhook को trigger करने वाला event type (उदाहरण के लिए, `payment.succeeded`, `subscription.active`)।
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-ISO 8601 formatted timestamp of when the event occurred.
+Event होने के समय का ISO 8601 formatted timestamp।
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-Event-specific payload containing detailed information about the event.
+Event के बारे में विस्तृत जानकारी वाला event-specific payload।
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
-  Type of resource. One of: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant`, or `Payout`.
+  Resource का type। इनमें से एक: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant` या `Payout`।
   </ResponseField>
   
-  Additional fields vary by event type. See the event-specific documentation for complete schemas.
+  अतिरिक्त fields event type के अनुसार अलग-अलग होते हैं। Complete schemas के लिए event-specific documentation देखें।
 </Expandable>
 </ResponseField>
 
@@ -456,59 +481,59 @@ Event-specific payload containing detailed information about the event.
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    Browse all available webhook event types
+    सभी उपलब्ध webhook event types ब्राउज़ करें
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    View detailed payload schemas for each event
+    प्रत्येक event के लिए detailed payload schemas देखें
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    React to `payment.failed` and recover declined payments
+    `payment.failed` पर प्रतिक्रिया दें और declined payments recover करें
   </Card>
 </CardGroup>
 
-## Testing Webhooks
+## Webhooks का परीक्षण
 
-You can test your webhook integration directly from the Dodo Payments dashboard to ensure your endpoint is working correctly before going live.
+Live होने से पहले यह सुनिश्चित करने के लिए कि आपका endpoint सही ढंग से काम कर रहा है, आप Dodo Payments dashboard से सीधे अपने webhook integration का परीक्षण कर सकते हैं।
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    Go to your Dodo Payments Dashboard and navigate to **Developer → Webhooks**.
+    अपने Dodo Payments Dashboard पर जाएँ और **Developer → Webhooks** खोलें।
 </Step>
 
 <Step title="Select Your Endpoint">
-    Click on your webhook endpoint to access its details page.
+    Details page खोलने के लिए अपने webhook endpoint पर click करें।
 </Step>
 
 <Step title="Open Testing Tab">
-    Click on the **Testing** tab to access the webhook testing interface.
+    Webhook testing interface खोलने के लिए **Testing** tab पर click करें।
 </Step>
 </Steps>
 
-### Send an Example Event
+### Example Event भेजें
 
-The **Testing** tab dispatches a sample payload to this endpoint so you can verify your receiver.
+**Testing** tab इस endpoint पर sample payload भेजता है, जिससे आप अपने receiver को verify कर सकते हैं।
 
 <Steps>
 <Step title="Select Event Type">
-    Use **Select an event type** to choose the event you want to test, for example `payment.succeeded` or `payment.failed`.
+    जिस event का परीक्षण करना है, उसे चुनने के लिए **Select an event type** का उपयोग करें, उदाहरण के लिए `payment.succeeded` या `payment.failed`।
 </Step>
 
 <Step title="Send Example">
-    Click **Send example**. The sample payload is delivered to your endpoint URL exactly like a real event, signed the same way.
+    **Send example** पर click करें। Sample payload आपके endpoint URL पर वास्तविक event की तरह ही भेजा जाता है और उसी तरह sign किया जाता है।
     
     <Warning>
-    Failed messages sent from the Testing tab are not retried. Use it to verify your receiver, not to test the retry schedule.
+    Testing tab से भेजे गए failed messages को retry नहीं किया जाता। इसका उपयोग अपने receiver को verify करने के लिए करें, retry schedule का परीक्षण करने के लिए नहीं।
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    The tab records when the **Last example sent** went out. Confirm the event arrived, that your signature verification passed, and that you returned a `2xx` status code.
+    यह tab **Last example sent** के भेजे जाने का समय record करता है। पुष्टि करें कि event प्राप्त हुआ, आपका signature verification सफल रहा और आपने `2xx` status code return किया।
 </Step>
 </Steps>
 
 ### Implementation Example
 
-Here's a complete Express.js implementation showing webhook verification and handling:
+यहाँ Express.js का एक complete implementation है, जो webhook verification और handling दिखाता है:
 
 <CodeGroup>
 
@@ -601,255 +626,255 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-Test your webhook handler thoroughly using the dashboard testing interface before processing production events. This helps identify and fix issues early.
+Production events process करने से पहले dashboard testing interface का उपयोग करके अपने webhook handler का पूरी तरह परीक्षण करें। इससे समस्याओं की जल्दी पहचान और समाधान करने में सहायता मिलती है।
 </Tip>
 
-## Testing Webhooks with the CLI
+## CLI के साथ Webhooks का परीक्षण
 
-The [Dodo Payments CLI](/developer-resources/sdks/cli) provides two commands for testing webhooks during local development, without needing to leave your terminal.
+[Dodo Payments CLI](/developer-resources/sdks/cli) local development के दौरान webhooks का परीक्षण करने के लिए दो commands प्रदान करता है, और इसके लिए आपको अपना terminal छोड़ने की आवश्यकता नहीं होती।
 
-### Listen for Live Webhooks Locally
+### Locally Live Webhooks सुनें
 
-Forward real webhook events from your test mode account to your local development server in real time:
+अपने test mode account से वास्तविक webhook events को real time में अपने local development server पर forward करें:
 
 ```bash
 dodo wh listen
 ```
 
-The CLI opens a WebSocket connection to Dodo Payments and forwards every webhook event to your local endpoint (e.g., `http://localhost:3000/webhook`), preserving all headers including signature headers for verification testing.
+CLI Dodo Payments से WebSocket connection खोलता है और हर webhook event को आपके local endpoint (उदाहरण के लिए, `http://localhost:3000/webhook`) पर forward करता है। यह verification testing के लिए signature headers सहित सभी headers को सुरक्षित रखता है।
 
 <Info>
-The listener only works with **test mode** API keys. Run `dodo login` and select Test Mode before using this command.
+Listener केवल **test mode** API keys के साथ काम करता है। इस command का उपयोग करने से पहले `dodo login` चलाएँ और Test Mode चुनें।
 </Info>
 
-### Trigger Mock Webhook Events
+### Mock Webhook Events Trigger करें
 
-Send mock webhook payloads to any endpoint without creating real transactions:
+वास्तविक transactions बनाए बिना किसी भी endpoint पर mock webhook payloads भेजें:
 
 ```bash
 dodo wh trigger
 ```
 
-This interactive tool lets you pick an event type and sends a realistic mock payload to your endpoint. It loops so you can test multiple events in one session.
+यह interactive tool आपको event type चुनने और अपने endpoint पर realistic mock payload भेजने देता है। यह loop करता रहता है, इसलिए आप एक ही session में कई events का परीक्षण कर सकते हैं।
 
-The trigger command covers all 46 event types Dodo Payments delivers, including the subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning, and entitlement grant families — see [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) for the exact list.
+Trigger command Dodo Payments द्वारा deliver किए जाने वाले सभी 47 event types को cover करता है, जिनमें subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning और entitlement grant families शामिल हैं — exact list के लिए [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) देखें।
 
 <Warning>
-Mock webhook payloads from `dodo wh trigger` are not signed. Use `unsafe_unwrap()` instead of `unwrap()` in your webhook handler during testing only.
+`dodo wh trigger` से प्राप्त mock webhook payloads signed नहीं होते। केवल testing के दौरान अपने webhook handler में `unwrap()` के स्थान पर `unsafe_unwrap()` का उपयोग करें।
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  See the full CLI webhook testing documentation
+  CLI webhook testing का पूरा documentation देखें
 </Card>
 
 ## Advanced Settings
 
-The **Advanced** tab provides additional configuration options for fine-tuning your webhook endpoint behavior.
+**Advanced** tab आपके webhook endpoint के behavior को fine-tune करने के लिए अतिरिक्त configuration options प्रदान करता है।
 
 ### Rate Limiting (Throttling)
 
-Control the rate at which webhook events are delivered to your endpoint to prevent overwhelming your system.
+अपने system पर अत्यधिक load रोकने के लिए webhook events को आपके endpoint पर deliver किए जाने की rate नियंत्रित करें।
 
 <Steps>
 <Step title="Open Advanced Tab">
-    From your endpoint details page, click the **Advanced** tab.
+    अपने endpoint details page से **Advanced** tab पर click करें।
 </Step>
 
 <Step title="Configure Rate Limit">
-    In the "Rate Limit (throttling)" section, click **Edit** to modify the rate limit settings.
+    "Rate Limit (throttling)" section में rate limit settings बदलने के लिए **Edit** पर click करें।
     
     <Info>
-    By default, webhooks have no rate limit applied, meaning events are delivered as soon as they occur.
+    डिफ़ॉल्ट रूप से webhooks पर कोई rate limit लागू नहीं होती, यानी events होते ही deliver कर दिए जाते हैं।
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    Configure your desired rate limit to control webhook delivery frequency and prevent system overload.
+    Webhook delivery frequency नियंत्रित करने और system overload रोकने के लिए अपनी इच्छित rate limit configure करें।
 </Step>
 </Steps>
 
 <Tip>
-Use rate limiting when your webhook handler needs time to process events or when you want to batch multiple events together.
+जब आपके webhook handler को events process करने के लिए समय चाहिए या आप कई events को एक साथ batch करना चाहते हैं, तब rate limiting का उपयोग करें।
 </Tip>
 
 ### Custom Headers
 
-Add custom HTTP headers to all webhook requests sent to your endpoint. This is useful for authentication, routing, or adding metadata.
+अपने endpoint पर भेजी जाने वाली सभी webhook requests में custom HTTP headers जोड़ें। यह authentication, routing या metadata जोड़ने के लिए उपयोगी है।
 
 <Steps>
 <Step title="Add Headers">
-    In the "Custom Headers" section, enter a **Key** and **Value** for each custom header.
+    "Custom Headers" section में प्रत्येक custom header के लिए **Key** और **Value** दर्ज करें।
 </Step>
 
 <Step title="Add Multiple Headers">
-    Click the **+** button to add additional custom headers as needed.
+    आवश्यकता के अनुसार अतिरिक्त custom headers जोड़ने के लिए **+** button पर click करें।
 </Step>
 </Steps>
 
-Your custom headers are included in all webhook requests to this endpoint.
+आपके custom headers इस endpoint पर भेजी जाने वाली सभी webhook requests में शामिल किए जाते हैं।
 
 ### Transformations
 
-Transformations allow you to modify a webhook's payload and optionally redirect it to a different URL. This powerful feature enables you to:
+Transformations आपको webhook के payload को modify करने और वैकल्पिक रूप से उसे किसी अलग URL पर redirect करने देती हैं। यह शक्तिशाली सुविधा आपको निम्न कार्य करने देती है:
 
-- Modify the payload structure before processing
-- Route webhooks to different endpoints based on content
-- Add or remove fields from the payload
-- Transform data formats
+- Processing से पहले payload structure को modify करना
+- Content के आधार पर webhooks को अलग-अलग endpoints पर route करना
+- Payload में fields जोड़ना या हटाना
+- Data formats को transform करना
 
 <Steps>
 <Step title="Enable Transformations">
-    Toggle the **Enabled** switch to activate the transformation feature.
+    Transformation feature activate करने के लिए **Enabled** switch को toggle करें।
 </Step>
 
 <Step title="Configure Transformation">
-    Click **Edit transformation** to define your transformation rules using JavaScript.
+    JavaScript का उपयोग करके transformation rules define करने के लिए **Edit transformation** पर click करें।
 </Step>
 
 <Step title="Test Transformation">
-    Use the transformation test interface to verify your transformation works correctly before going live.
+    Live होने से पहले transformation test interface का उपयोग करके verify करें कि आपका transformation सही ढंग से काम करता है।
 </Step>
 </Steps>
 
 <Warning>
-Transformations can impact webhook delivery performance. Test thoroughly and keep transformation logic simple and efficient.
+Transformations webhook delivery performance को प्रभावित कर सकती हैं। पूरी तरह परीक्षण करें और transformation logic को सरल व efficient रखें।
 </Warning>
 
 <Tip>
-Transformations are particularly useful for:
-- Converting between different data formats
-- Filtering events based on specific criteria
-- Adding computed fields to the payload
-- Routing events to different microservices
+Transformations विशेष रूप से इन कार्यों के लिए उपयोगी हैं:
+- अलग-अलग data formats के बीच convert करना
+- विशिष्ट criteria के आधार पर events को filter करना
+- Payload में computed fields जोड़ना
+- Events को अलग-अलग microservices पर route करना
 </Tip>
 
-## Monitoring Webhook Logs
+## Webhook Logs की निगरानी
 
-The **Logs** tab provides comprehensive visibility into your webhook delivery status, allowing you to monitor, debug, and manage webhook events effectively.
+**Logs** tab आपके webhook delivery status की comprehensive visibility प्रदान करता है, जिससे आप webhook events की प्रभावी रूप से निगरानी, debugging और management कर सकते हैं।
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    Go to **Developer → Webhooks** and open the **Logs** tab.
+    **Developer → Webhooks** पर जाएँ और **Logs** tab खोलें।
 </Step>
 
 <Step title="Browse Delivery History">
-    View a table of all webhook delivery attempts with columns for Event type, Message ID, Event ID, Sent at, Attempted at, Response code, and Duration.
+    सभी webhook delivery attempts की table देखें, जिसमें Event type, Message ID, Event ID, Sent at, Attempted at, Response code और Duration के columns हैं।
 </Step>
 
 <Step title="Search and Filter">
-    Use the search bar to find specific messages by ID or event type. Filter by status (Succeeded, Failed, Pending, etc.) to focus on the events you need to investigate.
+    ID या event type के आधार पर specific messages खोजने के लिए search bar का उपयोग करें। जिन events की जाँच करनी है उन पर ध्यान केंद्रित करने के लिए status (Succeeded, Failed, Pending आदि) के आधार पर filter करें।
 </Step>
 
 <Step title="View Message Details">
-    Click on any message to open the message detail page, which shows:
-    - The complete webhook payload
-    - Every delivery attempt with response code and duration
-    - Timestamp of each attempt
-    - Any error messages from your endpoint
+    Message detail page खोलने के लिए किसी भी message पर click करें, जहाँ यह दिखाई देता है:
+    - Complete webhook payload
+    - Response code और duration के साथ प्रत्येक delivery attempt
+    - प्रत्येक attempt का timestamp
+    - आपके endpoint से प्राप्त कोई भी error messages
 
-    Each attempt carries a **Replay** action, so you can re-drive that one message without leaving the page.
+    प्रत्येक attempt में **Replay** action होता है, इसलिए page छोड़े बिना उस एक message को फिर से भेज सकते हैं।
 </Step>
 </Steps>
 
 ## Activity Monitoring
 
-Go to **Developer → Webhooks** and open the **Activity** tab for a view of delivery performance across your endpoints.
+अपने endpoints के across delivery performance देखने के लिए **Developer → Webhooks** पर जाएँ और **Activity** tab खोलें।
 
-**Delivery activity** plots attempts over time, bucketed as **Attempts per 5 minutes**, **Attempts per hour**, or **Attempts per day** depending on the window. Each bar is split by outcome, and hovering a segment shows the status, the number of attempts, and its share of the total. On an endpoint, **Delivery stats (last 24h)** on the **Overview** tab summarizes the same information for the past day.
+**Delivery activity** समय के साथ attempts को plot करता है, जिन्हें window के अनुसार **Attempts per 5 minutes**, **Attempts per hour** या **Attempts per day** में bucket किया जाता है। प्रत्येक bar outcome के अनुसार विभाजित होती है और किसी segment पर hover करने से status, attempts की संख्या और total में उसका share दिखाई देता है। किसी endpoint पर **Overview** tab में **Delivery stats (last 24h)** पिछले दिन की यही जानकारी summarize करता है।
 
 <Tip>
-The **Error rate (24h)** column on the **Endpoints** tab tells you at a glance which endpoints need attention, before you open any of them.
+**Endpoints** tab का **Error rate (24h)** column तुरंत बताता है कि किन endpoints पर ध्यान देने की आवश्यकता है, इससे पहले कि आप उनमें से किसी को खोलें।
 </Tip>
 
-## Replaying and Recovering Messages
+## Messages को Replay और Recover करना
 
-How you re-drive a message depends on how many you need:
+किसी message को फिर से भेजने का तरीका इस बात पर निर्भर करता है कि आपको कितने messages की आवश्यकता है:
 
-- **One message** — open it from the **Logs** tab and use the **Replay** action on the attempt. No need to open the endpoint.
-- **A range of messages** — open the endpoint, since the bulk modes act on a single endpoint at a time.
+- **एक message** — इसे **Logs** tab से खोलें और attempt पर **Replay** action का उपयोग करें। Endpoint खोलने की आवश्यकता नहीं है।
+- **Messages की एक range** — endpoint खोलें, क्योंकि bulk modes एक समय में केवल एक endpoint पर कार्य करते हैं।
 
-### Replaying in Bulk
+### Bulk में Replay करना
 
-Open the endpoint from **Developer → Webhooks**. Three modes are available, each acting on that endpoint alone. The range you set depends on the mode:
+**Developer → Webhooks** से endpoint खोलें। तीन modes उपलब्ध हैं और प्रत्येक केवल उसी endpoint पर कार्य करता है। आपके द्वारा set की जाने वाली range mode पर निर्भर करती है:
 
-| Mode | What it does | What you set |
+| Mode | यह क्या करता है | आपको क्या set करना है |
 |------|--------------|--------------|
-| **Recover failed messages** | Replays every message to this endpoint that failed. | A starting point: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week**, or **2 weeks ago** |
-| **Replay missing messages** | Replays messages that were never dispatched to this endpoint, for example after you subscribe it to a new event type. | The same starting points |
-| **Bulk replay messages** | Replays messages matching the filters you choose, including ones that already delivered successfully. | **Since** and **Until** bounds, defaulting to the last two weeks, plus optional event types, channel, or tag |
+| **Recover failed messages** | इस endpoint पर वे सभी messages replay करता है जो fail हुए हैं। | एक starting point: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** या **2 weeks ago** |
+| **Replay missing messages** | उन messages को replay करता है जो इस endpoint पर कभी dispatch नहीं हुए, उदाहरण के लिए इसे किसी नए event type की subscription देने के बाद। | वही starting points |
+| **Bulk replay messages** | आपके चुने हुए filters से match करने वाले messages को replay करता है, जिसमें वे messages भी शामिल हैं जो पहले ही successfully deliver हो चुके हैं। | **Since** और **Until** bounds, जो डिफ़ॉल्ट रूप से पिछले दो weeks पर set होते हैं, साथ ही optional event types, channel या tag |
 
 <Steps>
 <Step title="Open More Actions">
-    On the endpoint, open **More actions** and pick one of the three modes above.
+    Endpoint पर **More actions** खोलें और ऊपर दिए गए तीन modes में से एक चुनें।
 </Step>
 
 <Step title="Set the Range">
-    Fill in the range that mode asks for, as listed in the table.
+    Table में listed mode के अनुसार, उस mode द्वारा माँगी गई range भरें।
 </Step>
 
 <Step title="Start the Run">
-    Click **Recover** or **Replay**, depending on the mode you picked.
+    चुने गए mode के अनुसार **Recover** या **Replay** पर click करें।
 </Step>
 </Steps>
 
-Every run appears under **Replay history** on the endpoint's **Overview** tab, with its mode, time range, status, and the number of messages resent.
+हर run endpoint के **Overview** tab में **Replay history** के अंतर्गत दिखाई देता है, जिसमें इसका mode, time range, status और फिर से भेजे गए messages की संख्या होती है।
 
 ## Email Alerts
 
-Receive an email notification when webhook deliveries to an endpoint are failing, so you can address problems before they turn into a backlog.
+जब किसी endpoint पर webhook deliveries fail हो रही हों, तब email notification प्राप्त करें, ताकि समस्याएँ backlog बनने से पहले उनका समाधान किया जा सके।
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  Go to **Developer → Webhooks** and open the **Settings** tab.
+  **Developer → Webhooks** पर जाएँ और **Settings** tab खोलें।
 </Step>
 
 <Step title="Find Email Alerting">
-  Locate the **Email alerting** card.
+  **Email alerting** card खोजें।
 </Step>
 
 <Step title="Configure Email Addresses">
-  Enter the addresses that should receive the alerts. Separate multiple addresses with commas, and leave the field empty to turn alerts off.
+  Alerts प्राप्त करने वाले addresses दर्ज करें। कई addresses को commas से अलग करें और alerts बंद करने के लिए field खाली छोड़ दें।
 </Step>
 
 <Step title="Save">
-  Click **Save** to apply your changes.
+  अपने changes लागू करने के लिए **Save** पर click करें।
 </Step>
 </Steps>
 
 <Tip>
-Enable email alerts to catch webhook delivery problems early and maintain reliable integrations.
+Webhook delivery problems को जल्दी पकड़ने और reliable integrations बनाए रखने के लिए email alerts enable करें।
 </Tip>
 
-## Deploy to Cloud Platforms
+## Cloud Platforms पर Deploy करें
 
-Ready to deploy your webhook handler to production? We provide platform-specific guides to help you deploy webhooks to popular cloud providers with best practices for each platform.
+अपने webhook handler को production में deploy करने के लिए तैयार हैं? हम लोकप्रिय cloud providers पर webhooks deploy करने में सहायता के लिए platform-specific guides प्रदान करते हैं, जिनमें प्रत्येक platform के लिए best practices शामिल हैं।
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    Deploy webhooks to Vercel with serverless functions
+    Vercel पर serverless functions के साथ webhooks deploy करें
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    Run webhooks on Cloudflare's edge network
+    Cloudflare के edge network पर webhooks चलाएँ
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    Integrate webhooks with Supabase
+    Webhooks को Supabase के साथ integrate करें
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    Deploy webhooks as Netlify serverless functions
+    Webhooks को Netlify serverless functions के रूप में deploy करें
   </Card>
 </CardGroup>
 
 <Info>
-Each platform guide includes environment setup, signature verification, and deployment steps specific to that provider.
+प्रत्येक platform guide में उस provider के लिए specific environment setup, signature verification और deployment steps शामिल हैं।
 </Info>
 
-## Related API Reference
+## संबंधित API Reference
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  API reference for creating and configuring webhook endpoints programmatically
+  Webhook endpoints को programmatically create और configure करने के लिए API reference
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
-  API reference for retrieving and managing your webhook endpoints
+  अपने webhook endpoints retrieve और manage करने के लिए API reference
 </Card>
 </CardGroup>

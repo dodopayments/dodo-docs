@@ -80,7 +80,7 @@ Grants are driven by the same payment and subscription events you already receiv
 
 <Steps>
 <Step title="Created">
-Grant dibuat saat pembayaran selesai atau subscription menjadi aktif. Feature flags langsung beralih ke `Delivered`. License keys juga langsung beralih ke `Delivered` saat entitlement menggunakan `fulfillment_mode: auto` (default); dengan `fulfillment_mode: manual`, grant dibuat dalam `Pending` tanpa key hingga Anda menyediakannya melalui [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Setiap integration lainnya dimulai dalam `Pending`. Integration berbasis OAuth (Discord, GitHub, Notion) menyertakan `oauth_url` yang harus dikunjungi pelanggan untuk menyelesaikan consent. Integration langsung ke platform (Telegram, Framer, Digital Files) hanya berada dalam `Pending` sebentar selama delivery disiapkan, lalu beralih ke `Delivered`.
+Grant dibuat ketika pembayaran selesai atau subscription menjadi aktif. Feature flags langsung menuju `Delivered`. License keys juga langsung menuju `Delivered` ketika entitlement menggunakan `fulfillment_mode: auto` (default); pada `fulfillment_mode: manual`, grant dibuat dalam `Pending` tanpa key hingga Anda menyediakannya melalui [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Setiap integrasi lainnya dimulai dalam `Pending`. Integrasi berbasis OAuth (Discord, GitHub, Notion) menampilkan `oauth_url` yang harus dikunjungi customer untuk menyelesaikan consent; field tersebut adalah `null` pada grant yang baru dibuat dan diisi setelah customer memulai accept flow dari email delivery atau customer portal. Integrasi langsung platform (Telegram, Framer, Digital Files) hanya berada dalam `Pending` sebentar saat delivery disiapkan, lalu beralih ke `Delivered`.
 </Step>
 
 <Step title="Delivered">
@@ -100,18 +100,20 @@ Saat akses dicabut (subscription dibatalkan, refund diterbitkan, atau revoke yan
 
 | Event | Behavior |
 |---|---|
-| `payment.succeeded` (one-time payment) | Issue one grant per attached entitlement. |
-| `payment.succeeded` (subscription-linked payment) | No-op. Grants are driven by the subscription event below. |
-| `subscription.active` | Issue grants for any attached entitlements that don't already have one. Re-grant any grants previously revoked for the same subscription. |
-| `subscription.renewed` | No-op. Existing grants persist across renewals. |
-| `subscription.on_hold` | Revoke all delivered and pending grants. `revocation_reason: subscription_on_hold`. |
-| `subscription.cancelled` | Revoke all. `revocation_reason: subscription_cancelled`. |
-| `subscription.expired` | Revoke all. `revocation_reason: subscription_expired`. |
-| `subscription.plan_changed` | Revoke all current grants, then issue grants for the new plan's entitlements. `revocation_reason: plan_changed`. |
-| `refund.succeeded` (one-time payment) | Revoke grants for that payment. `revocation_reason: refund`. |
-| Manual API revoke | Revoke with `revocation_reason: manual`. Manual revokes are not auto-regranted on subscription renewal. |
-| License key disabled | For license-key grants, disabling the underlying key revokes the grant with `revocation_reason: license_key_disabled`. The grant is re-activated automatically if the key is re-enabled. |
-| Platform drift detected | If the platform side of an integration drifts out of sync (a Discord role removed manually, the GitHub App losing repository access, or a reconciliation pass detecting a missing target), the grant is revoked with `revocation_reason: platform_external`. Not auto-regranted on subscription renewal until the underlying platform issue is resolved. |
+| `payment.succeeded` (one-time payment) | Terbitkan satu grant untuk setiap entitlement yang terlampir. |
+| `payment.succeeded` (subscription-linked payment) | No-op. Grant dikendalikan oleh subscription event di bawah. |
+| `subscription.active` | Terbitkan grant untuk setiap entitlement terlampir yang belum memilikinya. Terbitkan kembali grant yang sebelumnya dicabut untuk subscription yang sama. |
+| `subscription.renewed` | No-op. Grant yang ada tetap bertahan selama renewal. |
+| `subscription.on_hold` | Cabut semua grant yang telah dan sedang dikirim. `revocation_reason: subscription_on_hold`. |
+| `subscription.paused` | Cabut semua grant yang telah dan sedang dikirim. `revocation_reason: SubscriptionPaused`. |
+| `subscription.unpaused` | Terbitkan kembali grant yang sebelumnya dicabut untuk subscription yang sama, persis seperti yang dilakukan `subscription.active`. |
+| `subscription.cancelled` | Cabut semua. `revocation_reason: subscription_cancelled`. |
+| `subscription.expired` | Cabut semua. `revocation_reason: subscription_expired`. |
+| `subscription.plan_changed` | Cabut semua grant saat ini, lalu terbitkan grant untuk entitlement pada plan baru. `revocation_reason: plan_changed`. |
+| `refund.succeeded` (one-time payment) | Cabut grant untuk pembayaran tersebut. `revocation_reason: refund`. |
+| Manual API revoke | Cabut dengan `revocation_reason: manual`. Pencabutan manual tidak akan otomatis diterbitkan kembali saat subscription renewal. |
+| License key disabled | Untuk grant license key, menonaktifkan key yang mendasarinya akan mencabut grant dengan `revocation_reason: license_key_disabled`. Grant akan diaktifkan kembali secara otomatis jika key diaktifkan kembali. |
+| Platform drift detected | Jika sisi platform dari suatu integrasi tidak lagi sinkron (role Discord dihapus secara manual, GitHub App kehilangan akses ke repository, atau proses rekonsiliasi mendeteksi target yang hilang), grant akan dicabut dengan `revocation_reason: platform_external`. Tidak otomatis diterbitkan kembali saat subscription renewal hingga masalah pada platform yang mendasarinya terselesaikan. |
 
 <Note>
 Subscription-driven grants are idempotent per `(entitlement, customer, subscription)`; renewals and re-activations do not create duplicate grants. One-time grants are idempotent per `(entitlement, customer, payment)`.
@@ -194,7 +196,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -206,7 +208,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -217,7 +219,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -274,8 +276,8 @@ View the full payload schema, sample events, and `revocation_reason` reference.
 
 ## Best Practices
 
-- **Use one entitlement per delivery channel.** Don't share a single Discord entitlement across products with different role intentions; create one per role for clean revocation.
-- **Test in test mode first.** Create the entitlement, attach it to a test product, run a checkout, and watch the grant transition through `pending → delivered`. Confirm that cancelling the test subscription revokes the grant.
-- **Listen to `entitlement_grant.delivered`, not `payment.succeeded`.** A payment can succeed before fulfilment finishes (especially for OAuth flows). Wait for the delivered event before unlocking dependent features in your own systems.
-- **Treat `entitlement_grant.failed` as actionable.** A failed grant means a customer paid but didn't get access. Surface these to your support team or trigger a regrant.
-- **Map `revocation_reason` to your retention flows.** A `subscription_on_hold` revoke is recoverable (the customer may update their card). A `manual` revoke is intentional. Treat them differently in customer comms.
+- **Gunakan satu entitlement per delivery channel.** Jangan membagikan satu entitlement Discord ke beberapa produk dengan tujuan role yang berbeda; buat satu entitlement per role agar pencabutan tetap rapi.
+- **Uji dalam test mode terlebih dahulu.** Buat entitlement, lampirkan ke produk pengujian, lakukan checkout, dan pantau transisi grant melalui `Pending → Delivered`. Pastikan pembatalan subscription pengujian mencabut grant.
+- **Dengarkan `entitlement_grant.delivered`, bukan `payment.succeeded`.** Pembayaran dapat berhasil sebelum fulfilment selesai (terutama untuk OAuth flows). Tunggu event delivered sebelum membuka fitur yang bergantung padanya di sistem Anda sendiri.
+- **Perlakukan `entitlement_grant.failed` sebagai hal yang memerlukan tindakan.** Grant yang gagal berarti customer telah membayar tetapi tidak mendapatkan akses. Tampilkan hal ini kepada tim support Anda atau picu regrant.
+- **Petakan `revocation_reason` ke retention flows Anda.** Pencabutan `subscription_on_hold` dapat dipulihkan (customer mungkin memperbarui kartunya). Pencabutan `manual` disengaja. Perlakukan keduanya secara berbeda dalam komunikasi dengan customer.

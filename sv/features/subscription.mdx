@@ -415,22 +415,119 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Förhandsgranska planändringar innan du genomför dem.
 </Card>
 
-## Prenumerationstillstånd
+## Pausa och återuppta prenumerationer
 
-En prenumeration går igenom en definierad uppsättning statusar under sin livstid. Den här tabellen är referensen för varje status, vad som orsakar den och hur (eller om) du kan återställa den.
+Att pausa fryser en prenumeration i stället för att avsluta den. Debiteringen stoppas, åtkomsten återkallas och prenumerationen behåller sin plan och historik så att kunden kan fortsätta exakt där den slutade. Använd detta som ett alternativ till uppsägning för att behålla kunder.
 
-| Status | Vad det betyder | Kan återställas? | Återställningsväg / nästa steg |
+Öppna en aktiv prenumeration under **Sales → Subscriptions** och klicka på **Pause subscription**. Statusen ändras till `paused` och förnyelserna stoppas tills prenumerationen återupptas.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Subscription details page in the dashboard showing the Update, Pause subscription, and Cancel Subscription buttons" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### Vad händer när du pausar
+
+- **Förnyelser stoppas.** Ingen faktura skapas och ingen förnyelseavgift debiteras medan prenumerationen är pausad.
+- **Åtkomsten återkallas omedelbart.** När du pausar återkallas alla levererade och väntande [entitlement grants](/features/entitlements/introduction) på prenumerationen. Det inaktiverar dess [license keys](/features/license-keys) och stoppar utfärdandet av nya nedladdnings-URL:er för [digital products](/features/digital-product-delivery). När prenumerationen återupptas tilldelas de igen, på samma sätt som när man återställer från `on_hold`.
+- **Debiteringsklockan fryses.** `next_billing_date` och `expires_at` flyttas båda fram med exakt lika lång tid som pausen, så kunden behåller den tid som redan betalats.
+- **Det finns ingen gräns för pausens längd.** En pausad prenumeration förblir pausad tills någon återupptar den. Du behöver inte ange pausens längd i förväg.
+
+<Warning>
+När du pausar återkallas åtkomsten direkt, inte vid slutet av debiteringsperioden. Om en prenumeration styr åtkomsten till din produkt bör du tydliggöra detta för kunden innan hen bekräftar.
+</Warning>
+
+När prenumerationen återupptas återgår den till `active` och dess rättigheter återställs. Eftersom klockan var fryst infaller nästa förnyelse den pausade tiden senare än ursprungligen planerat — en prenumeration som pausats i 12 dagar förnyas 12 dagar senare.
+
+### Pausa prenumerationer med användningsbaserad debitering
+
+En [usage-based](/features/usage-based-billing/introduction)-prenumeration kan ha användning som har registrerats men ännu inte debiterats när den pausas. **Bill Usage at Pause** under **Settings → Subscriptions** avgör vad som händer med den:
+
+| Inställning | Beteende |
+|---------|----------|
+| **On** (standard) | Dodo Payments skapar en faktura för användningen sedan det senaste debiteringsdatumet och tar betalt direkt. |
+| **Off** | Den utestående användningen förs vidare och debiteras på prenumerationens nästa vanliga faktura. |
+
+På detta sätt regleras endast mätbar användning — den återkommande grundavgiften debiteras aldrig när prenumerationen pausas. Standardprenumerationer och on-demand-prenumerationer har inget att reglera, så denna inställning påverkar dem inte.
+
+<Info>
+**Bill Usage at Pause** registreras per debiteringscykel. Om du ändrar inställningen mitt i en cykel påverkas inte regleringen av den redan pågående cykeln; det nya värdet gäller från och med nästa cykel.
+</Info>
+
+<Warning>
+Regleringsfakturan debiteras som vilken annan faktura som helst och kan därför misslyckas. Om den förblir obetald efter [dunning](/features/recovery/subscription-dunning)-perioden flyttas prenumerationen till `on_hold`, samtidigt som den fortfarande markeras som pausad.
+</Warning>
+
+En prenumeration i det tillståndet kan lämna det på två sätt, och de skiljer sig åt genom vem som står för den utestående användningen:
+
+| Utgång | Resultat |
+|------|--------|
+| Regleringsfakturan betalas | Prenumerationen återgår till `paused`, inte `active`. Återuppta den uttryckligen när kunden är redo. |
+| Du återupptar den direkt | Prenumerationen går direkt till `active` och den obetalda regleringsfakturan **makuleras**, tillsammans med väntande omförsök. Den utestående användningen skrivs av. |
+
+<Info>
+Att återuppta prenumerationen är en giltig väg ut ur detta stopp — du behöver inte först driva in regleringsfakturan. Tänk bara på att ett återupptagande efterskänker den utestående användningen i stället för att skjuta upp den.
+</Info>
+
+### Låt kunder pausa sina egna prenumerationer
+
+**Allow Subscription Pause** under **Settings → Subscriptions** styr om kunder kan pausa och återuppta prenumerationer från Customer Portal. Funktionen är **avstängd som standard**, så självbetjäningspaus måste aktiveras.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Subscriptions settings tab showing the Allow Subscription Pause and Bill Usage at Pause toggles" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Den här inställningen gäller endast Customer Portal. Du kan alltid pausa och återuppta prenumerationer från instrumentpanelen eller API:et, oavsett hur reglaget är inställt.
+
+Om du stänger av funktionen stoppas nya kundinitierade pauser, men en kund som redan har pausat sin prenumeration låses inte ute — hen kan fortfarande återuppta en paus som hen själv startat. Pauser som du har startat förblir under din kontroll.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+Se vad kunden ser, inklusive bekräftelsedialogen.
+</Card>
+
+### Pausa via API
+
+Pausa och återuppta hanteras av ett enda `pause`-fält på endpointen för att uppdatera prenumerationen. Det finns ingen separat pause-endpoint.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` är exklusivt och kan inte kombineras med något annat fält — om du skickar det tillsammans med något annat avvisas begäran med `422`. Att sätta `status` till `paused` pausar **inte** en prenumeration; använd i stället fältet `pause`.
+</Warning>
+
+När en prenumeration pausas skickas `subscription.paused` och när den återupptas skickas `subscription.unpaused`. Båda innehåller hela prenumerationsobjektet, med `paused_at` inställt under pausen och `null` efter återupptagandet.
+
+### Paus och andra prenumerationsåtgärder
+
+- **Uppsägning fungerar fortfarande.** Du kan säga upp en pausad prenumeration på samma sätt som en aktiv. Alla öppna regleringsfakturor från pausen makuleras då.
+- **Schemalagda planändringar fördröjs, inte tas bort.** En [planändring](#subscription-plan-changes) som schemalagts till nästa debiteringsdatum ligger orörd medan prenumerationen är pausad och tillämpas sedan vid det förskjutna debiteringsdatumet när den återupptas. Dess `scheduled_change.effective_at` är en ögonblicksbild från när den schemalades och justeras inte för pausen, så den kan visa ett datum i det förflutna — tolka det som ”var schemalagd till”, inte som ett garanterat datum. Om du vill ta bort ändringen i stället för att låta den fortsätta, använder du [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
+## Prenumerationsstatusar
+
+En prenumeration går igenom en definierad uppsättning statusar under sin livstid. Den här tabellen beskriver varje status, vad som orsakar den och hur (eller om) den kan återställas.
+
+| Status | Innebörd | Kan återställas? | Återställningsväg / nästa steg |
 |--------|---------------|--------------|---------------------------|
 | `pending` | Prenumerationen skapas eller behandlas | — | Vänta på `subscription.active` (eller `subscription.failed`) |
-| `active` | Prenumerationen är aktiv och förnyas automatiskt | — | Ingen åtgärd behövs |
-| `on_hold` | En förnyelsebetalning (eller debitering vid planändring) misslyckades; prenumerationen är pausad | **Ja** | Uppdatera betalningsmetoden för att återaktivera — automatiskt via [Payment Retries](/features/recovery/payment-retries) och [Dunning](/features/recovery/subscription-dunning), eller manuellt via [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | Prenumerationen sades upp och kommer inte att förnyas | Endast nytt köp | Kunden måste starta en ny prenumeration; [Dunning](/features/recovery/subscription-dunning) kan uppmana till ett nytt köp |
-| `failed` | **Skapandet** av prenumerationen misslyckades (det ursprungliga mandatet eller betalningen lyckades inte) | **Nej — slutgiltigt** | Kunden måste skapa en ny prenumeration med en fungerande betalningsmetod |
+| `active` | Prenumerationen är aktiv och förnyas automatiskt | — | Ingen åtgärd krävs |
+| `on_hold` | En förnyelsebetalning (eller avgift för en planändring) misslyckades; förnyelserna har stoppats | **Ja** | Uppdatera betalningsmetoden för att återaktivera — automatiskt via [Payment Retries](/features/recovery/payment-retries) och [Dunning](/features/recovery/subscription-dunning), eller manuellt via [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | Prenumerationen pausades medvetet av dig eller kunden; debiteringen är fryst och åtkomsten återkallad | **Ja** | Återuppta den med `pause: false` eller från Customer Portal när självbetjäningspaus är aktiverad — se [Pausa och återuppta prenumerationer](#pausing-and-resuming-subscriptions) |
+| `cancelled` | Prenumerationen sades upp och kommer inte att förnyas | Endast återköp | Kunden måste starta en ny prenumeration; [Dunning](/features/recovery/subscription-dunning) kan uppmana till ett återköp |
+| `failed` | **Skapandet** av prenumerationen misslyckades (det initiala medgivandet eller betalningen lyckades inte) | **Nej — slutgiltigt** | Kunden måste skapa en ny prenumeration med en fungerande betalningsmetod |
 | `expired` | Prenumerationen nådde slutet av sin löptid | — | Kunden måste starta en ny prenumeration om så önskas |
 
 <Warning>
-`on_hold` och `failed` blandas ofta ihop. `on_hold` är ett **återställningsbart** tillstånd för en redan aktiv prenumeration vars förnyelse misslyckades. `failed` är ett **slutgiltigt** tillstånd som endast inträffar när det **ursprungliga** skapandet av prenumerationen misslyckas — det kan inte återaktiveras.
+`on_hold` och `failed` blandas ofta ihop. `on_hold` är ett **återställningsbart** tillstånd för en redan aktiv prenumeration vars förnyelse misslyckades. `failed` är ett **slutgiltigt** tillstånd som endast uppstår när det **initiala** skapandet av prenumerationen misslyckas — det kan inte återaktiveras.
 </Warning>
+
+<Info>
+`on_hold` och `paused` är också olika. `on_hold` är ofrivilligt — en betalning misslyckades. `paused` är avsiktligt — du eller kunden valde att frysa prenumerationen, och ingen förnyelse försöks medan den förblir pausad. En användningsbaserad prenumeration kan fortfarande ha en engångsfaktura för reglering vid tidpunkten då den pausas; se [Pausa prenumerationer med användningsbaserad debitering](#pausing-usage-based-subscriptions).
+</Info>
 
 ### Tillståndsmaskin
 
@@ -441,34 +538,44 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
     expired --> [*]
 ```
 
-### Tillståndet On Hold
+### Tillståndet väntande
 
 En prenumeration övergår till tillståndet `on_hold` när:
 
-- En förnyelsebetalning misslyckas (otillräckliga medel, utgånget kort etc.)
-- En debitering vid planändring misslyckas
+- En förnyelsebetalning misslyckas (otillräckliga medel, utgånget kort osv.)
+- En avgift för en planändring misslyckas
 - Auktorisering av betalningsmetoden misslyckas
+- En [regleringsfaktura vid paus](#pausing-usage-based-subscriptions) för en användningsbaserad prenumeration förblir obetald
 
 <Warning>
 När en prenumeration befinner sig i tillståndet `on_hold` förnyas den inte automatiskt. Du måste uppdatera betalningsmetoden för att återaktivera prenumerationen.
 </Warning>
 
-### Återaktivera från On Hold
+### Återaktivera från väntande
 
 För att återaktivera en prenumeration från tillståndet `on_hold` uppdaterar du betalningsmetoden. Detta gör automatiskt följande:
 
-1. Skapar en debitering för återstående skulder
+1. Skapar en debitering för återstående belopp
 2. Skapar en faktura
 3. Behandlar betalningen med den nya betalningsmetoden
-4. Återaktiverar prenumerationen till tillståndet `active` när betalningen lyckats
+4. Återaktiverar prenumerationen till tillståndet `active` när betalningen lyckas
+
+<Note>
+Det enda undantaget är ett väntande tillstånd som orsakats av en obetald regleringsfaktura vid paus. När fakturan betalas återgår prenumerationen till `paused`, inte `active`, eftersom den var pausad innan betalningen misslyckades. Återuppta den uttryckligen när fakturan har reglerats.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,54 +595,66 @@ if (response.payment_id) {
 ```
 
 <Info>
-När betalningsmetoden för en prenumeration i tillståndet `on_hold` har uppdaterats får du webhook-händelserna `payment.succeeded` följt av `subscription.active`.
+När betalningsmetoden för en prenumeration i tillståndet `on_hold` har uppdaterats får du webhook-händelsen `payment.succeeded` följd av `subscription.active`.
 </Info>
 
-### Webhook-händelser efter övergång
+### Webhook-händelser per övergång
 
-Varje övergång genererar en webhook så att du kan styra logiken för åtkomsträttigheter utan polling:
+Varje övergång skickar en webhook så att du kan styra logiken för rättigheter utan polling:
 
 | Övergång | Händelse |
 |------------|-------|
 | Prenumeration aktiverad | `subscription.active` |
 | Förnyelsen lyckas | `subscription.renewed` |
-| Förnyelsen misslyckas → pausad | `subscription.on_hold` |
-| Prenumeration pausad | `subscription.paused` |
+| Förnyelsen misslyckas → väntande | `subscription.on_hold` |
+| Prenumerationen pausad | `subscription.paused` |
 | Pausad prenumeration återupptagen | `subscription.unpaused` |
 | Skapandet misslyckas | `subscription.failed` |
-| Plan uppgraderad/nedgraderad | `subscription.plan_changed` |
-| Avslutad | `subscription.cancelled` |
-| Perioden avslutad | `subscription.expired` |
-| Alla fält ändras | `subscription.updated` |
+| Planen uppgraderad/nedgraderad | `subscription.plan_changed` |
+| Uppsagd | `subscription.cancelled` |
+| Löptiden avslutad | `subscription.expired` |
+| Alla fältändringar | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-Visa det fullständiga payload-schemat för prenumerationens livscykelhändelser.
+Visa hela payload-schemat för prenumerationens livscykelhändelser.
 </Card>
 
 ## API-hantering
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Använd `POST /subscriptions` för att programmatiskt skapa prenumerationer från produkter, med valfria provperioder och tillägg.
+Använd `POST /checkouts` för att programmatiskt skapa prenumerationer från produkter, med valfria provperioder (`subscription_data.trial_period_days`) och tillägg (`product_cart[].addons`).
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Visa API:t för att skapa prenumerationer.
+<Warning>
+`POST /subscriptions` är föråldrad. Befintliga integrationer fortsätter att fungera, men nya integrationer bör använda [Checkout Sessions](/api-reference/checkout-sessions/create).
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+Visa API:et för att skapa en checkout-session.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Använd `PATCH /subscriptions/{subscription_id}` för att avsluta vid nästa faktureringsdatum, förlänga prenumerationsperioden, uppdatera faktureringsuppgifter eller ändra metadata. Om du vill ändra antalet använder du i stället [Change Plan API](/api-reference/subscriptions/change-plan) — `PATCH` accepterar inte `quantity`.
+Använd `PATCH /subscriptions/{subscription_id}` för att säga upp vid nästa debiteringsdatum, förlänga prenumerationsperioden, uppdatera debiteringsuppgifter eller ändra metadata. Om du vill ändra kvantiteten använder du i stället [Change Plan API](/api-reference/subscriptions/change-plan) — `PATCH` accepterar inte `quantity`.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Läs mer om hur du uppdaterar prenumerationsuppgifter.
 </Card>
 </Accordion>
 
+<Accordion title="Pause and resume subscriptions">
+Pausning och återupptagning hanteras via samma endpoint `PATCH /subscriptions/{subscription_id}` med fältet `pause`: `pause: true` pausar en aktiv prenumeration och `pause: false` återupptar den. Fältet kan inte kombineras med något annat fält i samma begäran. För fullständig information om beteende, debiteringseffekter och relaterade affärsinställningar, se [Pausa och återuppta prenumerationer](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+Visa API:et för att uppdatera prenumerationer, inklusive fältet `pause`.
+</Card>
+</Accordion>
+
 <Accordion title="Change plans (proration)">
-Ändra den aktiva produkten och antalet med prorateringskontroller.
+Ändra den aktiva produkten och kvantiteterna med prorationskontroller.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Granska alternativen för planändring.
+Granska alternativ för planändringar.
 </Card>
 </Accordion>
 
@@ -559,14 +678,14 @@ Bläddra bland API:er för listning och hämtning.
 Hämta registrerad användning för modeller med mätbaserad eller hybridprissättning.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-Se API:t för användningshistorik.
+Se API:et för användningshistorik.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Uppdatera betalningsmetoden för en prenumeration. För aktiva prenumerationer uppdaterar detta betalningsmetoden för framtida förnyelser. För prenumerationer i tillståndet `on_hold` återaktiverar detta prenumerationen genom att skapa en debitering för återstående skulder.
+Uppdatera betalningsmetoden för en prenumeration. För aktiva prenumerationer uppdateras betalningsmetoden för framtida förnyelser. För prenumerationer i tillståndet `on_hold` återaktiveras prenumerationen genom att en debitering skapas för återstående belopp.
 
-När du genererar en ny länk för betalningsmetod (begärandetypen `New`) kan du skicka med `allowed_payment_method_types` för att begränsa vilka betalningsmetoder kunden ser på sidan. Kunder ser aldrig en metod som inte finns i listan, men att inkludera en metod garanterar inte att den visas (tillgängligheten beror fortfarande på faktorer som kundens plats och dina företagsinställningar).
+När du skapar en ny länk för betalningsmetod (begärandetypen `New`) kan du skicka `allowed_payment_method_types` för att begränsa vilka betalningsmetoder kunden ser på sidan. Kunden ser aldrig en metod som inte finns i listan, men att inkludera en metod garanterar inte att den visas (tillgängligheten beror fortfarande på faktorer som kundens plats och dina affärsinställningar).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
 Läs mer om hur du uppdaterar betalningsmetoder och återaktiverar prenumerationer.
@@ -574,16 +693,16 @@ Läs mer om hur du uppdaterar betalningsmetoder och återaktiverar prenumeration
 </Accordion>
 </AccordionGroup>
 
-## Vanliga användningsområden
+## Vanliga användningsfall
 
-- **SaaS och API:er**: Nivåbaserad åtkomst med tillägg för platser eller användning
-- **Innehåll och medier**: Månadsåtkomst med introducerande provperioder
-- **B2B-supportplaner**: Årsavtal med premiumtillägg för support
+- **SaaS och API:er**: Nivåindelad åtkomst med tillägg för platser eller användning
+- **Innehåll och media**: Månatlig åtkomst med introduktionsprovperioder
+- **B2B-supportplaner**: Årsavtal med tillägg för premiumsupport
 - **Verktyg och plugins**: Licensnycklar och versionshanterade utgåvor
 
 ## Integrationsexempel
 
-### Checkout-sessioner (prenumerationer)
+### Checkout Sessions (prenumerationer)
 När du skapar checkout-sessioner inkluderar du din prenumerationsprodukt och valfria tillägg:
 
 ```typescript
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Planändringar med proratering
-Uppgradera eller nedgradera en prenumeration och styr prorateringsbeteendet:
+### Planändringar med proration
+Uppgradera eller nedgradera en prenumeration och styr prorationsbeteendet:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -608,8 +727,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Säg upp vid nästa faktureringsdatum
-Schemalägg en uppsägning som träder i kraft i slutet av den aktuella faktureringsperioden:
+### Säg upp vid nästa debiteringsdatum
+Schemalägg en uppsägning som träder i kraft i slutet av den aktuella debiteringsperioden:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -618,7 +737,7 @@ await client.subscriptions.update('sub_123', {
 ```
 
 ### Förläng prenumerationsperioden
-Förläng hur länge en prenumeration löper genom att skicka ett nytt `subscription_period_count` och `subscription_period_interval` till `PATCH /subscriptions/{subscription_id}`. Prenumerationens utgångsdatum beräknas om utifrån det nya antalet och intervallet — till exempel för att ge en kund extra tid på sin nuvarande plan:
+Förläng prenumerationens löptid genom att skicka ett nytt `subscription_period_count` och `subscription_period_interval` till `PATCH /subscriptions/{subscription_id}`. Prenumerationens utgångsdatum räknas om utifrån det nya antalet och intervallet — till exempel för att ge en kund extra tid på sin nuvarande plan:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -672,7 +791,7 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 ```
 
 ### Återaktivera prenumeration från on_hold
-Återaktivera en prenumeration som pausades på grund av en misslyckad betalning:
+Återaktivera en prenumeration som hamnat i väntande tillstånd på grund av en misslyckad betalning:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## Prenumerationer med RBI-kompatibla mandat
+## Prenumerationer med RBI-kompatibla medgivanden
 
-  UPI- och indiska kortprenumerationer omfattas av RBI-regler (Reserve Bank of India) med särskilda mandatkrav:
+  UPI- och indiska kortprenumerationer omfattas av RBI:s (Reserve Bank of India) regler med särskilda krav på medgivanden:
 
-  ### Mandatgränser
+  ### Medgivandegränser
 
-  Mandattypen och beloppet beror på prenumerationens återkommande debitering:
+  Typen och beloppet för medgivandet beror på prenumerationens återkommande debitering:
 
-  - **Debiteringar under mandatgränsen (standard ₹15,000):** Vi skapar ett on-demand-mandat för gränsbeloppet. Prenumerationsbeloppet debiteras periodiskt enligt prenumerationens frekvens, upp till mandatgränsen.
-  - **Debiteringar på eller över mandatgränsen:** Vi skapar ett prenumerationsmandat (eller on-demand-mandat) för exakt prenumerationsbelopp.
+  - **Debiteringar under medgivandets golv (standard ₹15,000):** Vi skapar ett on-demand-medgivande för golvbeloppet. Prenumerationsbeloppet debiteras periodvis enligt prenumerationens frekvens, upp till medgivandegränsen.
+  - **Debiteringar vid eller över medgivandets golv:** Vi skapar ett prenumerationsmedgivande (eller on-demand-medgivande) för det exakta prenumerationsbeloppet.
 
-  Mandatgränsen kan konfigureras per merchant eller per begäran via `mandate_min_amount_inr_paise` (INR paise). Beloppet som registreras hos banken är `max(mandate_floor, billing_amount)` — därför blir gränsen i praktiken kundens högsta godkända belopp när debiteringen är lägre.
+  Medgivandets golv kan konfigureras per merchant eller per begäran via `mandate_min_amount_inr_paise` (INR paisa). Beloppet som registreras hos banken är `max(mandate_floor, billing_amount)` — golvet blir därför i praktiken kundens auktoriseringstak när debiteringen är lägre.
 
-För detaljerad information om RBI-kompatibla mandat och den konfigurerbara mandatgränsen för indiska betalningsmetoder, se sidan <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
+För detaljerad information om RBI-kompatibla medgivanden och det konfigurerbara medgivandegolvet för indiska betalningsmetoder, se sidan <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
   ### Överväganden vid upp- och nedgradering
 
-  **Viktigt:** Ta hänsyn till mandatgränserna när du uppgraderar eller nedgraderar prenumerationer:
+  **Viktigt:** Ta noggrant hänsyn till medgivandegränserna när du uppgraderar eller nedgraderar prenumerationer:
 
-  - Om en uppgradering eller nedgradering leder till ett debiteringsbelopp som överstiger Rs 15,000 och överskrider den befintliga on-demand-betalningsgränsen kan transaktionsdebiteringen misslyckas.
-  - I sådana fall kan kunden behöva uppdatera sin betalningsmetod eller ändra prenumerationen igen för att skapa ett nytt mandat med rätt gräns.
+  - Om en upp- eller nedgradering leder till ett debiteringsbelopp som överstiger Rs 15,000 och går utöver den befintliga on-demand-betalningsgränsen kan transaktionsdebiteringen misslyckas.
+  - I sådana fall kan kunden behöva uppdatera sin betalningsmetod eller ändra prenumerationen igen för att skapa ett nytt medgivande med rätt gräns.
 
   ### Auktorisering för debiteringar med högt värde
 
   För prenumerationsdebiteringar på Rs 15,000 eller mer:
 
   - Kunden uppmanas av sin bank att auktorisera transaktionen.
-  - Om kunden inte auktoriserar transaktionen misslyckas den och prenumerationen pausas.
+  - Om kunden inte auktoriserar transaktionen misslyckas den och prenumerationen försätts i väntande tillstånd.
 
-  ### 48 timmars fördröjning vid behandling
+  ### 48 timmars behandlingsfördröjning
 
-  **Behandlingstidslinje:** Återkommande debiteringar för indiska kort- och UPI-prenumerationer följer ett särskilt behandlingsmönster:
+  **Behandlingstidslinje:** Återkommande debiteringar på indiska kort och UPI-prenumerationer följer ett särskilt behandlingsmönster:
 
   - Debiteringar **initieras** på det schemalagda datumet enligt prenumerationens frekvens.
-  - Den faktiska **dragningen** från kundens konto sker först **48 timmar** efter att betalningen initierats.
-  - Detta 48-timmarsfönster kan förlängas med upp till **ytterligare 2–3 timmar**, beroende på svar från bankens API.
+  - Det faktiska **avdraget** från kundens konto sker först **48 timmar** efter att betalningen initierats.
+  - Detta 48-timmarsfönster kan förlängas med upp till **ytterligare 2–3 timmar** beroende på svar från bankens API.
 
-  ### Fönster för makulering av mandat
+  ### Fönster för makulering av medgivande
 
   Under det 48 timmar långa behandlingsfönstret:
 
-  - Kunder kan makulera mandatet via sina bankappar.
-  - Om en kund makulerar mandatet under denna period förblir prenumerationen **aktiv** (ett specialfall som endast gäller indiska kort- och UPI AutoPay-prenumerationer).
-  - Den faktiska dragningen kan dock misslyckas, och i så fall försätter vi prenumerationen i tillståndet **on hold**.
+  - Kunder kan makulera medgivandet via sina bankappar.
+  - Om en kund makulerar medgivandet under denna period förblir prenumerationen **aktiv** (detta är ett specialfall som gäller indiska kort- och UPI AutoPay-prenumerationer).
+  - Det faktiska avdraget kan dock misslyckas och i så fall försätter vi prenumerationen i **väntande tillstånd**.
 
-  **Hantering av specialfall:** Om du ger kunder förmåner, krediter eller tillgång till prenumerationsanvändning omedelbart när debiteringen initieras måste du hantera detta 48-timmarsfönster på lämpligt sätt i din applikation. Överväg att:
+  **Hantering av specialfall:** Om du ger kunder förmåner, krediter eller prenumerationsanvändning direkt när debiteringen initieras måste du hantera detta 48-timmarsfönster på rätt sätt i din applikation. Överväg att:
 
   - Fördröja aktiveringen av förmåner tills betalningen har bekräftats
   - Införa respitperioder eller tillfällig åtkomst
-  - Övervaka prenumerationsstatus för makuleringar av mandat
-  - Hantera pausade prenumerationstillstånd i applikationslogiken
+  - Övervaka prenumerationsstatus för makulerade medgivanden
+  - Hantera prenumerationer i väntande tillstånd i applikationens logik
 
   <Tip>
-  Övervaka prenumerationens webhook-händelser för att följa ändringar i betalningsstatus och hantera specialfall där mandat makuleras under 48-timmarsfönstret.
+  Övervaka prenumerationens webhookar för att spåra ändringar i betalningsstatus och hantera specialfall där medgivanden makuleras under 48-timmarsfönstret.
   </Tip>
 
 ## Bästa praxis
 
 - **Börja med tydliga nivåer**: 2–3 planer med uppenbara skillnader
-- **Kommunicera prissättningen**: Visa totalsummor, proratering och nästa förnyelse
+- **Kommunicera prissättningen**: Visa totalsummor, proration och nästa förnyelse
 - **Använd provperioder genomtänkt**: Konvertera med onboarding, inte bara med tid
-- **Utnyttja tillägg**: Håll basplanerna enkla och sälj extra funktioner separat
-- **Testa ändringar**: Validera planändringar och proratering i testläge
+- **Utnyttja tillägg**: Håll grundplanerna enkla och sälj extra funktioner
+- **Testa ändringar**: Validera planändringar och proration i testläge
 
 <Info>
-Prenumerationer är en flexibel grund för återkommande intäkter. Börja enkelt, testa noggrant och iterera utifrån mätvärden för användning, kundbortfall och expansion.
+Prenumerationer är en flexibel grund för återkommande intäkter. Börja enkelt, testa noggrant och iterera utifrån mätvärden för användning, churn och expansion.
 </Info>

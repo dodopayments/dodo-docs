@@ -352,10 +352,35 @@ Om du inte använder ett SDK kan du verifiera signaturer själv enligt specifika
   Vi följer specifikationen Standard Webhooks. Du kan använda deras bibliotek för att verifiera signaturer: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). Information om eventpayload-format finns i [Webhook Payload](/developer-resources/webhooks/intents/payment).
 </Info>
 
+### Käll-IP-adresser
+
+Signaturverifiering är det rekommenderade sättet att autentisera en webhook. Den bevisar att begäran signerades med din webhook-hemlighet, vilket en kontroll på nätverksnivå inte kan göra.
+
+Webhook-leveranser skickas från en pool med käll-IP-adresser som tillhör vår leveransinfrastruktur. Poolen ändras då och då, så betrakta adresserna som operativ information snarare än en fast egenskap hos integrationen.
+
+<Warning>
+Använd inte en allowlist för käll-IP som autentiseringsmekanism. En allowlist visar bara var en begäran kom ifrån, inte att den är äkta eller oförändrad — verifiera `webhook-signature`-headern för varje begäran, enligt beskrivningen i [Verifiera signaturer](#verifying-signatures).
+</Warning>
+
+Om din infrastruktur ligger bakom en brandvägg som kräver en explicit allowlist bör du tänka på följande:
+
+- **Hårdkoda inte adresser permanent.** Intervall läggs till och tas bort över tid, och en inaktuell regel blockerar leveranser utan någon tydlig indikation.
+- **Begär de aktuella intervallen** från [support@dodopayments.com](mailto:support@dodopayments.com) innan du låser en brandvägg, så att du använder en uppdaterad lista.
+- **Håll utkik efter ändringsmeddelanden.** När leveransadresser ändras meddelar vi berörda merchants via e-post — tillämpa uppdateringarna före det angivna datumet för att undvika uteblivna leveranser.
+- **Behåll signaturverifiering aktiverad** oavsett vilka nätverksregler du lägger till.
+
+<Tip>
+På serverless- och hanterade hostingplattformar är inkommande IP-filtrering ofta otillgänglig eller opraktisk att underhålla. Signaturverifiering är rätt kontroll i dessa miljöer, och ingen allowlist krävs.
+</Tip>
+
+<Info>
+En blockerad leverans behandlas som alla andra fel och görs om enligt schemat som beskrivs i [Automatiska omförsök](#automatic-retries). Om brandväggsregler gjorde att leveranser misslyckades kan du skicka dem igen när reglerna har åtgärdats — se [Spela upp och återställ meddelanden](#replaying-and-recovering-messages).
+</Info>
+
 ### Svara på webhooks
 
-* Din webhook-hanterare måste returnera en `2xx status code` för att bekräfta mottagandet av händelsen.
-* Alla andra svar behandlas som ett misslyckande och webhooken skickas igen.
+* Din webhook-handler måste returnera en `2xx status code` för att bekräfta mottagandet av händelsen.
+* Alla andra svar behandlas som fel och webhooken görs om.
 
 ### Bästa praxis
 
@@ -365,7 +390,7 @@ Om du inte använder ett SDK kan du verifiera signaturer själv enligt specifika
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  Returnera omedelbart en `200`-statuskod när webhooken tas emot. Bearbeta händelsen asynkront för att undvika tidsgränser.
+  Returnera en `200`-statuskod omedelbart när webhooken tas emot. Bearbeta händelsen asynkront för att undvika timeouts.
   
 
   ```javascript
@@ -381,17 +406,17 @@ Om du inte använder ett SDK kan du verifiera signaturer själv enligt specifika
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  Implementera idempotens med hjälp av `webhook-id`-headern för att säkert bearbeta samma händelse flera gånger utan sidoeffekter.
+  Implementera idempotens med `webhook-id`-headern för att säkert kunna bearbeta samma händelse flera gånger utan sidoeffekter.
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  Lagra din webhook-hemlighet säkert med miljövariabler eller en secrets manager. Checka aldrig in hemligheter i versionshanteringen.
+  Lagra din webhook-hemlighet säkert med miljövariabler eller en secrets manager. Checka aldrig in hemligheter i versionshantering.
 </Accordion>
 </AccordionGroup>
 
 ## Webhook-payloadens struktur
 
-Om du förstår webhook-payloadens struktur blir det enklare att tolka och bearbeta händelser korrekt.
+Genom att förstå webhook-payloadens struktur blir det enklare att parsa och bearbeta händelser korrekt.
 
 ### Begäransformat
 
@@ -407,17 +432,17 @@ Unik identifierare för denna webhook-händelse. Använd den för idempotenskont
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
-HMAC SHA256-signatur för verifiering av webhookens äkthet.
+HMAC SHA256-signatur för att verifiera webhookens äkthet.
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
 Unix-tidsstämpel (i sekunder) för när webhooken skickades.
 </ParamField>
 
-### Begäransbrödtext
+### Begärans brödtext
 
 <ResponseField name="business_id" type="string" required>
-Identifieraren för ditt Dodo Payments-företag.
+Din Dodo Payments-företagsidentifierare.
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
@@ -429,7 +454,7 @@ ISO 8601-formaterad tidsstämpel för när händelsen inträffade.
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-Händelsespecifik payload med detaljerad information om händelsen.
+Händelsespecifik payload som innehåller detaljerad information om händelsen.
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
@@ -468,15 +493,15 @@ Händelsespecifik payload med detaljerad information om händelsen.
 
 ## Testa webhooks
 
-Du kan testa din webhook-integration direkt från Dodo Payments-dashboarden för att säkerställa att endpointen fungerar korrekt innan den tas i drift.
+Du kan testa din webhook-integration direkt från Dodo Payments-dashboarden för att säkerställa att din endpoint fungerar korrekt innan du går live.
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    Gå till Dodo Payments Dashboard och öppna **Developer → Webhooks**.
+    Gå till din Dodo Payments Dashboard och navigera till **Developer → Webhooks**.
 </Step>
 
 <Step title="Select Your Endpoint">
-    Klicka på webhook-endpointen för att öppna dess informationssida.
+    Klicka på din webhook-endpoint för att öppna dess detaljsida.
 </Step>
 
 <Step title="Open Testing Tab">
@@ -484,9 +509,9 @@ Du kan testa din webhook-integration direkt från Dodo Payments-dashboarden för
 </Step>
 </Steps>
 
-### Skicka en exempel-händelse
+### Skicka en exempelhändelse
 
-Fliken **Testing** skickar en exempelpayload till denna endpoint så att du kan verifiera mottagaren.
+Fliken **Testing** skickar en exempelpayload till denna endpoint så att du kan verifiera din mottagare.
 
 <Steps>
 <Step title="Select Event Type">
@@ -494,10 +519,10 @@ Fliken **Testing** skickar en exempelpayload till denna endpoint så att du kan 
 </Step>
 
 <Step title="Send Example">
-    Klicka på **Send example**. Exempelpayloaden levereras till endpointens URL precis som en riktig händelse och signeras på samma sätt.
+    Klicka på **Send example**. Exempelpayloaden levereras till din endpoint-URL precis som en riktig händelse och signeras på samma sätt.
     
     <Warning>
-    Misslyckade meddelanden som skickas från fliken Testing skickas inte igen. Använd funktionen för att verifiera mottagaren, inte för att testa schemat för nya försök.
+    Misslyckade meddelanden som skickas från fliken Testing görs inte om. Använd den för att verifiera din mottagare, inte för att testa omförsöksschemat.
     </Warning>
 </Step>
 
@@ -508,7 +533,7 @@ Fliken **Testing** skickar en exempelpayload till denna endpoint så att du kan 
 
 ### Implementeringsexempel
 
-Här är en komplett Express.js-implementering som visar webhook-verifiering och hantering:
+Här är en komplett Express.js-implementation som visar webhook-verifiering och hantering:
 
 <CodeGroup>
 
@@ -601,12 +626,12 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-Testa webhook-hanteraren noggrant med dashboardens testgränssnitt innan du bearbetar produktionshändelser. Det hjälper dig att identifiera och åtgärda problem tidigt.
+Testa din webhook-handler noggrant med dashboardens testgränssnitt innan du bearbetar produktionshändelser. Det hjälper dig att identifiera och åtgärda problem tidigt.
 </Tip>
 
 ## Testa webhooks med CLI
 
-[Dodo Payments CLI](/developer-resources/sdks/cli) innehåller två kommandon för att testa webhooks under lokal utveckling, utan att du behöver lämna terminalen.
+[Dodo Payments CLI](/developer-resources/sdks/cli) innehåller två kommandon för att testa webhooks under lokal utveckling utan att behöva lämna terminalen.
 
 ### Lyssna på live-webhooks lokalt
 
@@ -619,7 +644,7 @@ dodo wh listen
 CLI öppnar en WebSocket-anslutning till Dodo Payments och vidarebefordrar varje webhook-händelse till din lokala endpoint (t.ex. `http://localhost:3000/webhook`) samtidigt som alla headers bevaras, inklusive signaturheaders för verifieringstestning.
 
 <Info>
-Lyssnaren fungerar endast med API-nycklar i **testläge**. Kör `dodo login` och välj Test Mode innan du använder kommandot.
+Lyssnaren fungerar endast med API-nycklar i **test mode**. Kör `dodo login` och välj Test Mode innan du använder detta kommando.
 </Info>
 
 ### Utlös simulerade webhook-händelser
@@ -630,12 +655,12 @@ Skicka simulerade webhook-payloads till valfri endpoint utan att skapa riktiga t
 dodo wh trigger
 ```
 
-Med detta interaktiva verktyg kan du välja en händelsetyp och skicka en realistisk simulerad payload till endpointen. Verktyget körs i en loop så att du kan testa flera händelser under samma session.
+Med detta interaktiva verktyg kan du välja en händelsetyp och skicka en realistisk simulerad payload till din endpoint. Det körs i en loop så att du kan testa flera händelser i samma session.
 
-Trigger-kommandot omfattar alla 46 händelsetyper som Dodo Payments levererar, inklusive familjerna prenumeration, betalning, återbetalning, tvist, licensnyckel, utbetalning, kredit, övergiven checkout, kravhantering och beviljande av rättigheter — se [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) för den exakta listan.
+Trigger-kommandot omfattar alla 47 händelsetyper som Dodo Payments levererar, inklusive familjerna subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning och entitlement grant — se [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) för den exakta listan.
 
 <Warning>
-Simulerade webhook-payloads från `dodo wh trigger` är inte signerade. Använd `unsafe_unwrap()` i stället för `unwrap()` i webhook-hanteraren, men endast under testning.
+Simulerade webhook-payloads från `dodo wh trigger` är inte signerade. Använd `unsafe_unwrap()` i stället för `unwrap()` i din webhook-handler, endast under testning.
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
@@ -646,86 +671,86 @@ Simulerade webhook-payloads från `dodo wh trigger` är inte signerade. Använd 
 
 Fliken **Advanced** innehåller ytterligare konfigurationsalternativ för finjustering av webhook-endpointens beteende.
 
-### Hastighetsbegränsning (throttling)
+### Rate limiting (throttling)
 
-Styr hur snabbt webhook-händelser levereras till endpointen för att förhindra att systemet överbelastas.
+Styr hur snabbt webhook-händelser levereras till din endpoint för att förhindra att systemet överbelastas.
 
 <Steps>
 <Step title="Open Advanced Tab">
-    Klicka på fliken **Advanced** på endpointens informationssida.
+    Klicka på fliken **Advanced** från endpointens detaljsida.
 </Step>
 
 <Step title="Configure Rate Limit">
-    I avsnittet "Rate Limit (throttling)" klickar du på **Edit** för att ändra inställningarna för hastighetsbegränsning.
+    I avsnittet "Rate Limit (throttling)" klickar du på **Edit** för att ändra inställningarna för rate limit.
     
     <Info>
-    Som standard har webhooks ingen hastighetsbegränsning, vilket innebär att händelser levereras så snart de inträffar.
+    Som standard tillämpas ingen rate limit på webhooks, vilket innebär att händelser levereras så snart de inträffar.
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    Konfigurera önskad hastighetsbegränsning för att styra leveransfrekvensen och förhindra systemöverbelastning.
+    Konfigurera önskad rate limit för att styra webhook-leveransens frekvens och förhindra överbelastning av systemet.
 </Step>
 </Steps>
 
 <Tip>
-Använd hastighetsbegränsning när webhook-hanteraren behöver tid för att bearbeta händelser eller när du vill samla flera händelser i ett batchjobb.
+Använd rate limiting när din webhook-handler behöver tid för att bearbeta händelser eller när du vill samla flera händelser i batchar.
 </Tip>
 
 ### Anpassade headers
 
-Lägg till anpassade HTTP-headers i alla webhook-begäranden som skickas till endpointen. Detta är användbart för autentisering, dirigering eller för att lägga till metadata.
+Lägg till anpassade HTTP-headers i alla webhook-begäranden som skickas till din endpoint. Detta är användbart för autentisering, routing eller för att lägga till metadata.
 
 <Steps>
 <Step title="Add Headers">
-    Ange en **Key** och ett **Value** för varje anpassad header i avsnittet "Custom Headers".
+    I avsnittet "Custom Headers" anger du en **Key** och ett **Value** för varje anpassad header.
 </Step>
 
 <Step title="Add Multiple Headers">
-    Klicka på knappen **+** för att lägga till fler anpassade headers efter behov.
+    Klicka på knappen **+** för att lägga till fler anpassade headers vid behov.
 </Step>
 </Steps>
 
 Dina anpassade headers inkluderas i alla webhook-begäranden till denna endpoint.
 
-### Transformeringar
+### Transformationer
 
-Med transformeringar kan du ändra en webhooks payload och vid behov omdirigera den till en annan URL. Denna kraftfulla funktion gör det möjligt att:
+Med transformationer kan du ändra en webhooks payload och vid behov omdirigera den till en annan URL. Denna kraftfulla funktion gör det möjligt att:
 
 - Ändra payloadens struktur före bearbetning
-- Dirigera webhooks till olika endpoints baserat på innehåll
+- Routa webhooks till olika endpoints baserat på innehåll
 - Lägga till eller ta bort fält från payloaden
 - Transformera dataformat
 
 <Steps>
 <Step title="Enable Transformations">
-    Aktivera transformeringar genom att slå på reglaget **Enabled**.
+    Aktivera reglaget **Enabled** för att aktivera transformationsfunktionen.
 </Step>
 
 <Step title="Configure Transformation">
-    Klicka på **Edit transformation** för att definiera transformeringsregler med JavaScript.
+    Klicka på **Edit transformation** för att definiera transformationsregler med JavaScript.
 </Step>
 
 <Step title="Test Transformation">
-    Använd gränssnittet för att testa transformeringen och kontrollera att den fungerar korrekt innan den tas i drift.
+    Använd gränssnittet för transformationstestning för att verifiera att transformationen fungerar korrekt innan du går live.
 </Step>
 </Steps>
 
 <Warning>
-Transformeringar kan påverka webhook-leveransens prestanda. Testa noggrant och håll transformeringslogiken enkel och effektiv.
+Transformationer kan påverka webhook-leveransens prestanda. Testa noggrant och håll transformationslogiken enkel och effektiv.
 </Warning>
 
 <Tip>
-Transformeringar är särskilt användbara för:
+Transformationer är särskilt användbara för:
 - Konvertering mellan olika dataformat
 - Filtrering av händelser baserat på specifika kriterier
 - Tillägg av beräknade fält i payloaden
-- Dirigering av händelser till olika mikrotjänster
+- Routing av händelser till olika mikrotjänster
 </Tip>
 
 ## Övervaka webhook-loggar
 
-Fliken **Logs** ger fullständig insyn i statusen för dina webhook-leveranser, så att du effektivt kan övervaka, felsöka och hantera webhook-händelser.
+Fliken **Logs** ger omfattande insyn i statusen för dina webhook-leveranser, så att du effektivt kan övervaka, felsöka och hantera webhook-händelser.
 
 <Steps>
 <Step title="Navigate to Logs Tab">
@@ -737,15 +762,15 @@ Fliken **Logs** ger fullständig insyn i statusen för dina webhook-leveranser, 
 </Step>
 
 <Step title="Search and Filter">
-    Använd sökfältet för att hitta specifika meddelanden efter ID eller händelsetyp. Filtrera efter status (Succeeded, Failed, Pending med flera) för att fokusera på de händelser du behöver undersöka.
+    Använd sökfältet för att hitta specifika meddelanden efter ID eller händelsetyp. Filtrera efter status (Succeeded, Failed, Pending osv.) för att fokusera på de händelser du behöver undersöka.
 </Step>
 
 <Step title="View Message Details">
-    Klicka på ett meddelande för att öppna informationssidan, som visar:
+    Klicka på ett meddelande för att öppna meddelandets detaljsida, som visar:
     - Den fullständiga webhook-payloaden
     - Varje leveransförsök med svarskod och varaktighet
     - Tidsstämpeln för varje försök
-    - Eventuella felmeddelanden från endpointen
+    - Eventuella felmeddelanden från din endpoint
 
     Varje försök har åtgärden **Replay**, så att du kan skicka just det meddelandet igen utan att lämna sidan.
 </Step>
@@ -753,30 +778,30 @@ Fliken **Logs** ger fullständig insyn i statusen för dina webhook-leveranser, 
 
 ## Aktivitetsövervakning
 
-Gå till **Developer → Webhooks** och öppna fliken **Activity** för att se leveransprestanda för dina endpoints.
+Gå till **Developer → Webhooks** och öppna fliken **Activity** för att se leveransprestandan för alla dina endpoints.
 
-**Delivery activity** visar försök över tid, grupperade som **Attempts per 5 minutes**, **Attempts per hour** eller **Attempts per day** beroende på tidsfönstret. Varje stapel delas upp efter resultat, och när du håller pekaren över ett segment visas status, antal försök och dess andel av totalen. På en endpoint sammanfattar **Delivery stats (last 24h)** på fliken **Overview** samma information för det senaste dygnet.
+**Delivery activity** visar försök över tid, grupperade som **Attempts per 5 minutes**, **Attempts per hour** eller **Attempts per day** beroende på tidsfönstret. Varje stapel delas upp efter resultat, och när du håller pekaren över ett segment visas status, antalet försök och dess andel av totalen. För en endpoint sammanfattar **Delivery stats (last 24h)** på fliken **Overview** samma information för det senaste dygnet.
 
 <Tip>
-Kolumnen **Error rate (24h)** på fliken **Endpoints** visar direkt vilka endpoints som behöver uppmärksamhet, innan du öppnar någon av dem.
+Kolumnen **Error rate (24h)** på fliken **Endpoints** visar direkt vilka endpoints som behöver åtgärdas, innan du öppnar någon av dem.
 </Tip>
 
 ## Spela upp och återställ meddelanden
 
-Hur du skickar ett meddelande igen beror på hur många meddelanden det gäller:
+Hur du skickar ett meddelande igen beror på hur många meddelanden du behöver hantera:
 
 - **Ett meddelande** — öppna det från fliken **Logs** och använd åtgärden **Replay** på försöket. Du behöver inte öppna endpointen.
-- **Ett intervall med meddelanden** — öppna endpointen, eftersom masslägena alltid gäller en enda endpoint åt gången.
+- **Ett intervall med meddelanden** — öppna endpointen, eftersom masslägena endast gäller en endpoint åt gången.
 
-### Massomspelning
+### Spela upp i bulk
 
 Öppna endpointen från **Developer → Webhooks**. Tre lägen är tillgängliga och vart och ett gäller endast den endpointen. Intervallet du anger beror på läget:
 
-| Läge | Vad det gör | Det du anger |
+| Läge | Vad det gör | Vad du anger |
 |------|--------------|--------------|
-| **Recover failed messages** | Spelar upp alla meddelanden till denna endpoint som misslyckades igen. | En startpunkt: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** eller **2 weeks ago** |
+| **Recover failed messages** | Spelar upp varje meddelande till denna endpoint som misslyckades. | En startpunkt: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** eller **2 weeks ago** |
 | **Replay missing messages** | Spelar upp meddelanden som aldrig skickades till denna endpoint, till exempel efter att du prenumererat på en ny händelsetyp. | Samma startpunkter |
-| **Bulk replay messages** | Spelar upp meddelanden som matchar de valda filtren, inklusive meddelanden som redan levererats utan problem. | Gränserna **Since** och **Until**, som som standard gäller de senaste två veckorna, samt valfria händelsetyper, kanal eller tagg |
+| **Bulk replay messages** | Spelar upp meddelanden som matchar de filter du väljer, inklusive meddelanden som redan levererats utan fel. | Gränserna **Since** och **Until**, som som standard omfattar de senaste två veckorna, samt valfria händelsetyper, kanal eller tagg |
 
 <Steps>
 <Step title="Open More Actions">
@@ -784,7 +809,7 @@ Hur du skickar ett meddelande igen beror på hur många meddelanden det gäller:
 </Step>
 
 <Step title="Set the Range">
-    Ange det intervall som läget kräver, enligt tabellen.
+    Fyll i det intervall som läget efterfrågar, enligt tabellen.
 </Step>
 
 <Step title="Start the Run">
@@ -792,11 +817,11 @@ Hur du skickar ett meddelande igen beror på hur många meddelanden det gäller:
 </Step>
 </Steps>
 
-Varje körning visas under **Replay history** på endpointens flik **Overview**, tillsammans med läge, tidsintervall, status och antalet omsända meddelanden.
+Varje körning visas under **Replay history** på endpointens flik **Overview**, tillsammans med läge, tidsintervall, status och antalet omskickade meddelanden.
 
 ## E-postaviseringar
 
-Ta emot en e-postavisering när webhook-leveranser till en endpoint misslyckas, så att du kan åtgärda problemen innan de leder till en kö.
+Få en e-postavisering när webhook-leveranser till en endpoint misslyckas, så att du kan åtgärda problem innan de leder till en kö.
 
 <Steps>
 <Step title="Navigate to Settings Tab">
@@ -804,11 +829,11 @@ Ta emot en e-postavisering när webhook-leveranser till en endpoint misslyckas, 
 </Step>
 
 <Step title="Find Email Alerting">
-  Leta reda på kortet **Email alerting**.
+  Leta upp kortet **Email alerting**.
 </Step>
 
 <Step title="Configure Email Addresses">
-  Ange adresserna som ska ta emot aviseringarna. Separera flera adresser med kommatecken och lämna fältet tomt för att stänga av aviseringarna.
+  Ange adresserna som ska ta emot aviseringarna. Separera flera adresser med kommatecken och lämna fältet tomt för att stänga av aviseringar.
 </Step>
 
 <Step title="Save">
@@ -817,12 +842,12 @@ Ta emot en e-postavisering när webhook-leveranser till en endpoint misslyckas, 
 </Steps>
 
 <Tip>
-Aktivera e-postaviseringar för att upptäcka webhook-leveransproblem tidigt och upprätthålla tillförlitliga integrationer.
+Aktivera e-postaviseringar för att upptäcka problem med webhook-leveranser tidigt och upprätthålla tillförlitliga integrationer.
 </Tip>
 
 ## Distribuera till molnplattformar
 
-Redo att distribuera din webhook-hanterare till produktion? Vi erbjuder plattformsspecifika guider som hjälper dig att distribuera webhooks till populära molnleverantörer, med bästa praxis för varje plattform.
+Redo att distribuera din webhook-handler till produktion? Vi tillhandahåller plattformsspecifika guider som hjälper dig att distribuera webhooks till populära molnleverantörer med bästa praxis för varje plattform.
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
@@ -835,7 +860,7 @@ Redo att distribuera din webhook-hanterare till produktion? Vi erbjuder plattfor
     Integrera webhooks med Supabase
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    Distribuera webhooks som Netlify-serverlessfunktioner
+    Distribuera webhooks som Netlify-serverless-funktioner
   </Card>
 </CardGroup>
 
@@ -847,7 +872,7 @@ Varje plattformsguide innehåller miljökonfiguration, signaturverifiering och d
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  API-referens för att programmässigt skapa och konfigurera webhook-endpoints
+  API-referens för att programmatiskt skapa och konfigurera webhook-endpoints
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
   API-referens för att hämta och hantera dina webhook-endpoints

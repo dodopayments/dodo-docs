@@ -78,7 +78,7 @@ Dodo Payments通过专门的集成交付每个权限。选择匹配您销售内�
 
 <Steps>
 <Step title="Created">
-付款完成或订阅变为 active 时会创建授权。Feature flags 会直接变为 `Delivered`。 当权益使用 `fulfillment_mode: auto`（默认值）时，License keys 也会直接变为 `Delivered`；在 `fulfillment_mode: manual` 下，授权会以 `Pending` 创建，并且在你通过[履行 License Key 授权](/api-reference/entitlements/fulfill-license-key)提供密钥之前不会包含密钥。其他所有集成均从 `Pending` 开始。基于 OAuth 的集成（Discord、GitHub、Notion）会包含一个 `oauth_url`，客户必须访问该链接才能完成授权。平台直连集成（Telegram、Framer、Digital Files）仅会在配置交付期间短暂处于 `Pending`，随后转为 `Delivered`。
+付款完成或订阅变为活跃状态时，会创建一项授予。Feature flags 会直接跳转到 `Delivered`。当权益使用 `fulfillment_mode: auto`（默认值）时，License keys 也会直接跳转到 `Delivered`；在 `fulfillment_mode: manual` 下，授予会在 `Pending` 中创建，在你通过 [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) 提供密钥之前不会包含密钥。其他所有集成都从 `Pending` 开始。基于 OAuth 的集成（Discord、GitHub、Notion）会提供一个 `oauth_url`，客户必须访问该地址才能完成授权；对于新创建的授予，此字段为 `null`；客户从交付邮件或 Customer Portal 开始接受流程后，该字段会被填充。平台直连集成（Telegram、Framer、Digital Files）只会在交付配置期间短暂处于 `Pending`，随后转为 `Delivered`。
 </Step>
 
 <Step title="Delivered">
@@ -98,18 +98,20 @@ Dodo Payments通过专门的集成交付每个权限。选择匹配您销售内�
 
 | 事件 | 行为 |
 |---|---|
-| `payment.succeeded`（一次性付款） | 每个附加的权限发放一个授予。 |
-| `payment.succeeded`（订阅链接付款） | 无操作。授予由以下订阅事件驱动。 |
-| `subscription.active` | 为所有尚未有授予的附加权限发放授予。再次授予相同订阅先前被撤销的授予。 |
-| `subscription.renewed` | 无操作。现有的授予在续订过程中持续存在。 |
-| `subscription.on_hold` | 撤销所有已交付和待交付的授予。`revocation_reason: subscription_on_hold`。 |
+| `payment.succeeded`（一次性付款） | 为每项附加的权益发放一项授予。 |
+| `payment.succeeded`（订阅关联付款） | 不执行任何操作。授予由下方的订阅事件驱动。 |
+| `subscription.active` | 为所有附加但尚未拥有授予的权益发放授予。重新发放此前因同一订阅被撤销的授予。 |
+| `subscription.renewed` | 不执行任何操作。现有授予会在续订期间持续存在。 |
+| `subscription.on_hold` | 撤销所有已交付和待处理的授予。`revocation_reason: subscription_on_hold`。 |
+| `subscription.paused` | 撤销所有已交付和待处理的授予。`revocation_reason: SubscriptionPaused`。 |
+| `subscription.unpaused` | 重新发放此前因同一订阅被撤销的授予，其行为与 `subscription.active` 完全相同。 |
 | `subscription.cancelled` | 全部撤销。`revocation_reason: subscription_cancelled`。 |
 | `subscription.expired` | 全部撤销。`revocation_reason: subscription_expired`。 |
-| `subscription.plan_changed` | 撤销所有当前授予，然后为新计划的权限发放授予。`revocation_reason: plan_changed`。 |
-| `refund.succeeded`（一次性付款） | 撤销该付款的授予。`revocation_reason: refund`。 |
-| 手动API撤销 | 使用 `revocation_reason: manual` 撤销。手动撤销在订阅续订时不自动再次授予。 |
-| 许可证密钥禁用 | 对于许可证密钥授予，禁用基础密钥会使用 `revocation_reason: license_key_disabled` 撤销授予。如果密钥被重新启用，授予会自动重新激活。 |
-| 平台漂移检测 | 如果集成的平台一侧不同步（Discord角色被手动删除、GitHub App失去仓库访问或对缺失目标的对账结果），授予会使用 `revocation_reason: platform_external` 撤销。在订阅续订时不自动再次授予，直到解决平台底层问题。 |
+| `subscription.plan_changed` | 撤销所有当前授予，然后为新方案的权益发放授予。`revocation_reason: plan_changed`。 |
+| `refund.succeeded`（一次性付款） | 撤销该付款对应的授予。`revocation_reason: refund`。 |
+| 手动 API 撤销 | 使用 `revocation_reason: manual` 撤销。订阅续订时不会自动重新发放手动撤销的授予。 |
+| License key disabled | 对于 License key 授予，停用底层密钥会使用 `revocation_reason: license_key_disabled` 撤销该授予。重新启用密钥后，该授予会自动重新激活。 |
+| 检测到平台状态偏移 | 如果集成的平台端状态不同步（例如手动移除了 Discord 角色、GitHub App 失去仓库访问权限，或协调检查发现目标缺失），系统会使用 `revocation_reason: platform_external` 撤销该授予。在底层平台问题解决之前，订阅续订时不会自动重新发放。 |
 
 <Note>
 订阅驱动的授予为每个 `(entitlement, customer, subscription)` 幂等；续订和重新激活不会创建重复的授予。一时间授予对于每个 `(entitlement, customer, payment)` 也是幂等的。
@@ -192,7 +194,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -204,7 +206,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -215,7 +217,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -272,8 +274,8 @@ Dodo Payments为授予生命周期触发四个webhook事件。订阅这些事件
 
 ## 最佳实践
 
-- **每个交付渠道使用一个权限。** 不要在具有不同角色意图的产品之间共享单一Discord权限；为每个角色创建一个，以便于清晰的撤销。
-- **首先在测试模式下测试。** 创建权限，将其附加到测试产品中，运行结账，并观察授予在 `pending → delivered` 中的过渡。确认取消测试订阅可以撤销授予。
-- **监听 `entitlement_grant.delivered`，而不是 `payment.succeeded`。** 付款可以在完成之前即成功（尤其是对于OAuth流程）。在解锁您自己系统中的依赖功能之前，请等待到交付事件。
-- **将 `entitlement_grant.failed` 视为可操作事项。** 失败的授予意味着客户付款但未获得访问权限。将这些问题传达给您的支持团队或触发重新授予机制。
-- **将 `revocation_reason` 映射到您的保留流程中。** `subscription_on_hold` 撤销是可恢复的（客户可能会更新他们的卡）。`manual` 撤销是有意的。在客户沟通中要区别对待。
+- **每个交付渠道使用一项权益。** 不要在具有不同角色用途的多个产品之间共享同一个 Discord 权益；应为每个角色创建一项权益，以便干净地撤销。
+- **先在测试模式下进行测试。** 创建权益，将其附加到测试产品，运行一次结账，并观察授予经过 `Pending → Delivered` 的状态变化。确认取消测试订阅后会撤销该授予。
+- **监听 `entitlement_grant.delivered`，而不是 `payment.succeeded`。** 付款可能在履约完成前成功（尤其是 OAuth 流程）。请等待 delivered 事件，然后再在你自己的系统中解锁依赖功能。
+- **将 `entitlement_grant.failed` 视为需要采取行动的事件。** 授予失败意味着客户已经付款但未获得访问权限。请将这些情况反馈给支持团队，或触发重新发放。
+- **将 `revocation_reason` 映射到你的留存流程。** `subscription_on_hold` 撤销是可恢复的（客户可能会更新其银行卡）。`manual` 撤销则是有意为之。在客户沟通中应区别对待这两种情况。

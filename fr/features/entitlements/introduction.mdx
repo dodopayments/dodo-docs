@@ -80,7 +80,7 @@ Les grants sont pilotés par les mêmes événements de paiement et d'abonnement
 
 <Steps>
 <Step title="Created">
-Un grant est créé lorsqu'un paiement est finalisé ou qu'un abonnement devient actif. Les feature flags passent directement à `Delivered`. Les clés de licence passent également directement à `Delivered` lorsque le droit utilise `fulfillment_mode: auto` (la valeur par défaut) ; avec `fulfillment_mode: manual`, le grant est créé dans `Pending` sans clé, jusqu'à ce que vous en fournissiez une via [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Toutes les autres intégrations commencent dans `Pending`. Les intégrations basées sur OAuth (Discord, GitHub, Notion) incluent un `oauth_url` que le client doit consulter pour terminer son consentement. Les intégrations directement connectées à la plateforme (Telegram, Framer, Digital Files) restent brièvement dans `Pending` pendant le provisionnement de la livraison, puis passent à `Delivered`.
+Un grant est créé lorsqu’un paiement est finalisé ou qu’un abonnement devient actif. Les feature flags passent directement à `Delivered`. Les clés de licence passent également directement à `Delivered` lorsque l’entitlement utilise `fulfillment_mode: auto` (la valeur par défaut) ; avec `fulfillment_mode: manual`, le grant est créé dans `Pending` sans clé, jusqu’à ce que vous en fournissiez une via [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Toutes les autres intégrations commencent dans `Pending`. Les intégrations basées sur OAuth (Discord, GitHub, Notion) exposent un `oauth_url` que le client doit consulter pour terminer son consentement ; le champ est `null` sur un grant nouvellement créé et est renseigné lorsque le client commence le processus d’acceptation depuis son e-mail de livraison ou le customer portal. Les intégrations directement connectées à la plateforme (Telegram, Framer, Digital Files) restent brièvement dans `Pending` pendant la configuration de la livraison, puis passent à `Delivered`.
 </Step>
 
 <Step title="Delivered">
@@ -98,20 +98,22 @@ Lorsque l'accès est révoqué (abonnement annulé, remboursement émis ou révo
 
 ### Comportement des Grants par Événement
 
-| Event | Comportement |
+| Événement | Comportement |
 |---|---|
-| `payment.succeeded` (paiement ponctuel) | Émet un grant par droit attaché. |
-| `payment.succeeded` (paiement lié à un abonnement) | Aucun effet. Les grants sont pilotés par l'événement d'abonnement ci-dessous. |
-| `subscription.active` | Émet des grants pour tous les droits attachés qui n'en ont pas déjà un. Réaccorder tous les grants précédemment révoqués pour le même abonnement. |
-| `subscription.renewed` | Aucun effet. Les grants existants persistent lors des renouvellements. |
-| `subscription.on_hold` | Révoquez tous les grants délivrés et en attente. `revocation_reason: subscription_on_hold`. |
-| `subscription.cancelled` | Révoquer tous. `revocation_reason: subscription_cancelled`. |
-| `subscription.expired` | Révoquer tous. `revocation_reason: subscription_expired`. |
-| `subscription.plan_changed` | Révoquer tous les grants actuels, puis émettre des grants pour les droits du nouveau plan. `revocation_reason: plan_changed`. |
-| `refund.succeeded` (paiement ponctuel) | Révoquer les grants pour ce paiement. `revocation_reason: refund`. |
-| Révocation API manuelle | Révoquer avec `revocation_reason: manual`. Les révocations manuelles ne sont pas réaccordées automatiquement lors du renouvellement de l'abonnement. |
-| Clé de licence désactivée | Pour les grants de clé de licence, la désactivation de la clé sous-jacente révoque le grant avec `revocation_reason: license_key_disabled`. Le grant est réactivé automatiquement si la clé est réactivée. |
-| Dérive de plateforme détectée | Si le côté plateforme d'une intégration sort de la synchronisation (un rôle Discord enlevé manuellement, l'App GitHub perdant l'accès au dépôt, ou un passage de réconciliation détectant une cible manquante), le grant est révoqué avec `revocation_reason: platform_external`. Pas de réattribution automatique lors du renouvellement de l'abonnement tant que le problème de plateforme sous-jacent n'est pas résolu. |
+| `payment.succeeded` (paiement unique) | Émettre un grant pour chaque entitlement associé. |
+| `payment.succeeded` (paiement associé à un abonnement) | Aucune opération. Les grants sont déclenchés par l’événement d’abonnement ci-dessous. |
+| `subscription.active` | Émettre des grants pour tous les entitlements associés qui n’en ont pas encore. Émettre à nouveau les grants précédemment révoqués pour le même abonnement. |
+| `subscription.renewed` | Aucune opération. Les grants existants sont conservés lors des renouvellements. |
+| `subscription.on_hold` | Révoquer tous les grants délivrés et en attente. `revocation_reason: subscription_on_hold`. |
+| `subscription.paused` | Révoquer tous les grants délivrés et en attente. `revocation_reason: SubscriptionPaused`. |
+| `subscription.unpaused` | Émettre à nouveau tous les grants précédemment révoqués pour le même abonnement, exactement comme le fait `subscription.active`. |
+| `subscription.cancelled` | Tout révoquer. `revocation_reason: subscription_cancelled`. |
+| `subscription.expired` | Tout révoquer. `revocation_reason: subscription_expired`. |
+| `subscription.plan_changed` | Révoquer tous les grants actuels, puis émettre des grants pour les entitlements du nouveau plan. `revocation_reason: plan_changed`. |
+| `refund.succeeded` (paiement unique) | Révoquer les grants associés à ce paiement. `revocation_reason: refund`. |
+| Révocation manuelle via l’API | Révoquer avec `revocation_reason: manual`. Les révocations manuelles ne font pas l’objet d’une nouvelle attribution automatique lors du renouvellement de l’abonnement. |
+| Clé de licence désactivée | Pour les grants associés à une clé de licence, la désactivation de la clé sous-jacente révoque le grant avec `revocation_reason: license_key_disabled`. Le grant est automatiquement réactivé si la clé est réactivée. |
+| Dérive de la plateforme détectée | Si la partie plateforme d’une intégration n’est plus synchronisée (un rôle Discord supprimé manuellement, la perte par l’application GitHub de l’accès à un dépôt ou un contrôle de rapprochement détectant une cible manquante), le grant est révoqué avec `revocation_reason: platform_external`. Il ne fait pas l’objet d’une nouvelle attribution automatique lors du renouvellement de l’abonnement tant que le problème sous-jacent de la plateforme n’est pas résolu. |
 
 <Note>
 Les grants pilotés par abonnement sont idempotents par `(entitlement, customer, subscription)`; les renouvellements et réactivations ne créent pas de grants en double. Les grants ponctuels sont idempotents par `(entitlement, customer, payment)`.
@@ -194,7 +196,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -206,7 +208,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -217,7 +219,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -274,8 +276,8 @@ Consultez le schéma de charge utile complet, les événements d'exemple et `rev
 
 ## Bonnes pratiques
 
-- **Utilisez un droit par canal de livraison.** Ne partagez pas un seul droit Discord sur des produits avec différentes intentions de rôle; créez-en un par rôle pour une révocation propre.
-- **Testez en mode test d'abord.** Créez le droit, attachez-le à un produit test, effectuez un paiement, et observez le grant passer par `pending → delivered`. Confirmez que l'annulation de l'abonnement test révoque le grant.
-- **Écoutez `entitlement_grant.delivered`, pas `payment.succeeded`.** Un paiement peut réussir avant que l'exécution ne soit terminée (surtout pour les flux OAuth). Attendez l'événement de livraison avant de débloquer les fonctionnalités dépendantes dans vos propres systèmes.
-- **Traitez `entitlement_grant.failed` comme actionnable.** Un grant échoué signifie qu'un client a payé mais n'a pas reçu l'accès. Affichez ces informations à votre équipe de support ou déclenchez un regrant.
-- **Mappez `revocation_reason` à vos flux de rétention.** Un `subscription_on_hold` révoquer est récupérable (le client peut mettre à jour sa carte). Un `manual` révoquer est intentionnel. Traitez-les différemment dans vos communications clients.
+- **Utilisez un entitlement par canal de livraison.** Ne partagez pas un entitlement Discord unique entre des produits ayant des objectifs de rôles différents ; créez-en un par rôle pour permettre une révocation claire.
+- **Commencez par tester en mode test.** Créez l’entitlement, associez-le à un produit de test, effectuez un checkout et observez la transition du grant via `Pending → Delivered`. Vérifiez que l’annulation de l’abonnement de test révoque le grant.
+- **Écoutez `entitlement_grant.delivered`, pas `payment.succeeded`.** Un paiement peut réussir avant la fin du fulfillment (en particulier pour les flux OAuth). Attendez l’événement de livraison avant de déverrouiller les fonctionnalités dépendantes dans vos propres systèmes.
+- **Considérez `entitlement_grant.failed` comme une action à traiter.** Un grant échoué signifie qu’un client a payé sans obtenir l’accès. Signalez ces cas à votre équipe de support ou déclenchez une nouvelle attribution.
+- **Associez `revocation_reason` à vos flux de rétention.** Une révocation `subscription_on_hold` peut être résolue (le client peut mettre à jour sa carte). Une révocation `manual` est intentionnelle. Traitez-les différemment dans vos communications avec les clients.

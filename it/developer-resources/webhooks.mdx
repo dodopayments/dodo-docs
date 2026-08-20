@@ -352,20 +352,45 @@ If you are not using an SDK, you can verify signatures yourself following the St
   We follow the Standard Webhooks specification. You can use their libraries to verify signatures: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). For event payload formats, see the [Webhook Payload](/developer-resources/webhooks/intents/payment).
 </Info>
 
-### Responding to Webhooks
+### Indirizzi IP di origine
 
-* Your webhook handler must return a `2xx status code` to acknowledge receipt of the event.
-* Any other response will be treated as a failure, and the webhook will be retried.
+La verifica della firma è il metodo supportato per autenticare un webhook. Dimostra che la richiesta è stata firmata con il tuo segreto webhook, cosa che un controllo a livello di rete non può fare.
 
-### Best Practices
+Le consegne dei webhook vengono inviate da un insieme di indirizzi IP di origine appartenenti alla nostra infrastruttura di consegna. Questo insieme cambia di tanto in tanto, quindi considera gli indirizzi come un dettaglio operativo e non come una proprietà fissa dell'integrazione.
+
+<Warning>
+Non utilizzare un elenco di indirizzi IP di origine consentiti come meccanismo di autenticazione. Un elenco di indirizzi consentiti mostra solo da dove proviene una richiesta, non che sia autentica o non modificata: verifica l'intestazione `webhook-signature` su ogni richiesta, come descritto in [Verifica delle firme](#verifying-signatures).
+</Warning>
+
+Se la tua infrastruttura si trova dietro un firewall che richiede un elenco di indirizzi consentiti esplicito, considera quanto segue:
+
+- **Non codificare gli indirizzi in modo permanente.** Gli intervalli vengono aggiunti e ritirati nel tempo e una regola obsoleta blocca silenziosamente le consegne.
+- **Richiedi gli intervalli attuali** a [support@dodopayments.com](mailto:support@dodopayments.com) prima di configurare un firewall restrittivo, così lavorerai con un elenco aggiornato.
+- **Presta attenzione agli avvisi di modifica.** Quando cambiano gli indirizzi di consegna, informiamo via email i merchant interessati: applica gli aggiornamenti prima della data indicata per evitare consegne perse.
+- **Mantieni attiva la verifica della firma** indipendentemente dalle regole di rete che aggiungi.
+
+<Tip>
+Sulle piattaforme serverless e di hosting gestito, il filtraggio degli IP in entrata è spesso non disponibile o poco pratico da mantenere. In questi ambienti, la verifica della firma è il controllo corretto e non è necessario alcun elenco di indirizzi consentiti.
+</Tip>
+
+<Info>
+Una consegna bloccata viene trattata come qualsiasi altro errore e ritentata secondo la pianificazione descritta in [Nuovi tentativi automatici](#automatic-retries). Se le regole del firewall hanno causato il fallimento delle consegne, puoi reinviarle dopo aver corretto le regole: consulta [Riproduzione e recupero dei messaggi](#replaying-and-recovering-messages).
+</Info>
+
+### Rispondere ai webhook
+
+* Il gestore del webhook deve restituire un `2xx status code` per confermare la ricezione dell'evento.
+* Qualsiasi altra risposta verrà trattata come un errore e il webhook verrà ritentato.
+
+### Best practice
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  Always use HTTPS URLs for webhook endpoints. HTTP endpoints are vulnerable to man-in-the-middle attacks and expose your webhook data.
+  Utilizza sempre URL HTTPS per gli endpoint webhook. Gli endpoint HTTP sono vulnerabili agli attacchi man-in-the-middle ed espongono i dati del webhook.
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  Return a `200` status code immediately upon receiving the webhook. Process the event asynchronously to avoid timeouts.
+  Restituisci immediatamente un codice di stato `200` alla ricezione del webhook. Elabora l'evento in modo asincrono per evitare timeout.
   
 
   ```javascript
@@ -381,66 +406,66 @@ If you are not using an SDK, you can verify signatures yourself following the St
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  Implement idempotency using the `webhook-id` header to safely process the same event multiple times without side effects.
+  Implementa l'idempotenza utilizzando l'intestazione `webhook-id` per elaborare in sicurezza più volte lo stesso evento senza effetti collaterali.
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  Store your webhook secret securely using environment variables or a secrets manager. Never commit secrets to version control.
+  Archivia il segreto webhook in modo sicuro utilizzando variabili d'ambiente o un gestore di segreti. Non eseguire mai il commit dei segreti nel controllo versione.
 </Accordion>
 </AccordionGroup>
 
-## Webhook Payload Structure
+## Struttura del payload webhook
 
-Understanding the webhook payload structure helps you parse and process events correctly.
+Comprendere la struttura del payload webhook ti aiuta a analizzare ed elaborare correttamente gli eventi.
 
-### Request Format
+### Formato della richiesta
 
 ```http
 POST /your-webhook-url
 Content-Type: application/json
 ```
 
-### Headers
+### Intestazioni
 
 <ParamField header="webhook-id" type="string" required>
-Unique identifier for this webhook event. Use this for idempotency checks.
+Identificatore univoco di questo evento webhook. Usalo per i controlli di idempotenza.
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
-HMAC SHA256 signature for verifying the webhook authenticity.
+Firma HMAC SHA256 per verificare l'autenticità del webhook.
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
-Unix timestamp (in seconds) when the webhook was sent.
+Timestamp Unix, in secondi, relativo al momento dell'invio del webhook.
 </ParamField>
 
-### Request Body
+### Corpo della richiesta
 
 <ResponseField name="business_id" type="string" required>
-Your Dodo Payments business identifier.
+Identificatore della tua attività Dodo Payments.
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-Event type that triggered this webhook (e.g., `payment.succeeded`, `subscription.active`).
+Tipo di evento che ha attivato questo webhook (ad es. `payment.succeeded`, `subscription.active`).
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-ISO 8601 formatted timestamp of when the event occurred.
+Timestamp formattato secondo ISO 8601 relativo al momento in cui si è verificato l'evento.
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-Event-specific payload containing detailed information about the event.
+Payload specifico dell'evento contenente informazioni dettagliate sull'evento.
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
-  Type of resource. One of: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant`, or `Payout`.
+  Tipo di risorsa. Uno tra: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant` o `Payout`.
   </ResponseField>
   
-  Additional fields vary by event type. See the event-specific documentation for complete schemas.
+  I campi aggiuntivi variano in base al tipo di evento. Consulta la documentazione specifica dell'evento per gli schemi completi.
 </Expandable>
 </ResponseField>
 
-### Example Payload
+### Payload di esempio
 
 ```json
 {
@@ -456,59 +481,59 @@ Event-specific payload containing detailed information about the event.
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    Browse all available webhook event types
+    Sfoglia tutti i tipi di evento webhook disponibili
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    View detailed payload schemas for each event
+    Visualizza gli schemi dettagliati del payload per ogni evento
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    React to `payment.failed` and recover declined payments
+    Reagisci a `payment.failed` e recupera i pagamenti rifiutati
   </Card>
 </CardGroup>
 
-## Testing Webhooks
+## Test dei webhook
 
-You can test your webhook integration directly from the Dodo Payments dashboard to ensure your endpoint is working correctly before going live.
+Puoi testare l'integrazione webhook direttamente dalla dashboard Dodo Payments per assicurarti che l'endpoint funzioni correttamente prima di andare in produzione.
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    Go to your Dodo Payments Dashboard and navigate to **Developer → Webhooks**.
+    Vai alla Dashboard Dodo Payments e accedi a **Developer → Webhooks**.
 </Step>
 
 <Step title="Select Your Endpoint">
-    Click on your webhook endpoint to access its details page.
+    Fai clic sull'endpoint webhook per accedere alla relativa pagina dei dettagli.
 </Step>
 
 <Step title="Open Testing Tab">
-    Click on the **Testing** tab to access the webhook testing interface.
+    Fai clic sulla scheda **Testing** per accedere all'interfaccia di test dei webhook.
 </Step>
 </Steps>
 
-### Send an Example Event
+### Inviare un evento di esempio
 
-The **Testing** tab dispatches a sample payload to this endpoint so you can verify your receiver.
+La scheda **Testing** invia un payload di esempio a questo endpoint, così puoi verificare il tuo ricevitore.
 
 <Steps>
 <Step title="Select Event Type">
-    Use **Select an event type** to choose the event you want to test, for example `payment.succeeded` or `payment.failed`.
+    Utilizza **Select an event type** per scegliere l'evento da testare, ad esempio `payment.succeeded` o `payment.failed`.
 </Step>
 
 <Step title="Send Example">
-    Click **Send example**. The sample payload is delivered to your endpoint URL exactly like a real event, signed the same way.
+    Fai clic su **Send example**. Il payload di esempio viene consegnato all'URL del tuo endpoint esattamente come un evento reale e firmato allo stesso modo.
     
     <Warning>
-    Failed messages sent from the Testing tab are not retried. Use it to verify your receiver, not to test the retry schedule.
+    I messaggi non riusciti inviati dalla scheda Testing non vengono ritentati. Usala per verificare il ricevitore, non per testare la pianificazione dei nuovi tentativi.
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    The tab records when the **Last example sent** went out. Confirm the event arrived, that your signature verification passed, and that you returned a `2xx` status code.
+    La scheda registra quando è stato inviato l'**Last example sent**. Conferma che l'evento sia arrivato, che la verifica della firma sia riuscita e che tu abbia restituito un codice di stato `2xx`.
 </Step>
 </Steps>
 
-### Implementation Example
+### Esempio di implementazione
 
-Here's a complete Express.js implementation showing webhook verification and handling:
+Ecco un'implementazione completa con Express.js che mostra la verifica e la gestione dei webhook:
 
 <CodeGroup>
 
@@ -601,255 +626,255 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-Test your webhook handler thoroughly using the dashboard testing interface before processing production events. This helps identify and fix issues early.
+Testa accuratamente il gestore del webhook utilizzando l'interfaccia di test della dashboard prima di elaborare gli eventi di produzione. Questo aiuta a identificare e correggere tempestivamente i problemi.
 </Tip>
 
-## Testing Webhooks with the CLI
+## Test dei webhook con la CLI
 
-The [Dodo Payments CLI](/developer-resources/sdks/cli) provides two commands for testing webhooks during local development, without needing to leave your terminal.
+La [Dodo Payments CLI](/developer-resources/sdks/cli) fornisce due comandi per testare i webhook durante lo sviluppo locale, senza dover lasciare il terminale.
 
-### Listen for Live Webhooks Locally
+### Ascoltare localmente i webhook in tempo reale
 
-Forward real webhook events from your test mode account to your local development server in real time:
+Inoltra in tempo reale gli eventi webhook reali dal tuo account in modalità test al server di sviluppo locale:
 
 ```bash
 dodo wh listen
 ```
 
-The CLI opens a WebSocket connection to Dodo Payments and forwards every webhook event to your local endpoint (e.g., `http://localhost:3000/webhook`), preserving all headers including signature headers for verification testing.
+La CLI apre una connessione WebSocket a Dodo Payments e inoltra ogni evento webhook al tuo endpoint locale (ad es. `http://localhost:3000/webhook`), conservando tutte le intestazioni, comprese quelle della firma, per testare la verifica.
 
 <Info>
-The listener only works with **test mode** API keys. Run `dodo login` and select Test Mode before using this command.
+Il listener funziona solo con chiavi API in **test mode**. Esegui `dodo login` e seleziona Test Mode prima di utilizzare questo comando.
 </Info>
 
-### Trigger Mock Webhook Events
+### Attivare eventi webhook simulati
 
-Send mock webhook payloads to any endpoint without creating real transactions:
+Invia payload webhook simulati a qualsiasi endpoint senza creare transazioni reali:
 
 ```bash
 dodo wh trigger
 ```
 
-This interactive tool lets you pick an event type and sends a realistic mock payload to your endpoint. It loops so you can test multiple events in one session.
+Questo strumento interattivo ti consente di scegliere un tipo di evento e invia un payload simulato realistico al tuo endpoint. Funziona in un ciclo, così puoi testare più eventi nella stessa sessione.
 
-The trigger command covers all 46 event types Dodo Payments delivers, including the subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning, and entitlement grant families — see [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) for the exact list.
+Il comando trigger supporta tutti i 47 tipi di evento che Dodo Payments consegna, incluse le categorie di abbonamenti, pagamenti, rimborsi, contestazioni, chiavi di licenza, payout, crediti, checkout abbandonati, solleciti di pagamento e concessioni di entitlement: consulta [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) per l'elenco completo.
 
 <Warning>
-Mock webhook payloads from `dodo wh trigger` are not signed. Use `unsafe_unwrap()` instead of `unwrap()` in your webhook handler during testing only.
+I payload webhook simulati da `dodo wh trigger` non sono firmati. Durante i test, utilizza `unsafe_unwrap()` invece di `unwrap()` nel gestore webhook.
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  See the full CLI webhook testing documentation
+  Consulta la documentazione completa sui test dei webhook con la CLI
 </Card>
 
-## Advanced Settings
+## Impostazioni avanzate
 
-The **Advanced** tab provides additional configuration options for fine-tuning your webhook endpoint behavior.
+La scheda **Advanced** offre opzioni di configurazione aggiuntive per perfezionare il comportamento dell'endpoint webhook.
 
-### Rate Limiting (Throttling)
+### Limitazione della frequenza (throttling)
 
-Control the rate at which webhook events are delivered to your endpoint to prevent overwhelming your system.
+Controlla la frequenza con cui gli eventi webhook vengono consegnati al tuo endpoint per evitare di sovraccaricare il sistema.
 
 <Steps>
 <Step title="Open Advanced Tab">
-    From your endpoint details page, click the **Advanced** tab.
+    Dalla pagina dei dettagli dell'endpoint, fai clic sulla scheda **Advanced**.
 </Step>
 
 <Step title="Configure Rate Limit">
-    In the "Rate Limit (throttling)" section, click **Edit** to modify the rate limit settings.
+    Nella sezione "Rate Limit (throttling)", fai clic su **Edit** per modificare le impostazioni del limite di frequenza.
     
     <Info>
-    By default, webhooks have no rate limit applied, meaning events are delivered as soon as they occur.
+    Per impostazione predefinita, ai webhook non viene applicato alcun limite di frequenza, quindi gli eventi vengono consegnati non appena si verificano.
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    Configure your desired rate limit to control webhook delivery frequency and prevent system overload.
+    Configura il limite di frequenza desiderato per controllare la frequenza di consegna dei webhook ed evitare il sovraccarico del sistema.
 </Step>
 </Steps>
 
 <Tip>
-Use rate limiting when your webhook handler needs time to process events or when you want to batch multiple events together.
+Utilizza la limitazione della frequenza quando il gestore webhook ha bisogno di tempo per elaborare gli eventi o quando vuoi raggruppare più eventi.
 </Tip>
 
-### Custom Headers
+### Intestazioni personalizzate
 
-Add custom HTTP headers to all webhook requests sent to your endpoint. This is useful for authentication, routing, or adding metadata.
+Aggiungi intestazioni HTTP personalizzate a tutte le richieste webhook inviate al tuo endpoint. È utile per l'autenticazione, il routing o l'aggiunta di metadati.
 
 <Steps>
 <Step title="Add Headers">
-    In the "Custom Headers" section, enter a **Key** and **Value** for each custom header.
+    Nella sezione "Custom Headers", inserisci una **Key** e un **Value** per ogni intestazione personalizzata.
 </Step>
 
 <Step title="Add Multiple Headers">
-    Click the **+** button to add additional custom headers as needed.
+    Fai clic sul pulsante **+** per aggiungere altre intestazioni personalizzate secondo necessità.
 </Step>
 </Steps>
 
-Your custom headers are included in all webhook requests to this endpoint.
+Le tue intestazioni personalizzate sono incluse in tutte le richieste webhook a questo endpoint.
 
-### Transformations
+### Trasformazioni
 
-Transformations allow you to modify a webhook's payload and optionally redirect it to a different URL. This powerful feature enables you to:
+Le trasformazioni consentono di modificare il payload di un webhook e, facoltativamente, reindirizzarlo a un URL diverso. Questa potente funzionalità ti permette di:
 
-- Modify the payload structure before processing
-- Route webhooks to different endpoints based on content
-- Add or remove fields from the payload
-- Transform data formats
+- Modificare la struttura del payload prima dell'elaborazione
+- Instradare i webhook a endpoint diversi in base al contenuto
+- Aggiungere o rimuovere campi dal payload
+- Trasformare i formati dei dati
 
 <Steps>
 <Step title="Enable Transformations">
-    Toggle the **Enabled** switch to activate the transformation feature.
+    Attiva l'interruttore **Enabled** per abilitare la funzionalità di trasformazione.
 </Step>
 
 <Step title="Configure Transformation">
-    Click **Edit transformation** to define your transformation rules using JavaScript.
+    Fai clic su **Edit transformation** per definire le regole di trasformazione utilizzando JavaScript.
 </Step>
 
 <Step title="Test Transformation">
-    Use the transformation test interface to verify your transformation works correctly before going live.
+    Utilizza l'interfaccia di test delle trasformazioni per verificare che la trasformazione funzioni correttamente prima di andare in produzione.
 </Step>
 </Steps>
 
 <Warning>
-Transformations can impact webhook delivery performance. Test thoroughly and keep transformation logic simple and efficient.
+Le trasformazioni possono influire sulle prestazioni di consegna dei webhook. Esegui test approfonditi e mantieni la logica di trasformazione semplice ed efficiente.
 </Warning>
 
 <Tip>
-Transformations are particularly useful for:
-- Converting between different data formats
-- Filtering events based on specific criteria
-- Adding computed fields to the payload
-- Routing events to different microservices
+Le trasformazioni sono particolarmente utili per:
+- Convertire dati tra formati diversi
+- Filtrare gli eventi in base a criteri specifici
+- Aggiungere campi calcolati al payload
+- Instradare gli eventi a microservizi diversi
 </Tip>
 
-## Monitoring Webhook Logs
+## Monitoraggio dei log dei webhook
 
-The **Logs** tab provides comprehensive visibility into your webhook delivery status, allowing you to monitor, debug, and manage webhook events effectively.
+La scheda **Logs** offre una visibilità completa sullo stato di consegna dei webhook, consentendoti di monitorare, eseguire il debug e gestire gli eventi webhook in modo efficace.
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    Go to **Developer → Webhooks** and open the **Logs** tab.
+    Vai a **Developer → Webhooks** e apri la scheda **Logs**.
 </Step>
 
 <Step title="Browse Delivery History">
-    View a table of all webhook delivery attempts with columns for Event type, Message ID, Event ID, Sent at, Attempted at, Response code, and Duration.
+    Visualizza una tabella di tutti i tentativi di consegna dei webhook, con colonne per Event type, Message ID, Event ID, Sent at, Attempted at, Response code e Duration.
 </Step>
 
 <Step title="Search and Filter">
-    Use the search bar to find specific messages by ID or event type. Filter by status (Succeeded, Failed, Pending, etc.) to focus on the events you need to investigate.
+    Utilizza la barra di ricerca per trovare messaggi specifici per ID o tipo di evento. Filtra per stato (Succeeded, Failed, Pending, ecc.) per concentrarti sugli eventi da analizzare.
 </Step>
 
 <Step title="View Message Details">
-    Click on any message to open the message detail page, which shows:
-    - The complete webhook payload
-    - Every delivery attempt with response code and duration
-    - Timestamp of each attempt
-    - Any error messages from your endpoint
+    Fai clic su un messaggio qualsiasi per aprire la pagina dei dettagli, che mostra:
+    - Il payload webhook completo
+    - Ogni tentativo di consegna con codice di risposta e durata
+    - Il timestamp di ogni tentativo
+    - Eventuali messaggi di errore provenienti dal tuo endpoint
 
-    Each attempt carries a **Replay** action, so you can re-drive that one message without leaving the page.
+    Ogni tentativo include un'azione **Replay**, così puoi reinviare quel singolo messaggio senza lasciare la pagina.
 </Step>
 </Steps>
 
-## Activity Monitoring
+## Monitoraggio dell'attività
 
-Go to **Developer → Webhooks** and open the **Activity** tab for a view of delivery performance across your endpoints.
+Vai a **Developer → Webhooks** e apri la scheda **Activity** per visualizzare le prestazioni di consegna tra i tuoi endpoint.
 
-**Delivery activity** plots attempts over time, bucketed as **Attempts per 5 minutes**, **Attempts per hour**, or **Attempts per day** depending on the window. Each bar is split by outcome, and hovering a segment shows the status, the number of attempts, and its share of the total. On an endpoint, **Delivery stats (last 24h)** on the **Overview** tab summarizes the same information for the past day.
+**Delivery activity** traccia i tentativi nel tempo, raggruppandoli come **Attempts per 5 minutes**, **Attempts per hour** o **Attempts per day** a seconda dell'intervallo. Ogni barra è suddivisa per risultato; passando il mouse su un segmento vengono mostrati lo stato, il numero di tentativi e la relativa percentuale sul totale. In un endpoint, **Delivery stats (last 24h)** nella scheda **Overview** riepiloga le stesse informazioni dell'ultimo giorno.
 
 <Tip>
-The **Error rate (24h)** column on the **Endpoints** tab tells you at a glance which endpoints need attention, before you open any of them.
+La colonna **Error rate (24h)** nella scheda **Endpoints** indica immediatamente quali endpoint richiedono attenzione, prima ancora che tu ne apra uno.
 </Tip>
 
-## Replaying and Recovering Messages
+## Riproduzione e recupero dei messaggi
 
-How you re-drive a message depends on how many you need:
+Il modo in cui reinvii un messaggio dipende da quanti messaggi devi gestire:
 
-- **One message** — open it from the **Logs** tab and use the **Replay** action on the attempt. No need to open the endpoint.
-- **A range of messages** — open the endpoint, since the bulk modes act on a single endpoint at a time.
+- **Un messaggio**: aprilo dalla scheda **Logs** e utilizza l'azione **Replay** sul tentativo. Non è necessario aprire l'endpoint.
+- **Un intervallo di messaggi**: apri l'endpoint, poiché le modalità collettive operano su un solo endpoint alla volta.
 
-### Replaying in Bulk
+### Riproduzione collettiva
 
-Open the endpoint from **Developer → Webhooks**. Three modes are available, each acting on that endpoint alone. The range you set depends on the mode:
+Apri l'endpoint da **Developer → Webhooks**. Sono disponibili tre modalità, ognuna delle quali opera solo su quell'endpoint. L'intervallo da impostare dipende dalla modalità:
 
-| Mode | What it does | What you set |
+| Modalità | Funzione | Impostazioni |
 |------|--------------|--------------|
-| **Recover failed messages** | Replays every message to this endpoint that failed. | A starting point: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week**, or **2 weeks ago** |
-| **Replay missing messages** | Replays messages that were never dispatched to this endpoint, for example after you subscribe it to a new event type. | The same starting points |
-| **Bulk replay messages** | Replays messages matching the filters you choose, including ones that already delivered successfully. | **Since** and **Until** bounds, defaulting to the last two weeks, plus optional event types, channel, or tag |
+| **Recover failed messages** | Riproduce ogni messaggio destinato a questo endpoint la cui consegna è fallita. | Un punto di partenza: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** o **2 weeks ago** |
+| **Replay missing messages** | Riproduce i messaggi che non sono mai stati inviati a questo endpoint, ad esempio dopo averlo sottoscritto a un nuovo tipo di evento. | Gli stessi punti di partenza |
+| **Bulk replay messages** | Riproduce i messaggi corrispondenti ai filtri scelti, inclusi quelli già consegnati correttamente. | Limiti **Since** e **Until**, predefiniti alle ultime due settimane, più tipi di evento, canale o tag opzionali |
 
 <Steps>
 <Step title="Open More Actions">
-    On the endpoint, open **More actions** and pick one of the three modes above.
+    Nell'endpoint, apri **More actions** e scegli una delle tre modalità precedenti.
 </Step>
 
 <Step title="Set the Range">
-    Fill in the range that mode asks for, as listed in the table.
+    Inserisci l'intervallo richiesto dalla modalità, come indicato nella tabella.
 </Step>
 
 <Step title="Start the Run">
-    Click **Recover** or **Replay**, depending on the mode you picked.
+    Fai clic su **Recover** o **Replay**, a seconda della modalità scelta.
 </Step>
 </Steps>
 
-Every run appears under **Replay history** on the endpoint's **Overview** tab, with its mode, time range, status, and the number of messages resent.
+Ogni esecuzione viene visualizzata in **Replay history** nella scheda **Overview** dell'endpoint, con modalità, intervallo temporale, stato e numero di messaggi reinviati.
 
-## Email Alerts
+## Avvisi email
 
-Receive an email notification when webhook deliveries to an endpoint are failing, so you can address problems before they turn into a backlog.
+Ricevi una notifica email quando le consegne dei webhook a un endpoint non riescono, così puoi risolvere i problemi prima che si trasformino in un arretrato.
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  Go to **Developer → Webhooks** and open the **Settings** tab.
+  Vai a **Developer → Webhooks** e apri la scheda **Settings**.
 </Step>
 
 <Step title="Find Email Alerting">
-  Locate the **Email alerting** card.
+  Individua la scheda **Email alerting**.
 </Step>
 
 <Step title="Configure Email Addresses">
-  Enter the addresses that should receive the alerts. Separate multiple addresses with commas, and leave the field empty to turn alerts off.
+  Inserisci gli indirizzi che devono ricevere gli avvisi. Separa più indirizzi con virgole e lascia vuoto il campo per disattivare gli avvisi.
 </Step>
 
 <Step title="Save">
-  Click **Save** to apply your changes.
+  Fai clic su **Save** per applicare le modifiche.
 </Step>
 </Steps>
 
 <Tip>
-Enable email alerts to catch webhook delivery problems early and maintain reliable integrations.
+Attiva gli avvisi email per individuare tempestivamente i problemi di consegna dei webhook e mantenere integrazioni affidabili.
 </Tip>
 
-## Deploy to Cloud Platforms
+## Distribuzione su piattaforme cloud
 
-Ready to deploy your webhook handler to production? We provide platform-specific guides to help you deploy webhooks to popular cloud providers with best practices for each platform.
+Pronto a distribuire il gestore webhook in produzione? Forniamo guide specifiche per piattaforma che ti aiutano a distribuire i webhook sui principali provider cloud, seguendo le best practice di ciascuna piattaforma.
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    Deploy webhooks to Vercel with serverless functions
+    Distribuisci i webhook su Vercel con funzioni serverless
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    Run webhooks on Cloudflare's edge network
+    Esegui i webhook sulla rete edge di Cloudflare
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    Integrate webhooks with Supabase
+    Integra i webhook con Supabase
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    Deploy webhooks as Netlify serverless functions
+    Distribuisci i webhook come funzioni serverless Netlify
   </Card>
 </CardGroup>
 
 <Info>
-Each platform guide includes environment setup, signature verification, and deployment steps specific to that provider.
+Ogni guida per piattaforma include la configurazione dell'ambiente, la verifica della firma e i passaggi di distribuzione specifici per quel provider.
 </Info>
 
-## Related API Reference
+## Riferimenti API correlati
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  API reference for creating and configuring webhook endpoints programmatically
+  Riferimento API per creare e configurare gli endpoint webhook tramite codice
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
-  API reference for retrieving and managing your webhook endpoints
+  Riferimento API per recuperare e gestire gli endpoint webhook
 </Card>
 </CardGroup>

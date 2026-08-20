@@ -80,7 +80,7 @@ Rättigheter drivs av samma betalnings- och prenumerationshändelser som du reda
 
 <Steps>
 <Step title="Created">
-En grant skapas när en betalning slutförs eller en prenumeration blir aktiv. Feature flags går direkt till `Delivered`. Licensnycklar går också direkt till `Delivered` när entitlement använder `fulfillment_mode: auto` (standardvärdet); med `fulfillment_mode: manual` skapas granten i `Pending` utan nyckel tills du anger en via [Slutför grant för licensnyckel](/api-reference/entitlements/fulfill-license-key). Alla andra integrationer börjar i `Pending`. OAuth-baserade integrationer (Discord, GitHub, Notion) innehåller en `oauth_url` som kunden måste besöka för att slutföra sitt samtycke. Plattformdirekta integrationer (Telegram, Framer, Digital Files) befinner sig endast kortvarigt i `Pending` medan leveransen provisioneras och övergår sedan till `Delivered`.
+En grant skapas när en betalning slutförs eller en prenumeration blir aktiv. Funktionsflaggor går direkt till `Delivered`. Licensnycklar går också direkt till `Delivered` när entitlement använder `fulfillment_mode: auto` (standardvärdet); med `fulfillment_mode: manual` skapas grant i `Pending` utan nyckel tills du tillhandahåller en via [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key). Alla andra integrationer startar i `Pending`. OAuth-baserade integrationer (Discord, GitHub, Notion) visar en `oauth_url` som kunden måste besöka för att slutföra sitt samtycke; fältet är `null` för en nyskapad grant och fylls i när kunden startar acceptflödet från sitt leveransmejl eller sin kundportal. Plattformdirekta integrationer (Telegram, Framer, Digital Files) befinner sig endast kortvarigt i `Pending` medan leveransen konfigureras och övergår sedan till `Delivered`.
 </Step>
 
 <Step title="Delivered">
@@ -100,18 +100,20 @@ När åtkomsten återkallas (prenumerationen avslutas, en återbetalning utfärd
 
 | Händelse | Beteende |
 |---|---|
-| `payment.succeeded` (engångsbetalning) | Utfärda en rättighet per bifogad rättighet. |
-| `payment.succeeded` (prenumerationsbunden betalning) | No-op. Rättigheter drivs av prenumerationshändelsen nedan. |
-| `subscription.active` | Utfärda rättigheter för alla bifogade rättigheter som inte redan har en. Återgiv tidigare återkallade rättigheter för samma prenumeration. |
-| `subscription.renewed` | No-op. Befintliga rättigheter kvarstår vid förnyelser. |
-| `subscription.on_hold` | Återkalla alla levererade och väntande rättigheter. `revocation_reason: subscription_on_hold`. |
+| `payment.succeeded` (engångsbetalning) | Utfärda en grant per kopplad entitlement. |
+| `payment.succeeded` (prenumerationskopplad betalning) | No-op. Grants styrs av prenumerationshändelsen nedan. |
+| `subscription.active` | Utfärda grants för alla kopplade entitlements som ännu inte har någon. Utfärda på nytt alla grants som tidigare återkallats för samma prenumeration. |
+| `subscription.renewed` | No-op. Befintliga grants kvarstår vid förnyelser. |
+| `subscription.on_hold` | Återkalla alla levererade och väntande grants. `revocation_reason: subscription_on_hold`. |
+| `subscription.paused` | Återkalla alla levererade och väntande grants. `revocation_reason: SubscriptionPaused`. |
+| `subscription.unpaused` | Utfärda på nytt alla grants som tidigare återkallats för samma prenumeration, exakt på samma sätt som `subscription.active` gör. |
 | `subscription.cancelled` | Återkalla alla. `revocation_reason: subscription_cancelled`. |
 | `subscription.expired` | Återkalla alla. `revocation_reason: subscription_expired`. |
-| `subscription.plan_changed` | Återkalla alla nuvarande rättigheter, sedan utfärda rättigheter för den nya planens rättigheter. `revocation_reason: plan_changed`. |
-| `refund.succeeded` (engångsbetalning) | Återkalla rättigheter för den betalningen. `revocation_reason: refund`. |
-| Manuell API-återkallelse | Återkalla med `revocation_reason: manual`. Manuella återkallanden återgrantas inte automatiskt vid prenumerationsförnyelse. |
-| Licensnyckel inaktiverad | För licensnyckelrättigheter, inaktiverar den underliggande nyckeln återkallar rättigheten med `revocation_reason: license_key_disabled`. Rättigheten återaktiveras automatiskt om nyckeln aktiveras igen. |
-| Plattform drift upptäckt | Om plattformens sida av en integration går ur synk (en Discord-roll borttagen manuellt, GitHub-appen förlorar förrådsåtkomst, eller en avstämningspass upptäcker ett saknat mål), återkallas rättigheten med `revocation_reason: platform_external`. Inte automatiskt återgrantas vid prenumerationsförnyelse förrän det underliggande plattformsproblemet är löst. |
+| `subscription.plan_changed` | Återkalla alla aktuella grants och utfärda sedan grants för den nya planens entitlements. `revocation_reason: plan_changed`. |
+| `refund.succeeded` (engångsbetalning) | Återkalla grants för betalningen. `revocation_reason: refund`. |
+| Manuell API-återkallelse | Återkalla med `revocation_reason: manual`. Manuella återkallelser utfärdas inte automatiskt på nytt vid förnyelse av prenumerationen. |
+| Licensnyckel inaktiverad | För licensnyckelgrants återkallas grant när den underliggande nyckeln inaktiveras, med `revocation_reason: license_key_disabled`. Grant aktiveras automatiskt igen om nyckeln återaktiveras. |
+| Plattformavvikelse upptäckt | Om plattformssidan av en integration inte längre är synkroniserad (en Discord-roll tas bort manuellt, GitHub App förlorar åtkomst till ett repository eller en avstämning upptäcker ett saknat mål) återkallas grant med `revocation_reason: platform_external`. Den utfärdas inte automatiskt på nytt vid förnyelse av prenumerationen förrän det underliggande plattformsproblemet har lösts. |
 
 <Note>
 Prenumerationsdrivna rättigheter är idempotenta per `(entitlement, customer, subscription)`; förnyelser och återaktiveringar skapar inte dubbletträttigheter. Engångsrättigheter är idempotenta per `(entitlement, customer, payment)`.
@@ -194,7 +196,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -206,7 +208,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -217,7 +219,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -274,8 +276,8 @@ Se hela payload-schemat, exempelhändelser och `revocation_reason` referens.
 
 ## Bästa praxis
 
-- **Använd en rättighet per leveranskanal.** Dela inte en enda Discord-rättighet över produkter med olika rollavsikter; skapa en per roll för ren återkallelse.
-- **Testa i testläge först.** Skapa rättigheten, bifoga den till en testprodukt, genomför ett köp och se rättigheten övergå genom `pending → delivered`. Bekräfta att avbokning av testprenumerationen återkallar rättigheten.
-- **Lyssna på `entitlement_grant.delivered`, inte `payment.succeeded`.** En betalning kan lyckas innan fullföljandet slutförs (särskilt för OAuth-flöden). Vänta på leveranshändelsen innan du låser upp beroende funktioner i dina egna system.
-- **Behandla `entitlement_grant.failed` som åtgärdbar.** En misslyckad rättighet betyder att en kund betalade men inte fick åtkomst. Visa dessa för ditt supportteam eller utlöse en ny beviljning.
-- **Map `revocation_reason` till dina retentionflöden.** En `subscription_on_hold` återkallelse är återvinningsbar (kunden kan uppdatera sitt kort). En `manual` återkallelse är avsiktlig. Behandla dem olika i kundkommunikation.
+- **Använd en entitlement per leveranskanal.** Dela inte en enskild Discord-entitlement mellan produkter med olika rollavsikter; skapa en per roll för att förenkla återkallelse.
+- **Testa i testläge först.** Skapa entitlement, koppla den till en testprodukt, genomför en checkout och följ grantens övergång genom `Pending → Delivered`. Bekräfta att en annullerad testprenumeration återkallar grant.
+- **Lyssna på `entitlement_grant.delivered`, inte `payment.succeeded`.** En betalning kan lyckas innan leveransen är klar (särskilt för OAuth-flöden). Vänta på den levererade händelsen innan du låser upp beroende funktioner i dina egna system.
+- **Behandla `entitlement_grant.failed` som åtgärdskrävande.** En misslyckad grant innebär att en kund har betalat men inte fått åtkomst. Visa dessa för ditt supportteam eller utlös en ny grant.
+- **Koppla `revocation_reason` till dina retentionflöden.** En `subscription_on_hold`-återkallelse kan återställas (kunden kan uppdatera sitt kort). En `manual`-återkallelse är avsiktlig. Hantera dem olika i kundkommunikationen.

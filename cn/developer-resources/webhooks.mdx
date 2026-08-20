@@ -350,20 +350,45 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
   我们遵循 Standard Webhooks specification。您可以使用其 libraries 验证 signatures：[https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries)。有关 event payload formats，请参阅 [Webhook Payload](/developer-resources/webhooks/intents/payment)。
 </Info>
 
-### 响应 Webhooks
+### 源 IP 地址
 
-* 您的 webhook handler 必须返回 `2xx status code`，以确认收到 event。
-* 任何其他 response 都会被视为失败，并且 webhook 将被重试。
+Signature verification 是支持的 webhook 身份验证方式。它可以证明请求使用了您的 webhook secret 签名，而网络层检查无法做到这一点。
+
+Webhook 交付来自属于我们交付基础设施的源 IP 地址池。该地址池会不时变化，因此应将这些地址视为运营细节，而不是集成的固定属性。
+
+<Warning>
+不要将源 IP allowlist 用作身份验证机制。allowlist 只能表明请求的来源，不能证明请求真实或未被修改 — 请按照 [Verifying Signatures](#verifying-signatures) 中的说明，在每个请求上验证 `webhook-signature` header。
+</Warning>
+
+如果您的基础设施位于要求显式 allowlist 的防火墙之后，请注意以下事项：
+
+- **不要永久硬编码地址。** 地址范围会随着时间推移不断添加和弃用，过时的规则会悄无声息地阻止交付。
+- **请求当前地址范围**：在锁定防火墙之前，请通过 [support@dodopayments.com](mailto:support@dodopayments.com) 获取当前地址范围，确保使用的是最新列表。
+- **留意变更通知。** 交付地址发生变化时，我们会通过电子邮件通知受影响的商户 — 请在指定日期前应用这些更新，以避免交付丢失。
+- **无论添加了哪些网络规则，都要保持 Signature verification 启用。**
+
+<Tip>
+在 serverless 和托管主机平台上，入站 IP 过滤通常不可用，或难以维护。在这些环境中，Signature verification 是正确的控制措施，无需 allowlist。
+</Tip>
+
+<Info>
+被阻止的交付会被视为与其他失败相同，并按照 [Automatic Retries](#automatic-retries) 中所述的计划进行重试。如果防火墙规则导致交付失败，可以在修复规则后重新发送 — 请参阅 [Replaying and Recovering Messages](#replaying-and-recovering-messages)。
+</Info>
+
+### 响应 Webhook
+
+* 您的 webhook handler 必须返回 `2xx status code`，以确认已收到事件。
+* 任何其他响应都会被视为失败，webhook 将被重试。
 
 ### 最佳实践
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  始终为 webhook endpoints 使用 HTTPS URLs。HTTP endpoints 容易受到中间人攻击，并会暴露 webhook data。
+  始终为 webhook endpoint 使用 HTTPS URL。HTTP endpoint 容易受到中间人攻击，并会暴露您的 webhook 数据。
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  收到 webhook 后立即返回 `200` status code。异步处理 event，以避免超时。
+  收到 webhook 后立即返回 `200` status code。请异步处理事件，以避免超时。
   
 
   ```javascript
@@ -379,19 +404,19 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  使用 `webhook-id` header 实现幂等性，从而安全地多次处理同一个 event 且不产生副作用。
+  使用 `webhook-id` header 实现幂等性，从而安全地多次处理同一事件而不会产生副作用。
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  使用 environment variables 或 secrets manager 安全地存储 webhook secret。切勿将 secrets 提交到 version control。
+  使用 environment variables 或 secrets manager 安全地存储 webhook secret。切勿将 secret 提交到版本控制系统。
 </Accordion>
 </AccordionGroup>
 
-## Webhook Payload Structure
+## Webhook Payload 结构
 
-了解 webhook payload structure 有助于正确解析和处理 events。
+了解 webhook payload 结构有助于您正确解析和处理事件。
 
-### Request Format
+### Request 格式
 
 ```http
 POST /your-webhook-url
@@ -401,7 +426,7 @@ Content-Type: application/json
 ### Headers
 
 <ParamField header="webhook-id" type="string" required>
-此 webhook event 的唯一标识符。使用它进行幂等性检查。
+此 webhook 事件的唯一标识符。使用它执行幂等性检查。
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
@@ -419,26 +444,26 @@ Content-Type: application/json
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-触发此 webhook 的 event type（例如 `payment.succeeded`、`subscription.active`）。
+触发此 webhook 的事件类型（例如 `payment.succeeded`、`subscription.active`）。
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-Event 发生时间的 ISO 8601 格式 timestamp。
+事件发生时间的 ISO 8601 格式 timestamp。
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-包含 event 详细信息的 event-specific payload。
+包含事件详细信息的特定于事件的 payload。
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
-  Resource 类型，可能是：`Payment`、`Subscription`、`Refund`、`Dispute`、`LicenseKey`、`CreditLedgerEntry`、`CreditBalanceLow`、`AbandonedCheckout`、`DunningAttempt`、`EntitlementGrant` 或 `Payout`。
+  资源类型。可选值包括：`Payment`、`Subscription`、`Refund`、`Dispute`、`LicenseKey`、`CreditLedgerEntry`、`CreditBalanceLow`、`AbandonedCheckout`、`DunningAttempt`、`EntitlementGrant` 或 `Payout`。
   </ResponseField>
   
-  Additional fields 会因 event type 而异。完整 schemas 请参阅 event-specific documentation。
+  其他字段因事件类型而异。请参阅特定于事件的文档以获取完整 schema。
 </Expandable>
 </ResponseField>
 
-### 示例 Payload
+### Payload 示例
 
 ```json
 {
@@ -454,19 +479,19 @@ Event 发生时间的 ISO 8601 格式 timestamp。
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    浏览所有可用的 webhook event types
+    浏览所有可用的 webhook 事件类型
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    查看每个 event 的详细 payload schemas
+    查看每个事件的详细 payload schema
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    响应 `payment.failed` 并恢复 declined payments
+    响应 `payment.failed` 并恢复被拒付的款项
   </Card>
 </CardGroup>
 
-## 测试 Webhooks
+## 测试 Webhook
 
-您可以直接从 Dodo Payments dashboard 测试 webhook integration，确保 endpoint 在上线前正常工作。
+您可以直接从 Dodo Payments dashboard 测试 webhook 集成，以确保 endpoint 在上线前正常工作。
 
 <Steps>
 <Step title="Navigate to Webhooks">
@@ -474,39 +499,39 @@ Event 发生时间的 ISO 8601 格式 timestamp。
 </Step>
 
 <Step title="Select Your Endpoint">
-    点击 webhook endpoint 以访问其详情页。
+    点击 webhook endpoint 以访问其详情页面。
 </Step>
 
 <Step title="Open Testing Tab">
-    点击 **Testing** 标签页，访问 webhook testing interface。
+    点击 **Testing** tab 以访问 webhook 测试界面。
 </Step>
 </Steps>
 
-### 发送示例 Event
+### 发送示例事件
 
-**Testing** 标签页会向此 endpoint 发送示例 payload，方便您验证 receiver。
+**Testing** tab 会向此 endpoint 发送示例 payload，以便您验证 receiver。
 
 <Steps>
 <Step title="Select Event Type">
-    使用 **Select an event type** 选择要测试的 event，例如 `payment.succeeded` 或 `payment.failed`。
+    使用 **Select an event type** 选择要测试的事件，例如 `payment.succeeded` 或 `payment.failed`。
 </Step>
 
 <Step title="Send Example">
-    点击 **Send example**。示例 payload 会像真实 event 一样发送到 endpoint URL，并使用相同方式签名。
+    点击 **Send example**。示例 payload 会像真实事件一样发送到您的 endpoint URL，并使用相同方式签名。
     
     <Warning>
-    从 Testing 标签页发送的失败消息不会重试。请使用它验证 receiver，而不要用来测试 retry schedule。
+    从 Testing tab 发送的失败消息不会重试。请使用它验证 receiver，而不是测试重试计划。
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    该标签页会记录 **Last example sent** 的发送时间。请确认 event 已到达、signature verification 已通过，并且您返回了 `2xx` status code。
+    该 tab 会记录 **Last example sent** 的发送时间。请确认事件已到达、signature verification 已通过，并且您返回了 `2xx` status code。
 </Step>
 </Steps>
 
-### Implementation Example
+### 实现示例
 
-以下是一个完整的 Express.js implementation，展示 webhook verification 和 handling：
+下面是一个完整的 Express.js 实现，展示了 webhook verification 和处理：
 
 <CodeGroup>
 
@@ -599,190 +624,190 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-在处理 production events 前，请使用 dashboard testing interface 对 webhook handler 进行全面测试。这有助于尽早发现并修复问题。
+在处理 production events 之前，请使用 dashboard 测试界面全面测试 webhook handler。这有助于及早发现并修复问题。
 </Tip>
 
-## 使用 CLI 测试 Webhooks
+## 使用 CLI 测试 Webhook
 
-[Dodo Payments CLI](/developer-resources/sdks/cli) 提供两个命令，用于在 local development 期间测试 webhooks，无需离开 terminal。
+[Dodo Payments CLI](/developer-resources/sdks/cli) 提供两个命令，可在本地开发期间测试 webhook，无需离开 terminal。
 
-### 在本地监听 Live Webhooks
+### 在本地监听实时 Webhook
 
-实时将 test mode account 的真实 webhook events 转发到本地 development server：
+实时将 test mode account 的真实 webhook 事件转发到本地开发服务器：
 
 ```bash
 dodo wh listen
 ```
 
-CLI 会与 Dodo Payments 建立 WebSocket connection，并将每个 webhook event 转发到本地 endpoint（例如 `http://localhost:3000/webhook`），同时保留包括 signature headers 在内的所有 headers，以便进行 verification testing。
+CLI 会与 Dodo Payments 建立 WebSocket 连接，并将每个 webhook 事件转发到您的本地 endpoint（例如 `http://localhost:3000/webhook`），同时保留包括 signature headers 在内的所有 headers，以便进行验证测试。
 
 <Info>
-该 listener 仅适用于 **test mode** API keys。运行 `dodo login`，并在使用此命令前选择 Test Mode。
+listener 仅适用于 **test mode** API keys。运行 `dodo login`，并在使用此命令前选择 Test Mode。
 </Info>
 
-### 触发 Mock Webhook Events
+### 触发模拟 Webhook 事件
 
-向任意 endpoint 发送 mock webhook payloads，无需创建真实 transactions：
+向任意 endpoint 发送模拟 webhook payload，而无需创建真实交易：
 
 ```bash
 dodo wh trigger
 ```
 
-此 interactive tool 允许您选择 event type，并向 endpoint 发送逼真的 mock payload。它会循环运行，方便您在一次 session 中测试多个 events。
+此交互式工具允许您选择事件类型，并向 endpoint 发送逼真的模拟 payload。它会循环运行，因此您可以在同一会话中测试多个事件。
 
-trigger command 覆盖 Dodo Payments delivery 的全部 46 种 event types，包括 subscription、payment、refund、dispute、license key、payout、credit、abandoned checkout、dunning 和 entitlement grant 系列 — exact list 请参阅 [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events)。
+trigger command 涵盖 Dodo Payments 交付的全部 47 种事件类型，包括 subscription、payment、refund、dispute、license key、payout、credit、abandoned checkout、dunning 和 entitlement grant 系列 — 具体列表请参阅 [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events)。
 
 <Warning>
-来自 `dodo wh trigger` 的 mock webhook payloads 未签名。仅在 testing 期间，在 webhook handler 中使用 `unsafe_unwrap()`，而不是 `unwrap()`。
+来自 `dodo wh trigger` 的模拟 webhook payload 未签名。仅在测试期间，请在 webhook handler 中使用 `unsafe_unwrap()`，而不是 `unwrap()`。
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  查看完整的 CLI webhook testing documentation
+  查看完整的 CLI webhook 测试文档
 </Card>
 
-## Advanced Settings
+## 高级设置
 
-**Advanced** 标签页提供额外的 configuration options，用于精细调整 webhook endpoint behavior。
+**Advanced** tab 提供其他配置选项，用于微调 webhook endpoint 的行为。
 
 ### Rate Limiting（Throttling）
 
-控制 webhook events 发送到 endpoint 的速率，避免系统过载。
+控制 webhook 事件交付到 endpoint 的速率，防止系统过载。
 
 <Steps>
 <Step title="Open Advanced Tab">
-    在 endpoint details page 中，点击 **Advanced** 标签页。
+    在 endpoint 详情页面中，点击 **Advanced** tab。
 </Step>
 
 <Step title="Configure Rate Limit">
-    在 “Rate Limit (throttling)” 部分，点击 **Edit** 修改 rate limit settings。
+    在“Rate Limit (throttling)”部分中，点击 **Edit** 修改 rate limit 设置。
     
     <Info>
-    默认情况下，webhooks 不应用 rate limit，这意味着 events 会在发生后立即 delivery。
+    默认情况下，webhook 不应用 rate limit，这意味着事件会在发生后立即交付。
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    配置所需的 rate limit，以控制 webhook delivery frequency 并防止系统过载。
+    配置所需的 rate limit，以控制 webhook 交付频率并防止系统过载。
 </Step>
 </Steps>
 
 <Tip>
-当 webhook handler 需要时间处理 events，或您希望将多个 events 批量处理时，可以使用 rate limiting。
+当 webhook handler 需要时间处理事件，或您希望将多个事件批量处理时，可以使用 rate limiting。
 </Tip>
 
 ### 自定义 Headers
 
-向发送到 endpoint 的所有 webhook requests 添加自定义 HTTP headers。这对于 authentication、routing 或添加 metadata 很有用。
+向发送到 endpoint 的所有 webhook requests 添加自定义 HTTP headers。这对于身份验证、路由或添加 metadata 很有用。
 
 <Steps>
 <Step title="Add Headers">
-    在 “Custom Headers” 部分，为每个 custom header 输入 **Key** 和 **Value**。
+    在“Custom Headers”部分中，为每个自定义 header 输入 **Key** 和 **Value**。
 </Step>
 
 <Step title="Add Multiple Headers">
-    根据需要点击 **+** 按钮添加更多 custom headers。
+    根据需要点击 **+** 按钮添加其他自定义 headers。
 </Step>
 </Steps>
 
-您的 custom headers 会包含在发送到此 endpoint 的所有 webhook requests 中。
+您的自定义 headers 会包含在发送到此 endpoint 的所有 webhook requests 中。
 
 ### Transformations
 
-Transformations 允许您修改 webhook payload，并可选择将其重定向到其他 URL。此强大功能可以：
+Transformations 允许您修改 webhook 的 payload，并可选择将其重定向到其他 URL。此强大功能可以帮助您：
 
-- 在处理前修改 payload structure
-- 根据内容将 webhooks 路由到不同 endpoints
-- 从 payload 添加或移除 fields
-- 转换 data formats
+- 在处理前修改 payload 结构
+- 根据内容将 webhook 路由到不同 endpoint
+- 从 payload 中添加或删除字段
+- 转换数据格式
 
 <Steps>
 <Step title="Enable Transformations">
-    切换 **Enabled** 开关以启用 transformation feature。
+    切换 **Enabled** 开关以启用 transformation 功能。
 </Step>
 
 <Step title="Configure Transformation">
-    点击 **Edit transformation**，使用 JavaScript 定义 transformation rules。
+    点击 **Edit transformation**，使用 JavaScript 定义 transformation 规则。
 </Step>
 
 <Step title="Test Transformation">
-    使用 transformation test interface 验证 transformation 在上线前是否正常工作。
+    使用 transformation 测试界面验证 transformation 在上线前能够正常工作。
 </Step>
 </Steps>
 
 <Warning>
-Transformations 可能会影响 webhook delivery performance。请充分测试，并保持 transformation logic 简单高效。
+Transformations 可能影响 webhook 交付性能。请进行全面测试，并保持 transformation 逻辑简单高效。
 </Warning>
 
 <Tip>
 Transformations 特别适用于：
-- 在不同 data formats 之间转换
-- 根据特定 criteria 过滤 events
+- 在不同数据格式之间进行转换
+- 根据特定条件过滤事件
 - 向 payload 添加计算字段
-- 将 events 路由到不同 microservices
+- 将事件路由到不同的微服务
 </Tip>
 
 ## 监控 Webhook Logs
 
-**Logs** 标签页全面展示 webhook delivery status，帮助您有效监控、调试和管理 webhook events。
+**Logs** tab 提供 webhook 交付状态的全面可见性，帮助您有效监控、调试和管理 webhook 事件。
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    进入 **Developer → Webhooks**，打开 **Logs** 标签页。
+    前往 **Developer → Webhooks**，然后打开 **Logs** tab。
 </Step>
 
 <Step title="Browse Delivery History">
-    查看所有 webhook delivery attempts 的表格，其中包含 Event type、Message ID、Event ID、Sent at、Attempted at、Response code 和 Duration 列。
+    查看所有 webhook 交付尝试的表格，其中包含 Event type、Message ID、Event ID、Sent at、Attempted at、Response code 和 Duration 列。
 </Step>
 
 <Step title="Search and Filter">
-    使用搜索栏按 ID 或 event type 查找特定 messages。按 status（Succeeded、Failed、Pending 等）筛选，以专注于需要调查的 events。
+    使用搜索栏按 ID 或事件类型查找特定消息。按状态（Succeeded、Failed、Pending 等）筛选，以聚焦于需要调查的事件。
 </Step>
 
 <Step title="View Message Details">
-    点击任意 message 打开 message detail page，其中显示：
+    点击任意消息以打开消息详情页面，其中显示：
     - 完整的 webhook payload
-    - 每次 delivery attempt 及其 response code 和 duration
-    - 每次 attempt 的 timestamp
-    - endpoint 返回的任何 error messages
+    - 每次交付尝试及其 response code 和 duration
+    - 每次尝试的 timestamp
+    - endpoint 返回的任何错误消息
 
-    每次 attempt 都带有 **Replay** 操作，因此您可以在不离开页面的情况下重新驱动该条 message。
+    每次尝试都带有 **Replay** 操作，因此您无需离开页面即可重新驱动该消息。
 </Step>
 </Steps>
 
 ## Activity Monitoring
 
-进入 **Developer → Webhooks**，打开 **Activity** 标签页，查看所有 endpoints 的 delivery performance。
+前往 **Developer → Webhooks**，然后打开 **Activity** tab，查看各 endpoint 的交付性能。
 
-**Delivery activity** 会按时间绘制 attempts；根据时间窗口，分组方式为 **Attempts per 5 minutes**、**Attempts per hour** 或 **Attempts per day**。每个柱状条会按 outcome 拆分，悬停在某个分段上可查看 status、attempts 数量及其占总数的比例。在 endpoint 中，**Overview** 标签页的 **Delivery stats (last 24h)** 会汇总过去一天的相同信息。
+**Delivery activity** 按时间绘制尝试次数，并根据时间窗口分组为 **Attempts per 5 minutes**、**Attempts per hour** 或 **Attempts per day**。每个柱状条会按结果拆分，将鼠标悬停在某个部分上即可查看状态、尝试次数及其占总数的比例。在 endpoint 的 **Overview** tab 中，**Delivery stats (last 24h)** 会汇总过去一天的相同信息。
 
 <Tip>
-**Endpoints** 标签页中的 **Error rate (24h)** 列可以让您快速了解哪些 endpoints 需要关注，无需先打开它们。
+**Endpoints** tab 中的 **Error rate (24h)** 列可以让您一眼识别需要关注的 endpoint，无需先打开任何 endpoint。
 </Tip>
 
-## Replay 和恢复 Messages
+## 重新发送和恢复消息
 
-重新驱动 message 的方式取决于需要处理的数量：
+重新驱动消息的方式取决于您需要处理的消息数量：
 
-- **一条 message** — 从 **Logs** 标签页打开它，并在 attempt 上使用 **Replay** 操作。无需打开 endpoint。
-- **一系列 messages** — 打开 endpoint，因为批量模式每次只作用于一个 endpoint。
+- **一条消息** — 从 **Logs** tab 打开消息，并使用该尝试上的 **Replay** 操作。无需打开 endpoint。
+- **一批消息** — 打开 endpoint，因为批量模式一次只作用于一个 endpoint。
 
-### 批量 Replay
+### 批量重新发送
 
-从 **Developer → Webhooks** 打开 endpoint。共有三种模式，每种模式仅作用于该 endpoint。您设置的范围取决于所选模式：
+从 **Developer → Webhooks** 打开 endpoint。共有三种模式，每种模式只作用于该 endpoint。设置的范围取决于所选模式：
 
-| Mode | What it does | What you set |
+| 模式 | 功能 | 设置项 |
 |------|--------------|--------------|
-| **Recover failed messages** | Replay 此 endpoint 上所有 delivery 失败的 messages。 | 起始点：**8 hours ago**、**Yesterday**、**3 days ago**、**Last week** 或 **2 weeks ago** |
-| **Replay missing messages** | Replay 从未 dispatch 到此 endpoint 的 messages，例如 endpoint 新订阅某个 event type 后的 messages。 | 相同的起始点 |
-| **Bulk replay messages** | 根据所选 filters replay 匹配的 messages，包括已成功 delivery 的 messages。 | **Since** 和 **Until** 边界，默认为最近两周；还可选 event types、channel 或 tag |
+| **Recover failed messages** | 重新发送所有发送到此 endpoint 但失败的消息。 | 起始点：**8 hours ago**、**Yesterday**、**3 days ago**、**Last week** 或 **2 weeks ago** |
+| **Replay missing messages** | 重新发送从未分发到此 endpoint 的消息，例如将 endpoint 订阅到新的事件类型之后。 | 相同的起始点 |
+| **Bulk replay messages** | 重新发送符合所选筛选条件的消息，包括已经成功交付的消息。 | **Since** 和 **Until** 边界，默认为过去两周；还可选 event types、channel 或 tag |
 
 <Steps>
 <Step title="Open More Actions">
-    在 endpoint 中打开 **More actions**，选择上述三种模式之一。
+    在 endpoint 上打开 **More actions**，然后选择上述三种模式之一。
 </Step>
 
 <Step title="Set the Range">
-    按照表格中的说明，填写该模式要求的范围。
+    按照表格中的说明，填写该模式所要求的范围。
 </Step>
 
 <Step title="Start the Run">
@@ -790,23 +815,23 @@ Transformations 特别适用于：
 </Step>
 </Steps>
 
-每次运行都会显示在 endpoint 的 **Overview** 标签页中的 **Replay history** 下，其中包含模式、时间范围、status 以及重新发送的 messages 数量。
+每次运行都会显示在 endpoint **Overview** tab 下的 **Replay history** 中，并包含其模式、时间范围、状态以及重新发送的消息数量。
 
 ## Email Alerts
 
-当发送到某个 endpoint 的 webhook deliveries 失败时接收 email notification，以便在问题形成积压之前及时处理。
+当向某个 endpoint 的 webhook 交付失败时接收电子邮件通知，以便在问题形成积压之前及时处理。
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  进入 **Developer → Webhooks**，打开 **Settings** 标签页。
+  前往 **Developer → Webhooks**，然后打开 **Settings** tab。
 </Step>
 
 <Step title="Find Email Alerting">
-  找到 **Email alerting** card。
+  找到 **Email alerting** 卡片。
 </Step>
 
 <Step title="Configure Email Addresses">
-  输入应接收 alerts 的 addresses。多个 addresses 请用逗号分隔；留空则关闭 alerts。
+  输入应接收提醒的地址。多个地址之间使用逗号分隔；留空则关闭提醒。
 </Step>
 
 <Step title="Save">
@@ -815,30 +840,30 @@ Transformations 特别适用于：
 </Steps>
 
 <Tip>
-启用 email alerts，以便及早发现 webhook delivery problems，并保持可靠的 integrations。
+启用 email alerts，以便及早发现 webhook 交付问题并保持集成可靠运行。
 </Tip>
 
 ## 部署到 Cloud Platforms
 
-准备将 webhook handler 部署到 production？我们提供特定于平台的 guides，帮助您按照各平台的 best practices，将 webhooks 部署到常用 cloud providers。
+准备将 webhook handler 部署到 production？我们提供特定于平台的指南，帮助您按照各平台的最佳实践，将 webhook 部署到常用 cloud providers。
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    使用 serverless functions 将 webhooks 部署到 Vercel
+    使用 serverless functions 将 webhook 部署到 Vercel
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    在 Cloudflare 的 edge network 上运行 webhooks
+    在 Cloudflare 的 edge network 上运行 webhook
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    将 webhooks 与 Supabase 集成
+    将 webhook 与 Supabase 集成
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    将 webhooks 部署为 Netlify serverless functions
+    将 webhook 作为 Netlify serverless functions 部署
   </Card>
 </CardGroup>
 
 <Info>
-每个平台 guide 都包含特定于该 provider 的 environment setup、signature verification 和 deployment steps。
+每个平台指南都包含特定于该 provider 的环境设置、signature verification 和部署步骤。
 </Info>
 
 ## 相关 API Reference

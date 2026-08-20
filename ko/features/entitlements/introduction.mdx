@@ -79,7 +79,7 @@ Dodo Payments는 각 entitlement를 전용 통합을 통해 제공합니다. 판
 
 <Steps>
 <Step title="Created">
-grant는 결제가 완료되거나 subscription이 활성화될 때 생성됩니다. Feature flags는 바로 `Delivered`로 전환됩니다. entitlement가 `fulfillment_mode: auto`(기본값)을 사용하는 경우 License keys도 바로 `Delivered`로 전환됩니다. `fulfillment_mode: manual`에서는 키를 제공할 때까지 grant가 키 없이 `Pending`에서 생성됩니다. 키는 [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key)를 통해 제공할 수 있습니다. 그 외 모든 integration은 `Pending`에서 시작합니다. OAuth 기반 integration(Discord, GitHub, Notion)에는 고객이 consent를 완료하기 위해 방문해야 하는 `oauth_url`가 포함됩니다. Platform-direct integration(Telegram, Framer, Digital Files)은 delivery가 provision되는 동안 잠시 `Pending`에 머문 후 `Delivered`로 전환됩니다.
+결제 완료 또는 subscription 활성화 시 grant가 생성됩니다. Feature flags는 `Delivered`로 바로 이동합니다. entitlement가 `fulfillment_mode: auto`(기본값)를 사용하는 경우 License keys도 `Delivered`로 바로 이동합니다. `fulfillment_mode: manual`에서는 grant가 `Pending`에서 생성되며, [Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key)를 통해 키를 제공할 때까지 키가 없습니다. 다른 모든 integration은 `Pending`에서 시작합니다. OAuth 기반 integration(Discord, GitHub, Notion)은 customer가 방문하여 동의를 완료해야 하는 `oauth_url`를 노출합니다. 새로 생성된 grant에서는 이 필드가 `null`이며, customer가 delivery email 또는 customer portal에서 accept flow를 시작하면 값이 채워집니다. Platform-direct integration(Telegram, Framer, Digital Files)은 delivery가 provision되는 짧은 동안만 `Pending`에 머문 후 `Delivered`로 전환됩니다.
 </Step>
 
 <Step title="Delivered">
@@ -97,20 +97,22 @@ integration 호출에서 재시도할 수 없는 오류가 반환되면(철회�
 
 ### 이벤트별 승인 동작
 
-| 이벤트 | 동작 |
-| --- | --- |
-| `payment.succeeded` (일회성 결제) | 첨부된 자격에 대해 하나의 승인을 발급합니다. |
-| `payment.succeeded` (구독 연결된 결제) | 작업 안 함. 승인은 아래의 구독 이벤트에 의해 추진됩니다. |
-| `subscription.active` | 아직 없는 첨부된 자격에 대한 승인을 발급합니다. 동일한 구독에 대해 이전에 취소된 승인도 재발급합니다. |
-| `subscription.renewed` | 작업 안 함. 기존 승인은 갱신을 통해 지속됩니다. |
-| `subscription.on_hold` | 모든 제공 및 대기 중인 승인을 취소합니다. `revocation_reason: subscription_on_hold`. |
-| `subscription.cancelled` | 모두 취소합니다. `revocation_reason: subscription_cancelled`. |
-| `subscription.expired` | 모두 취소합니다. `revocation_reason: subscription_expired`. |
-| `subscription.plan_changed` | 모든 현재 승인을 취소한 후 새로운 계획의 자격에 대한 승인을 발급합니다. `revocation_reason: plan_changed`. |
-| `refund.succeeded` (일회성 결제) | 해당 결제에 대한 승인을 취소합니다. `revocation_reason: refund`. |
-| 수동 API 취소 | `revocation_reason: manual`로 취소합니다. 수동 취소는 구독 갱신 시 자동 재발급되지 않습니다. |
-| 라이선스 키 비활성화 | 라이선스 키 승인의 경우, 기본 키 비활성화는 `revocation_reason: license_key_disabled`로 승인을 취소합니다. 키가 재활성화되면 승인은 자동으로 재활성화됩니다. |
-| 플랫폼 드리프트 감지 | 통합의 플랫폼 측면이 동기화에서 이탈한 경우(수동으로 제거된 Discord 역할, GitHub 앱이 저장소 접근을 잃음, 또는 대조 패스가 누락된 대상을 감지함), 승인은 `revocation_reason: platform_external`로 취소됩니다. 플랫폼 문제가 해결되지 않은 상태에서 구독 갱신 시 자동 재발급되지 않습니다. |
+| Event | Behavior |
+|---|---|
+| `payment.succeeded` (one-time payment) | 연결된 각 entitlement에 대해 grant 하나를 발급합니다. |
+| `payment.succeeded` (subscription-linked payment) | No-op입니다. grant는 아래 subscription event에 의해 관리됩니다. |
+| `subscription.active` | 연결된 entitlement 중 아직 grant가 없는 항목에 대해 grant를 발급합니다. 동일한 subscription에 대해 이전에 revoke된 grant는 다시 발급합니다. |
+| `subscription.renewed` | No-op입니다. 기존 grant는 renewal 동안 유지됩니다. |
+| `subscription.on_hold` | delivered 및 pending 상태의 모든 grant를 revoke합니다. `revocation_reason: subscription_on_hold`. |
+| `subscription.paused` | delivered 및 pending 상태의 모든 grant를 revoke합니다. `revocation_reason: SubscriptionPaused`. |
+| `subscription.unpaused` | `subscription.active`와 동일하게, 동일한 subscription에 대해 이전에 revoke된 grant를 다시 발급합니다. |
+| `subscription.cancelled` | 모두 revoke합니다. `revocation_reason: subscription_cancelled`. |
+| `subscription.expired` | 모두 revoke합니다. `revocation_reason: subscription_expired`. |
+| `subscription.plan_changed` | 현재 grant를 모두 revoke한 후 새 plan의 entitlement에 대한 grant를 발급합니다. `revocation_reason: plan_changed`. |
+| `refund.succeeded` (one-time payment) | 해당 payment의 grant를 revoke합니다. `revocation_reason: refund`. |
+| Manual API revoke | `revocation_reason: manual`를 사용하여 revoke합니다. Manual revoke는 subscription renewal 시 자동으로 다시 발급되지 않습니다. |
+| License key disabled | License-key grant의 경우, 기반 key를 비활성화하면 `revocation_reason: license_key_disabled`와 함께 grant가 revoke됩니다. key를 다시 활성화하면 grant는 자동으로 재활성화됩니다. |
+| Platform drift detected | integration의 platform 측 상태가 동기화 상태에서 벗어나면(Discord role이 수동으로 제거되거나, GitHub App이 repository access를 잃거나, reconciliation pass에서 target 누락을 감지하는 경우) `revocation_reason: platform_external`와 함께 grant가 revoke됩니다. 기반 platform 문제가 해결될 때까지 subscription renewal 시 자동으로 다시 발급되지 않습니다. |
 
 <Note>
 구독 기반 승인은 `(entitlement, customer, subscription)`마다 비절개적입니다; 갱신 및 재활성화로 인해 중복 승인이 생성되지 않습니다. 일회성 승인은 `(entitlement, customer, payment)`마다 비절개적입니다.
@@ -193,7 +195,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -205,7 +207,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -216,7 +218,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -273,8 +275,8 @@ Dodo Payments는 승인 생명주기에 대해 네 개의 웹후크 이벤트를
 
 ## 모범 사례
 
-- **전달 채널별 자격을 사용하세요.** 동일한 Discord 자격을 서로 다른 역할의 의도를 가진 제품에 공유하지 마세요; 역할별로 하나씩 만들어 철회를 깔끔하게 하세요.
-- **먼저 테스트 모드에서 테스트하세요.** 자격을 만들고, 테스트 제품에 첨부하고, 체크아웃을 실행하여 승인이 `pending → delivered`로 전환되는 것을 확인하세요. 테스트 구독 취소가 승인을 철회하는지 확인하세요.
-- **`entitlement_grant.delivered`, 아닌 `payment.succeeded`를 듣습니다.** 결제는 이행이 완료되기 전에 성공할 수 있습니다(OAuth 흐름의 경우 특히). 전달된 이벤트 전에 종속 기능을 자체 시스템에서 잠금 해제하지 마세요.
-- **`entitlement_grant.failed`를 실행 가능하게 취급합니다.** 실패한 승인은 고객이 비용을 지불했으나 접근을 받지 못했다는 것을 의미합니다. 이를 지원 팀에 알리거나 재승인을 트리거하세요.
-- **`revocation_reason`를 유지 흐름에 매핑합니다.** `subscription_on_hold` 철회는 복구 가능합니다(고객이 카드를 업데이트할 수 있습니다). `manual` 철회는 의도적입니다. 이들을 고객 커뮤니케이션에서 다르게 처리하세요.
+- **각 delivery channel마다 entitlement 하나를 사용하세요.** 서로 다른 role 의도를 가진 product 간에 하나의 Discord entitlement를 공유하지 마세요. 깔끔한 revoke를 위해 role마다 하나씩 생성하세요.
+- **먼저 test mode에서 테스트하세요.** entitlement를 생성하고, test product에 연결한 다음 checkout을 실행하여 grant가 `Pending → Delivered`를 거쳐 전환되는 과정을 확인하세요. test subscription을 취소하면 grant가 revoke되는지 확인하세요.
+- **`entitlement_grant.delivered`를 수신하고 `payment.succeeded`는 수신하지 마세요.** 특히 OAuth flow에서는 fulfilment가 완료되기 전에 payment가 성공할 수 있습니다. 자체 시스템에서 종속 기능을 unlock하기 전에 delivered event를 기다리세요.
+- **`entitlement_grant.failed`를 조치가 필요한 상태로 처리하세요.** failed grant는 customer가 비용을 지불했지만 access를 받지 못했다는 의미입니다. 이를 support team에 전달하거나 regrant를 trigger하세요.
+- **`revocation_reason`를 retention flow에 매핑하세요.** `subscription_on_hold` revoke는 복구할 수 있습니다(customer가 card를 업데이트할 수 있음). `manual` revoke는 의도적인 동작입니다. customer comms에서 두 경우를 다르게 처리하세요.
