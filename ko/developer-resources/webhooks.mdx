@@ -351,20 +351,45 @@ SDK를 사용하지 않는 경우 Standard Webhooks spec에 따라 직접 signat
   Standard Webhooks specification을 따릅니다. signature verification에는 해당 library를 사용할 수 있습니다: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). event payload format은 [Webhook Payload](/developer-resources/webhooks/intents/payment)을 참조하세요.
 </Info>
 
-### Webhook 응답
+### 소스 IP 주소
 
-* webhook handler는 event 수신을 확인하기 위해 `2xx status code`를 반환해야 합니다.
-* 그 외의 모든 response는 failure로 처리되며 webhook은 retry됩니다.
+웹훅을 인증하는 데 지원되는 방법은 서명 검증입니다. 이를 통해 요청이 웹훅 시크릿으로 서명되었음을 증명할 수 있지만, 네트워크 수준의 확인만으로는 이를 검증할 수 없습니다.
 
-### Best Practices
+웹훅 전송은 전송 인프라에 속한 소스 IP 주소 풀에서 이루어집니다. 이 풀은 수시로 변경되므로 해당 주소를 통합의 고정된 속성이 아닌 운영상의 세부 정보로 취급하세요.
+
+<Warning>
+소스 IP allowlist를 인증 메커니즘으로 사용하지 마세요. Allowlist는 요청이 어디에서 왔는지만 보여 줄 뿐, 해당 요청이 진짜이거나 변조되지 않았음을 보여 주지는 않습니다. [서명 검증](#verifying-signatures)에 설명된 대로 모든 요청에서 `webhook-signature` 헤더를 검증하세요.
+</Warning>
+
+인프라가 명시적인 allowlist를 요구하는 방화벽 뒤에 있는 경우 다음 사항에 유의하세요:
+
+- **주소를 영구적으로 하드코딩하지 마세요.** 범위는 시간이 지나면서 추가되고 폐기되며, 오래된 규칙은 전송을 조용히 차단합니다.
+- 방화벽을 제한하기 전에 [support@dodopayments.com](mailto:support@dodopayments.com)에서 **현재 범위를 요청**하여 최신 목록을 사용하세요.
+- **변경 알림을 확인하세요.** 전송 주소가 변경되면 영향을 받는 merchant에게 이메일로 알립니다. 전송이 누락되지 않도록 지정된 날짜 전에 해당 업데이트를 적용하세요.
+- 추가하는 네트워크 규칙과 관계없이 **서명 검증을 활성화된 상태로 유지하세요.**
+
+<Tip>
+서버리스 및 관리형 호스팅 플랫폼에서는 인바운드 IP 필터링을 사용할 수 없거나 유지 관리가 비현실적인 경우가 많습니다. 이러한 환경에서는 서명 검증이 올바른 제어 수단이며 allowlist가 필요하지 않습니다.
+</Tip>
+
+<Info>
+차단된 전송은 다른 모든 실패와 동일하게 처리되며 [자동 재시도](#automatic-retries)에 설명된 일정에 따라 재시도됩니다. 방화벽 규칙으로 인해 전송이 실패한 경우 규칙을 수정한 후 다시 전송할 수 있습니다. 자세한 내용은 [메시지 재생 및 복구](#replaying-and-recovering-messages)를 참조하세요.
+</Info>
+
+### 웹훅에 응답하기
+
+* 웹훅 핸들러는 이벤트 수신을 확인하기 위해 `2xx status code`를 반환해야 합니다.
+* 다른 응답은 모두 실패로 처리되며 웹훅이 재시도됩니다.
+
+### 모범 사례
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  webhook endpoint에는 항상 HTTPS URL을 사용하세요. HTTP endpoint는 man-in-the-middle attack에 취약하며 webhook data를 노출합니다.
+  웹훅 엔드포인트에는 항상 HTTPS URL을 사용하세요. HTTP 엔드포인트는 중간자 공격에 취약하며 웹훅 데이터를 노출합니다.
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  webhook을 수신하는 즉시 `200` status code를 반환하세요. timeout을 방지하려면 event를 비동기적으로 처리합니다.
+  웹훅을 수신하는 즉시 `200` 상태 코드를 반환하세요. 시간 초과를 방지하려면 이벤트를 비동기적으로 처리하세요.
   
 
   ```javascript
@@ -380,66 +405,66 @@ SDK를 사용하지 않는 경우 Standard Webhooks spec에 따라 직접 signat
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  `webhook-id` header를 사용하여 idempotency를 구현하면 동일한 event를 여러 번 side effect 없이 안전하게 처리할 수 있습니다.
+  `webhook-id` 헤더를 사용하여 멱등성을 구현하면 동일한 이벤트가 여러 번 처리되어도 부작용 없이 안전하게 처리할 수 있습니다.
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  environment variable 또는 secrets manager를 사용하여 webhook secret을 안전하게 저장하세요. secret을 version control에 절대 commit하지 마세요.
+  환경 변수 또는 시크릿 관리자를 사용하여 웹훅 시크릿을 안전하게 저장하세요. 시크릿을 버전 관리 시스템에 절대 커밋하지 마세요.
 </Accordion>
 </AccordionGroup>
 
-## Webhook Payload Structure
+## 웹훅 페이로드 구조
 
-webhook payload structure를 이해하면 event를 올바르게 parse하고 처리할 수 있습니다.
+웹훅 페이로드 구조를 이해하면 이벤트를 올바르게 파싱하고 처리하는 데 도움이 됩니다.
 
-### Request Format
+### 요청 형식
 
 ```http
 POST /your-webhook-url
 Content-Type: application/json
 ```
 
-### Headers
+### 헤더
 
 <ParamField header="webhook-id" type="string" required>
-이 webhook event의 고유 identifier입니다. idempotency check에 사용하세요.
+이 웹훅 이벤트의 고유 식별자입니다. 멱등성 확인에 사용하세요.
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
-webhook authenticity를 확인하기 위한 HMAC SHA256 signature입니다.
+웹훅의 진위를 검증하기 위한 HMAC SHA256 서명입니다.
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
-webhook이 전송된 시점의 Unix timestamp(초)입니다.
+웹훅이 전송된 시점의 Unix 타임스탬프(초 단위)입니다.
 </ParamField>
 
-### Request Body
+### 요청 본문
 
 <ResponseField name="business_id" type="string" required>
-Dodo Payments business identifier입니다.
+Dodo Payments 비즈니스 식별자입니다.
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-이 webhook을 트리거한 event type입니다(예: `payment.succeeded`, `subscription.active`).
+이 웹훅을 트리거한 이벤트 유형입니다(예: `payment.succeeded`, `subscription.active`).
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-event가 발생한 시점의 ISO 8601 형식 timestamp입니다.
+이벤트가 발생한 시점의 ISO 8601 형식 타임스탬프입니다.
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-event에 대한 상세 정보를 포함하는 event별 payload입니다.
+이벤트에 관한 상세 정보를 포함하는 이벤트별 페이로드입니다.
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
-  리소스 type입니다. 다음 중 하나입니다: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant` 또는 `Payout`입니다.
+  리소스 유형입니다. 다음 중 하나입니다: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant` 또는 `Payout`.
   </ResponseField>
   
-  추가 field는 event type에 따라 달라집니다. 전체 schema는 event별 documentation을 참조하세요.
+  추가 필드는 이벤트 유형에 따라 달라집니다. 전체 스키마는 이벤트별 문서를 참조하세요.
 </Expandable>
 </ResponseField>
 
-### Example Payload
+### 페이로드 예시
 
 ```json
 {
@@ -455,59 +480,59 @@ event에 대한 상세 정보를 포함하는 event별 payload입니다.
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    사용 가능한 모든 webhook event type 찾아보기
+    사용 가능한 모든 웹훅 이벤트 유형 탐색
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    각 event의 상세 payload schema 보기
+    각 이벤트의 상세 페이로드 스키마 보기
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    `payment.failed`에 대응하고 declined payment 복구하기
+    `payment.failed`에 대응하고 거부된 결제를 복구
   </Card>
 </CardGroup>
 
-## Webhook 테스트
+## 웹훅 테스트
 
-production으로 전환하기 전에 Dodo Payments dashboard에서 webhook integration을 직접 테스트하여 endpoint가 올바르게 작동하는지 확인할 수 있습니다.
+실행 환경으로 전환하기 전에 Dodo Payments 대시보드에서 직접 웹훅 통합을 테스트하여 엔드포인트가 올바르게 작동하는지 확인할 수 있습니다.
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    Dodo Payments Dashboard로 이동한 다음 **Developer → Webhooks**로 이동합니다.
+    Dodo Payments Dashboard로 이동한 후 **Developer → Webhooks**로 이동하세요.
 </Step>
 
 <Step title="Select Your Endpoint">
-    webhook endpoint를 클릭하여 details page를 엽니다.
+    웹훅 엔드포인트를 클릭하여 세부 정보 페이지에 액세스하세요.
 </Step>
 
 <Step title="Open Testing Tab">
-    **Testing** 탭을 클릭하여 webhook testing interface를 엽니다.
+    **Testing** 탭을 클릭하여 웹훅 테스트 인터페이스에 액세스하세요.
 </Step>
 </Steps>
 
-### Example Event 전송
+### 예시 이벤트 전송
 
-**Testing** 탭은 receiver를 확인할 수 있도록 이 endpoint로 sample payload를 전송합니다.
+**Testing** 탭은 수신기를 확인할 수 있도록 이 엔드포인트에 샘플 페이로드를 전송합니다.
 
 <Steps>
 <Step title="Select Event Type">
-    **Select an event type**를 사용하여 테스트할 event를 선택합니다(예: `payment.succeeded` 또는 `payment.failed`).
+    **Select an event type**를 사용하여 테스트할 이벤트를 선택하세요(예: `payment.succeeded` 또는 `payment.failed`).
 </Step>
 
 <Step title="Send Example">
-    **Send example**을 클릭합니다. sample payload는 실제 event와 동일하게 endpoint URL로 전송되며 같은 방식으로 서명됩니다.
+    **Send example**을 클릭하세요. 샘플 페이로드가 실제 이벤트와 동일한 방식으로 서명되어 엔드포인트 URL로 전송됩니다.
     
     <Warning>
-    Testing 탭에서 전송된 failed message는 retry되지 않습니다. receiver 확인에 사용하고 retry schedule 테스트에는 사용하지 마세요.
+    Testing 탭에서 전송된 실패 메시지는 재시도되지 않습니다. 재시도 일정을 테스트하는 것이 아니라 수신기를 확인하는 데 사용하세요.
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    이 탭에는 **Last example sent**가 전송된 시간이 기록됩니다. event가 도착했는지, signature verification이 통과했는지, `2xx` status code를 반환했는지 확인하세요.
+    탭에는 **Last example sent**가 전송된 시간이 기록됩니다. 이벤트가 도착했는지, 서명 검증이 통과했는지, `2xx` 상태 코드를 반환했는지 확인하세요.
 </Step>
 </Steps>
 
 ### 구현 예시
 
-다음은 webhook verification 및 handling을 보여주는 완전한 Express.js 구현입니다.
+다음은 웹훅 검증 및 처리를 보여 주는 완전한 Express.js 구현 예시입니다:
 
 <CodeGroup>
 
@@ -600,255 +625,255 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-production event를 처리하기 전에 dashboard testing interface를 사용하여 webhook handler를 충분히 테스트하세요. 이를 통해 문제를 조기에 발견하고 해결할 수 있습니다.
+프로덕션 이벤트를 처리하기 전에 대시보드 테스트 인터페이스를 사용하여 웹훅 핸들러를 철저히 테스트하세요. 이를 통해 문제를 조기에 식별하고 해결할 수 있습니다.
 </Tip>
 
-## CLI로 Webhook 테스트
+## CLI로 웹훅 테스트
 
-[Dodo Payments CLI](/developer-resources/sdks/cli)는 terminal을 벗어나지 않고 local development 중 webhook을 테스트할 수 있는 두 가지 command를 제공합니다.
+[Dodo Payments CLI](/developer-resources/sdks/cli)는 터미널을 벗어나지 않고 로컬 개발 중 웹훅을 테스트할 수 있는 두 가지 명령을 제공합니다.
 
-### 로컬에서 Live Webhook 수신
+### 로컬에서 실시간 웹훅 수신
 
-test mode account의 실제 webhook event를 local development server로 실시간 forwarding합니다.
+테스트 모드 계정의 실제 웹훅 이벤트를 로컬 개발 서버로 실시간 전달하세요:
 
 ```bash
 dodo wh listen
 ```
 
-CLI는 Dodo Payments에 WebSocket connection을 열고 모든 webhook event를 local endpoint(예: `http://localhost:3000/webhook`)로 forwarding합니다. verification 테스트에 필요한 signature header를 포함한 모든 header가 유지됩니다.
+CLI는 Dodo Payments에 WebSocket 연결을 열고 모든 웹훅 이벤트를 로컬 엔드포인트(예: `http://localhost:3000/webhook`)로 전달합니다. 검증 테스트를 위해 서명 헤더를 포함한 모든 헤더가 그대로 유지됩니다.
 
 <Info>
-listener는 **test mode** API key에서만 작동합니다. 이 command를 사용하기 전에 `dodo login`를 실행하고 Test Mode를 선택하세요.
+리스너는 **test mode** API 키에서만 작동합니다. 이 명령을 사용하기 전에 `dodo login`를 실행하고 Test Mode를 선택하세요.
 </Info>
 
-### Mock Webhook Event 트리거
+### 모의 웹훅 이벤트 트리거
 
-실제 transaction을 생성하지 않고 어떤 endpoint로든 mock webhook payload를 전송합니다.
+실제 거래를 생성하지 않고 모든 엔드포인트에 모의 웹훅 페이로드를 전송하세요:
 
 ```bash
 dodo wh trigger
 ```
 
-이 interactive tool을 사용하면 event type을 선택하여 현실적인 mock payload를 endpoint로 전송할 수 있습니다. 반복 실행되므로 한 session에서 여러 event를 테스트할 수 있습니다.
+이 대화형 도구를 사용하면 이벤트 유형을 선택하고 사실적인 모의 페이로드를 엔드포인트로 전송할 수 있습니다. 세션 하나에서 여러 이벤트를 테스트할 수 있도록 반복 실행됩니다.
 
-trigger command는 Dodo Payments가 제공하는 전체 46개 event type을 지원하며 subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning, entitlement grant family가 포함됩니다. 정확한 목록은 [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events)를 참조하세요.
+트리거 명령은 Dodo Payments가 전송하는 47가지 이벤트 유형을 모두 지원합니다. 여기에는 구독, 결제, 환불, 분쟁, 라이선스 키, 지급, 크레딧, 중단된 checkout, 독촉 및 entitlement grant 계열이 포함됩니다. 정확한 목록은 [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events)를 참조하세요.
 
 <Warning>
-`dodo wh trigger`의 mock webhook payload에는 signature가 없습니다. 테스트 중인 webhook handler에서는 `unwrap()` 대신 `unsafe_unwrap()`를 사용하세요.
+`dodo wh trigger`에서 생성된 모의 웹훅 페이로드에는 서명이 없습니다. 테스트 중에만 웹훅 핸들러에서 `unwrap()` 대신 `unsafe_unwrap()`를 사용하세요.
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  전체 CLI webhook testing documentation 보기
+  전체 CLI 웹훅 테스트 문서 보기
 </Card>
 
-## Advanced Settings
+## 고급 설정
 
-**Advanced** 탭에서는 webhook endpoint 동작을 세부 조정할 수 있는 추가 configuration option을 제공합니다.
+**Advanced** 탭에서는 웹훅 엔드포인트 동작을 세밀하게 조정할 수 있는 추가 구성 옵션을 제공합니다.
 
-### Rate Limiting (Throttling)
+### Rate Limiting(Throttling)
 
-시스템 과부하를 방지하도록 webhook event가 endpoint로 delivery되는 rate를 제어합니다.
+시스템에 과부하가 발생하지 않도록 웹훅 이벤트가 엔드포인트로 전달되는 속도를 제어하세요.
 
 <Steps>
 <Step title="Open Advanced Tab">
-    endpoint details page에서 **Advanced** 탭을 클릭합니다.
+    엔드포인트 세부 정보 페이지에서 **Advanced** 탭을 클릭하세요.
 </Step>
 
 <Step title="Configure Rate Limit">
-    "Rate Limit (throttling)" section에서 **Edit**를 클릭하여 rate limit settings를 수정합니다.
+    "Rate Limit (throttling)" 섹션에서 **Edit**를 클릭하여 rate limit 설정을 수정하세요.
     
     <Info>
-    기본적으로 webhook에는 rate limit이 적용되지 않으므로 event가 발생하는 즉시 delivery됩니다.
+    기본적으로 웹훅에는 rate limit이 적용되지 않으므로 이벤트가 발생하는 즉시 전달됩니다.
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    원하는 rate limit을 구성하여 webhook delivery frequency를 제어하고 시스템 overload를 방지합니다.
+    원하는 rate limit을 구성하여 웹훅 전달 빈도를 제어하고 시스템 과부하를 방지하세요.
 </Step>
 </Steps>
 
 <Tip>
-webhook handler가 event를 처리할 시간이 필요하거나 여러 event를 batch로 묶으려는 경우 rate limiting을 사용하세요.
+웹훅 핸들러가 이벤트를 처리할 시간을 확보해야 하거나 여러 이벤트를 함께 일괄 처리하려는 경우 rate limiting을 사용하세요.
 </Tip>
 
-### Custom Headers
+### 사용자 지정 헤더
 
-endpoint로 전송되는 모든 webhook request에 custom HTTP header를 추가합니다. authentication, routing 또는 metadata 추가에 유용합니다.
+엔드포인트로 전송되는 모든 웹훅 요청에 사용자 지정 HTTP 헤더를 추가하세요. 인증, 라우팅 또는 메타데이터 추가에 유용합니다.
 
 <Steps>
 <Step title="Add Headers">
-    "Custom Headers" section에서 각 custom header의 **Key**와 **Value**를 입력합니다.
+    "Custom Headers" 섹션에서 각 사용자 지정 헤더의 **Key**와 **Value**를 입력하세요.
 </Step>
 
 <Step title="Add Multiple Headers">
-    필요에 따라 **+** button을 클릭하여 custom header를 추가합니다.
+    필요에 따라 **+** 버튼을 클릭하여 사용자 지정 헤더를 추가하세요.
 </Step>
 </Steps>
 
-custom header는 이 endpoint로 전송되는 모든 webhook request에 포함됩니다.
+사용자 지정 헤더는 이 엔드포인트로 전송되는 모든 웹훅 요청에 포함됩니다.
 
-### Transformations
+### 변환
 
-transformation을 사용하면 webhook payload를 수정하고 다른 URL로 redirect할 수 있습니다. 이 강력한 기능으로 다음을 수행할 수 있습니다.
+변환을 사용하면 웹훅의 페이로드를 수정하고 필요한 경우 다른 URL로 리디렉션할 수 있습니다. 이 강력한 기능을 사용하면 다음 작업을 수행할 수 있습니다:
 
-- 처리 전에 payload structure 수정
-- content에 따라 webhook을 다른 endpoint로 routing
-- payload에서 field 추가 또는 제거
-- data format 변환
+- 처리 전에 페이로드 구조 수정
+- 콘텐츠에 따라 웹훅을 다른 엔드포인트로 라우팅
+- 페이로드에서 필드 추가 또는 제거
+- 데이터 형식 변환
 
 <Steps>
 <Step title="Enable Transformations">
-    **Enabled** switch를 켜서 transformation feature를 활성화합니다.
+    **Enabled** 스위치를 전환하여 변환 기능을 활성화하세요.
 </Step>
 
 <Step title="Configure Transformation">
-    **Edit transformation**을 클릭하여 JavaScript로 transformation rule을 정의합니다.
+    **Edit transformation**을 클릭하여 JavaScript로 변환 규칙을 정의하세요.
 </Step>
 
 <Step title="Test Transformation">
-    production으로 전환하기 전에 transformation test interface를 사용하여 transformation이 올바르게 작동하는지 확인합니다.
+    실행 환경으로 전환하기 전에 변환 테스트 인터페이스를 사용하여 변환이 올바르게 작동하는지 확인하세요.
 </Step>
 </Steps>
 
 <Warning>
-transformation은 webhook delivery performance에 영향을 줄 수 있습니다. 충분히 테스트하고 transformation logic을 단순하고 효율적으로 유지하세요.
+변환은 웹훅 전달 성능에 영향을 줄 수 있습니다. 충분히 테스트하고 변환 로직을 단순하고 효율적으로 유지하세요.
 </Warning>
 
 <Tip>
-transformation은 특히 다음과 같은 경우에 유용합니다.
-- 서로 다른 data format 간 변환
-- 특정 기준에 따른 event filtering
-- payload에 computed field 추가
-- event를 서로 다른 microservice로 routing
+변환은 특히 다음 작업에 유용합니다:
+- 서로 다른 데이터 형식 간 변환
+- 특정 기준에 따른 이벤트 필터링
+- 페이로드에 계산된 필드 추가
+- 이벤트를 다른 마이크로서비스로 라우팅
 </Tip>
 
-## Webhook Logs 모니터링
+## 웹훅 로그 모니터링
 
-**Logs** 탭에서는 webhook delivery status를 종합적으로 확인할 수 있어 webhook event를 효과적으로 모니터링, debug 및 관리할 수 있습니다.
+**Logs** 탭에서는 웹훅 전달 상태를 종합적으로 확인할 수 있어 웹훅 이벤트를 효과적으로 모니터링하고 디버깅하며 관리할 수 있습니다.
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    **Developer → Webhooks**로 이동하여 **Logs** 탭을 엽니다.
+    **Developer → Webhooks**로 이동하여 **Logs** 탭을 여세요.
 </Step>
 
 <Step title="Browse Delivery History">
-    Event type, Message ID, Event ID, Sent at, Attempted at, Response code, Duration column이 포함된 모든 webhook delivery attempt table을 확인합니다.
+    Event type, Message ID, Event ID, Sent at, Attempted at, Response code 및 Duration 열이 있는 모든 웹훅 전송 시도 표를 확인하세요.
 </Step>
 
 <Step title="Search and Filter">
-    search bar로 ID 또는 event type별 특정 message를 찾습니다. status(Succeeded, Failed, Pending 등)로 filter하여 조사할 event에 집중할 수 있습니다.
+    검색창을 사용하여 ID 또는 이벤트 유형으로 특정 메시지를 찾으세요. 상태(Succeeded, Failed, Pending 등)로 필터링하여 조사해야 하는 이벤트에 집중할 수 있습니다.
 </Step>
 
 <Step title="View Message Details">
-    message를 클릭하여 다음 내용을 표시하는 message detail page를 엽니다.
-    - 전체 webhook payload
-    - response code와 duration이 포함된 모든 delivery attempt
-    - 각 attempt의 timestamp
-    - endpoint에서 반환된 error message
+    메시지를 클릭하여 다음 내용을 보여 주는 메시지 세부 정보 페이지를 여세요:
+    - 전체 웹훅 페이로드
+    - 응답 코드 및 기간이 포함된 모든 전송 시도
+    - 각 시도의 타임스탬프
+    - 엔드포인트에서 반환된 오류 메시지
 
-    각 attempt에는 **Replay** action이 있으므로 page를 벗어나지 않고 해당 message만 다시 전송할 수 있습니다.
+    각 시도에는 **Replay** 작업이 있어 페이지를 벗어나지 않고 해당 메시지 하나를 다시 전송할 수 있습니다.
 </Step>
 </Steps>
 
-## Activity 모니터링
+## 활동 모니터링
 
-**Developer → Webhooks**로 이동하여 **Activity** 탭을 열면 endpoint 전체의 delivery performance를 확인할 수 있습니다.
+**Developer → Webhooks**로 이동하여 **Activity** 탭을 열면 엔드포인트 전반의 전달 성능을 확인할 수 있습니다.
 
-**Delivery activity**는 시간에 따른 attempt를 표시하며 window에 따라 **Attempts per 5 minutes**, **Attempts per hour** 또는 **Attempts per day**로 구분됩니다. 각 bar는 outcome별로 나뉘며 segment 위에 마우스를 올리면 status, attempt 수 및 전체에서 차지하는 비율이 표시됩니다. endpoint의 **Overview** 탭에 있는 **Delivery stats (last 24h)**는 지난 하루 동안의 동일한 정보를 요약합니다.
+**Delivery activity**는 시간에 따른 시도를 표시하며, 기간에 따라 **Attempts per 5 minutes**, **Attempts per hour** 또는 **Attempts per day** 단위로 그룹화됩니다. 각 막대는 결과별로 나뉘며, 세그먼트에 마우스를 올리면 상태, 시도 횟수 및 전체에서 차지하는 비율이 표시됩니다. 엔드포인트의 **Overview** 탭에 있는 **Delivery stats (last 24h)**에서는 지난 하루 동안의 동일한 정보를 요약합니다.
 
 <Tip>
-**Endpoints** 탭의 **Error rate (24h)** column을 통해 endpoint를 열기 전에도 주의가 필요한 endpoint를 한눈에 확인할 수 있습니다.
+**Endpoints** 탭의 **Error rate (24h)** 열에서는 엔드포인트를 열어 보기 전에 어떤 엔드포인트에 주의가 필요한지 한눈에 확인할 수 있습니다.
 </Tip>
 
-## Message 재생 및 복구
+## 메시지 재생 및 복구
 
-message를 다시 전송하는 방법은 필요한 message 수에 따라 다릅니다.
+메시지를 다시 전송하는 방법은 필요한 메시지 수에 따라 달라집니다:
 
-- **One message** — **Logs** 탭에서 message를 열고 attempt의 **Replay** action을 사용합니다. endpoint를 열 필요가 없습니다.
-- **A range of messages** — bulk mode는 한 번에 하나의 endpoint에만 적용되므로 endpoint를 엽니다.
+- **메시지 하나** — **Logs** 탭에서 메시지를 열고 시도 항목의 **Replay** 작업을 사용하세요. 엔드포인트를 열 필요가 없습니다.
+- **메시지 범위** — 일괄 모드는 한 번에 하나의 엔드포인트에만 적용되므로 엔드포인트를 여세요.
 
 ### 일괄 재생
 
-**Developer → Webhooks**에서 endpoint를 엽니다. 세 가지 mode를 사용할 수 있으며 각 mode는 해당 endpoint에만 적용됩니다. 설정할 range는 mode에 따라 다릅니다.
+**Developer → Webhooks**에서 엔드포인트를 여세요. 세 가지 모드를 사용할 수 있으며, 각 모드는 해당 엔드포인트에만 적용됩니다. 설정하는 범위는 모드에 따라 다릅니다:
 
-| Mode | What it does | What you set |
+| 모드 | 수행 작업 | 설정할 항목 |
 |------|--------------|--------------|
-| **Recover failed messages** | 이 endpoint에서 실패한 모든 message를 재생합니다. | 시작점: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** 또는 **2 weeks ago** |
-| **Replay missing messages** | 이 endpoint로 dispatch되지 않은 message를 재생합니다. 예를 들어 새 event type을 구독한 후 사용할 수 있습니다. | 동일한 시작점 |
-| **Bulk replay messages** | 이미 성공적으로 delivery된 message를 포함하여 선택한 filter와 일치하는 message를 재생합니다. | 기본값이 최근 2주로 설정된 **Since** 및 **Until** 범위와 선택적 event type, channel 또는 tag |
+| **Recover failed messages** | 이 엔드포인트로 전송되었으나 실패한 모든 메시지를 재생합니다. | 시작점: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** 또는 **2 weeks ago** |
+| **Replay missing messages** | 이 엔드포인트로 한 번도 전송되지 않은 메시지를 재생합니다. 예를 들어 새 이벤트 유형을 구독한 후 사용할 수 있습니다. | 동일한 시작점 |
+| **Bulk replay messages** | 이미 성공적으로 전달된 메시지를 포함하여 선택한 필터와 일치하는 메시지를 재생합니다. | 기본값이 최근 2주로 설정된 **Since** 및 **Until** 범위와 선택적 이벤트 유형, 채널 또는 태그 |
 
 <Steps>
 <Step title="Open More Actions">
-    endpoint에서 **More actions**를 열고 위 세 가지 mode 중 하나를 선택합니다.
+    엔드포인트에서 **More actions**를 열고 위의 세 가지 모드 중 하나를 선택하세요.
 </Step>
 
 <Step title="Set the Range">
-    table에 나열된 대로 선택한 mode에서 요구하는 range를 입력합니다.
+    표에 나열된 대로 해당 모드에서 요청하는 범위를 입력하세요.
 </Step>
 
 <Step title="Start the Run">
-    선택한 mode에 따라 **Recover** 또는 **Replay**를 클릭합니다.
+    선택한 모드에 따라 **Recover** 또는 **Replay**를 클릭하세요.
 </Step>
 </Steps>
 
-각 실행은 endpoint의 **Overview** 탭에 있는 **Replay history**에 표시되며 mode, time range, status 및 다시 전송된 message 수가 함께 표시됩니다.
+각 실행은 엔드포인트의 **Overview** 탭에 있는 **Replay history** 아래에 표시되며, 모드, 시간 범위, 상태 및 다시 전송된 메시지 수가 함께 표시됩니다.
 
-## Email Alerts
+## 이메일 알림
 
-endpoint로의 webhook delivery가 실패할 때 email notification을 받아 문제가 backlog로 이어지기 전에 해결할 수 있습니다.
+엔드포인트로의 웹훅 전달이 실패할 때 이메일 알림을 받아 문제가 누적되기 전에 해결하세요.
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  **Developer → Webhooks**로 이동하여 **Settings** 탭을 엽니다.
+  **Developer → Webhooks**로 이동하여 **Settings** 탭을 여세요.
 </Step>
 
 <Step title="Find Email Alerting">
-  **Email alerting** card를 찾습니다.
+  **Email alerting** 카드를 찾으세요.
 </Step>
 
 <Step title="Configure Email Addresses">
-  alert를 수신할 address를 입력합니다. 여러 address는 comma로 구분하고, alert를 끄려면 field를 비워 둡니다.
+  알림을 받을 주소를 입력하세요. 여러 주소는 쉼표로 구분하고, 알림을 끄려면 필드를 비워 두세요.
 </Step>
 
 <Step title="Save">
-  **Save**를 클릭하여 변경 사항을 적용합니다.
+  **Save**를 클릭하여 변경 사항을 적용하세요.
 </Step>
 </Steps>
 
 <Tip>
-email alert를 활성화하면 webhook delivery 문제를 조기에 파악하고 안정적인 integration을 유지할 수 있습니다.
+이메일 알림을 활성화하여 웹훅 전달 문제를 조기에 파악하고 안정적인 통합을 유지하세요.
 </Tip>
 
-## Cloud Platform에 배포
+## 클라우드 플랫폼에 배포
 
-webhook handler를 production에 배포할 준비가 되었나요? 각 platform에 맞는 best practice와 함께 인기 cloud provider에 webhook을 배포할 수 있도록 platform별 guide를 제공합니다.
+웹훅 핸들러를 프로덕션에 배포할 준비가 되셨나요? 각 플랫폼의 모범 사례와 함께 인기 클라우드 제공업체에 웹훅을 배포하는 데 도움이 되는 플랫폼별 가이드를 제공합니다.
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    Vercel에 serverless function으로 webhook 배포
+    서버리스 함수로 Vercel에 웹훅 배포
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    Cloudflare edge network에서 webhook 실행
+    Cloudflare의 엣지 네트워크에서 웹훅 실행
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    Supabase와 webhook 통합
+    Supabase와 웹훅 통합
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    Netlify serverless function으로 webhook 배포
+    Netlify 서버리스 함수로 웹훅 배포
   </Card>
 </CardGroup>
 
 <Info>
-각 platform guide에는 해당 provider에 맞는 environment setup, signature verification 및 deployment 단계가 포함되어 있습니다.
+각 플랫폼 가이드에는 해당 제공업체에 맞는 환경 설정, 서명 검증 및 배포 단계가 포함되어 있습니다.
 </Info>
 
-## 관련 API Reference
+## 관련 API 레퍼런스
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  webhook endpoint를 programmatically 생성하고 구성하기 위한 API reference
+  웹훅 엔드포인트를 프로그래밍 방식으로 생성하고 구성하기 위한 API 레퍼런스
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
-  webhook endpoint를 조회하고 관리하기 위한 API reference
+  웹훅 엔드포인트를 조회하고 관리하기 위한 API 레퍼런스
 </Card>
 </CardGroup>

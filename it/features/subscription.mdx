@@ -415,22 +415,119 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Visualizza in anteprima le modifiche al piano prima di confermarle.
 </Card>
 
-## Stati della subscription
+## Sospensione e ripresa degli abbonamenti
 
-Nel corso della sua durata, una subscription attraversa un insieme definito di stati. Questa tabella è il riferimento per ogni stato, per le cause che lo determinano e per le modalità di recupero, quando disponibili.
+La sospensione blocca un abbonamento invece di terminarlo. La fatturazione si interrompe, l'accesso viene revocato e l'abbonamento conserva il piano e la cronologia, così il cliente può riprendere esattamente da dove aveva interrotto. Usala come alternativa alla cancellazione per favorire la fidelizzazione.
 
-| Stato | Significato | Recuperabile? | Procedura di recupero / passaggio successivo |
-|--------|---------------|--------------|---------------------------|
-| `pending` | La subscription è in fase di creazione o elaborazione | — | Attendi `subscription.active` (o `subscription.failed`) |
-| `active` | La subscription è attiva e si rinnoverà automaticamente | — | Nessuna azione necessaria |
-| `on_hold` | Un pagamento di rinnovo (o un addebito per modifica del piano) non è riuscito; la subscription è sospesa | **Sì** | Aggiorna il metodo di pagamento per riattivarla — automaticamente tramite [Payment Retries](/features/recovery/payment-retries) e [Dunning](/features/recovery/subscription-dunning), oppure manualmente tramite l'[API Update Payment Method](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | La subscription è stata annullata e non verrà rinnovata | Solo nuovo acquisto | Il cliente deve avviare una nuova subscription; [Dunning](/features/recovery/subscription-dunning) può sollecitare un nuovo acquisto |
-| `failed` | La **creazione** della subscription non è riuscita (il mandato iniziale o il pagamento non è andato a buon fine) | **No — terminale** | Il cliente deve creare una nuova subscription con un metodo di pagamento funzionante |
-| `expired` | La subscription ha raggiunto la fine del suo periodo | — | Il cliente deve avviare una nuova subscription, se lo desidera |
+Apri un abbonamento attivo qualsiasi in **Sales → Subscriptions** e fai clic su **Pause subscription**. Lo stato cambia in `paused` e i rinnovi si interrompono finché l'abbonamento non viene ripreso.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Pagina dei dettagli dell'abbonamento nella dashboard con i pulsanti Update, Pause subscription e Cancel Subscription" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### Cosa succede quando sospendi un abbonamento
+
+- **I rinnovi si interrompono.** Durante la sospensione non viene generata alcuna fattura e non viene effettuato alcun tentativo di addebito per il rinnovo.
+- **L'accesso viene revocato immediatamente.** La sospensione revoca ogni [entitlement grant](/features/entitlements/introduction) già erogato o in sospeso sull'abbonamento, disabilitando le relative [license keys](/features/license-keys) e impedendo l'emissione di nuovi URL per il download di [digital product](/features/digital-product-delivery). Quando riprendi l'abbonamento, questi elementi vengono assegnati nuovamente, come avviene durante il recupero da `on_hold`.
+- **L'orologio di fatturazione si blocca.** `next_billing_date` e `expires_at` avanzano entrambi esattamente per la durata della sospensione, così il cliente conserva il tempo già pagato.
+- **Non esiste un limite alla durata della sospensione.** Un abbonamento sospeso rimane tale finché qualcuno non lo riprende. Non è necessario impostare in anticipo la durata della sospensione.
 
 <Warning>
-`on_hold` e `failed` vengono spesso confusi. `on_hold` è uno stato **recuperabile** per una subscription già attiva il cui rinnovo non è riuscito. `failed` è uno stato **terminale** che si verifica solo quando non riesce la **creazione iniziale** della subscription: non può essere riattivato.
+La sospensione revoca immediatamente l'accesso, non al termine del periodo di fatturazione. Se il tuo prodotto è vincolato a un abbonamento, comunicalo chiaramente al cliente prima che confermi.
 </Warning>
+
+La ripresa riporta l'abbonamento a `active` e ripristina i relativi entitlement. Poiché l'orologio era bloccato, il rinnovo successivo avviene con un ritardo pari alla durata della sospensione rispetto alla data originariamente prevista: un abbonamento sospeso per 12 giorni si rinnova 12 giorni più tardi.
+
+### Sospensione degli abbonamenti basati sull'utilizzo
+
+Un abbonamento [basato sull'utilizzo](/features/usage-based-billing/introduction) può avere un utilizzo registrato ma non ancora fatturato al momento della sospensione. L'impostazione **Bill Usage at Pause** in **Settings → Subscriptions** determina cosa accade a tale utilizzo:
+
+| Impostazione | Comportamento |
+|---------|----------|
+| **On** (predefinita) | Dodo Payments emette una fattura per l'utilizzo maturato dall'ultima data di fatturazione e la riscuote immediatamente. |
+| **Off** | L'utilizzo dovuto viene riportato e fatturato nella prossima fattura regolare dell'abbonamento. |
+
+In questo modo viene regolato solo l'utilizzo misurato: la tariffa base ricorrente non viene mai addebitata al momento della sospensione. Gli abbonamenti standard e on-demand non hanno importi da regolare, quindi questa impostazione non li riguarda.
+
+<Info>
+**Bill Usage at Pause** viene registrato per ciclo di fatturazione. Modificarlo a metà ciclo non cambia il modo in cui viene regolato il ciclo già iniziato; il nuovo valore si applica dal ciclo successivo.
+</Info>
+
+<Warning>
+La fattura di regolazione viene riscossa come qualsiasi altra fattura, quindi il pagamento può non riuscire. Se rimane insoluta oltre il periodo di tolleranza del [dunning](/features/recovery/subscription-dunning), l'abbonamento passa a `on_hold`, pur rimanendo contrassegnato come sospeso.
+</Warning>
+
+Un abbonamento in questo stato ha due possibili vie d'uscita, che differiscono per il soggetto che assorbe l'utilizzo dovuto:
+
+| Uscita | Risultato |
+|------|--------|
+| La fattura di regolazione viene pagata | L'abbonamento torna a `paused`, non a `active`. Riprendilo esplicitamente quando il cliente è pronto. |
+| Lo riprendi direttamente | L'abbonamento passa direttamente a `active` e la fattura di regolazione non pagata viene **annullata**, insieme ai relativi tentativi di pagamento in sospeso. L'utilizzo dovuto viene stornato. |
+
+<Info>
+La ripresa è una via d'uscita valida da questo blocco: non è necessario riscuotere prima la fattura di regolazione. Tieni presente che la ripresa annulla l'utilizzo dovuto invece di rimandarne la fatturazione.
+</Info>
+
+### Consentire ai clienti di sospendere autonomamente i propri abbonamenti
+
+**Allow Subscription Pause** in **Settings → Subscriptions** determina se i clienti possono sospendere e riprendere l'abbonamento dal Customer Portal. È **disattivata per impostazione predefinita**, quindi la sospensione self-service è facoltativa.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Scheda delle impostazioni degli abbonamenti con i toggle Allow Subscription Pause e Bill Usage at Pause" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Questa impostazione riguarda solo il Customer Portal. Puoi sempre sospendere e riprendere un abbonamento dalla dashboard o dall'API, indipendentemente dal valore del toggle.
+
+Disattivarla impedisce ai clienti di avviare nuove sospensioni, ma non blocca un cliente che ha già sospeso il proprio abbonamento: può comunque riprendere la sospensione avviata autonomamente. Le sospensioni avviate da te rimangono sotto il tuo controllo.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+Scopri cosa vede il cliente, inclusa la finestra di conferma.
+</Card>
+
+### Sospensione tramite API
+
+La sospensione e la ripresa utilizzano un unico campo `pause` sull'endpoint di aggiornamento dell'abbonamento. Non esiste un endpoint separato per la sospensione.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` è esclusivo rispetto a ogni altro campo: se lo invii insieme ad altri dati, la richiesta viene rifiutata con `422`. Impostare `status` su `paused` **non** sospende un abbonamento; usa invece il campo `pause`.
+</Warning>
+
+La sospensione emette `subscription.paused` e la ripresa emette `subscription.unpaused`. Entrambi contengono l'oggetto completo dell'abbonamento, con `paused_at` impostato durante la sospensione e `null` dopo la ripresa.
+
+### Sospensione e altre azioni sull'abbonamento
+
+- **La cancellazione continua a funzionare.** Puoi cancellare un abbonamento sospeso esattamente come uno attivo. L'eventuale fattura di regolazione aperta derivante dalla sospensione viene annullata al momento della cancellazione.
+- **Le modifiche pianificate del piano vengono posticipate, non eliminate.** Una [modifica del piano](#subscription-plan-changes) pianificata per la prossima data di fatturazione rimane invariata durante la sospensione e viene applicata alla data di fatturazione posticipata quando l'abbonamento riprende. Il relativo `scheduled_change.effective_at` è uno snapshot del momento in cui è stata pianificata e non viene aggiornato in base alla sospensione, quindi può mostrare una data passata: interpretalo come "era pianificata per", non come una data garantita. Per eliminare la modifica invece di mantenerla, usa [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
+## Stati dell'abbonamento
+
+Nel corso della sua durata, un abbonamento attraversa un insieme definito di stati. Questa tabella è il riferimento per ogni stato, per le cause che lo determinano e per il modo in cui è possibile, o meno, recuperarlo.
+
+| Stato | Significato | Recuperabile? | Percorso di recupero / passaggio successivo |
+|--------|---------------|--------------|---------------------------|
+| `pending` | L'abbonamento è in fase di creazione o elaborazione | — | Attendi `subscription.active` (o `subscription.failed`) |
+| `active` | L'abbonamento è attivo e si rinnoverà automaticamente | — | Non è richiesta alcuna azione |
+| `on_hold` | Un pagamento di rinnovo (o un addebito per la modifica del piano) non è riuscito; i rinnovi sono stati interrotti | **Sì** | Aggiorna il metodo di pagamento per riattivarlo, automaticamente tramite [Payment Retries](/features/recovery/payment-retries) e [Dunning](/features/recovery/subscription-dunning), oppure manualmente tramite [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | L'abbonamento è stato sospeso deliberatamente da te o dal cliente; la fatturazione è bloccata e l'accesso è revocato | **Sì** | Riprendilo con `pause: false` o dal Customer Portal quando la sospensione self-service è abilitata; consulta [Sospensione e ripresa degli abbonamenti](#pausing-and-resuming-subscriptions) |
+| `cancelled` | L'abbonamento è stato cancellato e non si rinnoverà | Solo nuovo acquisto | Il cliente deve avviare un nuovo abbonamento; [Dunning](/features/recovery/subscription-dunning) può sollecitare un nuovo acquisto |
+| `failed` | La **creazione** dell'abbonamento non è riuscita (il mandato o il pagamento iniziale non è andato a buon fine) | **No — terminale** | Il cliente deve creare un nuovo abbonamento con un metodo di pagamento funzionante |
+| `expired` | L'abbonamento ha raggiunto la fine del periodo previsto | — | Se lo desidera, il cliente deve avviare un nuovo abbonamento |
+
+<Warning>
+`on_hold` e `failed` vengono spesso confusi. `on_hold` è uno stato **recuperabile** per un abbonamento già attivo il cui rinnovo non è riuscito. `failed` è uno stato **terminale** che si verifica solo quando non riesce la **creazione iniziale** dell'abbonamento: non può essere riattivato.
+</Warning>
+
+<Info>
+Anche `on_hold` e `paused` sono distinti. `on_hold` è involontario: un pagamento non è riuscito. `paused` è deliberato: tu o il cliente avete scelto di bloccare l'abbonamento e, finché rimane sospeso, non viene effettuato alcun tentativo di rinnovo. Un abbonamento basato sull'utilizzo può comunque avere una fattura di regolazione una tantum dovuta al momento della sospensione; consulta [Sospensione degli abbonamenti basati sull'utilizzo](#pausing-usage-based-subscriptions).
+</Info>
 
 ### Macchina a stati
 
@@ -441,34 +538,44 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
     expired --> [*]
 ```
 
-### Stato On Hold
+### Stato in attesa
 
-Una subscription entra nello stato `on_hold` quando:
+Un abbonamento entra nello stato `on_hold` quando:
 
 - Un pagamento di rinnovo non riesce (fondi insufficienti, carta scaduta e così via)
-- Un addebito per modifica del piano non riesce
+- Un addebito per la modifica del piano non riesce
 - L'autorizzazione del metodo di pagamento non riesce
+- Una [fattura di regolazione della sospensione](#pausing-usage-based-subscriptions) per un abbonamento basato sull'utilizzo rimane insoluta
 
 <Warning>
-Quando una subscription si trova nello stato `on_hold`, non si rinnoverà automaticamente. Devi aggiornare il metodo di pagamento per riattivarla.
+Quando un abbonamento è nello stato `on_hold`, non si rinnoverà automaticamente. Devi aggiornare il metodo di pagamento per riattivarlo.
 </Warning>
 
-### Riattivare una subscription dallo stato On Hold
+### Riattivazione dallo stato in attesa
 
-Per riattivare una subscription dallo stato `on_hold`, aggiorna il metodo di pagamento. Questa operazione automaticamente:
+Per riattivare un abbonamento dallo stato `on_hold`, aggiorna il metodo di pagamento. Questa operazione automaticamente:
 
 1. Crea un addebito per gli importi ancora dovuti
 2. Genera una fattura
-3. Elabora il pagamento usando il nuovo metodo di pagamento
-4. Riattiva la subscription allo stato `active` dopo il pagamento riuscito
+3. Elabora il pagamento utilizzando il nuovo metodo di pagamento
+4. Riattiva l'abbonamento nello stato `active` quando il pagamento va a buon fine
+
+<Note>
+L'unica eccezione è un blocco causato da una fattura di regolazione della sospensione non pagata. Saldare quella fattura riporta l'abbonamento a `paused`, non a `active`, perché la sospensione era lo stato precedente al fallimento del pagamento. Riprendilo esplicitamente dopo aver saldato la fattura.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,75 +595,87 @@ if (response.payment_id) {
 ```
 
 <Info>
-Dopo aver aggiornato correttamente il metodo di pagamento per una subscription `on_hold`, riceverai gli eventi webhook `payment.succeeded` seguiti da `subscription.active`.
+Dopo aver aggiornato correttamente il metodo di pagamento per un abbonamento `on_hold`, riceverai gli eventi webhook `payment.succeeded` seguiti da `subscription.active`.
 </Info>
 
 ### Eventi webhook per transizione
 
-Ogni transizione genera un webhook, così puoi gestire la logica dei diritti senza eseguire polling:
+Ogni transizione emette un webhook, così puoi gestire la logica degli entitlement senza polling:
 
 | Transizione | Evento |
 |------------|-------|
 | Abbonamento attivato | `subscription.active` |
-| Rinnovo completato | `subscription.renewed` |
-| Rinnovo non riuscito → in pausa | `subscription.on_hold` |
-| Abbonamento in pausa | `subscription.paused` |
-| Abbonamento in pausa ripreso | `subscription.unpaused` |
+| Rinnovo riuscito | `subscription.renewed` |
+| Rinnovo non riuscito → in attesa | `subscription.on_hold` |
+| Abbonamento sospeso | `subscription.paused` |
+| Abbonamento sospeso ripreso | `subscription.unpaused` |
 | Creazione non riuscita | `subscription.failed` |
 | Piano aggiornato/declassato | `subscription.plan_changed` |
-| Annullato | `subscription.cancelled` |
-| Termine del periodo | `subscription.expired` |
-| Qualsiasi modifica ai campi | `subscription.updated` |
+| Cancellato | `subscription.cancelled` |
+| Periodo terminato | `subscription.expired` |
+| Modifica di qualsiasi campo | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-Visualizza lo schema completo del payload per gli eventi del ciclo di vita della subscription.
+Visualizza lo schema completo del payload per gli eventi del ciclo di vita degli abbonamenti.
 </Card>
 
 ## Gestione tramite API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Usa `POST /subscriptions` per creare programmaticamente subscription a partire dai prodotti, con prove e add-on facoltativi.
+Usa `POST /checkouts` per creare abbonamenti programmaticamente a partire dai prodotti, con prove facoltative (`subscription_data.trial_period_days`) e add-on (`product_cart[].addons`).
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Visualizza l'API per la creazione di una subscription.
+<Warning>
+`POST /subscriptions` è deprecato. Le integrazioni esistenti continuano a funzionare, ma per le nuove integrazioni devi usare [Checkout Sessions](/api-reference/checkout-sessions/create).
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+Visualizza l'API per creare una sessione di checkout.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Usa `PATCH /subscriptions/{subscription_id}` per annullare alla prossima data di fatturazione, estendere il periodo dell'abbonamento, aggiornare i dettagli di fatturazione o modificare i metadati. Per modificare la quantità, usa invece la [Change Plan API](/api-reference/subscriptions/change-plan) — `PATCH` non accetta `quantity`.
+Usa `PATCH /subscriptions/{subscription_id}` per cancellare alla prossima data di fatturazione, estendere il periodo dell'abbonamento, aggiornare i dettagli di fatturazione o modificare i metadati. Per cambiare la quantità, usa invece la [Change Plan API](/api-reference/subscriptions/change-plan): `PATCH` non accetta `quantity`.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Scopri come aggiornare i dettagli della subscription.
+Scopri come aggiornare i dettagli dell'abbonamento.
+</Card>
+</Accordion>
+
+<Accordion title="Pause and resume subscriptions">
+La sospensione e la ripresa passano dallo stesso endpoint `PATCH /subscriptions/{subscription_id}` utilizzando il campo `pause`: `pause: true` sospende un abbonamento attivo e `pause: false` lo riprende. Il campo non può essere combinato con altri campi nella stessa richiesta. Per informazioni complete sul comportamento, sugli effetti di fatturazione e sulle impostazioni aziendali correlate, consulta [Sospensione e ripresa degli abbonamenti](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+Visualizza l'API per aggiornare un abbonamento, incluso il campo `pause`.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Modifica il prodotto attivo e le quantità con i controlli di proratazione.
+Modifica il prodotto attivo e le quantità con i controlli di proroga.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Esamina le opzioni di modifica del piano.
+Esamina le opzioni per la modifica del piano.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-Per le subscription on-demand, addebita importi specifici su richiesta.
+Per gli abbonamenti on-demand, addebita importi specifici su richiesta.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Addebita una subscription on-demand.
+Addebita un abbonamento on-demand.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Usa `GET /subscriptions` per elencare tutte le subscription e `GET /subscriptions/{id}` per recuperarne una.
+Usa `GET /subscriptions` per elencare tutti gli abbonamenti e `GET /subscriptions/{id}` per recuperarne uno.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Consulta le API per l'elenco e il recupero.
+Esplora le API per l'elenco e il recupero.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Recupera l'utilizzo registrato per i modelli di prezzo basati sull'utilizzo o ibridi.
+Recupera l'utilizzo registrato per i modelli di prezzo misurati o ibridi.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
 Consulta l'API della cronologia di utilizzo.
@@ -564,12 +683,12 @@ Consulta l'API della cronologia di utilizzo.
 </Accordion>
 
 <Accordion title="Update payment method">
-Aggiorna il metodo di pagamento per una subscription. Per le subscription attive, questa operazione aggiorna il metodo di pagamento per i rinnovi futuri. Per le subscription nello stato `on_hold`, riattiva la subscription creando un addebito per gli importi ancora dovuti.
+Aggiorna il metodo di pagamento per un abbonamento. Per gli abbonamenti attivi, questa operazione aggiorna il metodo di pagamento per i rinnovi futuri. Per gli abbonamenti nello stato `on_hold`, riattiva l'abbonamento creando un addebito per gli importi ancora dovuti.
 
-Quando generi un nuovo link per il metodo di pagamento (il tipo di richiesta `New`), puoi passare `allowed_payment_method_types` per limitare i metodi di pagamento visualizzati dal cliente in quella pagina. I clienti non vedranno mai un metodo che non è incluso nell'elenco, anche se includere un metodo non ne garantisce la visualizzazione (la disponibilità dipende comunque da fattori quali la posizione del cliente e le impostazioni della tua attività).
+Quando generi un nuovo link per il metodo di pagamento (il tipo di richiesta `New`), puoi passare `allowed_payment_method_types` per limitare i metodi di pagamento visualizzati dal cliente in quella pagina. I clienti non vedranno mai un metodo che non è incluso nell'elenco, anche se includere un metodo non garantisce che venga visualizzato: la disponibilità dipende ancora da fattori come la posizione del cliente e le impostazioni della tua attività.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Scopri come aggiornare i metodi di pagamento e riattivare le subscription.
+Scopri come aggiornare i metodi di pagamento e riattivare gli abbonamenti.
 </Card>
 </Accordion>
 </AccordionGroup>
@@ -578,13 +697,13 @@ Scopri come aggiornare i metodi di pagamento e riattivare le subscription.
 
 - **SaaS e API**: accesso a livelli con add-on per postazioni o utilizzo
 - **Contenuti e media**: accesso mensile con prove introduttive
-- **Piani di assistenza B2B**: contratti annuali con add-on di assistenza premium
-- **Strumenti e plugin**: chiavi di licenza e versioni rilasciate
+- **Piani di supporto B2B**: contratti annuali con add-on di supporto premium
+- **Strumenti e plugin**: chiavi di licenza e release con versionamento
 
 ## Esempi di integrazione
 
-### Sessioni di checkout (subscription)
-Quando crei sessioni di checkout, includi il prodotto in subscription e gli eventuali add-on:
+### Checkout Sessions (abbonamenti)
+Quando crei sessioni di checkout, includi il prodotto in abbonamento e gli eventuali add-on:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Modifiche al piano con proratazione
-Effettua l'upgrade o il downgrade di una subscription e controlla il comportamento della proratazione:
+### Modifiche del piano con proroga
+Esegui l'upgrade o il downgrade di un abbonamento e controlla il comportamento della proroga:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -608,8 +727,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Annullamento alla data della fatturazione successiva
-Pianifica un annullamento che abbia effetto al termine del periodo di fatturazione corrente:
+### Cancellazione alla prossima data di fatturazione
+Pianifica una cancellazione effettiva al termine del periodo di fatturazione corrente:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -617,8 +736,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### Estendere il periodo dell'abbonamento
-Estendi la durata di un abbonamento passando un nuovo `subscription_period_count` e `subscription_period_interval` a `PATCH /subscriptions/{subscription_id}`. La scadenza dell'abbonamento viene ricalcolata in base al nuovo conteggio e all'intervallo — ad esempio, per concedere a un cliente tempo aggiuntivo sul piano attuale:
+### Estensione del periodo dell'abbonamento
+Estendi la durata di un abbonamento passando un nuovo `subscription_period_count` e `subscription_period_interval` a `PATCH /subscriptions/{subscription_id}`. La scadenza dell'abbonamento viene ricalcolata in base al nuovo conteggio e all'intervallo; ad esempio, per concedere a un cliente tempo aggiuntivo sul piano corrente:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -628,11 +747,11 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-Il periodo di una subscription può essere **aumentato**, ma mai abbreviato.
+Il periodo di un abbonamento può essere solo **aumentato**, mai abbreviato.
 </Note>
 
-### Subscription on-demand
-Crea una subscription on-demand e addebita in seguito quando necessario:
+### Abbonamenti on-demand
+Crea un abbonamento on-demand e addebita in seguito quando necessario:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### Aggiornare il metodo di pagamento per una subscription attiva
-Aggiorna il metodo di pagamento per una subscription attiva:
+### Aggiornamento del metodo di pagamento per un abbonamento attivo
+Aggiorna il metodo di pagamento per un abbonamento attivo:
 
 ```typescript
 // Update with new payment method
@@ -671,8 +790,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Riattivare una subscription dallo stato on_hold
-Riattiva una subscription sospesa a causa di un pagamento non riuscito:
+### Riattivazione di un abbonamento dallo stato on_hold
+Riattiva un abbonamento entrato nello stato in attesa a causa di un pagamento non riuscito:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscription con mandati conformi alle norme RBI
+## Abbonamenti con mandati conformi alle normative RBI
 
-  Le subscription UPI e con carte indiane operano secondo le normative RBI (Reserve Bank of India), con requisiti specifici per i mandati:
+  Gli abbonamenti UPI e con carte indiane sono soggetti alle normative RBI (Reserve Bank of India), che prevedono requisiti specifici per i mandati:
 
   ### Limiti dei mandati
 
-  Il tipo e l'importo del mandato dipendono dall'addebito ricorrente della subscription:
+  Il tipo e l'importo del mandato dipendono dall'addebito ricorrente dell'abbonamento:
 
-  - **Addebiti inferiori alla soglia del mandato (₹15,000 per impostazione predefinita):** creiamo un mandato on-demand per l'importo della soglia. L'importo della subscription viene addebitato periodicamente in base alla frequenza della subscription, fino al limite del mandato.
-  - **Addebiti pari o superiori alla soglia del mandato:** creiamo un mandato per subscription (o un mandato on-demand) per l'importo esatto della subscription.
+  - **Addebiti inferiori alla soglia del mandato (₹15.000 per impostazione predefinita):** creiamo un mandato on-demand per l'importo della soglia. L'importo dell'abbonamento viene addebitato periodicamente in base alla frequenza dell'abbonamento, fino al limite del mandato.
+  - **Addebiti pari o superiori alla soglia del mandato:** creiamo un mandato per abbonamento (o un mandato on-demand) per l'importo esatto dell'abbonamento.
 
-  La soglia del mandato è configurabile per merchant o per richiesta tramite `mandate_min_amount_inr_paise` (paise INR). L'importo registrato presso la banca è `max(mandate_floor, billing_amount)`; pertanto, quando la fatturazione è inferiore, la soglia diventa di fatto il limite massimo di autorizzazione mostrato al cliente.
+  La soglia del mandato è configurabile per merchant o per richiesta tramite `mandate_min_amount_inr_paise` (paise INR). L'importo registrato presso la banca è `max(mandate_floor, billing_amount)`: pertanto, quando la fatturazione è inferiore, la soglia diventa di fatto il limite di autorizzazione visibile al cliente.
 
-Per informazioni dettagliate sui mandati conformi alle norme RBI e sulla soglia configurabile dei mandati per i metodi di pagamento indiani, consulta la pagina <a href="/features/payment-methods/india#configurable-mandate-floor">Metodi di pagamento in India</a>.
+Per informazioni dettagliate sui mandati conformi alle normative RBI e sulla soglia configurabile dei mandati per i metodi di pagamento indiani, consulta la pagina <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
   ### Considerazioni su upgrade e downgrade
 
-  **Importante:** quando effettui l'upgrade o il downgrade delle subscription, considera attentamente i limiti dei mandati:
+  **Importante:** quando esegui l'upgrade o il downgrade degli abbonamenti, considera attentamente i limiti dei mandati:
 
-  - Se un upgrade o downgrade genera un importo superiore a Rs 15,000 e oltrepassa il limite di pagamento on-demand esistente, l'addebito della transazione potrebbe non riuscire.
-  - In questi casi, il cliente potrebbe dover aggiornare il metodo di pagamento o modificare nuovamente la subscription per stabilire un nuovo mandato con il limite corretto.
+  - Se un upgrade o downgrade produce un importo di addebito superiore a Rs 15.000 e oltre il limite di pagamento on-demand esistente, l'addebito della transazione potrebbe non riuscire.
+  - In questi casi, il cliente potrebbe dover aggiornare il metodo di pagamento o modificare nuovamente l'abbonamento per creare un nuovo mandato con il limite corretto.
 
   ### Autorizzazione per addebiti di importo elevato
 
-  Per addebiti della subscription pari o superiori a Rs 15,000:
+  Per addebiti di abbonamento pari o superiori a Rs 15.000:
 
   - La banca chiederà al cliente di autorizzare la transazione.
-  - Se il cliente non autorizza la transazione, questa non andrà a buon fine e la subscription verrà sospesa.
+  - Se il cliente non autorizza la transazione, questa non andrà a buon fine e l'abbonamento verrà messo in attesa.
 
   ### Ritardo di elaborazione di 48 ore
 
-  **Tempistiche di elaborazione:** gli addebiti ricorrenti sulle carte indiane e sulle subscription UPI seguono un modello di elaborazione particolare:
+  **Tempistiche di elaborazione:** gli addebiti ricorrenti sulle carte indiane e gli abbonamenti UPI seguono un processo particolare:
 
-  - Gli addebiti vengono **avviati** nella data pianificata, in base alla frequenza della subscription.
+  - Gli addebiti vengono **avviati** nella data pianificata, in base alla frequenza dell'abbonamento.
   - La **detrazione** effettiva dall'account del cliente avviene solo dopo **48 ore** dall'avvio del pagamento.
-  - Questa finestra di 48 ore può estendersi fino a **2-3 ore aggiuntive**, a seconda delle risposte delle API bancarie.
+  - Questa finestra di 48 ore può estendersi di ulteriori **2-3 ore** a seconda delle risposte delle API bancarie.
 
-  ### Finestra per l'annullamento del mandato
+  ### Finestra per la cancellazione del mandato
 
   Durante la finestra di elaborazione di 48 ore:
 
-  - I clienti possono annullare il mandato tramite le proprie app bancarie.
-  - Se un cliente annulla il mandato durante questo periodo, la subscription rimarrà **attiva** (si tratta di un caso limite specifico delle subscription AutoPay con carte indiane e UPI).
-  - Tuttavia, la detrazione effettiva potrebbe non riuscire e, in tal caso, metteremo la subscription **in sospeso**.
+  - I clienti possono cancellare il mandato tramite le proprie app bancarie.
+  - Se un cliente cancella il mandato durante questo periodo, l'abbonamento rimarrà **attivo** (si tratta di un caso limite specifico degli abbonamenti AutoPay con carte indiane e UPI).
+  - Tuttavia, la detrazione effettiva potrebbe non riuscire e, in tal caso, metteremo l'abbonamento **in attesa**.
 
-  **Gestione dei casi limite:** se fornisci immediatamente ai clienti vantaggi, crediti o utilizzo della subscription all'avvio dell'addebito, devi gestire correttamente questa finestra di 48 ore nella tua applicazione. Considera di:
+  **Gestione dei casi limite:** se fornisci immediatamente ai clienti vantaggi, crediti o utilizzo dell'abbonamento all'avvio dell'addebito, devi gestire correttamente questa finestra di 48 ore nella tua applicazione. Valuta di:
 
   - Ritardare l'attivazione dei vantaggi fino alla conferma del pagamento
   - Implementare periodi di tolleranza o accesso temporaneo
-  - Monitorare lo stato della subscription per rilevare gli annullamenti dei mandati
-  - Gestire gli stati sospesi della subscription nella logica dell'applicazione
+  - Monitorare lo stato dell'abbonamento per rilevare le cancellazioni dei mandati
+  - Gestire gli stati di attesa dell'abbonamento nella logica dell'applicazione
 
   <Tip>
-  Monitora i webhook della subscription per tenere traccia delle modifiche allo stato del pagamento e gestire i casi limite in cui i mandati vengono annullati durante la finestra di 48 ore.
+  Monitora i webhook degli abbonamenti per tenere traccia delle modifiche allo stato dei pagamenti e gestire i casi limite in cui i mandati vengono cancellati durante la finestra di 48 ore.
   </Tip>
 
 ## Best practice
 
 - **Inizia con livelli chiari**: 2–3 piani con differenze evidenti
-- **Comunica i prezzi**: mostra totali, proratazione e prossimo rinnovo
+- **Comunica i prezzi**: mostra totali, proroga e prossimo rinnovo
 - **Usa le prove con criterio**: converti con l'onboarding, non solo con il tempo
-- **Sfrutta gli add-on**: mantieni semplici i piani di base e proponi gli extra
-- **Testa le modifiche**: convalida le modifiche ai piani e la proratazione in modalità di test
+- **Sfrutta gli add-on**: mantieni semplici i piani base e proponi extra
+- **Testa le modifiche**: convalida le modifiche dei piani e la proroga in modalità test
 
 <Info>
-Le subscription sono una base flessibile per i ricavi ricorrenti. Inizia in modo semplice, testa accuratamente e migliora in base alle metriche di adozione, abbandono ed espansione.
+Gli abbonamenti sono una base flessibile per le entrate ricorrenti. Inizia in modo semplice, esegui test approfonditi e migliora iterativamente in base alle metriche di adozione, churn ed espansione.
 </Info>

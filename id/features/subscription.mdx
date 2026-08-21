@@ -415,22 +415,119 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Lihat pratinjau perubahan paket sebelum menerapkannya.
 </Card>
 
-## Status Subscription
+## Menjeda dan Melanjutkan Subscription
 
-Subscription berpindah melalui serangkaian status yang ditentukan selama masa berlakunya. Tabel ini menjadi referensi untuk setiap status, penyebabnya, serta cara (atau apakah) status tersebut dapat dipulihkan.
+Menjeda akan membekukan subscription, bukan mengakhirinya. Billing berhenti, akses dicabut, dan subscription mempertahankan plan serta riwayatnya agar customer dapat melanjutkan tepat dari posisi sebelumnya. Gunakan ini sebagai alternatif retensi selain pembatalan.
 
-| Status | Makna | Dapat dipulihkan? | Jalur pemulihan / langkah berikutnya |
-|--------|---------------|--------------|---------------------------|
-| `pending` | Subscription sedang dibuat atau diproses | — | Tunggu `subscription.active` (atau `subscription.failed`) |
-| `active` | Subscription aktif dan akan diperpanjang secara otomatis | — | Tidak ada tindakan yang diperlukan |
-| `on_hold` | Payment perpanjangan (atau biaya perubahan paket) gagal; subscription dijeda | **Ya** | Perbarui payment method untuk mengaktifkan kembali — secara otomatis melalui [Payment Retries](/features/recovery/payment-retries) dan [Dunning](/features/recovery/subscription-dunning), atau secara manual melalui [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | Subscription dibatalkan dan tidak akan diperpanjang | Hanya pembelian ulang | Pelanggan harus memulai subscription baru; [Dunning](/features/recovery/subscription-dunning) dapat mendorong pembelian ulang |
-| `failed` | **Creation** subscription gagal (mandat atau payment awal tidak berhasil) | **Tidak — terminal** | Pelanggan harus membuat subscription baru dengan payment method yang berfungsi |
-| `expired` | Subscription mencapai akhir masa berlakunya | — | Pelanggan harus memulai subscription baru jika diinginkan |
+Buka subscription aktif apa pun di **Sales → Subscriptions**, lalu klik **Pause subscription**. Status berubah menjadi `paused` dan renewal berhenti sampai subscription dilanjutkan.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Halaman detail subscription di dashboard yang menampilkan tombol Update, Pause subscription, dan Cancel Subscription" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### Apa yang Terjadi Saat Subscription Dijeda
+
+- **Renewal berhenti.** Tidak ada invoice yang dibuat dan tidak ada biaya renewal yang dikenakan selama subscription dijeda.
+- **Akses langsung dicabut.** Menjeda akan mencabut setiap [entitlement grant](/features/entitlements/introduction) yang telah diberikan maupun yang masih tertunda pada subscription, sehingga [license key](/features/license-keys) dinonaktifkan dan URL download [digital product](/features/digital-product-delivery) baru tidak lagi diterbitkan. Saat dilanjutkan, entitlement tersebut diberikan kembali, sama seperti pemulihan dari `on_hold`.
+- **Jam billing dibekukan.** `next_billing_date` dan `expires_at` sama-sama maju tepat selama durasi jeda, sehingga customer tetap mendapatkan waktu yang telah mereka bayar.
+- **Tidak ada batas durasi jeda.** Subscription yang dijeda akan tetap dijeda sampai seseorang melanjutkannya. Anda tidak perlu menetapkan durasi jeda sebelumnya.
 
 <Warning>
-`on_hold` dan `failed` sering tertukar. `on_hold` adalah status **recoverable** untuk subscription yang sudah aktif tetapi perpanjangannya gagal. `failed` adalah status **terminal** yang hanya terjadi ketika **initial** subscription gagal dibuat — status ini tidak dapat diaktifkan kembali.
+Menjeda langsung mencabut akses, bukan pada akhir periode billing. Jika subscription membatasi akses ke produk Anda, jelaskan hal ini kepada customer sebelum mereka mengonfirmasi.
 </Warning>
+
+Melanjutkan akan mengembalikan subscription ke `active` dan memulihkan entitlement-nya. Karena jam billing dibekukan, renewal berikutnya terjadi setelah durasi jeda berlalu dari jadwal semula — subscription yang dijeda selama 12 hari akan diperpanjang 12 hari lebih lambat.
+
+### Menjeda Subscription Berbasis Usage
+
+Subscription [berbasis usage](/features/usage-based-billing/introduction) dapat memiliki usage yang sudah tercatat tetapi belum ditagihkan saat dijeda. **Bill Usage at Pause** di **Settings → Subscriptions** menentukan apa yang terjadi pada usage tersebut:
+
+| Setting | Behavior |
+|---------|----------|
+| **On** (default) | Dodo Payments membuat invoice untuk usage yang terakumulasi sejak tanggal billing terakhir dan langsung menagihnya. |
+| **Off** | Usage yang belum dibayar dibawa ke depan dan ditagihkan pada invoice reguler subscription berikutnya. |
+
+Hanya usage terukur yang diselesaikan dengan cara ini — biaya dasar berulang tidak pernah ditagihkan saat jeda. Subscription standar dan on-demand tidak memiliki saldo yang perlu diselesaikan, sehingga setting ini tidak memengaruhi keduanya.
+
+<Info>
+**Bill Usage at Pause** dicatat per billing cycle. Mengubahnya di tengah cycle tidak mengubah cara cycle yang sedang berlangsung diselesaikan; nilai baru berlaku mulai cycle berikutnya.
+</Info>
+
+<Warning>
+Invoice penyelesaian ditagihkan seperti invoice lainnya, sehingga dapat gagal. Jika tetap belum dibayar setelah masa tenggang [dunning](/features/recovery/subscription-dunning), subscription berpindah ke `on_hold` dan tetap ditandai sebagai dijeda.
+</Warning>
+
+Subscription dalam kondisi tersebut memiliki dua cara untuk keluar, dan keduanya berbeda dalam hal pihak yang menanggung usage yang belum dibayar:
+
+| Exit | Result |
+|------|--------|
+| Invoice penyelesaian dibayar | Subscription kembali ke `paused`, bukan `active`. Lanjutkan secara eksplisit saat customer siap. |
+| Anda langsung melanjutkannya | Subscription langsung berpindah ke `active` dan invoice penyelesaian yang belum dibayar akan **dibatalkan**, bersama retry yang masih tertunda. Usage yang belum dibayar akan dihapuskan. |
+
+<Info>
+Melanjutkan adalah cara keluar yang valid dari penangguhan ini — Anda tidak harus menagih invoice penyelesaian terlebih dahulu. Namun, perlu diketahui bahwa melanjutkan akan menghapuskan usage yang belum dibayar, bukan menundanya.
+</Info>
+
+### Memungkinkan Customer Menjeda Subscription Mereka Sendiri
+
+**Allow Subscription Pause** di **Settings → Subscriptions** mengatur apakah customer dapat menjeda dan melanjutkan dari Customer Portal. Fitur ini **nonaktif secara default**, sehingga jeda mandiri harus diaktifkan secara opt-in.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Tab pengaturan Subscriptions yang menampilkan toggle Allow Subscription Pause dan Bill Usage at Pause" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Setting ini hanya mengatur Customer Portal. Anda selalu dapat menjeda dan melanjutkan dari dashboard atau API, terlepas dari posisi toggle.
+
+Menonaktifkannya akan menghentikan jeda baru yang dilakukan customer, tetapi tidak mengunci customer yang sudah dijeda — mereka tetap dapat melanjutkan jeda yang mereka mulai sendiri. Jeda yang Anda mulai tetap berada dalam kendali Anda.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+Lihat tampilan yang dilihat customer, termasuk dialog konfirmasi.
+</Card>
+
+### Menjeda melalui API
+
+Jeda dan lanjut adalah satu field `pause` pada endpoint update subscription. Tidak ada endpoint jeda terpisah.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` bersifat eksklusif terhadap setiap field lain — mengirimkannya bersama field lain akan ditolak dengan `422`. Menetapkan `status` ke `paused` **tidak** akan menjeda subscription; gunakan field `pause`.
+</Warning>
+
+Menjeda menghasilkan `subscription.paused` dan melanjutkan menghasilkan `subscription.unpaused`. Keduanya membawa objek subscription lengkap, dengan `paused_at` ditetapkan saat dijeda dan `null` setelah dilanjutkan.
+
+### Jeda dan Tindakan Subscription Lainnya
+
+- **Pembatalan tetap berfungsi.** Anda dapat membatalkan subscription yang dijeda sama seperti subscription aktif. Invoice penyelesaian yang masih terbuka dari jeda akan dibatalkan saat Anda melakukannya.
+- **Perubahan plan terjadwal ditunda, bukan dihapus.** [Perubahan plan](#subscription-plan-changes) yang dijadwalkan pada tanggal billing berikutnya tetap tidak berubah saat subscription dijeda, lalu diterapkan pada tanggal billing yang bergeser setelah subscription dilanjutkan. `scheduled_change.effective_at` adalah snapshot saat perubahan dijadwalkan dan tidak disesuaikan dengan jeda, sehingga dapat menampilkan tanggal yang sudah lewat — bacalah sebagai "dijadwalkan untuk", bukan sebagai tanggal yang dijamin. Untuk menghapus perubahan tersebut, gunakan [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
+## Status Subscription
+
+Subscription berpindah melalui serangkaian status yang telah ditentukan sepanjang masa berlakunya. Tabel ini menjadi referensi untuk setiap status, penyebabnya, serta cara (atau apakah) status tersebut dapat dipulihkan.
+
+| Status | What it means | Recoverable? | Recovery path / next step |
+|--------|---------------|--------------|---------------------------|
+| `pending` | Subscription sedang dibuat atau diproses | — | Tunggu `subscription.active` (atau `subscription.failed`) |
+| `active` | Subscription aktif dan akan diperpanjang otomatis | — | Tidak diperlukan tindakan |
+| `on_hold` | Pembayaran renewal (atau biaya perubahan plan) gagal; renewal berhenti | **Ya** | Perbarui metode pembayaran untuk mengaktifkannya kembali — otomatis melalui [Payment Retries](/features/recovery/payment-retries) dan [Dunning](/features/recovery/subscription-dunning), atau secara manual melalui [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | Subscription sengaja dijeda oleh Anda atau customer; billing dibekukan dan akses dicabut | **Ya** | Lanjutkan dengan `pause: false`, atau dari Customer Portal jika jeda mandiri diaktifkan — lihat [Menjeda dan Melanjutkan Subscription](#pausing-and-resuming-subscriptions) |
+| `cancelled` | Subscription dibatalkan dan tidak akan diperpanjang | Hanya dapat dibeli ulang | Customer harus memulai subscription baru; [Dunning](/features/recovery/subscription-dunning) dapat mendorong pembelian ulang |
+| `failed` | **Pembuatan** subscription gagal (mandate atau pembayaran awal tidak berhasil) | **Tidak — terminal** | Customer harus membuat subscription baru dengan metode pembayaran yang berfungsi |
+| `expired` | Subscription mencapai akhir masa berlakunya | — | Customer harus memulai subscription baru jika diinginkan |
+
+<Warning>
+`on_hold` dan `failed` sering tertukar. `on_hold` adalah status yang **dapat dipulihkan** untuk subscription yang sudah aktif tetapi renewal-nya gagal. `failed` adalah status **terminal** yang hanya terjadi saat **pembuatan awal** subscription gagal — status ini tidak dapat diaktifkan kembali.
+</Warning>
+
+<Info>
+`on_hold` dan `paused` juga berbeda. `on_hold` bersifat tidak disengaja — pembayaran gagal. `paused` disengaja — Anda atau customer memilih untuk membekukan subscription, dan tidak ada renewal yang dicoba selama subscription tetap dijeda. Subscription berbasis usage masih dapat memiliki invoice penyelesaian satu kali yang harus dibayar saat dijeda; lihat [Menjeda Subscription Berbasis Usage](#pausing-usage-based-subscriptions).
+</Info>
 
 ### State Machine
 
@@ -441,8 +538,13 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
@@ -453,22 +555,27 @@ stateDiagram-v2
 
 Subscription memasuki status `on_hold` ketika:
 
-- Payment perpanjangan gagal (saldo tidak mencukupi, kartu kedaluwarsa, dan sebagainya)
-- Biaya perubahan paket gagal
-- Otorisasi payment method gagal
+- Pembayaran renewal gagal (saldo tidak cukup, kartu kedaluwarsa, dan sebagainya)
+- Biaya perubahan plan gagal
+- Otorisasi metode pembayaran gagal
+- [Invoice penyelesaian jeda](#pausing-usage-based-subscriptions) untuk subscription berbasis usage tidak dibayar
 
 <Warning>
-Saat subscription berada dalam status `on_hold`, subscription tersebut tidak akan diperpanjang secara otomatis. Anda harus memperbarui payment method untuk mengaktifkan kembali subscription.
+Saat subscription berada dalam status `on_hold`, subscription tidak akan diperpanjang otomatis. Anda harus memperbarui metode pembayaran untuk mengaktifkannya kembali.
 </Warning>
 
 ### Mengaktifkan Kembali dari On Hold
 
-Untuk mengaktifkan kembali subscription dari status `on_hold`, perbarui payment method. Tindakan ini secara otomatis:
+Untuk mengaktifkan kembali subscription dari status `on_hold`, perbarui metode pembayaran. Proses ini secara otomatis:
 
-1. Membuat biaya untuk kewajiban yang tersisa
+1. Membuat charge untuk tagihan yang tersisa
 2. Membuat invoice
-3. Memproses payment menggunakan payment method baru
-4. Mengaktifkan kembali subscription ke status `active` setelah payment berhasil
+3. Memproses pembayaran menggunakan metode pembayaran baru
+4. Mengaktifkan kembali subscription ke status `active` setelah pembayaran berhasil
+
+<Note>
+Satu-satunya pengecualian adalah status hold yang disebabkan oleh invoice penyelesaian jeda yang belum dibayar. Melunasi invoice tersebut mengembalikan subscription ke `paused`, bukan `active`, karena jeda adalah status sebelum pembayaran gagal. Lanjutkan secara eksplisit setelah invoice diselesaikan.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,62 +595,74 @@ if (response.payment_id) {
 ```
 
 <Info>
-Setelah berhasil memperbarui payment method untuk subscription `on_hold`, Anda akan menerima event webhook `payment.succeeded` yang diikuti `subscription.active`.
+Setelah berhasil memperbarui metode pembayaran untuk subscription `on_hold`, Anda akan menerima event webhook `payment.succeeded`, kemudian `subscription.active`.
 </Info>
 
 ### Event Webhook berdasarkan Transisi
 
 Setiap transisi menghasilkan webhook sehingga Anda dapat menjalankan logika entitlement tanpa polling:
 
-| Transisi | Peristiwa |
+| Transition | Event |
 |------------|-------|
-| Langganan diaktifkan | `subscription.active` |
-| Perpanjangan berhasil | `subscription.renewed` |
-| Perpanjangan gagal → dijeda | `subscription.on_hold` |
-| Langganan dijeda | `subscription.paused` |
-| Langganan yang dijeda dilanjutkan | `subscription.unpaused` |
+| Subscription diaktifkan | `subscription.active` |
+| Renewal berhasil | `subscription.renewed` |
+| Renewal gagal → on hold | `subscription.on_hold` |
+| Subscription dijeda | `subscription.paused` |
+| Subscription yang dijeda dilanjutkan | `subscription.unpaused` |
 | Pembuatan gagal | `subscription.failed` |
-| Paket ditingkatkan/diturunkan | `subscription.plan_changed` |
+| Plan di-upgrade/downgrade | `subscription.plan_changed` |
 | Dibatalkan | `subscription.cancelled` |
-| Periode berakhir | `subscription.expired` |
-| Perubahan pada bidang apa pun | `subscription.updated` |
+| Masa berlaku berakhir | `subscription.expired` |
+| Perubahan field apa pun | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-Lihat schema payload lengkap untuk event siklus hidup subscription.
+Lihat skema payload lengkap untuk event lifecycle subscription.
 </Card>
 
 ## Manajemen API
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Gunakan `POST /subscriptions` untuk membuat subscription secara terprogram dari produk, dengan trial dan add-on opsional.
+Gunakan `POST /checkouts` untuk membuat subscription secara programatis dari product, dengan trial opsional (`subscription_data.trial_period_days`) dan add-on (`product_cart[].addons`).
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Lihat create subscription API.
+<Warning>
+`POST /subscriptions` sudah deprecated. Integrasi yang ada tetap berfungsi, tetapi integrasi baru sebaiknya menggunakan [Checkout Sessions](/api-reference/checkout-sessions/create).
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+Lihat API untuk membuat checkout session.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Gunakan `PATCH /subscriptions/{subscription_id}` untuk membatalkan pada tanggal penagihan berikutnya, memperpanjang periode langganan, memperbarui detail penagihan, atau mengubah metadata. Untuk mengubah kuantitas, gunakan [Change Plan API](/api-reference/subscriptions/change-plan) sebagai gantinya — `PATCH` tidak menerima `quantity`.
+Gunakan `PATCH /subscriptions/{subscription_id}` untuk membatalkan pada tanggal billing berikutnya, memperpanjang periode subscription, memperbarui detail billing, atau mengubah metadata. Untuk mengubah quantity, gunakan [Change Plan API](/api-reference/subscriptions/change-plan) — `PATCH` tidak menerima `quantity`.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Pelajari cara memperbarui detail subscription.
 </Card>
 </Accordion>
 
+<Accordion title="Pause and resume subscriptions">
+Jeda dan lanjut menggunakan endpoint `PATCH /subscriptions/{subscription_id}` yang sama dengan field `pause`: `pause: true` menjeda subscription aktif dan `pause: false` melanjutkannya. Field ini tidak dapat digabungkan dengan field lain dalam request yang sama. Untuk perilaku lengkap, dampak billing, dan pengaturan bisnis terkait, lihat [Menjeda dan Melanjutkan Subscription](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+Lihat API update subscription, termasuk field `pause`.
+</Card>
+</Accordion>
+
 <Accordion title="Change plans (proration)">
-Ubah produk aktif dan jumlah dengan kontrol proration.
+Ubah product aktif dan quantity dengan kontrol proration.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-Tinjau opsi perubahan paket.
+Tinjau opsi perubahan plan.
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-Untuk subscription on-demand, kenakan jumlah tertentu sesuai permintaan.
+Untuk subscription on-demand, kenakan jumlah tertentu sesuai kebutuhan.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Kenakan biaya subscription on-demand.
+Kenakan biaya pada subscription on-demand.
 </Card>
 </Accordion>
 
@@ -551,25 +670,25 @@ Kenakan biaya subscription on-demand.
 Gunakan `GET /subscriptions` untuk mencantumkan semua subscription dan `GET /subscriptions/{id}` untuk mengambil satu subscription.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Jelajahi API listing dan retrieval.
+Jelajahi API untuk pencantuman dan pengambilan data.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Ambil usage yang tercatat untuk model pricing metered atau hybrid.
+Ambil usage yang tercatat untuk model pricing terukur atau hybrid.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-Lihat usage history API.
+Lihat API riwayat usage.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Perbarui payment method untuk subscription. Untuk subscription aktif, tindakan ini memperbarui payment method untuk perpanjangan mendatang. Untuk subscription dalam status `on_hold`, tindakan ini mengaktifkan kembali subscription dengan membuat biaya untuk kewajiban yang tersisa.
+Perbarui metode pembayaran untuk subscription. Untuk subscription aktif, ini memperbarui metode pembayaran untuk renewal mendatang. Untuk subscription dalam status `on_hold`, ini mengaktifkan kembali subscription dengan membuat charge untuk tagihan yang tersisa.
 
-Saat membuat link payment method baru (request type `New`), Anda dapat meneruskan `allowed_payment_method_types` untuk membatasi payment method yang dilihat pelanggan di halaman tersebut. Pelanggan tidak akan pernah melihat method yang tidak ada dalam daftar, meskipun menyertakan suatu method tidak menjamin method tersebut ditampilkan (ketersediaannya tetap bergantung pada faktor seperti lokasi pelanggan dan pengaturan bisnis Anda).
+Saat membuat link metode pembayaran baru (jenis request `New`), Anda dapat meneruskan `allowed_payment_method_types` untuk membatasi metode pembayaran yang dilihat customer di halaman tersebut. Customer tidak akan pernah melihat metode yang tidak ada dalam daftar, meskipun penyertaan suatu metode tidak menjamin metode tersebut muncul (ketersediaannya tetap bergantung pada faktor seperti lokasi customer dan pengaturan bisnis Anda).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Pelajari cara memperbarui payment method dan mengaktifkan kembali subscription.
+Pelajari cara memperbarui metode pembayaran dan mengaktifkan kembali subscription.
 </Card>
 </Accordion>
 </AccordionGroup>
@@ -577,14 +696,14 @@ Pelajari cara memperbarui payment method dan mengaktifkan kembali subscription.
 ## Kasus Penggunaan Umum
 
 - **SaaS dan API**: Akses bertingkat dengan add-on untuk seat atau usage
-- **Konten dan media**: Akses bulanan dengan trial pengenalan
-- **Paket dukungan B2B**: Kontrak tahunan dengan add-on dukungan premium
+- **Content dan media**: Akses bulanan dengan trial pengenalan
+- **Plan dukungan B2B**: Kontrak tahunan dengan add-on dukungan premium
 - **Tools dan plugin**: License key dan rilis berversi
 
 ## Contoh Integrasi
 
-### Checkout Sessions (subscriptions)
-Saat membuat checkout sessions, sertakan produk subscription dan add-on opsional:
+### Checkout Sessions (subscription)
+Saat membuat checkout session, sertakan product subscription dan add-on opsional:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Perubahan paket dengan proration
-Upgrade atau downgrade subscription dan kontrol perilaku proration:
+### Perubahan plan dengan proration
+Upgrade atau downgrade subscription dan kendalikan perilaku proration:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -609,7 +728,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 ### Membatalkan pada tanggal billing berikutnya
-Jadwalkan pembatalan yang berlaku pada akhir billing period saat ini:
+Jadwalkan pembatalan yang berlaku pada akhir periode billing saat ini:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -617,8 +736,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### Perpanjang periode langganan
-Perpanjang durasi langganan dengan meneruskan `subscription_period_count` dan `subscription_period_interval` baru ke `PATCH /subscriptions/{subscription_id}`. Waktu kedaluwarsa langganan dihitung ulang berdasarkan jumlah dan interval baru — misalnya, untuk memberikan waktu tambahan kepada pelanggan pada paket mereka saat ini:
+### Memperpanjang periode subscription
+Perpanjang durasi subscription dengan meneruskan `subscription_period_count` dan `subscription_period_interval` ke `PATCH /subscriptions/{subscription_id}`. Masa berlaku subscription dihitung ulang berdasarkan count dan interval baru — misalnya, untuk memberikan waktu tambahan kepada customer pada plan mereka saat ini:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -628,7 +747,7 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-Periode subscription hanya dapat **ditambah**, tidak dapat dipersingkat.
+Periode subscription hanya dapat **diperpanjang**, tidak dapat dipersingkat.
 </Note>
 
 ### Subscription on-demand
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### Memperbarui payment method untuk subscription aktif
-Perbarui payment method untuk subscription aktif:
+### Memperbarui metode pembayaran untuk subscription aktif
+Perbarui metode pembayaran untuk subscription aktif:
 
 ```typescript
 // Update with new payment method
@@ -672,7 +791,7 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 ```
 
 ### Mengaktifkan kembali subscription dari on_hold
-Aktifkan kembali subscription yang berstatus on hold karena payment gagal:
+Aktifkan kembali subscription yang masuk status on hold karena pembayaran gagal:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscription dengan Mandat yang Mematuhi RBI
+## Subscription dengan Mandate yang Mematuhi RBI
 
-  Subscription UPI dan kartu India beroperasi berdasarkan regulasi RBI (Reserve Bank of India) dengan persyaratan mandat tertentu:
+  Subscription UPI dan kartu India beroperasi berdasarkan regulasi RBI (Reserve Bank of India) dengan persyaratan mandate tertentu:
 
-  ### Batas Mandat
+  ### Batas Mandate
 
-  Jenis dan jumlah mandat bergantung pada biaya berulang subscription Anda:
+  Jenis dan jumlah mandate bergantung pada charge berulang subscription Anda:
 
-  - **Biaya di bawah batas minimum mandat (default ₹15,000):** Kami membuat mandat on-demand untuk jumlah batas minimum tersebut. Jumlah subscription ditagihkan secara berkala sesuai frekuensi subscription, hingga batas mandat.
-  - **Biaya pada atau di atas batas minimum mandat:** Kami membuat subscription mandate (atau on-demand mandate) untuk jumlah subscription yang tepat.
+  - **Charge di bawah batas minimum mandate (default ₹15,000):** Kami membuat mandate on-demand sebesar batas minimum tersebut. Jumlah subscription ditagihkan secara berkala sesuai frekuensi subscription, hingga batas mandate.
+  - **Charge pada atau di atas batas minimum mandate:** Kami membuat mandate subscription (atau mandate on-demand) sebesar jumlah subscription yang tepat.
 
-  Batas minimum mandat dapat dikonfigurasi per merchant atau per request melalui `mandate_min_amount_inr_paise` (paise INR). Jumlah yang didaftarkan ke bank adalah `max(mandate_floor, billing_amount)` — sehingga batas minimum tersebut secara efektif menjadi batas otorisasi yang dilihat pelanggan ketika billing lebih rendah.
+  Batas minimum mandate dapat dikonfigurasi per merchant atau per request melalui `mandate_min_amount_inr_paise` (paise INR). Jumlah yang didaftarkan ke bank adalah `max(mandate_floor, billing_amount)` — sehingga batas minimum tersebut secara efektif menjadi batas otorisasi yang dilihat customer setiap kali billing lebih rendah.
 
-Untuk informasi terperinci tentang mandat yang mematuhi RBI dan batas minimum mandat yang dapat dikonfigurasi untuk payment method India, lihat halaman <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
+Untuk informasi terperinci tentang mandate yang mematuhi RBI dan batas minimum mandate yang dapat dikonfigurasi untuk metode pembayaran India, lihat halaman <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
   ### Pertimbangan Upgrade dan Downgrade
 
-  **Penting:** Saat melakukan upgrade atau downgrade subscription, pertimbangkan batas mandat dengan cermat:
+  **Penting:** Saat melakukan upgrade atau downgrade subscription, pertimbangkan batas mandate dengan cermat:
 
-  - Jika upgrade/downgrade menghasilkan jumlah biaya yang melebihi Rs 15,000 dan melampaui batas payment on-demand yang ada, biaya transaksi dapat gagal.
-  - Dalam kasus tersebut, pelanggan mungkin perlu memperbarui payment method atau mengubah subscription lagi untuk membuat mandat baru dengan batas yang benar.
+  - Jika upgrade/downgrade menghasilkan jumlah charge yang melebihi Rs 15,000 dan melampaui batas pembayaran on-demand yang ada, charge transaksi dapat gagal.
+  - Dalam kasus tersebut, customer mungkin perlu memperbarui metode pembayaran atau mengubah subscription lagi untuk membuat mandate baru dengan batas yang sesuai.
 
-  ### Otorisasi untuk Biaya Bernilai Tinggi
+  ### Otorisasi untuk Charge Bernilai Tinggi
 
-  Untuk biaya subscription sebesar Rs 15,000 atau lebih:
+  Untuk charge subscription sebesar Rs 15,000 atau lebih:
 
-  - Bank pelanggan akan meminta pelanggan mengotorisasi transaksi.
-  - Jika pelanggan gagal mengotorisasi transaksi, transaksi akan gagal dan subscription akan berstatus on hold.
+  - Bank customer akan meminta mereka mengotorisasi transaksi.
+  - Jika customer gagal mengotorisasi transaksi, transaksi akan gagal dan subscription akan masuk status on hold.
 
   ### Penundaan Pemrosesan 48 Jam
 
-  **Timeline Pemrosesan:** Biaya berulang pada kartu India dan subscription UPI mengikuti pola pemrosesan yang unik:
+  **Linimasa Pemrosesan:** Charge berulang pada kartu India dan subscription UPI mengikuti pola pemrosesan khusus:
 
-  - Biaya **diinisiasi** pada tanggal yang dijadwalkan sesuai frekuensi subscription Anda.
-  - **Pemotongan** aktual dari rekening pelanggan hanya terjadi setelah **48 jam** sejak payment diinisiasi.
-  - Jendela 48 jam ini dapat bertambah hingga **2-3 jam tambahan**, bergantung pada respons API bank.
+  - Charge **dimulai** pada tanggal yang dijadwalkan sesuai frekuensi subscription Anda.
+  - **Pemotongan** aktual dari rekening customer hanya terjadi setelah **48 jam** sejak pembayaran dimulai.
+  - Jendela 48 jam ini dapat bertambah hingga **2–3 jam tambahan** bergantung pada respons API bank.
 
-  ### Jendela Pembatalan Mandat
+  ### Jendela Pembatalan Mandate
 
   Selama jendela pemrosesan 48 jam:
 
-  - Pelanggan dapat membatalkan mandat melalui aplikasi perbankan mereka.
-  - Jika pelanggan membatalkan mandat selama periode ini, subscription akan tetap **active** (ini adalah kasus khusus yang hanya berlaku untuk subscription Indian card dan UPI AutoPay).
-  - Namun, pemotongan aktual dapat gagal dan dalam kasus tersebut kami akan menempatkan subscription **on hold**.
+  - Customer dapat membatalkan mandate melalui aplikasi perbankan mereka.
+  - Jika customer membatalkan mandate selama periode ini, subscription akan tetap **active** (ini adalah kasus khusus untuk subscription Indian card dan UPI AutoPay).
+  - Namun, pemotongan aktual dapat gagal, dan dalam kasus tersebut kami akan menempatkan subscription dalam status **on hold**.
 
-  **Penanganan Kasus Khusus:** Jika Anda memberikan benefit, kredit, atau usage subscription kepada pelanggan segera setelah biaya diinisiasi, Anda perlu menangani jendela 48 jam ini dengan tepat dalam aplikasi. Pertimbangkan untuk:
+  **Penanganan Kasus Khusus:** Jika Anda memberikan manfaat, kredit, atau akses penggunaan subscription kepada customer segera setelah charge dimulai, Anda perlu menangani jendela 48 jam ini dengan tepat dalam aplikasi. Pertimbangkan:
 
-  - Menunda aktivasi benefit hingga payment dikonfirmasi
-  - Menerapkan grace period atau akses sementara
-  - Memantau status subscription untuk pembatalan mandat
-  - Menangani status subscription on hold dalam logika aplikasi
+  - Menunda aktivasi manfaat hingga pembayaran dikonfirmasi
+  - Menerapkan masa tenggang atau akses sementara
+  - Memantau status subscription untuk pembatalan mandate
+  - Menangani status hold subscription dalam logika aplikasi Anda
 
   <Tip>
-  Pantau webhook subscription untuk melacak perubahan status payment dan menangani kasus khusus ketika mandat dibatalkan selama jendela 48 jam.
+  Pantau webhook subscription untuk melacak perubahan status pembayaran dan menangani kasus khusus ketika mandate dibatalkan selama jendela 48 jam.
   </Tip>
 
 ## Praktik Terbaik
 
-- **Mulai dengan tier yang jelas**: 2–3 paket dengan perbedaan yang mudah dipahami
-- **Komunikasikan harga**: Tampilkan total, proration, dan perpanjangan berikutnya
-- **Gunakan trial secara bijak**: Tingkatkan konversi melalui onboarding, bukan sekadar durasi
-- **Manfaatkan add-on**: Buat paket dasar tetap sederhana dan tawarkan tambahan
-- **Uji perubahan**: Validasi perubahan paket dan proration dalam test mode
+- **Mulai dengan tier yang jelas**: 2–3 plan dengan perbedaan yang mudah dipahami
+- **Komunikasikan pricing**: Tampilkan total, proration, dan renewal berikutnya
+- **Gunakan trial dengan bijak**: Lakukan konversi melalui onboarding, bukan hanya waktu
+- **Manfaatkan add-on**: Buat plan dasar tetap sederhana dan tawarkan tambahan
+- **Uji perubahan**: Validasi perubahan plan dan proration dalam test mode
 
 <Info>
-Subscription adalah fondasi yang fleksibel untuk pendapatan berulang. Mulailah dengan sederhana, lakukan pengujian secara menyeluruh, lalu iterasikan berdasarkan metrik adopsi, churn, dan ekspansi.
+Subscription adalah fondasi fleksibel untuk pendapatan berulang. Mulailah dengan sederhana, lakukan pengujian menyeluruh, lalu iterasikan berdasarkan metrik adopsi, churn, dan ekspansi.
 </Info>

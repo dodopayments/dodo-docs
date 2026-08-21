@@ -351,20 +351,45 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
   نتبع مواصفات Standard Webhooks. يمكنك استخدام مكتباتهم للتحقق من التوقيعات: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). لمعرفة تنسيقات حمولات الأحداث، راجع [Webhook Payload](/developer-resources/webhooks/intents/payment).
 </Info>
 
-### الاستجابة إلى webhooks
+### عناوين IP المصدر
 
-* يجب أن يعيد معالج webhook لديك رمز `2xx status code` لتأكيد استلام الحدث.
+يُعد التحقق من التوقيع الطريقة المدعومة لمصادقة webhook. فهو يثبت أن الطلب وُقّع باستخدام سر webhook الخاص بك، وهو أمر لا يمكن لفحص على مستوى الشبكة إثباته.
+
+تُرسل عمليات تسليم webhook من مجموعة من عناوين IP المصدر التي تنتمي إلى بنية التسليم التحتية لدينا. تتغير هذه المجموعة من وقت لآخر، لذا تعامل مع العناوين باعتبارها تفاصيل تشغيلية وليست خاصية ثابتة للتكامل.
+
+<Warning>
+لا تستخدم قائمة سماح لعناوين IP المصدر كآلية للمصادقة. فقائمة السماح توضح فقط مصدر الطلب، ولا تثبت أنه حقيقي أو لم يتم تعديله — تحقّق من header `webhook-signature` في كل طلب، كما هو موضح في [التحقق من التوقيعات](#verifying-signatures).
+</Warning>
+
+إذا كانت بنيتك التحتية خلف جدار حماية يتطلب قائمة سماح صريحة، فضع الأمور التالية في الاعتبار:
+
+- **لا تُضمّن العناوين في الشيفرة بشكل دائم.** تُضاف النطاقات وتُزال بمرور الوقت، وقد تؤدي قاعدة قديمة إلى حظر عمليات التسليم دون إشعار.
+- **اطلب النطاقات الحالية** من [support@dodopayments.com](mailto:support@dodopayments.com) قبل تقييد جدار الحماية، لضمان استخدامك قائمة محدثة.
+- **راقب إشعارات التغيير.** عند تغيير عناوين التسليم، نُخطر التجار المتأثرين عبر البريد الإلكتروني — طبّق هذه التحديثات قبل التاريخ المحدد لتجنب فقدان عمليات التسليم.
+- **أبقِ التحقق من التوقيع مفعّلًا** بغض النظر عن أي قواعد شبكة تضيفها.
+
+<Tip>
+في منصات serverless والاستضافة المُدارة، غالبًا ما تكون تصفية IP الواردة غير متاحة أو غير عملية للصيانة. ويُعد التحقق من التوقيع عنصر التحكم الصحيح في هذه البيئات، ولا تكون هناك حاجة إلى قائمة سماح.
+</Tip>
+
+<Info>
+يُعامل التسليم المحظور مثل أي فشل آخر، وتتم إعادة محاولته وفق الجدول الموضح في [إعادة المحاولات التلقائية](#automatic-retries). إذا تسببت قواعد جدار الحماية في فشل عمليات التسليم، يمكنك إعادة إرسالها بعد إصلاح القواعد — راجع [إعادة تشغيل الرسائل واستردادها](#replaying-and-recovering-messages).
+</Info>
+
+### الاستجابة إلى Webhooks
+
+* يجب أن يعيد معالج webhook الخاص بك `2xx status code` للإقرار باستلام الحدث.
 * ستُعامل أي استجابة أخرى على أنها فشل، وستتم إعادة محاولة webhook.
 
 ### أفضل الممارسات
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  استخدم دائماً عناوين HTTPS URL لنقاط نهاية webhook. تكون نقاط نهاية HTTP عرضة لهجمات الرجل في الوسط وتكشف بيانات webhook الخاصة بك.
+  استخدم دائمًا عناوين HTTPS URL لنقاط نهاية webhook. تكون نقاط نهاية HTTP عرضة لهجمات الرجل في الوسط وتكشف بيانات webhook الخاصة بك.
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  أعد رمز الحالة `200` فوراً عند استلام webhook. عالج الحدث بشكل غير متزامن لتجنب انتهاء المهلات.
+  أعد رمز الحالة `200` فورًا عند استلام webhook. عالج الحدث بشكل غير متزامن لتجنب انتهاء المهلة.
   
 
   ```javascript
@@ -380,17 +405,17 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  نفّذ idempotency باستخدام ترويسة `webhook-id` لمعالجة الحدث نفسه عدة مرات بأمان دون آثار جانبية.
+  طبّق idempotency باستخدام header `webhook-id` لمعالجة الحدث نفسه عدة مرات بأمان دون آثار جانبية.
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  خزّن سر webhook بأمان باستخدام متغيرات البيئة أو مدير أسرار. لا تودع الأسرار مطلقاً في نظام التحكم بالإصدارات.
+  خزّن سر webhook بأمان باستخدام environment variables أو مدير أسرار. لا تُودع الأسرار أبدًا في نظام التحكم بالإصدارات.
 </Accordion>
 </AccordionGroup>
 
-## بنية حمولة webhook
+## بنية Payload الخاص بـ Webhook
 
-يساعدك فهم بنية حمولة webhook على تحليل الأحداث ومعالجتها بشكل صحيح.
+يساعدك فهم بنية payload الخاص بـ webhook على تحليل الأحداث ومعالجتها بشكل صحيح.
 
 ### تنسيق الطلب
 
@@ -399,10 +424,10 @@ POST /your-webhook-url
 Content-Type: application/json
 ```
 
-### الترويسات
+### Headers
 
 <ParamField header="webhook-id" type="string" required>
-معرّف فريد لحدث webhook هذا. استخدمه في عمليات التحقق من idempotency.
+معرّف فريد لحدث webhook هذا. استخدمه لإجراء فحوصات idempotency.
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
@@ -410,7 +435,7 @@ Content-Type: application/json
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
-طابع زمني Unix (بالثواني) لوقت إرسال webhook.
+طابع زمني Unix (بالثواني) يوضح وقت إرسال webhook.
 </ParamField>
 
 ### نص الطلب
@@ -420,26 +445,26 @@ Content-Type: application/json
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-نوع الحدث الذي شغّل webhook هذا (مثل `payment.succeeded` و`subscription.active`).
+نوع الحدث الذي أدى إلى تشغيل webhook هذا (مثل `payment.succeeded` أو `subscription.active`).
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-طابع زمني بتنسيق ISO 8601 لوقت وقوع الحدث.
+طابع زمني منسق وفق ISO 8601 يوضح وقت وقوع الحدث.
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-حمولة خاصة بالحدث تحتوي على معلومات تفصيلية عنه.
+Payload خاص بالحدث، ويحتوي على معلومات تفصيلية عنه.
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
   نوع المورد. أحد الأنواع التالية: `Payment` أو `Subscription` أو `Refund` أو `Dispute` أو `LicenseKey` أو `CreditLedgerEntry` أو `CreditBalanceLow` أو `AbandonedCheckout` أو `DunningAttempt` أو `EntitlementGrant` أو `Payout`.
   </ResponseField>
   
-  تختلف الحقول الإضافية حسب نوع الحدث. راجع وثائق الحدث المحددة لمعرفة المخططات الكاملة.
+  تختلف الحقول الإضافية حسب نوع الحدث. راجع وثائق الحدث المحدد للاطلاع على المخططات الكاملة.
 </Expandable>
 </ResponseField>
 
-### مثال على الحمولة
+### Payload نموذجي
 
 ```json
 {
@@ -455,23 +480,23 @@ Content-Type: application/json
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    تصفح جميع أنواع أحداث webhook المتاحة
+    تصفّح جميع أنواع أحداث webhook المتاحة
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    اعرض مخططات الحمولات التفصيلية لكل حدث
+    اعرض مخططات payload التفصيلية لكل حدث
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    استجب إلى `payment.failed` واسترد الدفعات المرفوضة
+    استجب إلى `payment.failed` واسترد المدفوعات المرفوضة
   </Card>
 </CardGroup>
 
-## اختبار webhooks
+## اختبار Webhooks
 
-يمكنك اختبار تكامل webhook مباشرةً من لوحة تحكم Dodo Payments للتأكد من عمل نقطة النهاية بشكل صحيح قبل إطلاقها.
+يمكنك اختبار تكامل webhook مباشرةً من لوحة تحكم Dodo Payments للتأكد من أن نقطة النهاية تعمل بشكل صحيح قبل بدء التشغيل الفعلي.
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    انتقل إلى لوحة تحكم Dodo Payments ثم إلى **Developer → Webhooks**.
+    انتقل إلى لوحة تحكم Dodo Payments، ثم انتقل إلى **Developer → Webhooks**.
 </Step>
 
 <Step title="Select Your Endpoint">
@@ -479,13 +504,13 @@ Content-Type: application/json
 </Step>
 
 <Step title="Open Testing Tab">
-    انقر على علامة التبويب **Testing** للوصول إلى واجهة اختبار webhook.
+    انقر على علامة تبويب **Testing** للوصول إلى واجهة اختبار webhook.
 </Step>
 </Steps>
 
 ### إرسال حدث نموذجي
 
-ترسل علامة التبويب **Testing** حمولة نموذجية إلى نقطة النهاية هذه حتى تتمكن من التحقق من مستقبِلك.
+ترسل علامة تبويب **Testing** payload نموذجيًا إلى نقطة النهاية هذه حتى تتمكن من التحقق من مستقبلك.
 
 <Steps>
 <Step title="Select Event Type">
@@ -493,10 +518,10 @@ Content-Type: application/json
 </Step>
 
 <Step title="Send Example">
-    انقر على **Send example**. تُسلّم الحمولة النموذجية إلى عنوان URL لنقطة النهاية تماماً كحدث حقيقي، وبالتوقيع نفسه.
+    انقر على **Send example**. يُسلّم payload النموذجي إلى عنوان URL لنقطة النهاية تمامًا مثل الحدث الحقيقي، ويُوقّع بالطريقة نفسها.
     
     <Warning>
-    لا تتم إعادة محاولة الرسائل الفاشلة المرسلة من علامة التبويب Testing. استخدمها للتحقق من المستقبِل، وليس لاختبار جدول إعادة المحاولة.
+    لا تتم إعادة محاولة الرسائل الفاشلة المُرسلة من علامة تبويب Testing. استخدمها للتحقق من مستقبلك، وليس لاختبار جدول إعادة المحاولات.
     </Warning>
 </Step>
 
@@ -507,7 +532,7 @@ Content-Type: application/json
 
 ### مثال على التنفيذ
 
-إليك تنفيذاً كاملاً باستخدام Express.js يوضح التحقق من webhook ومعالجته:
+إليك تنفيذًا كاملًا باستخدام Express.js يوضح التحقق من webhook ومعالجته:
 
 <CodeGroup>
 
@@ -600,14 +625,14 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-اختبر معالج webhook لديك بدقة باستخدام واجهة الاختبار في لوحة التحكم قبل معالجة أحداث الإنتاج. يساعدك ذلك على تحديد المشكلات وإصلاحها مبكراً.
+اختبر معالج webhook بشكل شامل باستخدام واجهة الاختبار في لوحة التحكم قبل معالجة أحداث الإنتاج. يساعد ذلك على تحديد المشكلات وإصلاحها مبكرًا.
 </Tip>
 
-## اختبار webhooks باستخدام CLI
+## اختبار Webhooks باستخدام CLI
 
 يوفر [Dodo Payments CLI](/developer-resources/sdks/cli) أمرين لاختبار webhooks أثناء التطوير المحلي، دون الحاجة إلى مغادرة الطرفية.
 
-### الاستماع إلى webhooks المباشرة محلياً
+### الاستماع إلى Webhooks المباشرة محليًا
 
 أعد توجيه أحداث webhook الحقيقية من حساب وضع الاختبار إلى خادم التطوير المحلي في الوقت الفعلي:
 
@@ -615,167 +640,167 @@ console.log("Test webhook sent successfully:", response.data);
 dodo wh listen
 ```
 
-يفتح CLI اتصال WebSocket بـ Dodo Payments ويعيد توجيه كل حدث webhook إلى نقطة النهاية المحلية (مثل `http://localhost:3000/webhook`)، مع الحفاظ على جميع الترويسات، بما فيها ترويسات التوقيع لاختبار التحقق.
+يفتح CLI اتصال WebSocket بـ Dodo Payments ويعيد توجيه كل حدث webhook إلى نقطة النهاية المحلية (مثل `http://localhost:3000/webhook`)، مع الحفاظ على جميع Headers، بما فيها Headers الخاصة بالتوقيع لاختبار التحقق.
 
 <Info>
-يعمل المستمع فقط مع مفاتيح API الخاصة بـ **test mode**. شغّل `dodo login` وحدد Test Mode قبل استخدام هذا الأمر.
+يعمل المستمع فقط مع مفاتيح API الخاصة بـ **test mode**. شغّل `dodo login` واختر Test Mode قبل استخدام هذا الأمر.
 </Info>
 
-### تشغيل أحداث webhook وهمية
+### تشغيل أحداث Webhook وهمية
 
-أرسل حمولات webhook وهمية إلى أي نقطة نهاية دون إنشاء معاملات حقيقية:
+أرسل payloads وهمية لـ webhook إلى أي نقطة نهاية دون إنشاء معاملات حقيقية:
 
 ```bash
 dodo wh trigger
 ```
 
-تتيح لك هذه الأداة التفاعلية اختيار نوع حدث وإرسال حمولة وهمية واقعية إلى نقطة النهاية. وتستمر في حلقة حتى تتمكن من اختبار أحداث متعددة في جلسة واحدة.
+تتيح لك هذه الأداة التفاعلية اختيار نوع حدث وإرسال payload وهمي واقعي إلى نقطة النهاية الخاصة بك. وتستمر في حلقة حتى تتمكن من اختبار أحداث متعددة في جلسة واحدة.
 
-يغطي أمر التشغيل جميع أنواع الأحداث البالغ عددها 46 والتي يسلّمها Dodo Payments، بما في ذلك عائلات الاشتراكات والدفع والاسترداد والنزاعات ومفاتيح الترخيص والمدفوعات والتحويلات والائتمانات وعمليات الدفع المتروكة والتحصيل ومنح الاستحقاقات — راجع [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) للاطلاع على القائمة الدقيقة.
+يغطي أمر التشغيل جميع أنواع الأحداث البالغ عددها 47 التي يسلّمها Dodo Payments، بما في ذلك عائلات الاشتراكات والمدفوعات والمبالغ المستردة والنزاعات ومفاتيح الترخيص وعمليات الدفع والائتمانات وعمليات الدفع المتروكة والتحصيل والمنح الخاصة بالاستحقاقات — راجع [أحداث Webhook المدعومة](/developer-resources/sdks/cli#supported-webhook-events) للاطلاع على القائمة الدقيقة.
 
 <Warning>
-حمولات webhook الوهمية من `dodo wh trigger` غير موقعة. استخدم `unsafe_unwrap()` بدلاً من `unwrap()` في معالج webhook أثناء الاختبار فقط.
+إن payloads الوهمية لـ webhook من `dodo wh trigger` غير موقّعة. استخدم `unsafe_unwrap()` بدلًا من `unwrap()` في معالج webhook الخاص بك أثناء الاختبار فقط.
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  راجع وثائق اختبار webhook الكاملة لـ CLI
+  راجع وثائق اختبار webhook الكاملة الخاصة بـ CLI
 </Card>
 
 ## الإعدادات المتقدمة
 
-توفر علامة التبويب **Advanced** خيارات إعداد إضافية لضبط سلوك نقطة نهاية webhook بدقة.
+توفر علامة تبويب **Advanced** خيارات تكوين إضافية لضبط سلوك نقطة نهاية webhook بدقة.
 
-### تحديد معدل الطلبات (Throttling)
+### تحديد معدل الإرسال (Throttling)
 
-تحكم في معدل تسليم أحداث webhook إلى نقطة النهاية لمنع إغراق نظامك.
+تحكم في معدل تسليم أحداث webhook إلى نقطة النهاية لمنع إرهاق نظامك.
 
 <Steps>
 <Step title="Open Advanced Tab">
-    من صفحة تفاصيل نقطة النهاية، انقر على علامة التبويب **Advanced**.
+    من صفحة تفاصيل نقطة النهاية، انقر على علامة تبويب **Advanced**.
 </Step>
 
 <Step title="Configure Rate Limit">
-    في قسم "Rate Limit (throttling)"، انقر على **Edit** لتعديل إعدادات تحديد المعدل.
+    في قسم "Rate Limit (throttling)"، انقر على **Edit** لتعديل إعدادات حد المعدل.
     
     <Info>
-    لا تُطبّق webhooks أي حد للمعدل افتراضياً، ما يعني تسليم الأحداث فور وقوعها.
+    لا يتم تطبيق حد معدل على webhooks افتراضيًا، ما يعني أن الأحداث تُسلّم فور وقوعها.
     </Info>
 </Step>
 
 <Step title="Set Your Limit">
-    اضبط حد المعدل المطلوب للتحكم في تكرار تسليم webhook ومنع تحميل النظام بشكل زائد.
+    اضبط حد المعدل المطلوب للتحكم في وتيرة تسليم webhook ومنع زيادة الحمل على النظام.
 </Step>
 </Steps>
 
 <Tip>
-استخدم تحديد المعدل عندما يحتاج معالج webhook إلى وقت لمعالجة الأحداث أو عندما تريد تجميع أحداث متعددة معاً.
+استخدم تحديد معدل الإرسال عندما يحتاج معالج webhook إلى وقت لمعالجة الأحداث أو عندما تريد تجميع عدة أحداث معًا.
 </Tip>
 
-### الترويسات المخصصة
+### Headers مخصصة
 
-أضف ترويسات HTTP مخصصة إلى جميع طلبات webhook المرسلة إلى نقطة النهاية. يفيد ذلك في المصادقة أو التوجيه أو إضافة بيانات وصفية.
+أضف Headers مخصصة إلى جميع طلبات webhook المُرسلة إلى نقطة النهاية. يفيد ذلك في المصادقة أو التوجيه أو إضافة البيانات الوصفية.
 
 <Steps>
 <Step title="Add Headers">
-    في قسم "Custom Headers"، أدخل **Key** و**Value** لكل ترويسة مخصصة.
+    في قسم "Custom Headers"، أدخل **Key** و**Value** لكل Header مخصص.
 </Step>
 
 <Step title="Add Multiple Headers">
-    انقر على الزر **+** لإضافة ترويسات مخصصة إضافية حسب الحاجة.
+    انقر على زر **+** لإضافة Headers مخصصة إضافية حسب الحاجة.
 </Step>
 </Steps>
 
-تُضمّن ترويساتك المخصصة في جميع طلبات webhook إلى نقطة النهاية هذه.
+تُضمّن Headers المخصصة في جميع طلبات webhook إلى نقطة النهاية هذه.
 
 ### التحويلات
 
-تتيح لك التحويلات تعديل حمولة webhook وإعادة توجيهها اختيارياً إلى عنوان URL مختلف. وتمكّنك هذه الميزة القوية من:
+تتيح لك التحويلات تعديل payload الخاص بـ webhook وإعادة توجيهه اختياريًا إلى عنوان URL مختلف. وتمكّنك هذه الميزة القوية من:
 
-- تعديل بنية الحمولة قبل المعالجة
-- توجيه webhooks إلى نقاط نهاية مختلفة استناداً إلى المحتوى
-- إضافة حقول إلى الحمولة أو إزالتها
+- تعديل بنية payload قبل المعالجة
+- توجيه webhooks إلى نقاط نهاية مختلفة استنادًا إلى المحتوى
+- إضافة الحقول إلى payload أو إزالتها
 - تحويل تنسيقات البيانات
 
 <Steps>
 <Step title="Enable Transformations">
-    فعّل مفتاح **Enabled** لتنشيط ميزة التحويل.
+    بدّل مفتاح **Enabled** لتفعيل ميزة التحويل.
 </Step>
 
 <Step title="Configure Transformation">
-    انقر على **Edit transformation** لتحديد قواعد التحويل باستخدام JavaScript.
+    انقر على **Edit transformation** لتعريف قواعد التحويل باستخدام JavaScript.
 </Step>
 
 <Step title="Test Transformation">
-    استخدم واجهة اختبار التحويل للتحقق من عمل التحويل بشكل صحيح قبل إطلاقه.
+    استخدم واجهة اختبار التحويل للتحقق من عمل التحويل بشكل صحيح قبل بدء التشغيل الفعلي.
 </Step>
 </Steps>
 
 <Warning>
-قد تؤثر التحويلات في أداء تسليم webhook. اختبرها بدقة وحافظ على بساطة منطق التحويل وكفاءته.
+قد تؤثر التحويلات في أداء تسليم webhook. اختبرها بشكل شامل وحافظ على بساطة منطق التحويل وكفاءته.
 </Warning>
 
 <Tip>
-تفيد التحويلات بشكل خاص في:
+تكون التحويلات مفيدة بشكل خاص في:
 - التحويل بين تنسيقات بيانات مختلفة
-- تصفية الأحداث استناداً إلى معايير محددة
-- إضافة حقول محسوبة إلى الحمولة
-- توجيه الأحداث إلى خدمات مصغرة مختلفة
+- تصفية الأحداث استنادًا إلى معايير محددة
+- إضافة حقول محسوبة إلى payload
+- توجيه الأحداث إلى microservices مختلفة
 </Tip>
 
-## مراقبة سجلات webhook
+## مراقبة سجلات Webhook
 
-توفر علامة التبويب **Logs** رؤية شاملة لحالة تسليم webhook، مما يتيح لك مراقبة أحداث webhook وتصحيحها وإدارتها بفعالية.
+توفر علامة تبويب **Logs** رؤية شاملة لحالة تسليم webhook، ما يتيح لك مراقبة أحداث webhook وتصحيح أخطائها وإدارتها بفعالية.
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    انتقل إلى **Developer → Webhooks** وافتح علامة التبويب **Logs**.
+    انتقل إلى **Developer → Webhooks** وافتح علامة تبويب **Logs**.
 </Step>
 
 <Step title="Browse Delivery History">
-    اعرض جدولاً يضم جميع محاولات تسليم webhook، مع أعمدة لنوع الحدث ومعرّف الرسالة ومعرّف الحدث ووقت الإرسال ووقت المحاولة ورمز الاستجابة والمدة.
+    اعرض جدولًا يضم جميع محاولات تسليم webhook، مع أعمدة لنوع الحدث، ومعرّف الرسالة، ومعرّف الحدث، ووقت الإرسال، ووقت المحاولة، ورمز الاستجابة، والمدة.
 </Step>
 
 <Step title="Search and Filter">
-    استخدم شريط البحث للعثور على رسائل محددة بالمعرّف أو نوع الحدث. صفِّ حسب الحالة (Succeeded أو Failed أو Pending وغير ذلك) للتركيز على الأحداث التي تحتاج إلى التحقيق.
+    استخدم شريط البحث للعثور على رسائل محددة حسب المعرّف أو نوع الحدث. ويمكنك التصفية حسب الحالة (Succeeded أو Failed أو Pending وما إلى ذلك) للتركيز على الأحداث التي تحتاج إلى التحقيق فيها.
 </Step>
 
 <Step title="View Message Details">
-    انقر على أي رسالة لفتح صفحة تفاصيلها، التي تعرض:
-    - حمولة webhook الكاملة
+    انقر على أي رسالة لفتح صفحة تفاصيل الرسالة، التي تعرض:
+    - Payload الكامل لـ webhook
     - كل محاولة تسليم مع رمز الاستجابة والمدة
     - الطابع الزمني لكل محاولة
-    - أي رسائل خطأ من نقطة النهاية
+    - أي رسائل خطأ من نقطة النهاية الخاصة بك
 
-    تتضمن كل محاولة إجراء **Replay**، حتى تتمكن من إعادة إرسال تلك الرسالة دون مغادرة الصفحة.
+    تتضمن كل محاولة إجراء **Replay**، حتى تتمكن من إعادة دفع تلك الرسالة دون مغادرة الصفحة.
 </Step>
 </Steps>
 
 ## مراقبة النشاط
 
-انتقل إلى **Developer → Webhooks** وافتح علامة التبويب **Activity** لعرض أداء التسليم عبر نقاط النهاية.
+انتقل إلى **Developer → Webhooks** وافتح علامة تبويب **Activity** لعرض أداء التسليم عبر نقاط النهاية الخاصة بك.
 
-يعرض **Delivery activity** المحاولات بمرور الوقت، مجمّعة على شكل **Attempts per 5 minutes** أو **Attempts per hour** أو **Attempts per day** وفقاً للفترة. يُقسّم كل شريط حسب النتيجة، ويعرض تمرير المؤشر فوق مقطع الحالة وعدد المحاولات ونسبته من الإجمالي. وفي نقطة النهاية، تلخّص **Delivery stats (last 24h)** في علامة التبويب **Overview** المعلومات نفسها لليوم السابق.
+يعرض **Delivery activity** المحاولات بمرور الوقت، مجمّعةً في **Attempts per 5 minutes** أو **Attempts per hour** أو **Attempts per day** وفقًا للإطار الزمني. ينقسم كل شريط حسب النتيجة، ويؤدي تمرير المؤشر فوق مقطع إلى عرض الحالة وعدد المحاولات ونسبته من الإجمالي. وفي نقطة النهاية، تلخص **Delivery stats (last 24h)** في علامة تبويب **Overview** المعلومات نفسها لليوم الماضي.
 
 <Tip>
-يخبرك عمود **Error rate (24h)** في علامة التبويب **Endpoints** فوراً بنقاط النهاية التي تحتاج إلى اهتمام، قبل فتح أي منها.
+يوضح عمود **Error rate (24h)** في علامة تبويب **Endpoints** بسرعة نقاط النهاية التي تحتاج إلى اهتمام، قبل فتح أي منها.
 </Tip>
 
 ## إعادة تشغيل الرسائل واستردادها
 
-تعتمد طريقة إعادة إرسال الرسالة على عدد الرسائل التي تحتاج إليها:
+تعتمد طريقة إعادة دفع الرسالة على عدد الرسائل التي تحتاج إليها:
 
-- **رسالة واحدة** — افتحها من علامة التبويب **Logs** واستخدم إجراء **Replay** على المحاولة. لا حاجة إلى فتح نقطة النهاية.
-- **نطاق من الرسائل** — افتح نقطة النهاية، إذ تعمل الأوضاع المجمّعة على نقطة نهاية واحدة في كل مرة.
+- **رسالة واحدة** — افتحها من علامة تبويب **Logs** واستخدم إجراء **Replay** على المحاولة. لا حاجة إلى فتح نقطة النهاية.
+- **نطاق من الرسائل** — افتح نقطة النهاية، إذ تعمل أوضاع المعالجة المجمعة على نقطة نهاية واحدة في كل مرة.
 
-### إعادة التشغيل بشكل مجمّع
+### إعادة التشغيل بشكل مجمع
 
 افتح نقطة النهاية من **Developer → Webhooks**. تتوفر ثلاثة أوضاع، يعمل كل منها على نقطة النهاية وحدها. يعتمد النطاق الذي تحدده على الوضع:
 
 | الوضع | ما يفعله | ما تحدده |
 |------|--------------|--------------|
-| **Recover failed messages** | يعيد تشغيل كل رسالة فاشلة إلى نقطة النهاية هذه. | نقطة بداية: **8 hours ago** أو **Yesterday** أو **3 days ago** أو **Last week** أو **2 weeks ago** |
-| **Replay missing messages** | يعيد تشغيل الرسائل التي لم تُرسل مطلقاً إلى نقطة النهاية، مثل ما يحدث بعد اشتراكها في نوع حدث جديد. | نقاط البداية نفسها |
-| **Bulk replay messages** | يعيد تشغيل الرسائل المطابقة لعوامل التصفية التي تختارها، بما فيها الرسائل التي سُلّمت بنجاح مسبقاً. | حدود **Since** و**Until**، وتكون افتراضياً للأسبوعين الماضيين، بالإضافة إلى أنواع الأحداث أو القناة أو الوسم اختيارياً |
+| **Recover failed messages** | يعيد تشغيل كل رسالة إلى نقطة النهاية هذه فشلت. | نقطة بداية: **منذ 8 ساعات** أو **أمس** أو **منذ 3 أيام** أو **الأسبوع الماضي** أو **منذ أسبوعين** |
+| **Replay missing messages** | يعيد تشغيل الرسائل التي لم يتم إرسالها إلى نقطة النهاية هذه مطلقًا، مثلًا بعد الاشتراك في نوع حدث جديد. | نقاط البداية نفسها |
+| **Bulk replay messages** | يعيد تشغيل الرسائل المطابقة لعوامل التصفية التي تختارها، بما فيها الرسائل التي سُلّمت بنجاح من قبل. | حدّا **Since** و**Until**، مع الإعداد الافتراضي على الأسبوعين الماضيين، بالإضافة إلى أنواع أحداث أو channel أو tag اختيارية |
 
 <Steps>
 <Step title="Open More Actions">
@@ -783,31 +808,31 @@ dodo wh trigger
 </Step>
 
 <Step title="Set the Range">
-    أدخل النطاق الذي يطلبه الوضع، كما هو موضح في الجدول.
+    أدخل النطاق الذي يطلبه الوضع، كما هو مذكور في الجدول.
 </Step>
 
 <Step title="Start the Run">
-    انقر على **Recover** أو **Replay** وفقاً للوضع الذي اخترته.
+    انقر على **Recover** أو **Replay**، وفقًا للوضع الذي اخترته.
 </Step>
 </Steps>
 
-يظهر كل تشغيل ضمن **Replay history** في علامة التبويب **Overview** لنقطة النهاية، مع وضعه ونطاقه الزمني وحالته وعدد الرسائل التي أُعيد إرسالها.
+يظهر كل تشغيل ضمن **Replay history** في علامة تبويب **Overview** الخاصة بنقطة النهاية، مع وضعه ونطاقه الزمني وحالته وعدد الرسائل التي أُعيد إرسالها.
 
 ## تنبيهات البريد الإلكتروني
 
-تلقَّ إشعاراً عبر البريد الإلكتروني عند فشل تسليم webhooks إلى نقطة نهاية، حتى تتمكن من معالجة المشكلات قبل تحولها إلى تراكم.
+استلم إشعارًا عبر البريد الإلكتروني عند فشل عمليات تسليم webhook إلى نقطة نهاية، حتى تتمكن من معالجة المشكلات قبل تحولها إلى تراكمات.
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  انتقل إلى **Developer → Webhooks** وافتح علامة التبويب **Settings**.
+  انتقل إلى **Developer → Webhooks** وافتح علامة تبويب **Settings**.
 </Step>
 
 <Step title="Find Email Alerting">
-  حدد بطاقة **Email alerting**.
+  حدّد بطاقة **Email alerting**.
 </Step>
 
 <Step title="Configure Email Addresses">
-  أدخل العناوين التي يجب أن تتلقى التنبيهات. افصل بين العناوين المتعددة بفواصل، واترك الحقل فارغاً لتعطيل التنبيهات.
+  أدخل العناوين التي ينبغي أن تتلقى التنبيهات. افصل بين العناوين المتعددة بفواصل، واترك الحقل فارغًا لإيقاف التنبيهات.
 </Step>
 
 <Step title="Save">
@@ -816,7 +841,7 @@ dodo wh trigger
 </Steps>
 
 <Tip>
-فعّل تنبيهات البريد الإلكتروني لاكتشاف مشكلات تسليم webhook مبكراً والحفاظ على تكاملات موثوقة.
+فعّل تنبيهات البريد الإلكتروني لاكتشاف مشكلات تسليم webhook مبكرًا والحفاظ على تكاملات موثوقة.
 </Tip>
 
 ## النشر على المنصات السحابية
@@ -825,16 +850,16 @@ dodo wh trigger
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    نشر webhooks على Vercel باستخدام وظائف serverless
+    انشر webhooks على Vercel باستخدام serverless functions
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    تشغيل webhooks على شبكة Cloudflare الطرفية
+    شغّل webhooks على شبكة Cloudflare الطرفية
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    دمج webhooks مع Supabase
+    ادمج webhooks مع Supabase
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    نشر webhooks كوظائف serverless في Netlify
+    انشر webhooks كـ Netlify serverless functions
   </Card>
 </CardGroup>
 
@@ -842,11 +867,11 @@ dodo wh trigger
 يتضمن كل دليل خاص بمنصة إعداد البيئة والتحقق من التوقيع وخطوات النشر الخاصة بموفر الخدمة.
 </Info>
 
-## مرجع API ذي صلة
+## مرجع API ذي الصلة
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  مرجع API لإنشاء نقاط نهاية webhook وإعدادها برمجياً
+  مرجع API لإنشاء نقاط نهاية webhook وتهيئتها برمجيًا
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
   مرجع API لاسترداد نقاط نهاية webhook وإدارتها

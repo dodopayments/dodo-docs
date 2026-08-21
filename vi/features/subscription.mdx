@@ -415,22 +415,119 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Xem trước các thay đổi plan trước khi xác nhận.
 </Card>
 
-## Trạng thái Subscription
+## Tạm dừng và tiếp tục Subscription
 
-Một subscription sẽ trải qua một tập hợp trạng thái được xác định trong suốt vòng đời. Bảng này là tài liệu tham chiếu cho từng trạng thái, nguyên nhân tạo ra trạng thái đó và cách (hoặc liệu) bạn có thể khôi phục hay không.
+Tạm dừng sẽ đóng băng subscription thay vì kết thúc subscription. Việc lập hóa đơn dừng lại, quyền truy cập bị thu hồi, còn subscription vẫn giữ nguyên plan và lịch sử để customer có thể tiếp tục chính xác từ nơi họ đã dừng. Hãy sử dụng tính năng này như một lựa chọn giữ chân customer thay cho việc hủy.
 
-| Trạng thái | Ý nghĩa | Có thể khôi phục? | Cách khôi phục / bước tiếp theo |
-|--------|---------------|--------------|---------------------------|
-| `pending` | Subscription đang được tạo hoặc xử lý | — | Chờ `subscription.active` (hoặc `subscription.failed`) |
-| `active` | Subscription đang hoạt động và sẽ tự động gia hạn | — | Không cần thao tác |
-| `on_hold` | Payment gia hạn (hoặc khoản phí thay đổi plan) thất bại; subscription bị tạm dừng | **Có** | Cập nhật payment method để kích hoạt lại — tự động qua [Payment Retries](/features/recovery/payment-retries) và [Dunning](/features/recovery/subscription-dunning), hoặc thủ công qua [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | Subscription đã bị hủy và sẽ không gia hạn | Chỉ mua lại | Khách hàng phải bắt đầu subscription mới; [Dunning](/features/recovery/subscription-dunning) có thể nhắc khách hàng mua lại |
-| `failed` | **Tạo** subscription thất bại (mandate hoặc payment ban đầu không thành công) | **Không — trạng thái kết thúc** | Khách hàng phải tạo subscription mới bằng payment method hoạt động |
-| `expired` | Subscription đã đến cuối thời hạn | — | Khách hàng phải bắt đầu subscription mới nếu có nhu cầu |
+Mở bất kỳ subscription đang active nào trong **Sales → Subscriptions** rồi nhấp **Pause subscription**. Trạng thái sẽ chuyển thành `paused` và các lần gia hạn sẽ dừng cho đến khi subscription được tiếp tục.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Subscription details page in the dashboard showing the Update, Pause subscription, and Cancel Subscription buttons" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### Điều gì xảy ra khi bạn tạm dừng
+
+- **Các lần gia hạn dừng lại.** Không có invoice nào được tạo và không có khoản phí gia hạn nào được thực hiện trong khi subscription bị tạm dừng.
+- **Quyền truy cập bị thu hồi ngay lập tức.** Việc tạm dừng sẽ thu hồi mọi [entitlement grant](/features/entitlements/introduction) đã cấp và đang chờ cấp trên subscription, vô hiệu hóa [license keys](/features/license-keys) và ngừng cấp URL tải xuống [digital product](/features/digital-product-delivery) mới. Khi tiếp tục, các quyền này sẽ được cấp lại, giống như khi khôi phục từ `on_hold`.
+- **Đồng hồ billing đóng băng.** `next_billing_date` và `expires_at` đều tiến về sau chính xác bằng thời lượng tạm dừng, để customer giữ được khoảng thời gian họ đã thanh toán.
+- **Không có giới hạn về thời lượng tạm dừng.** Subscription bị tạm dừng sẽ tiếp tục ở trạng thái đó cho đến khi có người tiếp tục. Bạn không cần đặt trước thời lượng tạm dừng.
 
 <Warning>
-`on_hold` và `failed` thường bị nhầm lẫn. `on_hold` là trạng thái **có thể khôi phục** của subscription đã hoạt động nhưng gia hạn thất bại. `failed` là trạng thái **kết thúc** chỉ xảy ra khi việc **tạo** subscription ban đầu thất bại — không thể kích hoạt lại trạng thái này.
+Tạm dừng sẽ thu hồi quyền truy cập ngay lập tức, không phải khi kết thúc billing period. Nếu subscription kiểm soát quyền truy cập vào product của bạn, hãy thông báo rõ điều này cho customer trước khi họ xác nhận.
 </Warning>
+
+Việc tiếp tục sẽ đưa subscription về `active` và khôi phục các entitlement. Vì đồng hồ đã bị đóng băng, lần gia hạn tiếp theo sẽ diễn ra muộn hơn lịch ban đầu một khoảng bằng thời lượng tạm dừng — subscription bị tạm dừng 12 ngày sẽ gia hạn muộn 12 ngày.
+
+### Tạm dừng Subscription tính phí theo usage
+
+Một subscription [tính phí theo usage](/features/usage-based-billing/introduction) có thể có usage đã được ghi nhận nhưng chưa được lập hóa đơn tại thời điểm bị tạm dừng. Tùy chọn **Bill Usage at Pause** trong **Settings → Subscriptions** quyết định cách xử lý usage đó:
+
+| Setting | Behavior |
+|---------|----------|
+| **On** (mặc định) | Dodo Payments tạo invoice cho usage phát sinh kể từ ngày billing gần nhất và thu tiền ngay lập tức. |
+| **Off** | Usage chưa thanh toán được chuyển tiếp và lập hóa đơn trong invoice định kỳ tiếp theo của subscription. |
+
+Chỉ usage được đo lường mới được quyết toán theo cách này — recurring base fee không bao giờ bị tính tại thời điểm tạm dừng. Subscription Standard và on-demand không có khoản nào cần quyết toán, nên setting này không ảnh hưởng đến chúng.
+
+<Info>
+**Bill Usage at Pause** được ghi nhận theo từng billing cycle. Việc thay đổi tùy chọn giữa cycle không thay đổi cách cycle đang diễn ra được quyết toán; giá trị mới sẽ áp dụng từ cycle tiếp theo.
+</Info>
+
+<Warning>
+Settlement invoice được thu như mọi invoice khác, vì vậy việc thu tiền có thể thất bại. Nếu invoice vẫn chưa được thanh toán sau grace period của [dunning](/features/recovery/subscription-dunning), subscription sẽ chuyển sang `on_hold` nhưng vẫn được đánh dấu là đã tạm dừng.
+</Warning>
+
+Subscription ở trạng thái này có hai cách thoát và chúng khác nhau ở bên chịu khoản usage chưa thanh toán:
+
+| Exit | Result |
+|------|--------|
+| Settlement invoice được thanh toán | Subscription trở về `paused`, không phải `active`. Hãy tiếp tục subscription một cách rõ ràng khi customer sẵn sàng. |
+| Bạn tiếp tục subscription trực tiếp | Subscription chuyển thẳng sang `active` và settlement invoice chưa thanh toán sẽ được **void**, cùng với các lần retry đang chờ. Usage còn nợ được ghi giảm. |
+
+<Info>
+Tiếp tục subscription là một cách hợp lệ để thoát khỏi trạng thái hold này — bạn không cần thu settlement invoice trước. Tuy nhiên, cần lưu ý rằng việc tiếp tục sẽ miễn khoản usage còn nợ thay vì chuyển khoản đó sang kỳ sau.
+</Info>
+
+### Cho phép Customer tự tạm dừng Subscription
+
+**Allow Subscription Pause** trong **Settings → Subscriptions** kiểm soát việc customer có thể tạm dừng và tiếp tục từ Customer Portal hay không. Tùy chọn này **tắt theo mặc định**, vì vậy tính năng tự tạm dừng cần được chủ động bật.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Subscriptions settings tab showing the Allow Subscription Pause and Bill Usage at Pause toggles" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Setting này chỉ áp dụng cho Customer Portal. Bạn luôn có thể tạm dừng và tiếp tục từ dashboard hoặc API, bất kể trạng thái của toggle.
+
+Việc tắt tùy chọn này sẽ ngăn các yêu cầu tạm dừng mới từ customer, nhưng không giữ customer hiện đang tạm dừng ở trạng thái đó — họ vẫn có thể tiếp tục subscription mà họ đã tự tạm dừng. Các lần tạm dừng do bạn thực hiện vẫn thuộc quyền kiểm soát của bạn.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+Xem những gì customer nhìn thấy, bao gồm cả hộp thoại xác nhận.
+</Card>
+
+### Tạm dừng qua API
+
+Tạm dừng và tiếp tục là một field `pause` duy nhất trên endpoint update subscription. Không có endpoint tạm dừng riêng.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` không thể được gửi cùng bất kỳ field nào khác — gửi field này cùng với bất kỳ field nào khác sẽ bị từ chối với `422`. Đặt `status` thành `paused` **không** làm subscription tạm dừng; thay vào đó, hãy sử dụng field `pause`.
+</Warning>
+
+Tạm dừng phát ra `subscription.paused` và tiếp tục phát ra `subscription.unpaused`. Cả hai đều chứa subscription object đầy đủ, với `paused_at` được đặt trong thời gian tạm dừng và `null` sau khi tiếp tục.
+
+### Tạm dừng và các thao tác Subscription khác
+
+- **Việc hủy vẫn hoạt động.** Bạn có thể hủy subscription bị tạm dừng giống hệt subscription đang active. Mọi settlement invoice đang mở từ lần tạm dừng sẽ bị void khi bạn thực hiện việc này.
+- **Các thay đổi plan đã lên lịch bị trì hoãn, không bị loại bỏ.** [Plan change](#subscription-plan-changes) được lên lịch vào ngày billing tiếp theo sẽ giữ nguyên trong khi subscription bị tạm dừng, sau đó được áp dụng vào ngày billing đã dịch chuyển khi subscription tiếp tục. `scheduled_change.effective_at` của thay đổi là snapshot tại thời điểm lên lịch và không được điều chỉnh theo thời gian tạm dừng, nên có thể hiển thị một ngày trong quá khứ — hãy hiểu đó là “đã được lên lịch vào”, không phải ngày được đảm bảo. Để loại bỏ thay đổi thay vì tiếp tục áp dụng, hãy sử dụng [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
+## Các trạng thái Subscription
+
+Một subscription sẽ đi qua một tập hợp status được xác định trong suốt vòng đời. Bảng này là tài liệu tham chiếu cho mọi status, nguyên nhân tạo ra status đó và cách (hoặc liệu có thể) khôi phục hay không.
+
+| Status | Ý nghĩa | Có thể khôi phục? | Cách khôi phục / bước tiếp theo |
+|--------|---------|------------------|-------------------------------|
+| `pending` | Subscription đang được tạo hoặc xử lý | — | Chờ `subscription.active` (hoặc `subscription.failed`) |
+| `active` | Subscription đang active và sẽ tự động gia hạn | — | Không cần thao tác |
+| `on_hold` | Khoản thanh toán gia hạn (hoặc phí thay đổi plan) thất bại; các lần gia hạn đã dừng | **Có** | Cập nhật payment method để kích hoạt lại — tự động qua [Payment Retries](/features/recovery/payment-retries) và [Dunning](/features/recovery/subscription-dunning), hoặc thủ công qua [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | Subscription được bạn hoặc customer chủ động tạm dừng; billing bị đóng băng và quyền truy cập bị thu hồi | **Có** | Tiếp tục bằng `pause: false` hoặc từ Customer Portal khi tính năng tự tạm dừng được bật — xem [Tạm dừng và tiếp tục Subscription](#pausing-and-resuming-subscriptions) |
+| `cancelled` | Subscription đã bị hủy và sẽ không gia hạn | Chỉ mua lại | Customer phải bắt đầu subscription mới; [Dunning](/features/recovery/subscription-dunning) có thể nhắc customer mua lại |
+| `failed` | **Việc tạo** subscription thất bại (mandate ban đầu hoặc payment không thành công) | **Không — trạng thái kết thúc** | Customer phải tạo subscription mới với payment method hoạt động |
+| `expired` | Subscription đã đến cuối term | — | Customer phải bắt đầu subscription mới nếu có nhu cầu |
+
+<Warning>
+`on_hold` và `failed` thường bị nhầm lẫn. `on_hold` là trạng thái **có thể khôi phục** của một subscription đã active nhưng gia hạn thất bại. `failed` là trạng thái **kết thúc** chỉ xảy ra khi **việc tạo subscription ban đầu** thất bại — không thể kích hoạt lại trạng thái này.
+</Warning>
+
+<Info>
+`on_hold` và `paused` cũng khác nhau. `on_hold` là trạng thái ngoài ý muốn — một payment đã thất bại. `paused` là trạng thái chủ động — bạn hoặc customer đã chọn đóng băng subscription và không có lần gia hạn nào được thực hiện trong thời gian subscription bị tạm dừng. Subscription tính phí theo usage vẫn có thể còn một settlement invoice cần thanh toán tại thời điểm bị tạm dừng; xem [Tạm dừng Subscription tính phí theo usage](#pausing-usage-based-subscriptions).
+</Info>
 
 ### State Machine
 
@@ -441,8 +538,13 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
@@ -454,21 +556,26 @@ stateDiagram-v2
 Subscription chuyển sang trạng thái `on_hold` khi:
 
 - Payment gia hạn thất bại (không đủ tiền, thẻ hết hạn, v.v.)
-- Khoản phí thay đổi plan thất bại
-- Ủy quyền payment method thất bại
+- Phí thay đổi plan thất bại
+- Việc ủy quyền payment method thất bại
+- [Pause settlement invoice](#pausing-usage-based-subscriptions) của subscription tính phí theo usage không được thanh toán
 
 <Warning>
 Khi subscription ở trạng thái `on_hold`, subscription sẽ không tự động gia hạn. Bạn phải cập nhật payment method để kích hoạt lại subscription.
 </Warning>
 
-### Kích hoạt lại từ On Hold
+### Kích hoạt lại từ trạng thái On Hold
 
-Để kích hoạt lại subscription từ trạng thái `on_hold`, hãy cập nhật payment method. Thao tác này tự động:
+Để kích hoạt lại subscription từ trạng thái `on_hold`, hãy cập nhật payment method. Thao tác này sẽ tự động:
 
-1. Tạo khoản phí cho các khoản còn nợ
-2. Tạo hóa đơn
+1. Tạo khoản charge cho các khoản còn nợ
+2. Tạo invoice
 3. Xử lý payment bằng payment method mới
-4. Chuyển subscription về trạng thái `active` sau khi payment thành công
+4. Đưa subscription về trạng thái `active` sau khi payment thành công
+
+<Note>
+Ngoại lệ duy nhất là trạng thái hold do pause settlement invoice chưa thanh toán. Việc thanh toán invoice đó sẽ đưa subscription về `paused`, không phải `active`, vì subscription đang ở trạng thái tạm dừng trước khi payment thất bại. Hãy tiếp tục subscription một cách rõ ràng sau khi invoice được quyết toán.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,25 +595,25 @@ if (response.payment_id) {
 ```
 
 <Info>
-Sau khi cập nhật thành công payment method cho subscription `on_hold`, bạn sẽ nhận được webhook event `payment.succeeded`, tiếp theo là `subscription.active`.
+Sau khi cập nhật payment method thành công cho subscription `on_hold`, bạn sẽ nhận được các webhook event `payment.succeeded` rồi đến `subscription.active`.
 </Info>
 
-### Webhook Event theo Chuyển đổi Trạng thái
+### Webhook Event theo Transition
 
-Mỗi lần chuyển đổi sẽ phát ra một webhook để bạn có thể điều khiển logic entitlement mà không cần polling:
+Mỗi transition sẽ phát ra một webhook để bạn có thể triển khai logic entitlement mà không cần polling:
 
-| Chuyển đổi | Sự kiện |
+| Transition | Event |
 |------------|-------|
 | Subscription được kích hoạt | `subscription.active` |
 | Gia hạn thành công | `subscription.renewed` |
-| Gia hạn thất bại → tạm dừng | `subscription.on_hold` |
+| Gia hạn thất bại → on hold | `subscription.on_hold` |
 | Subscription bị tạm dừng | `subscription.paused` |
-| Tiếp tục Subscription đã tạm dừng | `subscription.unpaused` |
-| Tạo thất bại | `subscription.failed` |
-| Nâng cấp/hạ cấp plan | `subscription.plan_changed` |
+| Subscription bị tạm dừng được tiếp tục | `subscription.unpaused` |
+| Tạo subscription thất bại | `subscription.failed` |
+| Plan được nâng cấp/hạ cấp | `subscription.plan_changed` |
 | Đã hủy | `subscription.cancelled` |
-| Kết thúc kỳ hạn | `subscription.expired` |
-| Bất kỳ trường nào thay đổi | `subscription.updated` |
+| Term kết thúc | `subscription.expired` |
+| Bất kỳ field nào thay đổi | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
 Xem schema payload đầy đủ cho các event trong vòng đời subscription.
@@ -516,23 +623,35 @@ Xem schema payload đầy đủ cho các event trong vòng đời subscription.
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Sử dụng `POST /subscriptions` để lập trình tạo subscription từ các sản phẩm, với trial và add-on tùy chọn.
+Sử dụng `POST /checkouts` để tạo subscription theo cách lập trình từ các product, cùng với trial tùy chọn (`subscription_data.trial_period_days`) và add-on (`product_cart[].addons`).
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Xem API tạo subscription.
+<Warning>
+`POST /subscriptions` đã deprecated. Các integration hiện có vẫn tiếp tục hoạt động, nhưng integration mới nên sử dụng [Checkout Sessions](/api-reference/checkout-sessions/create).
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+Xem API tạo checkout session.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Sử dụng `PATCH /subscriptions/{subscription_id}` để hủy vào ngày thanh toán tiếp theo, kéo dài thời hạn Subscription, cập nhật thông tin thanh toán hoặc chỉnh sửa metadata. Để thay đổi số lượng, hãy sử dụng [API Thay đổi Plan](/api-reference/subscriptions/change-plan) — `PATCH` không chấp nhận `quantity`.
+Sử dụng `PATCH /subscriptions/{subscription_id}` để hủy vào ngày billing tiếp theo, gia hạn subscription, cập nhật thông tin billing hoặc chỉnh sửa metadata. Để thay đổi quantity, hãy sử dụng [Change Plan API](/api-reference/subscriptions/change-plan) — `PATCH` không chấp nhận `quantity`.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
 Tìm hiểu cách cập nhật thông tin subscription.
 </Card>
 </Accordion>
 
+<Accordion title="Pause and resume subscriptions">
+Tạm dừng và tiếp tục sử dụng cùng endpoint `PATCH /subscriptions/{subscription_id}` thông qua field `pause`: `pause: true` tạm dừng subscription đang active và `pause: false` tiếp tục subscription. Không thể kết hợp field này với bất kỳ field nào khác trong cùng request. Để xem đầy đủ behavior, ảnh hưởng đến billing và các setting business liên quan, hãy xem [Tạm dừng và tiếp tục Subscription](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+Xem API update subscription, bao gồm field `pause`.
+</Card>
+</Accordion>
+
 <Accordion title="Change plans (proration)">
-Thay đổi sản phẩm đang hoạt động và số lượng bằng các tùy chọn kiểm soát proration.
+Thay đổi product đang active và quantity với các tùy chọn proration.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
 Xem lại các tùy chọn thay đổi plan.
@@ -540,33 +659,33 @@ Xem lại các tùy chọn thay đổi plan.
 </Accordion>
 
 <Accordion title="On‑demand charges">
-Đối với subscription on-demand, thu các khoản tiền cụ thể theo nhu cầu.
+Đối với subscription on-demand, hãy tính các amount cụ thể theo nhu cầu.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Thu phí subscription on-demand.
+Tính phí subscription on-demand.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Sử dụng `GET /subscriptions` để liệt kê tất cả subscription và `GET /subscriptions/{id}` để lấy một subscription.
+Sử dụng `GET /subscriptions` để liệt kê tất cả subscription và `GET /subscriptions/{id}` để truy xuất một subscription.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-Duyệt các API liệt kê và truy xuất.
+Xem các API listing và retrieval.
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-Lấy usage đã ghi nhận cho các mô hình định giá theo usage hoặc hybrid.
+Lấy usage đã ghi nhận cho các mô hình pricing metered hoặc hybrid.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-Xem API lịch sử usage.
+Xem usage history API.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Cập nhật payment method cho subscription. Đối với subscription đang hoạt động, thao tác này cập nhật payment method cho các lần gia hạn trong tương lai. Đối với subscription ở trạng thái `on_hold`, thao tác này kích hoạt lại subscription bằng cách tạo khoản phí cho các khoản còn nợ.
+Cập nhật payment method cho subscription. Đối với subscription đang active, thao tác này cập nhật payment method cho các lần gia hạn trong tương lai. Đối với subscription ở trạng thái `on_hold`, thao tác này kích hoạt lại subscription bằng cách tạo charge cho các khoản còn nợ.
 
-Khi tạo payment-method link mới (loại request `New`), bạn có thể truyền `allowed_payment_method_types` để giới hạn các payment method khách hàng nhìn thấy trên trang đó. Khách hàng sẽ không bao giờ thấy phương thức không có trong danh sách, dù việc đưa một phương thức vào danh sách không đảm bảo phương thức đó sẽ xuất hiện (tính khả dụng vẫn phụ thuộc vào các yếu tố như vị trí của khách hàng và cài đặt doanh nghiệp).
+Khi tạo payment-method link mới (request type `New`), bạn có thể truyền `allowed_payment_method_types` để giới hạn các payment method mà customer nhìn thấy trên trang đó. Customer sẽ không bao giờ thấy method không có trong danh sách, dù việc đưa một method vào danh sách không đảm bảo method đó sẽ xuất hiện (khả dụng vẫn phụ thuộc vào các yếu tố như vị trí của customer và business settings của bạn).
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
 Tìm hiểu cách cập nhật payment method và kích hoạt lại subscription.
@@ -574,17 +693,17 @@ Tìm hiểu cách cập nhật payment method và kích hoạt lại subscriptio
 </Accordion>
 </AccordionGroup>
 
-## Trường hợp sử dụng phổ biến
+## Các trường hợp sử dụng phổ biến
 
 - **SaaS và API**: Quyền truy cập theo tier với add-on cho seat hoặc usage
-- **Nội dung và media**: Quyền truy cập hàng tháng với trial giới thiệu
-- **Gói hỗ trợ B2B**: Hợp đồng hàng năm với add-on hỗ trợ cao cấp
-- **Công cụ và plugin**: License key và bản phát hành theo version
+- **Content và media**: Quyền truy cập hàng tháng với trial giới thiệu
+- **Plan hỗ trợ B2B**: Hợp đồng hàng năm với add-on hỗ trợ cao cấp
+- **Tools và plugin**: License key và các bản phát hành theo version
 
-## Ví dụ tích hợp
+## Ví dụ Integration
 
-### Checkout Session (subscription)
-Khi tạo checkout session, hãy thêm sản phẩm subscription và các add-on tùy chọn:
+### Checkout Sessions (subscription)
+Khi tạo checkout session, hãy thêm subscription product và các add-on tùy chọn:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -598,7 +717,7 @@ const session = await client.checkoutSessions.create({
 ```
 
 ### Thay đổi plan với proration
-Nâng cấp hoặc hạ cấp subscription và kiểm soát hành vi proration:
+Nâng cấp hoặc hạ cấp subscription và kiểm soát behavior của proration:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -609,7 +728,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 ### Hủy vào ngày billing tiếp theo
-Lên lịch hủy có hiệu lực vào cuối kỳ billing hiện tại:
+Lên lịch hủy có hiệu lực vào cuối billing period hiện tại:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -617,8 +736,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### Kéo dài thời hạn Subscription
-Kéo dài thời gian hoạt động của Subscription bằng cách truyền `subscription_period_count` và `subscription_period_interval` mới vào `PATCH /subscriptions/{subscription_id}`. Thời điểm hết hạn của Subscription được tính lại dựa trên số lượng và khoảng thời gian mới — ví dụ: để cấp thêm thời gian cho khách hàng trong plan hiện tại của họ:
+### Gia hạn thời hạn Subscription
+Kéo dài thời gian subscription hoạt động bằng cách truyền `subscription_period_count` và `subscription_period_interval` mới vào `PATCH /subscriptions/{subscription_id}`. Thời điểm hết hạn của subscription được tính lại từ count và interval mới — ví dụ, để cấp thêm thời gian cho customer trong plan hiện tại:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -632,7 +751,7 @@ Thời hạn của subscription chỉ có thể được **tăng**, không thể
 </Note>
 
 ### Subscription on-demand
-Tạo subscription on-demand và thu phí sau khi cần:
+Tạo subscription on-demand và tính phí sau khi cần:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### Cập nhật payment method cho subscription đang hoạt động
-Cập nhật payment method cho subscription đang hoạt động:
+### Cập nhật payment method cho Subscription đang active
+Cập nhật payment method cho subscription đang active:
 
 ```typescript
 // Update with new payment method
@@ -671,8 +790,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Kích hoạt lại subscription từ on_hold
-Kích hoạt lại subscription bị on hold do payment thất bại:
+### Kích hoạt lại Subscription từ on_hold
+Kích hoạt lại subscription bị chuyển sang on hold do payment thất bại:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -692,67 +811,68 @@ if (response.payment_id) {
 
 ## Subscription với Mandate tuân thủ RBI
 
-  Subscription UPI và thẻ Ấn Độ hoạt động theo quy định RBI (Reserve Bank of India) với các yêu cầu mandate cụ thể:
+  Subscription UPI và Indian card hoạt động theo quy định RBI (Reserve Bank of India), với các yêu cầu mandate cụ thể:
 
   ### Giới hạn Mandate
 
-  Loại và số tiền mandate phụ thuộc vào khoản phí định kỳ của subscription:
+  Loại và amount của mandate phụ thuộc vào recurring charge của subscription:
 
-  - **Khoản phí dưới mức sàn mandate (mặc định ₹15,000):** Chúng tôi tạo mandate on-demand cho số tiền sàn. Số tiền subscription được thu định kỳ theo tần suất subscription, tối đa đến giới hạn mandate.
-  - **Khoản phí bằng hoặc cao hơn mức sàn mandate:** Chúng tôi tạo mandate subscription (hoặc mandate on-demand) cho đúng số tiền subscription.
+  - **Charge thấp hơn mandate floor (mặc định ₹15,000):** Chúng tôi tạo on-demand mandate với amount bằng floor. Amount subscription được tính định kỳ theo tần suất subscription, tối đa bằng mandate limit.
+  - **Charge bằng hoặc cao hơn mandate floor:** Chúng tôi tạo subscription mandate (hoặc on-demand mandate) với amount subscription chính xác.
 
-  Mức sàn mandate có thể được cấu hình theo merchant hoặc theo request thông qua `mandate_min_amount_inr_paise` (INR paise). Số tiền đăng ký với ngân hàng là `max(mandate_floor, billing_amount)` — vì vậy mức sàn thực tế trở thành giới hạn ủy quyền mà khách hàng nhìn thấy bất cứ khi nào số tiền billing thấp hơn.
+  Mandate floor có thể được cấu hình theo merchant hoặc theo request thông qua `mandate_min_amount_inr_paise` (INR paise). Amount được đăng ký với ngân hàng là `max(mandate_floor, billing_amount)` — vì vậy floor trở thành authorization ceiling mà customer nhìn thấy mỗi khi billing thấp hơn.
 
-Để biết thông tin chi tiết về mandate tuân thủ RBI và mức sàn mandate có thể cấu hình cho các payment method của Ấn Độ, hãy xem trang <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
+Để biết thông tin chi tiết về mandate tuân thủ RBI và mandate floor có thể cấu hình cho các payment method của Ấn Độ, hãy xem trang <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
   ### Lưu ý khi Nâng cấp và Hạ cấp
 
-  **Quan trọng:** Khi nâng cấp hoặc hạ cấp subscription, hãy cân nhắc cẩn thận các giới hạn mandate:
+  **Quan trọng:** Khi nâng cấp hoặc hạ cấp subscription, hãy cân nhắc cẩn thận các mandate limit:
 
-  - Nếu việc nâng cấp/hạ cấp dẫn đến khoản phí vượt quá Rs 15,000 và vượt giới hạn payment on-demand hiện tại, khoản phí giao dịch có thể thất bại.
-  - Trong trường hợp này, khách hàng có thể cần cập nhật payment method hoặc thay đổi subscription lần nữa để thiết lập mandate mới với giới hạn phù hợp.
+  - Nếu việc nâng cấp/hạ cấp tạo ra amount charge vượt quá Rs 15,000 và vượt existing on-demand payment limit, transaction charge có thể thất bại.
+  - Trong trường hợp này, customer có thể cần cập nhật payment method hoặc thay đổi subscription lần nữa để thiết lập mandate mới với limit phù hợp.
 
-  ### Ủy quyền cho Khoản phí Giá trị cao
+  ### Authorization cho Charge có Giá trị Cao
 
-  Đối với khoản phí subscription từ Rs 15,000 trở lên:
+  Với charge subscription từ Rs 15,000 trở lên:
 
-  - Ngân hàng sẽ yêu cầu khách hàng ủy quyền giao dịch.
-  - Nếu khách hàng không ủy quyền giao dịch, giao dịch sẽ thất bại và subscription sẽ bị on hold.
+  - Ngân hàng sẽ yêu cầu customer authorize transaction.
+  - Nếu customer không authorize transaction, transaction sẽ thất bại và subscription sẽ được chuyển sang on hold.
 
-  ### Trì hoãn Xử lý 48 giờ
+  ### Độ trễ Xử lý 48 giờ
 
-  **Lịch xử lý:** Các khoản phí định kỳ trên thẻ Ấn Độ và subscription UPI tuân theo một quy trình xử lý đặc biệt:
+  **Processing Timeline:** Recurring charge trên Indian card và subscription UPI tuân theo quy trình xử lý đặc biệt:
 
-  - Khoản phí được **khởi tạo** vào ngày đã lên lịch theo tần suất subscription.
-  - Khoản **khấu trừ** thực tế từ tài khoản khách hàng chỉ diễn ra sau **48 giờ** kể từ khi khởi tạo payment.
-  - Khoảng thời gian 48 giờ này có thể kéo dài thêm **2-3 giờ** tùy theo phản hồi của bank API.
+  - Charge được **initiated** vào ngày đã lên lịch theo tần suất subscription.
+  - Khoản **deduction** thực tế từ tài khoản của customer chỉ diễn ra sau **48 giờ** kể từ khi payment được initiated.
+  - Khoảng thời gian 48 giờ này có thể kéo dài thêm **2-3 giờ** tùy thuộc vào phản hồi từ bank API.
 
   ### Khoảng thời gian Hủy Mandate
 
-  Trong khoảng thời gian xử lý 48 giờ:
+  Trong processing window 48 giờ:
 
-  - Khách hàng có thể hủy mandate thông qua ứng dụng ngân hàng.
-  - Nếu khách hàng hủy mandate trong khoảng thời gian này, subscription vẫn giữ trạng thái **active** (đây là trường hợp đặc biệt chỉ áp dụng cho subscription AutoPay bằng thẻ Ấn Độ và UPI).
-  - Tuy nhiên, khoản khấu trừ thực tế có thể thất bại và trong trường hợp đó, chúng tôi sẽ chuyển subscription sang **on hold**.
+  - Customer có thể hủy mandate qua banking app của họ.
+  - Nếu customer hủy mandate trong khoảng thời gian này, subscription vẫn **active** (đây là edge case chỉ áp dụng cho Indian card và subscription UPI AutoPay).
+  - Tuy nhiên, deduction thực tế có thể thất bại và trong trường hợp đó, chúng tôi sẽ chuyển subscription sang **on hold**.
 
-  **Xử lý trường hợp đặc biệt:** Nếu bạn cung cấp quyền lợi, credit hoặc usage subscription cho khách hàng ngay khi khởi tạo khoản phí, bạn cần xử lý phù hợp khoảng thời gian 48 giờ này trong ứng dụng. Hãy cân nhắc:
+  **Edge Case Handling:** Nếu bạn cung cấp benefits, credits hoặc subscription usage cho customer ngay khi charge được initiated, bạn cần xử lý phù hợp processing window 48 giờ này trong application. Hãy cân nhắc:
 
-  - Trì hoãn việc kích hoạt quyền lợi cho đến khi xác nhận payment
-  - Triển khai thời gian gia hạn hoặc quyền truy cập tạm thời
-  - Theo dõi trạng thái subscription để phát hiện việc hủy mandate
-  - Xử lý trạng thái on hold của subscription trong logic ứng dụng
+
+  - Trì hoãn việc kích hoạt benefit cho đến khi payment được xác nhận
+  - Triển khai grace period hoặc quyền truy cập tạm thời
+  - Theo dõi subscription status để phát hiện việc hủy mandate
+  - Xử lý trạng thái subscription hold trong application logic
 
   <Tip>
-  Theo dõi webhook của subscription để kiểm tra các thay đổi trạng thái payment và xử lý những trường hợp đặc biệt khi mandate bị hủy trong khoảng thời gian 48 giờ.
+  Theo dõi subscription webhook để nắm bắt các thay đổi về payment status và xử lý các edge case khi mandate bị hủy trong processing window 48 giờ.
   </Tip>
 
 ## Best Practices
 
-- **Bắt đầu với các tier rõ ràng**: 2–3 plan có khác biệt dễ nhận thấy
-- **Truyền đạt thông tin giá**: Hiển thị tổng tiền, proration và lần gia hạn tiếp theo
-- **Sử dụng trial hợp lý**: Tăng chuyển đổi bằng onboarding, không chỉ bằng thời gian
-- **Tận dụng add-on**: Giữ plan cơ bản đơn giản và bán thêm tính năng bổ sung
-- **Kiểm thử các thay đổi**: Xác thực thay đổi plan và proration ở test mode
+- **Bắt đầu với các tier rõ ràng**: 2–3 plan có khác biệt dễ nhận biết
+- **Truyền đạt pricing rõ ràng**: Hiển thị tổng tiền, proration và lần gia hạn tiếp theo
+- **Sử dụng trial có cân nhắc**: Chuyển đổi bằng onboarding, không chỉ bằng thời gian
+- **Tận dụng add-on**: Giữ base plan đơn giản và upsell các tiện ích bổ sung
+- **Kiểm thử các thay đổi**: Xác thực plan change và proration trong test mode
 
 <Info>
 Subscription là nền tảng linh hoạt cho doanh thu định kỳ. Hãy bắt đầu đơn giản, kiểm thử kỹ lưỡng và cải tiến dựa trên các chỉ số adoption, churn và expansion.

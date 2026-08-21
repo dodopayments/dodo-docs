@@ -415,24 +415,121 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   在提交计划变更前进行预览。
 </Card>
 
-## Subscription States
+## 暂停和恢复订阅
 
-Subscription 在其生命周期中会经过一组定义明确的 statuses。此表列出每个 status、其触发原因，以及如何（或是否可以）恢复。
+暂停会冻结订阅，而不是结束订阅。计费会停止，访问权限会被撤销，同时订阅会保留其方案和历史记录，以便客户准确地从中断处继续使用。可将其作为取消订阅之外的留存方案。
 
-| Status | What it means | Recoverable? | Recovery path / next step |
-|--------|---------------|--------------|---------------------------|
-| `pending` | subscription 正在创建或处理 | — | 等待 `subscription.active`（或 `subscription.failed`） |
-| `active` | subscription 处于 active 状态，并会自动续订 | — | 无需操作 |
-| `on_hold` | renewal payment（或 plan-change charge）失败；subscription 已暂停 | **Yes** | 更新 payment method 以重新激活 — 可通过 [Payment Retries](/features/recovery/payment-retries) 和 [Dunning](/features/recovery/subscription-dunning) 自动完成，或通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 手动完成 |
-| `cancelled` | subscription 已取消，不会续订 | 仅可重新购买 | 客户必须开始新的 subscription；[Dunning](/features/recovery/subscription-dunning) 可以提示重新购买 |
-| `failed` | subscription **creation** 失败（初始 mandate 或 payment 未成功） | **No — terminal** | 客户必须使用有效的 payment method 创建新的 subscription |
-| `expired` | subscription 已达到其期限末尾 | — | 如有需要，客户必须开始新的 subscription |
+在 **Sales → Subscriptions** 下打开任意活跃订阅，然后点击 **Pause subscription**。状态会变为 `paused`，并且续订会停止，直到订阅恢复。
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="显示 Update、Pause subscription 和 Cancel Subscription 按钮的控制面板订阅详情页" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### 暂停后会发生什么
+
+- **续订会停止。** 订阅暂停期间不会生成 invoice，也不会尝试收取续订费用。
+- **访问权限会立即撤销。** 暂停会撤销订阅上所有已交付和待处理的 [entitlement grant](/features/entitlements/introduction)，从而禁用其 [license keys](/features/license-keys)，并停止签发新的 [digital product](/features/digital-product-delivery) 下载 URL。恢复订阅后会重新授予这些权限，其方式与从 `on_hold` 恢复相同。
+- **计费时钟会冻结。** `next_billing_date` 和 `expires_at` 都会向后顺延与暂停时长完全相等的时间，因此客户可以保留已支付的使用时间。
+- **暂停时长没有限制。** 暂停的订阅会一直保持暂停状态，直到有人恢复它。无需预先设置暂停时长。
 
 <Warning>
-`on_hold` 和 `failed` 经常被混淆。对于已经 active 但续订失败的 subscription，`on_hold` 是**可恢复**状态。`failed` 是**终止**状态，仅在 subscription **初始**创建失败时发生，无法重新激活。
+暂停会立即撤销访问权限，而不是等到计费周期结束。如果订阅用于控制产品访问权限，请在客户确认前向其明确说明这一点。
 </Warning>
 
-### State Machine
+恢复订阅会将其返回到 `active`，并恢复其 entitlements。由于计费时钟被冻结，下一次续订会比原计划晚暂停时长发生——订阅暂停 12 天，就会延迟 12 天续订。
+
+### 暂停按用量计费的订阅
+
+[按用量计费](/features/usage-based-billing/introduction)的订阅在暂停时可能存在已记录但尚未计费的用量。**Bill Usage at Pause**（位于 **Settings → Subscriptions**）决定如何处理这些用量：
+
+| 设置 | 行为 |
+|---------|----------|
+| **On**（默认） | Dodo Payments 会为上次计费日期以来累计的用量生成 invoice，并立即收取费用。 |
+| **Off** | 应付用量会结转，并在订阅下一张常规 invoice 中计费。 |
+
+只有计量用量会以这种方式结算——暂停时绝不会收取 recurring base fee。Standard 和 on-demand 订阅没有需要结算的用量，因此此设置不会影响它们。
+
+<Info>
+**Bill Usage at Pause** 按计费周期记录。在周期中途更改此设置，不会改变当前周期的结算方式；新值从下一个周期开始生效。
+</Info>
+
+<Warning>
+结算 invoice 会像其他 invoice 一样收取，因此可能会失败。如果在 [dunning](/features/recovery/subscription-dunning) 宽限期结束后仍未支付，订阅会变为 `on_hold`，同时仍会标记为已暂停。
+</Warning>
+
+处于该状态的订阅有两种恢复方式，区别在于由谁承担应付用量：
+
+| 退出方式 | 结果 |
+|------|--------|
+| 结算 invoice 已支付 | 订阅会返回 `paused`，而不是 `active`。客户准备好后，请明确恢复订阅。 |
+| 直接恢复订阅 | 订阅会直接变为 `active`，未支付的结算 invoice 会被 **voided**，其待处理重试也会一并取消。应付用量会被核销。 |
+
+<Info>
+恢复订阅是退出此暂停状态的有效方式——无需先收取结算 invoice。但请注意，恢复订阅会免除未结清的用量，而不是将其递延。
+</Info>
+
+### 让客户自行暂停订阅
+
+**Allow Subscription Pause**（位于 **Settings → Subscriptions**）控制客户是否可以从 Customer Portal 暂停和恢复订阅。该选项**默认关闭**，因此自助暂停需要主动启用。
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="显示 Allow Subscription Pause 和 Bill Usage at Pause 开关的 Subscriptions 设置选项卡" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+此设置仅控制 Customer Portal。无论开关处于何种状态，你始终可以从控制面板或 API 暂停和恢复订阅。
+
+关闭此选项会阻止客户发起新的暂停，但不会困住已经暂停的客户——他们仍可以恢复自己发起的暂停。由你发起的暂停仍由你控制。
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+查看客户看到的内容，包括确认对话框。
+</Card>
+
+### 通过 API 暂停
+
+暂停和恢复由 update subscription endpoint 上的同一个 `pause` 字段控制。不存在单独的暂停 endpoint。
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` 不能与任何其他字段同时使用——将其与其他内容一同发送会被拒绝，并返回 `422`。将 `status` 设置为 `paused` **不会**暂停订阅；请改用 `pause` 字段。
+</Warning>
+
+暂停会发出 `subscription.paused`，恢复会发出 `subscription.unpaused`。两者都会携带完整的订阅对象；暂停时 `paused_at` 会被设置，恢复后则设置 `null`。
+
+### 暂停与其他订阅操作
+
+- **取消仍然有效。** 你可以像取消活跃订阅一样取消已暂停的订阅。执行取消时，暂停产生的任何未结清结算 invoice 都会被作废。
+- **已排期的方案变更会延迟，而不会丢失。** 在下一次计费日期执行的 [方案变更](#subscription-plan-changes) 会在订阅暂停期间保持不变，恢复后于顺延后的计费日期应用。其 `scheduled_change.effective_at` 是排期时的快照，不会因暂停而调整，因此可能显示过去的日期——应将其理解为“原计划执行日期”，而不是保证日期。若要放弃变更而不是继续执行，请使用 [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan)。
+
+## 订阅状态
+
+订阅在其生命周期内会经过一组定义明确的状态。下表列出了每种状态、触发原因，以及可以（或无法）采取的恢复方式。
+
+| 状态 | 含义 | 可恢复？ | 恢复路径 / 下一步 |
+|--------|---------------|--------------|---------------------------|
+| `pending` | 正在创建或处理订阅 | — | 等待 `subscription.active`（或 `subscription.failed`） |
+| `active` | 订阅处于活跃状态，并会自动续订 | — | 无需操作 |
+| `on_hold` | 续订付款（或方案变更费用）失败；续订已停止 | **是** | 更新支付方式以重新激活——通过 [Payment Retries](/features/recovery/payment-retries) 和 [Dunning](/features/recovery/subscription-dunning) 自动恢复，或通过 [Update Payment Method API](/api-reference/subscriptions/update-payment-method) 手动恢复 |
+| `paused` | 订阅由你或客户主动暂停；计费被冻结，访问权限被撤销 | **是** | 使用 `pause: false` 恢复，或在启用自助暂停后从 Customer Portal 恢复——参见 [暂停和恢复订阅](#pausing-and-resuming-subscriptions) |
+| `cancelled` | 订阅已取消，不会再续订 | 仅可重新购买 | 客户必须创建新的订阅；[Dunning](/features/recovery/subscription-dunning) 可以提示客户重新购买 |
+| `failed` | 订阅**创建**失败（初始 mandate 或付款未成功） | **否——终止状态** | 客户必须使用可用的支付方式创建新订阅 |
+| `expired` | 订阅已达到期限结束 | — | 如有需要，客户必须创建新订阅 |
+
+<Warning>
+`on_hold` 和 `failed` 经常被混淆。`on_hold` 是已经活跃的订阅因续订失败而进入的**可恢复**状态。`failed` 是仅在**初始**订阅创建失败时出现的**终止**状态，无法重新激活。
+</Warning>
+
+<Info>
+`on_hold` 和 `paused` 也有所不同。`on_hold` 是非自愿状态——付款失败。`paused` 是主动状态——你或客户选择冻结订阅，在订阅保持暂停期间不会尝试续订。按用量计费的订阅在暂停时仍可能产生一次性结算 invoice；参见[暂停按用量计费的订阅](#pausing-usage-based-subscriptions)。
+</Info>
+
+### 状态机
 
 ```mermaid
 stateDiagram-v2
@@ -441,34 +538,44 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
     expired --> [*]
 ```
 
-### On Hold State
+### 暂停状态
 
-Subscription 在以下情况下会进入 `on_hold` state：
+订阅在以下情况下会进入 `on_hold` 状态：
 
-- renewal payment 失败（余额不足、卡片过期等）
-- plan change charge 失败
-- payment method authorization 失败
+- 续订付款失败（资金不足、卡片过期等）
+- 方案变更费用失败
+- 支付方式授权失败
+- 按用量计费订阅的[暂停结算 invoice](#pausing-usage-based-subscriptions)未支付
 
 <Warning>
-当 subscription 处于 `on_hold` state 时，不会自动续订。你必须更新 payment method 以重新激活 subscription。
+订阅处于 `on_hold` 状态时，不会自动续订。必须更新支付方式才能重新激活订阅。
 </Warning>
 
-### Reactivating from On Hold
+### 从暂停状态重新激活
 
-要从 `on_hold` state 重新激活 subscription，请更新 payment method。系统会自动：
+要从 `on_hold` 状态重新激活订阅，请更新支付方式。系统会自动：
 
 1. 为剩余应付款创建 charge
 2. 生成 invoice
-3. 使用新的 payment method 处理 payment
-4. payment 成功后，将 subscription 重新激活为 `active` state
+3. 使用新的支付方式处理付款
+4. 付款成功后，将订阅重新激活为 `active` 状态
+
+<Note>
+唯一例外是由未支付的暂停结算 invoice 导致的暂停状态。结清该 invoice 后，订阅会返回 `paused`，而不是 `active`，因为付款失败前订阅处于暂停状态。invoice 结清后，请明确恢复订阅。
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,103 +595,115 @@ if (response.payment_id) {
 ```
 
 <Info>
-成功更新 `on_hold` subscription 的 payment method 后，你会收到 `payment.succeeded`，随后会收到 `subscription.active` webhook events。
+成功更新 `on_hold` 订阅的支付方式后，你会先收到 `payment.succeeded`，再收到 `subscription.active` webhook events。
 </Info>
 
-### Webhook Events by Transition
+### 按状态转换划分的 Webhook Events
 
-每次状态转换都会发出 webhook，因此你可以在无需轮询的情况下驱动 entitlement logic：
+每次状态转换都会发出 webhook，便于你无需轮询即可驱动 entitlement 逻辑：
 
-| 转换 | 事件 |
+| 状态转换 | 事件 |
 |------------|-------|
 | 订阅已激活 | `subscription.active` |
 | 续订成功 | `subscription.renewed` |
-| 续订失败 → 已暂停 | `subscription.on_hold` |
+| 续订失败 → 暂停 | `subscription.on_hold` |
 | 订阅已暂停 | `subscription.paused` |
-| 已暂停的订阅已恢复 | `subscription.unpaused` |
+| 已暂停订阅恢复 | `subscription.unpaused` |
 | 创建失败 | `subscription.failed` |
-| 套餐升级/降级 | `subscription.plan_changed` |
+| 方案升级/降级 | `subscription.plan_changed` |
 | 已取消 | `subscription.cancelled` |
 | 期限结束 | `subscription.expired` |
-| 任意字段发生更改 | `subscription.updated` |
+| 任意字段变更 | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-查看 subscription lifecycle events 的完整 payload schema。
+查看订阅生命周期事件的完整 payload schema。
 </Card>
 
-## API Management
+## API 管理
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-使用 `POST /subscriptions` 根据 products 以编程方式创建 subscriptions，并可选用 trials 和 add‑ons。
+使用 `POST /checkouts` 根据产品以编程方式创建订阅，并可选择添加试用（`subscription_data.trial_period_days`）和附加项（`product_cart[].addons`）。
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-查看 create subscription API。
+<Warning>
+`POST /subscriptions` 已弃用。现有集成仍可继续使用，但新集成应使用 [Checkout Sessions](/api-reference/checkout-sessions/create)。
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+查看 create checkout session API。
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-使用 `PATCH /subscriptions/{subscription_id}` 可在下一计费日期取消订阅、延长订阅期限、更新账单详情或修改元数据。若要更改数量，请改用[更改套餐 API](/api-reference/subscriptions/change-plan)，因为 `PATCH` 不接受 `quantity`。
+使用 `PATCH /subscriptions/{subscription_id}` 在下一次计费日期取消订阅、延长订阅期限、更新计费详情或修改 metadata。要更改数量，请改用 [Change Plan API](/api-reference/subscriptions/change-plan)——`PATCH` 不接受 `quantity`。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-了解如何更新 subscription details。
+了解如何更新订阅详情。
+</Card>
+</Accordion>
+
+<Accordion title="Pause and resume subscriptions">
+暂停和恢复通过同一个 `PATCH /subscriptions/{subscription_id}` endpoint 完成，并使用 `pause` 字段：`pause: true` 会暂停活跃订阅，`pause: false` 会恢复订阅。该字段不能与同一请求中的任何其他字段结合使用。有关完整行为、计费影响及相关业务设置，请参见[暂停和恢复订阅](#pausing-and-resuming-subscriptions)。
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+查看 update subscription API，包括 `pause` 字段。
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-通过 proration controls 更改 active product 和数量。
+通过 proration 控制项更改活跃产品和数量。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-查看 plan change options。
+查看方案变更选项。
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-对于 on‑demand subscriptions，按需收取特定金额。
+对于 on-demand 订阅，按需收取指定金额。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-收取 on‑demand subscription 的费用。
+收取 on-demand 订阅费用。
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-使用 `GET /subscriptions` 列出所有 subscriptions，并使用 `GET /subscriptions/{id}` 获取单个 subscription。
+使用 `GET /subscriptions` 列出所有订阅，使用 `GET /subscriptions/{id}` 获取单个订阅。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-浏览 listing 和 retrieval APIs。
+浏览 list 和 retrieve API。
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-获取 metered 或 hybrid pricing models 的已记录 usage。
+获取计量或混合定价模式记录的用量。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-查看 usage history API。
+查看用量历史 API。
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-更新 subscription 的 payment method。对于 active subscriptions，这会更新未来续订使用的 payment method。对于处于 `on_hold` state 的 subscriptions，这会通过为剩余应付款创建 charge 来重新激活 subscription。
+更新订阅的支付方式。对于活跃订阅，这会更新未来续订使用的支付方式。对于处于 `on_hold` 状态的订阅，这会通过为剩余应付款创建 charge 来重新激活订阅。
 
-生成新的 payment-method link（`New` request type）时，可以传入 `allowed_payment_method_types`，以限制客户在该页面上看到的 payment methods。客户永远不会看到列表中未包含的方法，但包含某种方法并不保证它一定会显示（可用性仍取决于客户所在地和企业设置等因素）。
+生成新的 payment-method link（`New` request type）时，可以传入 `allowed_payment_method_types`，以限制客户在该页面上看到的支付方式。客户永远不会看到列表之外的支付方式，但列出某种方式并不保证它会显示（可用性仍取决于客户所在位置和你的业务设置等因素）。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-了解如何更新 payment methods 和重新激活 subscriptions。
+了解如何更新支付方式并重新激活订阅。
 </Card>
 </Accordion>
 </AccordionGroup>
 
-## Common Use Cases
+## 常见用例
 
-- **SaaS and APIs**：通过 add‑ons 为 seats 或 usage 提供分级访问
-- **Content and media**：提供每月访问权限和 introductory trials
-- **B2B support plans**：提供包含 premium support add‑ons 的年度合同
-- **Tools and plugins**：提供 license keys 和 versioned releases
+- **SaaS 和 API**：分层访问，并为席位或用量提供附加项
+- **内容和媒体**：提供带有 introductory trials 的月度访问权限
+- **B2B 支持方案**：年度合同，并提供高级支持附加项
+- **工具和插件**：license keys 和版本化发布
 
-## Integration Examples
+## 集成示例
 
-### Checkout Sessions (subscriptions)
-创建 checkout sessions 时，加入 subscription product 和可选的 add‑ons：
+### Checkout Sessions（订阅）
+创建 checkout sessions 时，请包含订阅产品和可选附加项：
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Plan changes with proration
-升级或降级 subscription，并控制 proration behavior：
+### 使用 proration 进行方案变更
+升级或降级订阅，并控制 proration 行为：
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -608,8 +727,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Cancel at next billing date
-安排在当前 billing period 结束时生效的取消操作：
+### 在下一次计费日期取消
+安排在当前计费周期结束时生效的取消操作：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -618,7 +737,7 @@ await client.subscriptions.update('sub_123', {
 ```
 
 ### 延长订阅期限
-通过向 `PATCH /subscriptions/{subscription_id}` 传入新的 `subscription_period_count` 和 `subscription_period_interval`，延长订阅的持续时间。订阅的到期时间会根据新的计数和间隔重新计算——例如，为客户当前的套餐提供额外时间：
+向 `PATCH /subscriptions/{subscription_id}` 传入新的 `subscription_period_count` 和 `subscription_period_interval`，以延长订阅的运行时间。系统会根据新的数量和间隔重新计算订阅到期时间——例如，为客户当前方案额外授予一段时间：
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -628,11 +747,11 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-Subscription 的 period 只能**延长**，不能缩短。
+订阅期限只能**延长**，不能缩短。
 </Note>
 
-### On‑demand subscriptions
-创建 on‑demand subscription，并在需要时稍后收取费用：
+### On-demand 订阅
+创建 on-demand 订阅，并在需要时稍后收费：
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### Update payment method for active subscription
-更新 active subscription 的 payment method：
+### 更新活跃订阅的支付方式
+更新活跃订阅的支付方式：
 
 ```typescript
 // Update with new payment method
@@ -671,8 +790,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Reactivate subscription from on_hold
-重新激活因 payment 失败而进入 on hold 的 subscription：
+### 从 on_hold 重新激活订阅
+重新激活因付款失败而进入暂停状态的订阅：
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions with RBI-Compliant Mandates
+## 使用符合 RBI 规范的 mandate 的订阅
 
-  UPI 和 Indian card subscriptions 受 RBI（Reserve Bank of India）法规约束，并有特定的 mandate 要求：
+  UPI 和印度卡订阅受 RBI（Reserve Bank of India）法规约束，并具有特定的 mandate 要求：
 
-  ### Mandate Limits
+  ### Mandate 限额
 
-  mandate type 和 amount 取决于 subscription 的 recurring charge：
+  mandate 类型和金额取决于订阅的 recurring charge：
 
-  - **Charges below the mandate floor (default ₹15,000)：** 我们会创建金额为 mandate floor 的 on-demand mandate。系统会根据 subscription frequency 定期收取 subscription amount，最高不超过 mandate limit。
-  - **Charges at or above the mandate floor：** 我们会为确切的 subscription amount 创建 subscription mandate（或 on-demand mandate）。
+  - **低于 mandate 下限的费用（默认 ₹15,000）：** 我们会为下限金额创建 on-demand mandate。系统会根据订阅频率定期收取订阅金额，但不超过 mandate 限额。
+  - **达到或高于 mandate 下限的费用：** 我们会为准确的订阅金额创建 subscription mandate（或 on-demand mandate）。
 
-  mandate floor 可按 merchant 配置，也可通过 `mandate_min_amount_inr_paise`（INR paise）按 request 配置。向银行注册的金额为 `max(mandate_floor, billing_amount)` — 因此，当 billing 金额较低时，floor 实际上会成为面向客户的授权上限。
+  mandate 下限可按 merchant 配置，也可以通过每个 request 中的 `mandate_min_amount_inr_paise`（INR paise）配置。向银行注册的金额为 `max(mandate_floor, billing_amount)`——因此，当计费金额较低时，该下限实际上会成为面向客户的授权上限。
 
-有关 RBI-compliant mandates 以及 Indian payment methods 可配置 mandate floor 的详细信息，请参阅 <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> 页面。
+有关符合 RBI 规范的 mandate 以及印度支付方式可配置 mandate 下限的详细信息，请参见 <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> 页面。
 
-  ### Upgrade and Downgrade Considerations
+  ### 升级和降级注意事项
 
-  **Important：**升级或降级 subscriptions 时，请仔细考虑 mandate limits：
+  **重要提示：** 升级或降级订阅时，请仔细考虑 mandate 限额：
 
-  - 如果升级/降级导致 charge amount 超过 Rs 15,000，并超出已有的 on-demand payment limit，则 transaction charge 可能会失败。
-  - 在这种情况下，客户可能需要更新 payment method，或再次更改 subscription，以使用正确的 limit 建立新的 mandate。
+  - 如果升级/降级导致费用金额超过 Rs 15,000，并超出已有的 on-demand payment limit，交易费用可能会失败。
+  - 在这种情况下，客户可能需要更新支付方式，或再次更改订阅，以便建立具有正确限额的新 mandate。
 
-  ### Authorization for High-Value Charges
+  ### 高额费用的授权
 
-  对于金额为 Rs 15,000 或以上的 subscription charges：
+  对于金额为 Rs 15,000 或以上的订阅费用：
 
-  - 客户的银行会提示其授权该 transaction。
-  - 如果客户未能授权该 transaction，transaction 将失败，subscription 会被 put on hold。
+  - 银行会提示客户授权交易。
+  - 如果客户未能授权交易，交易会失败，订阅也会进入暂停状态。
 
-  ### 48-Hour Processing Delay
+  ### 48 小时处理延迟
 
-  **Processing Timeline：**Indian cards 和 UPI subscriptions 的 recurring charges 遵循独特的处理模式：
+  **处理时间线：** 印度卡和 UPI 订阅的 recurring charge 遵循独特的处理模式：
 
-  - charges 会根据 subscription frequency 在计划日期**发起**。
-  - 客户账户的实际**扣款**仅会在 payment initiation 后 **48 hours** 发生。
-  - 根据 bank API responses，该 48-hour window 可能额外延长 **2-3 additional hours**。
+  - 费用会根据订阅频率在计划日期**发起**。
+  - 客户账户中的实际**扣款**仅会在发起付款 **48 小时**后发生。
+  - 根据银行 API 的响应，这个 48 小时窗口可能会额外延长 **2–3 小时**。
 
-  ### Mandate Cancellation Window
+  ### Mandate 取消窗口
 
-  在 48-hour processing window 期间：
+  在 48 小时处理窗口期间：
 
-  - 客户可以通过 banking apps 取消 mandate。
-  - 如果客户在此期间取消 mandate，subscription 仍会保持 **active**（这是 Indian card 和 UPI AutoPay subscriptions 特有的边界情况）。
-  - 但是，实际扣款可能会失败；在这种情况下，我们会将 subscription **on hold**。
+  - 客户可以通过银行 app 取消 mandate。
+  - 如果客户在此期间取消 mandate，订阅仍会保持**活跃**（这是印度卡和 UPI AutoPay 订阅特有的边缘情况）。
+  - 但是，实际扣款可能会失败；在这种情况下，我们会将订阅置于**暂停状态**。
 
-  **Edge Case Handling：**如果你在 charge initiation 后立即向客户提供 benefits、credits 或 subscription usage，就需要在应用中妥善处理此 48-hour window。请考虑：
+  **边缘情况处理：** 如果你在费用发起后立即向客户提供权益、额度或订阅用量，则需要在应用中妥善处理这 48 小时窗口。请考虑：
 
-  - 延迟 benefit activation，直到 payment confirmation
-  - 实现 grace periods 或 temporary access
-  - 监控 subscription status，以检测 mandate cancellations
-  - 在应用逻辑中处理 subscription hold states
+  - 延迟权益激活，直到付款确认
+  - 实现宽限期或临时访问权限
+  - 监控订阅状态，以发现 mandate 取消
+  - 在应用逻辑中处理订阅暂停状态
 
   <Tip>
-  监控 subscription webhooks，以跟踪 payment status changes，并处理 mandate 在 48-hour window 期间被取消的边界情况。
+  监控订阅 webhook，以跟踪付款状态变化，并处理 mandate 在 48 小时窗口期间被取消的边缘情况。
   </Tip>
 
-## Best Practices
+## 最佳实践
 
-- **从清晰的 tiers 开始**：设置 2–3 个差异明显的 plans
-- **清晰传达定价**：显示 totals、proration 和 next renewal
-- **合理使用 trials**：通过 onboarding 转化，而不只是依靠时间
-- **充分利用 add‑ons**：保持基础 plans 简洁，并追加销售额外功能
-- **测试变更**：在 test mode 中验证 plan changes 和 proration
+- **从清晰的层级开始：** 设置 2–3 个差异明显的方案
+- **清楚传达价格：** 展示总额、proration 和下一次续订
+- **合理使用试用：** 通过 onboarding 转化客户，而不只是延长时间
+- **利用附加项：** 保持基础方案简单，并通过额外功能进行 upsell
+- **测试变更：** 在 test mode 中验证方案变更和 proration
 
 <Info>
-Subscriptions 是 recurring revenue 的灵活基础。先从简单方案开始，进行充分测试，并根据 adoption、churn 和 expansion metrics 迭代。
+订阅是 recurring revenue 的灵活基础。先从简单方案开始，进行充分测试，再根据采用率、流失率和扩展指标持续迭代。
 </Info>

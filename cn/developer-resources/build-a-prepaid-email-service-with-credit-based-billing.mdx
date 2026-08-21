@@ -1,194 +1,187 @@
 ---
-title: 构建基于信用计费的预付费电子邮件服务
-description: 构建 MailKit，一个基于信用的预付费电子邮件平台。提供月度订阅计划、一次性充值包、每次发送时即时扣除信用以及由 Resend 和
-  Dodo Payments 提供支持的主动低余额提醒。
-icon: envelope
-keywords:
-  - Dodo Payments
-  - 开发者指南
-  - 基于信用的收费
-  - 交易邮件
-  - Resend
-  - 预付费信用
+title: "Build a Prepaid Email Service with Credit-Based Billing"
+description: "Build MailKit, a transactional email platform with prepaid email credits. A monthly subscription plan, one-time top-up packs, instant credit deduction on every send, and proactive low-balance alerts powered by Resend and Dodo Payments."
+icon: "envelope"
+keywords: ["Dodo Payments", "developer guide", "credit-based billing", "transactional email", "Resend", "prepaid credits"]
 ---
 
 <Tip>
-  <strong>让 Sentra 为您编写集成代码。</strong><br />
-  在 VS Code、Cursor 或 Windsurf 中使用我们的 AI 助手，只需描述您的需求即可生成 SDK/API 代码、webhook 处理程序等。
+  <strong>Let Sentra write your integration code for you.</strong><br />
+  Use our AI assistant in VS Code, Cursor, or Windsurf to generate SDK/API code, webhook handlers, and more, just by describing what you want.
   <a href="https://dodopayments.com/sentra" target="_blank" rel="noopener noreferrer" >
-    尝试 Sentra：AI 驱动的集成 &rarr;
+    Try Sentra: AI-Powered Integration &rarr;
   </a>
 </Tip>
 
-在本教程中，您将构建 **MailKit**，这是一个交易邮件平台，客户可以预先购买一组电子邮件信用。该计划提供每月的电子邮件额度；当客户余额不足时，他们可以购买充值包，而不是等待下一个周期。每次发送会自动扣除一个信用。
+In this tutorial, you'll build **MailKit**, a transactional email platform where customers pay upfront for a pool of email credits. The plan grants a monthly email allowance; when customers run low, they can buy a top-up pack instead of waiting for the next cycle. Every send deducts one credit automatically.
 
 <Note>
-本教程使用 [Resend](https://resend.com) 作为电子邮件提供商。其免费套餐（每月 3,000 封邮件）足以在没有付费账户的情况下构建和测试整个流程。该模式适用于任何提供商；可以用 SendGrid、Postmark、SES 或您自己的 SMTP 中继替换 `resend.emails.send`。
+This tutorial uses [Resend](https://resend.com) as the email provider. Its free tier (3,000 emails/month) is enough to build and test the entire flow without a paid account. The pattern works with any provider; swap `resend.emails.send` for SendGrid, Postmark, SES, or your own SMTP relay.
 </Note>
 
-在本教程结束时，您将了解如何：
+By the end of this tutorial, you'll know how to:
 
-- 在您的仪表板中创建自定义信用权利（电子邮件）
-- 将信用附加到订阅计划和一次性充值产品上
-- 通过 Resend 发送真实电子邮件，并通过账本条目每发送一次扣减一个信用
-- 从您的前端查询实时信用余额
-- 正确验证 Dodo webhooks，并在客户接近零之前处理 `credit.balance_low` 发出信号
+- Create a custom credit entitlement (emails) in your dashboard
+- Attach credits to a subscription plan and a one-time top-up product
+- Send real emails via Resend and debit one credit per send via a ledger entry
+- Query a live credit balance from your frontend
+- Verify Dodo webhooks correctly and handle `credit.balance_low` to nudge customers before they hit zero
 
-## 我们正在构建的内容
+## What We're Building
 
-以下是 MailKit 的定价模型：
+Here's the pricing model for MailKit:
 
-| 产品 | 价格 | 电子邮件数 |
+| Product | Price | Emails |
 |---------|-------|--------|
-| MailKit 计划 | $19/月 | 5,000 封邮件/周期 |
-| 充值包 | $9 一次性 | +5,000 封邮件 |
+| MailKit Plan | $19/month | 5,000 emails/cycle |
+| Top-Up Pack | $9 one-time | +5,000 emails |
 
-单位为 **一封电子邮件 = 一信用**。客户无需考虑令牌、批量或加权单位。他们只需看到“您本月还剩 4,231 封邮件”。
+The unit is **one email = one credit**. Customers don't have to think about tokens, batches, or weighted units. They just see "you have 4,231 emails left this month."
 
 <Info>
-在开始之前，请确保您有：
-- 一个 Dodo Payments 账户（测试模式即可）
-- 一个免费的 [Resend](https://resend.com) 账户和 API 密钥
-- Node.js 18+ 和基本的 TypeScript 知识
+Before you start, make sure you have:
+- A Dodo Payments account (test mode is fine)
+- A free [Resend](https://resend.com) account and API key
+- Node.js 18+ and basic TypeScript familiarity
 </Info>
 
-## 第 1 步：创建您的电子邮件信用权利
+## Step 1: Create Your Email Credit Entitlement
 
-信用权利定义了您的平台出售的单位：在这种情况下为一次电子邮件发送。
+The credit entitlement defines the unit your platform sells: in this case, one email send.
 
 <Frame caption="The Credits tab under Products lists all your credit entitlements.">
-<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="信用列表页面" style={{ maxHeight: '500px', width: 'auto' }} />
+<img src="/images/CBB/Desktop - Cookbook - Credits.png" alt="Credits listing page" style={{ maxHeight: '500px', width: 'auto' }} />
 </Frame>
 
 <Steps>
 <Step title="Open the Credits section">
-1. 登录您的 Dodo Payments 仪表板
-2. 点击左侧边栏中的 **产品**
-3. 选择 **信用** 标签
-4. 点击 **创建信用**
+1. Log into your Dodo Payments dashboard
+2. Click **Products** in the left sidebar
+3. Select the **Credits** tab
+4. Click **Create Credit**
 </Step>
 
 <Step title="Configure the credit unit">
-填写信用详情：
+Fill in the credit details:
 
-**信用名称**: `Email Credits`
+**Credit Name**: `Email Credits`
 
-**信用类型**: 选择 **Custom Unit**
+**Credit Type**: Select **Custom Unit**
 
-**单位名称**: `email`
+**Unit Name**: `email`
 
-**精度**: `0`（电子邮件始终为整单位；您无法发送半封邮件）
+**Precision**: `0` (an email is always a whole unit; you can't send half an email)
 
-**信用过期**: `30 days`（每个周期的额度重置）
+**Credit Expiry**: `30 days` (each cycle's allowance resets)
 
 <Warning>
-精度在创建后不能更改。对于离散单位如电子邮件、消息或会话，`0` 是正确的。
+Precision cannot be changed after creation. For discrete units like emails, messages, or sessions, `0` is correct.
 </Warning>
 </Step>
 
 <Step title="Leave the other defaults as-is">
-在本食谱中我们不会启用滚动或超量；目标是实现最简单的 CBB 流程。您可以稍后在信用附件上重新访问这些选项。
+We won't enable rollover or overage in this cookbook; the goal is the simplest possible CBB flow. You can revisit these on the credit attachment later.
 </Step>
 
 <Step title="Save and copy the credit ID">
-点击 **创建信用**。打开信用并复制其 ID。您需要它用于后端余额查询。看起来像 `cent_xxxxxxxxxxxx`。
+Click **Create Credit**. Open the credit and copy its ID. You'll need it for backend balance queries. It looks like `cde_xxxxxxxxxxxx`.
+
 <Check>
-您的 `Email Credits` 权利已准备好。接下来：授予客户信用的产品。
+Your `Email Credits` entitlement is ready. Next: the products that grant credits to customers.
 </Check>
 </Step>
 </Steps>
 
-## 第 2 步：创建计划和充值包
+## Step 2: Create the Plan and Top-Up Pack
 
-您将创建两个产品：一个定期的 **订阅** 计划和一个 **一次性付款** 充值。该计划授予每个周期 5,000 封电子邮件；充值可按需增加 5,000 封。两者都附加相同的 `Email Credits` 权利。
+You'll create two products: a recurring **Subscription** plan and a **Single Payment** top-up. The plan grants 5,000 emails each cycle; the top-up adds another 5,000 on demand. Both attach the same `Email Credits` entitlement.
 
 <Tip>
-此食谱通过直接账本条目而非基于使用的计量器来扣除信用。账本条目是即时的（余额在毫秒内更新），无需额外设置，当一个用户动作等于准确一个信用时这是合适的选择。如果您更喜欢从摄取的使用事件中自动扣除（适用于加权单位如“令牌”或“已处理 MB”），请参阅 [Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing) 获取基于计量器的模式。
+This cookbook deducts credits with direct ledger entries instead of usage-based meters. Ledger entries are immediate (the balance updates in milliseconds), need no extra setup, and are the right fit when one user action equals exactly one credit. If you'd prefer auto-deduction from ingested usage events (handy for weighted units like "tokens" or "MB processed"), see [Credit-Based Billing → Usage Billing with Credits](/features/credit-based-billing) for the meter-based pattern.
 </Tip>
 
-### MailKit 计划 ($19/月，5,000 封邮件)
+### MailKit Plan ($19/month, 5,000 emails)
 
- <Steps>
+<Steps>
 <Step title="Create the subscription">
-1. 进入 **产品 → 创建产品**
-2. 填写产品详情：
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**产品名称**: `MailKit Plan`
+**Product Name**: `MailKit Plan`
 
-**描述**: `5,000 transactional emails per month.`
+**Description**: `5,000 transactional emails per month.`
 
-3. 选择 **订阅** 作为产品类型
-4. 设置经常性价格：
+3. Select **Subscription** as the product type
+4. Set the recurring price:
 
-**经常性价格**: `19.00`
+**Recurring Price**: `19.00`
 
-**计费周期**: `Monthly`
+**Billing Cycle**: `Monthly`
 
-**货币**: `USD`
+**Currency**: `USD`
 </Step>
 
- <Step title="Attach the email credit entitlement">
-滚动到 **权利 → 信用 → 附加** 并配置：
+<Step title="Attach the email credit entitlement">
+Scroll to **Entitlements → Credits → Attach** and configure:
 
-**信用权利**: `Email Credits`
+**Credit Entitlement**: `Email Credits`
 
-**每个计费周期发行的信用**: `5000`
+**Credits issued per billing cycle**: `5000`
 
-**低余额阈值**: `20`（百分比；当余额低于周期额度的 20% 时触发 `credit.balance_low`，即 1,000 封邮件）
+**Low Balance Threshold**: `20` (percent; fires `credit.balance_low` when the balance drops below 20% of the cycle allowance, i.e. 1,000 emails)
 
-**导入默认信用设置**: 启用（使用第 1 步的 30 天到期）
+**Import Default Credit Settings**: enabled (uses the 30-day expiry from Step 1)
 
-点击 **添加到产品**，然后 **保存** 产品。复制产品 ID (`pdt_xxxxxxxxxxxx`)。
+Click **Add to Product**, then **Save** the product. Copy the product ID (`pdt_xxxxxxxxxxxx`).
 
- <Check>
-计划：$19/月 → 每个周期刷新 5,000 封邮件。
+<Check>
+Plan: $19/month → 5,000 emails refreshed each cycle.
 </Check>
 </Step>
 </Steps>
 
-### 充值包 ($9 一次性，5,000 封邮件)
+### Top-Up Pack ($9 one-time, 5,000 emails)
 
- <Steps>
+<Steps>
 <Step title="Create a one-time product">
-1. 进入 **产品 → 创建产品**
-2. 填写产品详情：
+1. Go to **Products → Create Product**
+2. Fill in the product details:
 
-**产品名称**: `Email Top-Up Pack`
+**Product Name**: `Email Top-Up Pack`
 
-**描述**: `Add 5,000 emails to your MailKit balance instantly.`
+**Description**: `Add 5,000 emails to your MailKit balance instantly.`
 
-3. 选择 **一次性付款** 作为产品类型
-4. 设置价格：
+3. Select **Single Payment** as the product type
+4. Set the pricing:
 
-**价格**: `9.00`
+**Price**: `9.00`
 
-**货币**: `USD`
+**Currency**: `USD`
 </Step>
 
- <Step title="Attach the credit grant">
-在 **权利 → 信用 → 附加**：
-- 信用权利: `Email Credits`
-- 发放的信用: `5000`
+<Step title="Attach the credit grant">
+In **Entitlements → Credits → Attach**:
+- Credit Entitlement: `Email Credits`
+- Credits issued: `5000`
 
- <Info>
-一次性产品根据其自身的到期（购买后 30 天，从第 1 步开始）授予信用。充值在订阅信用之上叠加；它们不会替代它们。
+<Info>
+One-time products grant credits with their own expiry (30 days from purchase, per Step 1). Top-ups stack on top of subscription credits; they don't replace them.
 </Info>
 
-保存并复制产品 ID。
+Save and copy the product ID.
 
- <Check>
-充值包：$9 → +5,000 封邮件，立即可用。
+<Check>
+Top-Up Pack: $9 → +5,000 emails, available immediately.
 </Check>
 </Step>
 </Steps>
 
-## 第 3 步：设置后端
+## Step 3: Set Up the Backend
 
-现在构建处理结账、发送、余额查询和 webhooks 的 Express 服务器。
+Now build the Express server that handles checkout, sending, balance queries, and webhooks.
 
- <Steps>
+<Steps>
 <Step title="Initialize the project">
-
 ```bash
 mkdir mailkit && cd mailkit
 npm init -y
@@ -196,7 +189,7 @@ npm install dodopayments resend express dotenv
 npm install -D tsx @types/node @types/express
 ```
 
-将一个开发脚本添加到 `package.json`：
+Add a dev script to `package.json`:
 
 ```json
 {
@@ -206,19 +199,19 @@ npm install -D tsx @types/node @types/express
 }
 ```
 
- <Tip>
-[`tsx`](https://tsx.is) 直接运行 TypeScript，无需构建步骤或 `tsconfig.json`，这对于教程是完美的。对于生产环境，添加一个 `tsconfig.json` 和一个 `build` 脚本。
+<Tip>
+[`tsx`](https://tsx.is) runs TypeScript directly without a build step or `tsconfig.json`, which is perfect for a tutorial. For production, add a `tsconfig.json` and a `build` script.
 </Tip>
 </Step>
 
- <Step title="Configure environment variables">
-创建 `.env`：
+<Step title="Configure environment variables">
+Create `.env`:
 
 ```bash .env
 # Dodo Payments
 DODO_PAYMENTS_API_KEY=your_dodo_test_api_key
 DODO_WEBHOOK_KEY=your_dodo_webhook_signing_key
-CREDIT_ENTITLEMENT_ID=cent_xxxxxxxxxxxx
+CREDIT_ENTITLEMENT_ID=cde_xxxxxxxxxxxx
 PLAN_PRODUCT_ID=pdt_xxxxxxxxxxxx
 TOPUP_PRODUCT_ID=pdt_xxxxxxxxxxxx
 
@@ -230,18 +223,17 @@ BASE_URL=http://localhost:3000
 PORT=3000
 ```
 
-您将在第 4 步创建端点后填充 `DODO_WEBHOOK_KEY`。Resend API 密钥来自 [resend.com/api-keys](https://resend.com/api-keys)。
+You'll fill in the `DODO_WEBHOOK_KEY` in Step 4 after creating the endpoint. The Resend API key comes from [resend.com/api-keys](https://resend.com/api-keys).
 
- <Warning>
-立即在 `.gitignore` 中添加 `.env`。切勿提交 API 密钥。
+<Warning>
+Add `.env` to `.gitignore` immediately. Never commit API keys.
 </Warning>
 </Step>
 
- <Step title="Build the server">
-在项目根目录中创建 `server.ts`：
+<Step title="Build the server">
+Create `server.ts` in the project root:
 
- <CodeGroup>
-
+<CodeGroup>
 ```typescript server.ts expandable
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
@@ -415,23 +407,21 @@ app.listen(port, () => {
   console.log(`MailKit running on http://localhost:${port}`);
 });
 ```
+</CodeGroup>
 
- </CodeGroup>
-
- <Warning>
-**Webhook 消息体必须是原始的。** `express.json()` 解析并重新序列化消息体，这会导致签名验证失败。定义 `/webhooks/dodo` 和 `express.raw()` *在* `app.use(express.json())` 之前。
+<Warning>
+**Webhook body must be raw.** `express.json()` parses and re-serializes the body, which breaks signature verification. Define `/webhooks/dodo` with `express.raw()` *before* the `app.use(express.json())` line.
 </Warning>
 
- <Check>
-后端准备就绪：订阅、充值、余额、发送以及 webhook 处理程序已全部连接。
+<Check>
+Backend ready: subscribe, top-up, balance, send, and webhook handler all wired up.
 </Check>
 </Step>
 
- <Step title="Add a demo UI">
-创建 `public/index.html`：
+<Step title="Add a demo UI">
+Create `public/index.html`:
 
- <CodeGroup>
-
+<CodeGroup>
 ```html public/index.html expandable
 <!doctype html>
 <html>
@@ -580,150 +570,147 @@ app.listen(port, () => {
   </body>
 </html>
 ```
-
- </CodeGroup>
+</CodeGroup>
 </Step>
 </Steps>
 
-## 第 4 步：连接 Webhook 端点
+## Step 4: Wire Up the Webhook Endpoint
 
-`credit.balance_low` 事件是让您在客户用完之前提示他们的重要事件。没有它，他们第一次注意到问题是在发送邮件失败时。
+The `credit.balance_low` event is what lets you nudge customers *before* they run out. Without it, the first time they notice the problem is when an email fails to send.
 
- <Steps>
+<Steps>
 <Step title="Expose your local server">
-Webhooks 需要一个公共 URL。使用 [ngrok](https://ngrok.com)（或任何隧道）在开发时运行：
+Webhooks need a public URL. Use [ngrok](https://ngrok.com) (or any tunnel) while developing:
 
 ```bash
 ngrok http 3000
 ```
 
-复制 HTTPS 转发 URL（例如 `https://1234abcd.ngrok-free.app`）。
+Copy the HTTPS forwarding URL (e.g. `https://1234abcd.ngrok-free.app`).
 </Step>
 
- <Step title="Register the endpoint in Dodo">
-1. 进入 **开发者 → Webhooks → 添加端点**
+<Step title="Register the endpoint in Dodo">
+1. Go to **Developers → Webhooks → Add Endpoint**
 2. **URL**: `https://1234abcd.ngrok-free.app/webhooks/dodo`
-3. **事件**: 订阅 `credit.added`, `credit.balance_low` 和 `credit.rolled_over`
-4. 保存，然后将 **签名密钥** 复制到您的 `.env` 作为 `DODO_WEBHOOK_KEY`
-5. 重启服务器
+3. **Events**: subscribe to `credit.added`, `credit.balance_low`, and `credit.rolled_over`
+4. Save, then copy the **signing key** into your `.env` as `DODO_WEBHOOK_KEY`
+5. Restart your server
 </Step>
 </Steps>
 
-## 第 5 步：测试完整流程
+## Step 5: Test the Full Flow
 
- <Steps>
+<Steps>
 <Step title="Start the server">
-
 ```bash
 npm run dev
 ```
 
-您应该会看到 `MailKit running on http://localhost:3000`。在浏览器中打开它。
+You should see `MailKit running on http://localhost:3000`. Open it in your browser.
 </Step>
 
- <Step title="Subscribe a test customer">
-1. 在第 1 节中输入测试电子邮件和名称，点击 **获取结账链接**
-2. 打开链接，用[测试卡](/miscellaneous/testing-process)完成结账
-3. 付款后，在仪表板下的 **客户** 中找到 `customer_id`
+<Step title="Subscribe a test customer">
+1. In section 1, enter a test email and name, click **Get checkout link**
+2. Open the link, complete checkout with a [test card](/miscellaneous/testing-process)
+3. After payment, find the `customer_id` in your dashboard under **Customers**
 
- <Check>
-客户现在应该在其余额中有 **5,000 封电子邮件**。检查 **客户 → [客户] → 信用**。
+<Check>
+The customer should now have **5,000 emails** in their balance. Check **Customers → [Customer] → Credits**.
 </Check>
 </Step>
 
- <Step title="Send a real email">
-1. 将 `customer_id` 粘贴到第 3 节
-2. 保持 `to` 设置为 `delivered@resend.dev`（Resend 的沙盒邮箱，接受所有内容）
-3. 点击 **发送**
+<Step title="Send a real email">
+1. Paste the `customer_id` into section 3
+2. Leave `to` set to `delivered@resend.dev` (Resend's sandbox inbox that accepts everything)
+3. Click **Send**
 
-您将获得返回的 Resend 消息 ID。在第 2 节中刷新余额，数量会立即下降到 4,999。每次账本扣款都会立即反映在实时余额中。
+You'll get a Resend message id back. Refresh the balance in section 2 and the count immediately drops to 4,999. Each ledger debit is reflected in the live balance the moment it's written.
 </Step>
 
- <Step title="Trigger the low-balance webhook">
-阈值为 20%（5,000 封邮件额度的 1,000 封）。要触发它而无需发送 4,000 封真实邮件，**手动从仪表板扣减余额**：
+<Step title="Trigger the low-balance webhook">
+The threshold is 20% (1,000 of the 5,000-email allowance). To trigger it without sending 4,000 real emails, **manually debit the balance** from the dashboard:
 
-1. 进入 **客户 → [客户] → 信用 → 邮件信用**
-2. 点击 **调整余额** 并扣减 `4000`
-3. 再通过演示发送一封邮件
+1. Go to **Customers → [Customer] → Credits → Email Credits**
+2. Click **Adjust Balance** and debit `4000`
+3. Send one more email through the demo
 
-您的服务器应在几秒钟内记录：
+Your server should log within a few seconds:
 
 ```
 [low-balance] cus_xxx has 999 Email Credits left (under 20%)
 [NOTIFY] cus_xxx: 999 emails left. Consider topping up.
 ```
 
- <Check>
-您的服务器已接收到并验证了 webhook。在生产中，这就是您向客户发送电子邮件或显示应用内横幅的地方。
+<Check>
+Your server received and verified the webhook. In production this is where you'd email the customer or show an in-app banner.
 </Check>
 </Step>
 
- <Step title="Buy a top-up pack">
-1. 将 `customer_id` 粘贴到第 4 节
-2. 点击 **购买 5,000 封邮件**，完成测试结账
-3. 刷新余额，它会跳增 5,000
+<Step title="Buy a top-up pack">
+1. Paste the `customer_id` into section 4
+2. Click **Buy 5,000 emails**, complete the test checkout
+3. Refresh the balance, and it jumps by 5,000
 
- <Check>
-当 `grant_source: one_time` 触发 `credit.added` 事件。充值叠加在订阅信用之上；两个池按 FIFO 消耗（最早的未过期供给首先使用）。
+<Check>
+A `credit.added` event fires with `grant_source: one_time`. The top-up stacks on top of the subscription credits; both pools are consumed FIFO (oldest non-expired grant first).
 </Check>
 </Step>
 
- <Step title="Test the hard stop">
-手动扣减余额到零，然后尝试再发送一封电子邮件。您将收到：
+<Step title="Test the hard stop">
+Manually debit the balance to zero, then try to send one more email. You'll get:
 
 ```json
 { "error": "No email credits remaining. Buy a top-up pack or upgrade your plan." }
 ```
 
-那个 402 是您的应用程序级别的强制。Dodo 余额 API 是事实来源；切勿在客户端缓存它。
+That 402 is your application-level enforcement. The Dodo balance API is the source of truth; never cache it on the client.
 </Step>
 </Steps>
 
-## 故障排除
+## Troubleshooting
 
- <AccordionGroup>
+<AccordionGroup>
 <Accordion title="Webhook signature verification fails (401)">
-签名是通过原始 HTTP 消息体计算的。`express.json()` 解析并重新序列化有效负载，这会打破 HMAC。确保 `/webhooks/dodo` 使用 `express.raw({ type: 'application/json' })` *在* `app.use(express.json())` 行上注册，并且 `DODO_WEBHOOK_KEY` 匹配端点详情页面上显示的签名密钥。
+The signature is computed over the raw HTTP body. `express.json()` parses and re-serializes the payload, which breaks the HMAC. Make sure `/webhooks/dodo` is registered with `express.raw({ type: 'application/json' })` *above* the `app.use(express.json())` line, and that `DODO_WEBHOOK_KEY` matches the signing key shown on the endpoint detail page.
 </Accordion>
 
- <Accordion title="Balance is 0, customer not found, or credits don't deduct">
-需要验证的三件事，按以下顺序：
+<Accordion title="Balance is 0, customer not found, or credits don't deduct">
+Three things to verify, in this order:
 
-1. 客户 **完成结账**（信用在成功付款时发放，而不是在会话创建时）
-2. `CREDIT_ENTITLEMENT_ID` 在您的 `.env` 中与产品附加的信用匹配（不匹配的 ID 会静默写入错误的信用）
-3. 您传递的 `customer_id` 来自 Dodo（仪表板中的 `customers` 表），而不是您自己的数据库
+1. The customer **completed checkout** (credits are issued on successful payment, not on session creation)
+2. `CREDIT_ENTITLEMENT_ID` in your `.env` matches the credit attached to the product (mismatched IDs silently write to the wrong credit)
+3. The `customer_id` you're passing came from Dodo (the `customers` table in the dashboard), not your own database
 </Accordion>
 
- <Accordion title="Resend rejects the recipient">
-沙盒发件人 `onboarding@resend.dev` 仅传递到您 Resend 账户上的电子邮件或 `delivered@resend.dev`。要发送给其他人，[验证一个域名](https://resend.com/docs/dashboard/domains/introduction) 并使用其上的 `from` 地址。
+<Accordion title="Resend rejects the recipient">
+The sandbox sender `onboarding@resend.dev` only delivers to the email on your Resend account or to `delivered@resend.dev`. To send to anyone else, [verify a domain](https://resend.com/docs/dashboard/domains/introduction) and use a `from` address on it.
 </Accordion>
 </AccordionGroup>
 
-## 您构建了什么
+## What You Built
 
- <CardGroup cols={2}>
+<CardGroup cols={2}>
 <Card title="One reusable credit unit" icon="envelope">
-`Email Credits`，一次定义并附加到订阅计划和充值包上。
-
- </Card>
-
- <Card title="Subscription with prepaid allowance" icon="layer-group">
-$19/月授予每个周期 5,000 封邮件。客户知道他们的支出，您知道您的最坏成本。
+`Email Credits`, defined once and attached to both the subscription plan and the top-up pack.
 </Card>
 
- <Card title="Top-up pack" icon="circle-plus">
-一个一次性产品，授予 5,000 封邮件。无需更改计划即可叠加订阅信用。
+<Card title="Subscription with prepaid allowance" icon="layer-group">
+$19/month grants 5,000 emails per cycle. Customers know what they're paying for, you know your worst-case cost.
 </Card>
 
- <Card title="Instant ledger debits" icon="bolt">
-每次发送后的一个简单 `createLedgerEntry` 调用。没有计量器，没有聚合滞后，通过 Resend 的消息 ID 在重试时具备幂等性。
+<Card title="Top-up pack" icon="circle-plus">
+A one-time product that grants 5,000 emails. Stacks on subscription credits with no plan change required.
+</Card>
+
+<Card title="Instant ledger debits" icon="bolt">
+A single `createLedgerEntry` call after each send. No meter, no aggregation lag, idempotent on retry via Resend's message id.
 </Card>
 </CardGroup>
 
- <Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
-阅读完整的 CBB 文档，了解滚动、超量模式、账本管理和完整的 API 资源。
+<Card title="Credit-Based Billing Reference" icon="book" href="/features/credit-based-billing">
+Read the full CBB documentation for rollover, overage modes, ledger management, and the complete API surface.
 </Card>
 
-需要帮助？
-- [Discord 社区](https://discord.gg/bYqAp4ayYh)
+Need help?
+- [Discord Community](https://discord.gg/bYqAp4ayYh)
 - support@dodopayments.com

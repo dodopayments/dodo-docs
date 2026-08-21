@@ -79,7 +79,7 @@ Dodo Paymentsは、各特権を専用の統合を通じて配信します。あ�
 
 <Steps>
 <Step title="Created">
-支払いが完了するか、サブスクリプションがアクティブになると、grant が作成されます。Feature flags は直接 `Delivered` に遷移します。entitlement が `fulfillment_mode: auto`（デフォルト）を使用する場合、License keys も直接 `Delivered` に遷移します。`fulfillment_mode: manual` では、grant は `Pending` で作成され、[Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) を使用してキーを指定するまでキーは設定されません。その他のすべてのintegrationは `Pending` で開始します。OAuthベースのintegration（Discord、GitHub、Notion）には、顧客がアクセスして同意を完了する必要がある `oauth_url` が含まれます。Platform-direct integration（Telegram、Framer、Digital Files）は、配信のプロビジョニング中のみ短時間 `Pending` となり、その後 `Delivered` に遷移します。
+grant は、payment が完了するか、subscription が active になると作成されます。Feature flags は `Delivered` に直接移行します。entitlement が `fulfillment_mode: auto`（デフォルト）を使用している場合、License keys も `Delivered` に直接移行します。`fulfillment_mode: manual` では、grant は `Pending` に作成され、[Fulfill License Key Grant](/api-reference/entitlements/fulfill-license-key) からキーを指定するまでキーは設定されません。その他のすべての integration は `Pending` で開始します。OAuth ベースの integration（Discord、GitHub、Notion）では、customer がアクセスして consent を完了する必要がある `oauth_url` が公開されます。新しく作成された grant では、この field は `null` であり、customer が delivery email または customer portal から accept flow を開始すると設定されます。Platform-direct integration（Telegram、Framer、Digital Files）は、delivery の provision 中だけ短時間 `Pending` に留まり、その後 `Delivered` に移行します。
 </Step>
 
 <Step title="Delivered">
@@ -99,18 +99,20 @@ integrationの呼び出しが再試行不能なエラー（OAuth tokenの取り�
 
 | Event | Behavior |
 |---|---|
-| `payment.succeeded` (one-time payment) | 添付された権利ごとに 1 つの権利を発行します。 |
-| `payment.succeeded` (subscription-linked payment) | No-op。権利は以下のサブスクリプションイベントによって駆動されます。 |
-| `subscription.active` | すでにない場合は、添付された権利の権利を発行します。同じサブスクリプションのために以前に取り消されたすべての権利を再発行します。 |
-| `subscription.renewed` | No-op。既存の権利は更新を越えて持続します。 |
-| `subscription.on_hold` | すべての配信済みおよび保留中の権利を取り消します。`revocation_reason: subscription_on_hold`。 |
-| `subscription.cancelled` | すべてを取り消します。`revocation_reason: subscription_cancelled`。 |
-| `subscription.expired` | すべてを取り消します。`revocation_reason: subscription_expired`。 |
-| `subscription.plan_changed` | 現在のすべての権利を取り消し、新しいプランの権利を出します。`revocation_reason: plan_changed`。 |
-| `refund.succeeded` (one-time payment) | その支払いの権利を取り消します。`revocation_reason: refund`。 |
-| Manual API revoke | `revocation_reason: manual` で取り消します。手動の取り消しはサブスクリプションの更新時に自動再付与されません。 |
-| License key disabled | ライセンスキーの権利の場合、基盤となるキーを無効にすると、`revocation_reason: license_key_disabled` で権利が取り消されます。キーが再有効化されると自動的に再活性化されます。 |
-| Platform drift detected | 統合のプラットフォーム側が同期から外れる場合 (Discord 役割が手動で削除される、GitHub アプリがリポジトリアクセスを失う、または検出パスでターゲットが見つからない)、権利は `revocation_reason: platform_external` で取り消されます。基盤となるプラットフォームの問題が解決されるまで、サブスクリプションの更新時に自動再付与されません。 |
+| `payment.succeeded`（one-time payment） | 紐付けられた各 entitlement に対して grant を 1 つ発行します。 |
+| `payment.succeeded`（subscription-linked payment） | No-op。grant は以下の subscription event によって処理されます。 |
+| `subscription.active` | 紐付けられた entitlement のうち、grant がまだないものに grant を発行します。同じ subscription に対して以前 revoke された grant を再発行します。 |
+| `subscription.renewed` | No-op。既存の grant は renewal 後も保持されます。 |
+| `subscription.on_hold` | delivered および pending の grant をすべて revoke します。`revocation_reason: subscription_on_hold`。 |
+| `subscription.paused` | delivered および pending の grant をすべて revoke します。`revocation_reason: SubscriptionPaused`。 |
+| `subscription.unpaused` | `subscription.active` と同様に、同じ subscription に対して以前 revoke された grant を再発行します。 |
+| `subscription.cancelled` | すべて revoke します。`revocation_reason: subscription_cancelled`。 |
+| `subscription.expired` | すべて revoke します。`revocation_reason: subscription_expired`。 |
+| `subscription.plan_changed` | 現在の grant をすべて revoke してから、新しい plan の entitlement に対して grant を発行します。`revocation_reason: plan_changed`。 |
+| `refund.succeeded`（one-time payment） | その payment の grant を revoke します。`revocation_reason: refund`。 |
+| Manual API revoke | `revocation_reason: manual` で revoke します。Manual revoke は subscription renewal 時に自動で再発行されません。 |
+| License key disabled | license-key grant の場合、基盤となる key を無効にすると、`revocation_reason: license_key_disabled` で grant が revoke されます。key を再度有効にすると、grant は自動的に再有効化されます。 |
+| Platform drift detected | integration の platform 側が同期状態からずれた場合（Discord role が手動で削除された、GitHub App が repository access を失った、または reconciliation pass によって target の欠落が検出された場合）、`revocation_reason: platform_external` で grant が revoke されます。基盤となる platform の問題が解決されるまで、subscription renewal 時に自動で再発行されません。 |
 
 <Note>
 サブスクリプション駆動の権利は、`(entitlement, customer, subscription)` によって冪等です。更新および再活性化は重複した権利を作成しません。一回限りの権利は、`(entitlement, customer, payment)` によって冪等です。
@@ -193,7 +195,7 @@ const grants = await client.entitlements.grants.list('ent_abc123', {
 });
 
 // Revoke a single grant
-await client.entitlements.grants.revoke('grant_xyz789', {
+await client.entitlements.grants.revoke('entg_xyz789', {
   id: 'ent_abc123',
 });
 ```
@@ -205,7 +207,7 @@ client.entitlements.grants.list(
 )
 
 client.entitlements.grants.revoke(
-    "grant_xyz789",
+    "entg_xyz789",
     id="ent_abc123",
 )
 ```
@@ -216,7 +218,7 @@ grants, _ := client.Entitlements.Grants.List(
   dodopayments.EntitlementGrantListParams{Status: dodopayments.F("Delivered")},
 )
 
-_, _ = client.Entitlements.Grants.Revoke(ctx, "grant_xyz789", "ent_abc123")
+_, _ = client.Entitlements.Grants.Revoke(ctx, "ent_abc123", "entg_xyz789")
 ```
 
 </CodeGroup>
@@ -273,8 +275,8 @@ Dodo Payments は、権利のライフサイクルに対して 4 つの webhook 
 
 ## ベストプラクティス
 
-- **配信チャネルごとに一つの権利を使用すること。** 異なる役割の意図で異なる製品間で単一の Discord 権利を共有しないでください。クリーンな取り消しのために役割ごとに一つの権利を作成します。
-- **最初にテストモードでテストすること。** 権利を作成し、テスト製品に添付し、チェックアウトを実行し、権利が `pending → delivered` を経て移行するのを確認します。テストサブスクリプションをキャンセルして権利が取り消されることを確認します。
-- **`entitlement_grant.delivered` に聞く。`payment.succeeded` ではなく。** 支払いは、完了前に成功することがあります（特に OAuth フローの場合）。納品済みイベントを待って、自社システムの依存機能を解除します。
-- **`entitlement_grant.failed` をアクション可能として扱うこと。** 失敗した権利は、顧客が支払ったがアクセスを得られなかったことを意味します。これをサポートチームに表面化させるか、再権利をトリガーします。
-- **`revocation_reason` を保持フローにマッピングすること。** `subscription_on_hold` の取り消しは回復可能です（顧客がカードを更新するかもしれません）。`manual` の取り消しは意図的です。顧客コミュニケーションで異なる取り扱いをします。
+- **delivery channel ごとに entitlement を 1 つ使用します。** 異なる role の意図を持つ複数の product 間で 1 つの Discord entitlement を共有しないでください。revoke を明確に行えるよう、role ごとに 1 つ作成します。
+- **まず test mode でテストします。** entitlement を作成して test product に紐付け、checkout を実行し、grant が `Pending → Delivered` を通じて遷移することを確認します。test subscription をキャンセルすると grant が revoke されることを確認してください。
+- **`entitlement_grant.delivered` をリッスンし、`payment.succeeded` は使用しません。** payment は fulfilment が完了する前に成功する可能性があります（特に OAuth flow の場合）。自社 system で依存する feature のロックを解除する前に、delivered event を待ってください。
+- **`entitlement_grant.failed` を対応が必要なものとして扱います。** failed grant は、customer が支払いを済ませたにもかかわらず access を取得できていないことを意味します。これらを support team に通知するか、regrant を実行してください。
+- **`revocation_reason` を retention flow にマッピングします。** `subscription_on_hold` revoke は回復可能です（customer はカードを更新できる場合があります）。`manual` revoke は意図的なものです。customer との communication では、これらを区別して扱ってください。

@@ -415,24 +415,121 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   確定する前にプラン変更をプレビューします。
 </Card>
 
-## サブスクリプションの状態
+## サブスクリプションの一時停止と再開
 
-サブスクリプションは存続期間中、定義された一連の状態を遷移します。この表は、各状態、その原因、復旧可能かどうか、復旧方法または次の手順を示します。
+一時停止すると、サブスクリプションを終了せずに凍結できます。請求が停止され、アクセスが取り消されますが、サブスクリプションのプランと履歴は保持されるため、顧客は停止した場所からそのまま再開できます。キャンセルに代わる顧客維持の手段として使用してください。
 
-| Status | 意味 | 復旧可能か | 復旧方法／次の手順 |
-|--------|---------------|--------------|---------------------------|
-| `pending` | サブスクリプションを作成または処理中 | — | `subscription.active`（または `subscription.failed`）を待ちます |
-| `active` | サブスクリプションは有効で、自動的に更新されます | — | 対応不要 |
-| `on_hold` | 更新 payment（またはプラン変更請求）に失敗し、サブスクリプションが一時停止しています | **はい** | Payment Retries と Dunning により自動的に、または [Update Payment Method API](/api-reference/subscriptions/update-payment-method) により手動で支払い方法を更新して再有効化します |
-| `cancelled` | サブスクリプションはキャンセルされ、更新されません | 再購入のみ | 顧客は新しいサブスクリプションを開始する必要があります。Dunning で再購入を促せます |
-| `failed` | サブスクリプションの**作成**に失敗しました（初回 mandate または payment が成功しませんでした） | **不可 — 終端状態** | 顧客は有効な支払い方法で新しいサブスクリプションを作成する必要があります |
-| `expired` | サブスクリプションが契約期間の終了に達しました | — | 希望する場合、顧客は新しいサブスクリプションを開始する必要があります |
+**Sales → Subscriptions** で任意のアクティブなサブスクリプションを開き、**Pause subscription** をクリックします。ステータスが `paused` に変わり、サブスクリプションが再開されるまで更新が停止します。
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Update、Pause subscription、Cancel Subscription ボタンが表示されたダッシュボードのサブスクリプション詳細ページ" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### 一時停止するとどうなるか
+
+- **更新が停止します。** サブスクリプションの一時停止中は、invoice が生成されず、更新料金の請求も試行されません。
+- **アクセスが直ちに取り消されます。** 一時停止すると、サブスクリプションで付与済みおよび保留中のすべての [entitlement grant](/features/entitlements/introduction) が取り消され、[license keys](/features/license-keys) が無効になり、新しい [digital product](/features/digital-product-delivery) のダウンロード URL が発行されなくなります。再開すると、`on_hold` から復旧する場合と同様に、これらが再付与されます。
+- **請求時計が停止します。** `next_billing_date` と `expires_at` は、どちらも一時停止期間とまったく同じ長さだけ先送りされるため、顧客はすでに支払った時間を保持できます。
+- **一時停止期間に制限はありません。** 一時停止されたサブスクリプションは、誰かが再開するまで一時停止されたままです。あらかじめ停止期間を設定する必要はありません。
 
 <Warning>
-`on_hold` と `failed` は混同されがちです。`on_hold` は、すでに有効なサブスクリプションの更新に失敗した場合の**復旧可能**な状態です。`failed` は、**初回**のサブスクリプション作成に失敗した場合のみ発生する**終端状態**で、再有効化できません。
+一時停止すると、請求期間の終了時ではなく直ちにアクセスが取り消されます。サブスクリプションによってプロダクトへのアクセスを制御している場合は、顧客が確定する前にその点を明確に伝えてください。
 </Warning>
 
-### 状態機械
+再開すると、サブスクリプションは `active` に戻り、entitlement が復元されます。時計が停止していたため、次回の更新は当初の予定より一時停止期間分だけ後になります。たとえば、12日間一時停止したサブスクリプションは、12日遅れて更新されます。
+
+### Usage-Based Subscription の一時停止
+
+[Usage-Based](/features/usage-based-billing/introduction) subscription は、一時停止時点で記録済みだがまだ請求されていない usage を持つ場合があります。**Settings → Subscriptions** の **Bill Usage at Pause** により、その usage の処理方法を決定します。
+
+| Setting | Behavior |
+|---------|----------|
+| **On** (default) | Dodo Payments は、前回の請求日以降に累積した usage に対する invoice を発行し、直ちに回収します。 |
+| **Off** | 未払いの usage は繰り越され、サブスクリプションの次回通常 invoice で請求されます。 |
+
+この方法で精算されるのは meter された usage のみです。recurring base fee が一時停止時に請求されることはありません。Standard subscription と on-demand subscription には精算対象がないため、この設定は影響しません。
+
+<Info>
+**Bill Usage at Pause** は billing cycle ごとに記録されます。cycle の途中で変更しても、すでに進行中の cycle の精算方法は変わりません。新しい値は次の cycle 以降に適用されます。
+</Info>
+
+<Warning>
+精算 invoice は他の invoice と同様に回収されるため、失敗する可能性があります。[dunning](/features/recovery/subscription-dunning) の猶予期間を過ぎても未払いの場合、サブスクリプションは一時停止フラグが付いたまま `on_hold` に移行します。
+</Warning>
+
+その状態のサブスクリプションには、未払いの usage を誰が負担するかによって異なる、2つの解決方法があります。
+
+| Exit | Result |
+|------|--------|
+| 精算 invoice が支払われる | サブスクリプションは `paused` に戻ります。`active` には戻りません。顧客の準備が整ったら、明示的に再開してください。 |
+| 直接再開する | サブスクリプションは `active` に直接移行し、未払いの精算 invoice は保留中の retry とともに **voided** になります。未払いの usage は放棄扱いになります。 |
+
+<Info>
+再開はこの保留状態からの有効な解決方法です。先に精算 invoice を回収する必要はありません。ただし、再開すると未払いの usage は繰り越されず免除される点に注意してください。
+</Info>
+
+### 顧客自身によるサブスクリプションの一時停止を許可する
+
+**Settings → Subscriptions** の **Allow Subscription Pause** は、顧客が Customer Portal から一時停止と再開を行えるかどうかを制御します。**デフォルトではオフ**のため、セルフサービスによる一時停止はオプトインです。
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Allow Subscription Pause と Bill Usage at Pause のトグルが表示された Subscriptions 設定タブ" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+この設定が制御するのは Customer Portal のみです。トグルの設定に関係なく、ダッシュボードまたは API からいつでも一時停止と再開を行えます。
+
+オフにすると、顧客による新たな一時停止は停止します。ただし、すでに一時停止中の顧客が閉じ込められることはありません。顧客自身が開始した一時停止は引き続き再開できます。あなたが開始した一時停止は、引き続きあなたが管理できます。
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+確認ダイアログを含め、顧客に表示される内容を確認できます。
+</Card>
+
+### API による一時停止
+
+一時停止と再開は、update subscription endpoint の単一の `pause` field で行います。個別の pause endpoint はありません。
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` は他のすべての field と排他的です。他の field と一緒に送信すると `422` で拒否されます。`status` を `paused` に設定してもサブスクリプションは一時停止されません。代わりに `pause` field を使用してください。
+</Warning>
+
+一時停止すると `subscription.paused` が発行され、再開すると `subscription.unpaused` が発行されます。どちらも完全な subscription object を含み、一時停止中は `paused_at` が設定され、再開後は `null` が設定されます。
+
+### 一時停止とその他のサブスクリプション操作
+
+- **キャンセルは引き続き機能します。** 一時停止中のサブスクリプションも、アクティブなサブスクリプションと同じ方法でキャンセルできます。実行すると、一時停止に関連する未確定の精算 invoice は voided になります。
+- **スケジュール済みのプラン変更は破棄されず、延期されます。** 次回 billing date に予定された [plan change](#subscription-plan-changes) は、サブスクリプションの一時停止中も変更されずに保持され、再開後、変更後の billing date に適用されます。その `scheduled_change.effective_at` はスケジュール時点の snapshot であり、一時停止に合わせて調整されません。そのため、過去の日付が表示される場合があります。これは「予定されていた日付」と解釈し、確定した日付とはみなさないでください。変更を適用せず破棄する場合は、[Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan) を使用してください。
+
+## Subscription States
+
+サブスクリプションは、存続期間中に定義済みの一連の status を遷移します。この table は、すべての status、その原因、復旧方法（または復旧できるかどうか）を確認するためのリファレンスです。
+
+| Status | What it means | Recoverable? | Recovery path / next step |
+|--------|---------------|--------------|---------------------------|
+| `pending` | サブスクリプションを作成または処理中です | — | `subscription.active`（または `subscription.failed`）を待ちます |
+| `active` | サブスクリプションはアクティブで、自動的に更新されます | — | 対応不要 |
+| `on_hold` | 更新 payment（または plan-change charge）が失敗し、更新が停止しています | **Yes** | [Payment Retries](/features/recovery/payment-retries) と [Dunning](/features/recovery/subscription-dunning) により自動的に、または [Update Payment Method API](/api-reference/subscriptions/update-payment-method) により手動で payment method を更新して再有効化します |
+| `paused` | サブスクリプションはあなたまたは顧客によって意図的に一時停止され、billing が凍結され、アクセスが取り消されています | **Yes** | `pause: false` で再開するか、セルフサービスの一時停止が有効な場合は Customer Portal から再開します。[Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) を参照してください |
+| `cancelled` | サブスクリプションはキャンセルされ、更新されません | 再購入のみ | 顧客は新しいサブスクリプションを開始する必要があります。[Dunning](/features/recovery/subscription-dunning) により再購入を促せます |
+| `failed` | サブスクリプションの **creation** に失敗しました（initial mandate または payment が成功しませんでした） | **No — terminal** | 顧客は有効な payment method を使用して新しいサブスクリプションを作成する必要があります |
+| `expired` | サブスクリプションが契約期間の終了に達しました | — | 顧客が希望する場合は、新しいサブスクリプションを開始する必要があります |
+
+<Warning>
+`on_hold` と `failed` は混同されがちです。`on_hold` は、すでにアクティブなサブスクリプションの更新が失敗した場合の **recoverable** な state です。`failed` は、**initial** subscription creation が失敗した場合にのみ発生する **terminal** state で、再有効化できません。
+</Warning>
+
+<Info>
+`on_hold` と `paused` も異なる status です。`on_hold` は非自発的な状態で、payment が失敗した場合に発生します。`paused` は意図的な状態で、あなたまたは顧客がサブスクリプションの凍結を選択した場合に発生し、一時停止中は更新が試行されません。Usage-based subscription は、一時停止時点で one-off の精算 invoice が未払いになる場合があります。[Pausing Usage-Based Subscriptions](#pausing-usage-based-subscriptions) を参照してください。
+</Info>
+
+### State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -441,34 +538,44 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
     expired --> [*]
 ```
 
-### On Hold 状態
+### On Hold State
 
-サブスクリプションは、次の場合に `on_hold` 状態になります。
+サブスクリプションは、次の場合に `on_hold` state になります。
 
-- 更新 payment に失敗した（残高不足、カード期限切れなど）
-- プラン変更の請求に失敗した
-- 支払い方法の認証に失敗した
+- 更新 payment が失敗した（残高不足、カードの有効期限切れなど）
+- plan change charge が失敗した
+- payment method の authorization が失敗した
+- Usage-based subscription の [pause settlement invoice](#pausing-usage-based-subscriptions) が未払いになった
 
 <Warning>
-サブスクリプションが `on_hold` 状態の場合、自動更新されません。サブスクリプションを再有効化するには、支払い方法を更新する必要があります。
+サブスクリプションが `on_hold` state の場合、自動的には更新されません。サブスクリプションを再有効化するには、payment method を更新する必要があります。
 </Warning>
 
 ### On Hold からの再有効化
 
-サブスクリプションを `on_hold` 状態から再有効化するには、支払い方法を更新します。これにより自動的に次の処理が行われます。
+`on_hold` state のサブスクリプションを再有効化するには、payment method を更新します。これにより、次の処理が自動的に行われます。
 
-1. 未払い残額の請求を作成
-2. 請求書を生成
-3. 新しい支払い方法で payment を処理
-4. payment 成功時にサブスクリプションを `active` 状態へ再有効化
+1. 未払い残高に対する charge を作成
+2. invoice を生成
+3. 新しい payment method を使用して payment を処理
+4. payment が成功すると、サブスクリプションを `active` state に再有効化
+
+<Note>
+唯一の例外は、未払いの pause settlement invoice が原因で保留になっている場合です。その invoice を支払うと、サブスクリプションは `active` ではなく `paused` に戻ります。これは、payment が失敗する前の状態が一時停止だったためです。invoice の精算後、明示的に再開してください。
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,103 +595,115 @@ if (response.payment_id) {
 ```
 
 <Info>
-`on_hold` のサブスクリプションについて支払い方法の更新に成功すると、`payment.succeeded` に続いて `subscription.active` webhook event が届きます。
+`on_hold` のサブスクリプションで payment method の更新に成功すると、`payment.succeeded` に続いて `subscription.active` webhook event が届きます。
 </Info>
 
-### 遷移ごとの Webhook Events
+### Transition ごとの Webhook Event
 
-各遷移では webhook が発行されるため、ポーリングなしで entitlement ロジックを実行できます。
+各 transition は webhook を発行するため、polling なしで entitlement logic を実行できます。
 
-| 遷移 | イベント |
+| Transition | Event |
 |------------|-------|
-| Subscription が有効化されました | `subscription.active` |
-| 更新に成功しました | `subscription.renewed` |
-| 更新に失敗 → 一時停止 | `subscription.on_hold` |
-| Subscription が一時停止されました | `subscription.paused` |
-| 一時停止中の Subscription が再開されました | `subscription.unpaused` |
-| 作成に失敗しました | `subscription.failed` |
-| Plan がアップグレード／ダウングレードされました | `subscription.plan_changed` |
-| キャンセルされました | `subscription.cancelled` |
-| 期間が終了しました | `subscription.expired` |
-| 任意のフィールドが変更されました | `subscription.updated` |
+| Subscription activated | `subscription.active` |
+| Renewal succeeds | `subscription.renewed` |
+| Renewal fails → on hold | `subscription.on_hold` |
+| Subscription paused | `subscription.paused` |
+| Paused subscription resumed | `subscription.unpaused` |
+| Creation fails | `subscription.failed` |
+| Plan upgraded/downgraded | `subscription.plan_changed` |
+| Cancelled | `subscription.cancelled` |
+| Term ended | `subscription.expired` |
+| Any field changes | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-サブスクリプションのライフサイクルイベントについて、完全な payload schema を確認してください。
+subscription lifecycle event の完全な payload schema を確認できます。
 </Card>
 
-## API 管理
+## API Management
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-`POST /subscriptions` を使用すると、任意のトライアルとアドオンを含め、商品からプログラムでサブスクリプションを作成できます。
+`POST /checkouts` を使用して、optional trial（`subscription_data.trial_period_days`）および add-on（`product_cart[].addons`）付きの subscription を product から programmatically に作成します。
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-サブスクリプション作成 API を確認してください。
+<Warning>
+`POST /subscriptions` は deprecated です。既存の integration は引き続き動作しますが、新しい integration では [Checkout Sessions](/api-reference/checkout-sessions/create) を使用してください。
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+create checkout session API を確認できます。
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-次回の請求日にキャンセルする、Subscription の期間を延長する、請求の詳細を更新する、またはメタデータを変更するには、`PATCH /subscriptions/{subscription_id}` を使用します。数量を変更する場合は、代わりに [Plan 変更 API](/api-reference/subscriptions/change-plan) を使用してください — `PATCH` は `quantity` を受け付けません。
+`PATCH /subscriptions/{subscription_id}` を使用して、次回 billing date でのキャンセル、subscription period の延長、billing details の更新、metadata の変更を行えます。quantity を変更するには、代わりに [Change Plan API](/api-reference/subscriptions/change-plan) を使用してください。`PATCH` は `quantity` を受け付けません。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-サブスクリプション詳細の更新方法を確認してください。
+subscription details の更新方法を確認できます。
+</Card>
+</Accordion>
+
+<Accordion title="Pause and resume subscriptions">
+一時停止と再開は、`pause` field を使用して同じ `PATCH /subscriptions/{subscription_id}` endpoint で行います。`pause: true` はアクティブなサブスクリプションを一時停止し、`pause: false` は再開します。この field は同じ request 内で他の field と組み合わせることはできません。動作、billing への影響、関連する business settings の詳細については、[Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) を参照してください。
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+`pause` field を含む update subscription API を確認できます。
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-日割り計算の制御を使用して、現在の商品と数量を変更します。
+proration controls を使用して、アクティブな product と quantity を変更します。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
-プラン変更のオプションを確認してください。
+plan change options を確認します。
 </Card>
 </Accordion>
 
 <Accordion title="On‑demand charges">
-オンデマンドサブスクリプションでは、必要に応じて指定した金額を請求します。
+on-demand subscription では、指定した金額をオンデマンドで請求します。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-オンデマンドサブスクリプションに請求します。
+on-demand subscription の請求を行います。
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-`GET /subscriptions` ですべてのサブスクリプションを一覧表示し、`GET /subscriptions/{id}` で 1 件を取得します。
+`GET /subscriptions` ですべての subscription を一覧表示し、`GET /subscriptions/{id}` で1つを取得します。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
-一覧表示および取得 API を確認してください。
+一覧表示および取得 API を確認できます。
 </Card>
 </Accordion>
 
 <Accordion title="Usage history">
-従量制またはハイブリッド価格モデルで記録された usage を取得します。
+metered または hybrid pricing model の記録済み usage を取得します。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-Usage history API を参照してください。
+usage history API を確認できます。
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-サブスクリプションの支払い方法を更新します。有効なサブスクリプションでは、今後の更新に使用する支払い方法が更新されます。`on_hold` 状態のサブスクリプションでは、未払い残額の請求を作成して再有効化します。
+subscription の payment method を更新します。アクティブな subscription では、今後の更新に使用する payment method が更新されます。`on_hold` state の subscription では、未払い残高に対する charge を作成して subscription を再有効化します。
 
-新しい payment-method link（`New` request type）を生成する際、`allowed_payment_method_types` を渡すと、そのページで顧客に表示する支払い方法を制限できます。顧客にはリストにない方法は表示されません。ただし、方法を含めても表示が保証されるわけではありません（利用可能性は顧客の所在地やビジネス設定などにも依存します）。
+新しい payment-method link（`New` request type）を生成するとき、`allowed_payment_method_types` を渡すことで、そのページで顧客に表示する payment method を制限できます。顧客にはリストにない method は表示されません。ただし、method を含めても表示が保証されるわけではありません（利用可能性は顧客の location や business settings などにも左右されます）。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-支払い方法の更新とサブスクリプションの再有効化について確認してください。
+payment method の更新と subscription の再有効化の方法を確認できます。
 </Card>
 </Accordion>
 </AccordionGroup>
 
 ## 一般的なユースケース
 
-- **SaaS と API**: シート数や usage に対応したアドオン付きの段階的アクセス
-- **コンテンツとメディア**: 導入トライアル付きの月額アクセス
-- **B2B サポートプラン**: プレミアムサポートアドオン付きの年間契約
-- **ツールとプラグイン**: license key とバージョン管理されたリリース
+- **SaaS と API**: seat または usage 用の add-on を備えた段階的な access
+- **コンテンツとメディア**: introductory trial 付きの月額 access
+- **B2B support plan**: premium support add-on 付きの年間契約
+- **ツールと plugin**: license key と versioned release
 
-## 統合例
+## Integration の例
 
-### Checkout Sessions（サブスクリプション）
-checkout session を作成する際は、サブスクリプション商品と任意のアドオンを含めます。
+### Checkout Sessions（subscription）
+checkout session を作成するときは、subscription product と optional add-on を含めます。
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### 日割り計算を使用したプラン変更
-サブスクリプションをアップグレードまたはダウングレードし、日割り計算の動作を制御します。
+### proration を伴う plan change
+subscription を upgrade または downgrade し、proration の動作を制御します。
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -608,8 +727,8 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### 次回請求日にキャンセル
-現在の請求期間の終了時に有効になるキャンセルを予約します。
+### 次回 billing date でキャンセル
+現在の billing period の終了時に有効になるキャンセルをスケジュールします。
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -617,8 +736,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### Subscription の期間を延長する
-新しい `subscription_period_count` と `subscription_period_interval` を `PATCH /subscriptions/{subscription_id}` に渡すことで、Subscription の期間を延長できます。Subscription の有効期限は、新しい回数と間隔に基づいて再計算されます。たとえば、現在の Plan に追加の期間を付与する場合は、次のようにします。
+### subscription period の延長
+新しい `subscription_period_count` と `subscription_period_interval` を `PATCH /subscriptions/{subscription_id}` に渡して、subscription の実行期間を延長します。subscription の expiry は新しい count と interval から再計算されます。たとえば、顧客に現在の plan の追加期間を付与する場合は次のようにします。
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -628,11 +747,11 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-サブスクリプション期間は**延長のみ**可能で、短縮することはできません。
+subscription の period は **増加のみ**可能で、短縮することはできません。
 </Note>
 
-### オンデマンドサブスクリプション
-オンデマンドサブスクリプションを作成し、必要に応じて後から請求します。
+### On-demand subscription
+On-demand subscription を作成し、必要に応じて後から請求します。
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### 有効なサブスクリプションの支払い方法を更新
-有効なサブスクリプションの支払い方法を更新します。
+### アクティブな subscription の payment method を更新
+アクティブな subscription の payment method を更新します。
 
 ```typescript
 // Update with new payment method
@@ -671,8 +790,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### on_hold のサブスクリプションを再有効化
-支払い失敗により on hold になったサブスクリプションを再有効化します。
+### on_hold から subscription を再有効化
+payment 失敗により on hold になった subscription を再有効化します。
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## RBI 準拠の Mandate を使用したサブスクリプション
+## RBI-Compliant Mandate を使用する Subscription
 
-  UPI とインドのカードによるサブスクリプションは、特定の mandate 要件を定めた RBI（Reserve Bank of India）規制に従って運用されます。
+  UPI と Indian card の subscription は、特定の mandate 要件を伴う RBI（Reserve Bank of India）規制に基づいて運用されます。
 
   ### Mandate の上限
 
-  mandate の種類と金額は、サブスクリプションの継続料金によって決まります。
+  mandate の type と amount は、subscription の recurring charge によって異なります。
 
-  - **mandate 下限（デフォルト ₹15,000）未満の請求:** 下限額のオンデマンド mandate を作成します。サブスクリプション金額は、mandate 上限まで、サブスクリプション頻度に応じて定期的に請求されます。
-  - **mandate 下限以上の請求:** サブスクリプション金額と同額の subscription mandate（またはオンデマンド mandate）を作成します。
+  - **mandate floor 未満の charge（デフォルト ₹15,000）:** floor amount に対する on-demand mandate を作成します。subscription amount は、subscription frequency に従って mandate limit まで定期的に請求されます。
+  - **mandate floor 以上の charge:** subscription amount と同額の subscription mandate（または on-demand mandate）を作成します。
 
-  mandate 下限は、`mandate_min_amount_inr_paise`（INR paise）を使用して merchant 単位または request 単位で設定できます。銀行に登録される金額は `max(mandate_floor, billing_amount)` です。そのため、請求額が低い場合、下限が実質的に顧客向けの認証上限になります。
+  mandate floor は、`mandate_min_amount_inr_paise`（INR paise）を使用して merchant 単位または request 単位で設定できます。bank に登録される amount は `max(mandate_floor, billing_amount)` です。そのため、billing がそれより低い場合、floor は実質的に顧客向けの authorization ceiling になります。
 
-RBI 準拠の mandate と、インドの支払い方法で設定可能な mandate 下限の詳細については、<a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> ページを参照してください。
+RBI-compliant mandate と、Indian payment method 用に設定可能な mandate floor の詳細については、<a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a> ページを参照してください。
 
-  ### アップグレードとダウングレードに関する考慮事項
+  ### Upgrade と Downgrade に関する考慮事項
 
-  **重要:** サブスクリプションをアップグレードまたはダウングレードする場合は、mandate の上限を慎重に考慮してください。
+  **重要:** subscription を upgrade または downgrade するときは、mandate limit を慎重に考慮してください。
 
-  - アップグレードまたはダウングレードによる請求額が Rs 15,000 を超え、既存のオンデマンド payment limit を上回る場合、transaction charge に失敗する可能性があります。
-  - この場合、顧客は支払い方法を更新するか、正しい上限の新しい mandate を設定するためにサブスクリプションを再度変更する必要があります。
+  - upgrade または downgrade によって charge amount が Rs 15,000 を超え、既存の on-demand payment limit も超過すると、transaction charge が失敗する可能性があります。
+  - この場合、顧客は payment method を更新するか、subscription を再度変更して、正しい limit の新しい mandate を設定する必要がある場合があります。
 
-  ### 高額請求の認証
+  ### 高額 charge の Authorization
 
-  Rs 15,000 以上のサブスクリプション請求については、次のようになります。
+  Rs 15,000 以上の subscription charge では、次のようになります。
 
-  - 顧客には、銀行から transaction の認証を求める通知が表示されます。
-  - 顧客が transaction を認証できない場合、transaction は失敗し、サブスクリプションは on hold になります。
+  - 顧客は bank から transaction の authorization を求められます。
+  - 顧客が transaction の authorization に失敗すると、transaction は失敗し、subscription は on hold になります。
 
-  ### 48 時間の処理遅延
+  ### 48時間の Processing Delay
 
-  **処理タイムライン:** インドのカードおよび UPI サブスクリプションの継続請求には、独自の処理パターンがあります。
+  **Processing Timeline:** Indian card と UPI subscription の recurring charge には、固有の processing pattern があります。
 
-  - 請求は、サブスクリプション頻度に従って予定日に**開始**されます。
-  - 顧客口座からの実際の**引き落とし**は、payment 開始から**48 時間後**にのみ行われます。
-  - この 48 時間の期間は、銀行 API の応答によって**さらに 2～3 時間**延長される場合があります。
+  - charge は、subscription frequency に従って scheduled date に **initiated** されます。
+  - 顧客の account から実際に **deduction** されるのは、payment initiation から **48時間後** です。
+  - この48時間の window は、bank API の response によって **追加で2〜3時間** 延長される場合があります。
 
-  ### Mandate のキャンセル可能期間
+  ### Mandate Cancellation Window
 
-  48 時間の処理期間中は、次のことが可能です。
+  48時間の processing window 中は、次のことが可能です。
 
   - 顧客は banking app から mandate をキャンセルできます。
-  - この期間中に顧客が mandate をキャンセルしても、サブスクリプションは**有効**なままです（これはインドのカードおよび UPI AutoPay サブスクリプション固有のエッジケースです）。
-  - ただし、実際の引き落としは失敗する可能性があり、その場合サブスクリプションは**on hold**になります。
+  - 顧客がこの期間中に mandate をキャンセルしても、subscription は **active** のままです（これは Indian card と UPI AutoPay subscription に固有の edge case です）。
+  - ただし、実際の deduction は失敗する可能性があり、その場合 subscription は **on hold** になります。
 
-  **エッジケースへの対応:** 請求開始直後に顧客へ特典、クレジット、またはサブスクリプション利用権を提供する場合は、アプリケーションでこの 48 時間の期間を適切に処理する必要があります。次の対応を検討してください。
+  **Edge Case Handling:** charge initiation の直後に顧客へ benefits、credits、または subscription usage を提供する場合は、アプリケーションでこの48時間の window を適切に処理する必要があります。次の対応を検討してください。
 
-  - payment 確認まで特典の有効化を遅延する
-  - grace period または一時的なアクセスを実装する
-  - mandate のキャンセルについてサブスクリプション状態を監視する
-  - アプリケーションロジックでサブスクリプションの hold 状態を処理する
+  - payment confirmation まで benefit activation を遅延させる
+  - grace period または一時的な access を実装する
+  - mandate cancellation に備えて subscription status を監視する
+  - アプリケーションの logic で subscription hold state を処理する
 
   <Tip>
-  サブスクリプション webhook を監視して payment status の変更を追跡し、48 時間の期間中に mandate がキャンセルされた場合のエッジケースに対応します。
+  subscription webhook を監視して payment status の変更を追跡し、48時間の window 中に mandate がキャンセルされた場合の edge case に対応してください。
   </Tip>
 
 ## ベストプラクティス
 
-- **明確なティアから始める**: 違いが明確な 2～3 個のプラン
-- **価格を明示する**: 合計額、日割り計算、次回更新を表示する
-- **トライアルを適切に使用する**: 期間だけでなくオンボーディングで転換を促す
-- **アドオンを活用する**: 基本プランをシンプルに保ち、追加機能をアップセルする
-- **変更をテストする**: test mode でプラン変更と日割り計算を検証する
+- **明確な tier から始める:** 違いが明確な2〜3個の plan を用意する
+- **pricing を伝える:** total、proration、次回の renewal を表示する
+- **trial を適切に活用する:** 単に期間を設けるのではなく、onboarding で conversion する
+- **add-on を活用する:** base plan をシンプルに保ち、追加機能を upsell する
+- **変更をテストする:** test mode で plan change と proration を検証する
 
 <Info>
-サブスクリプションは、継続収益のための柔軟な基盤です。シンプルに始め、十分にテストし、導入率、解約率、拡張指標に基づいて改善を繰り返してください。
+Subscription は recurring revenue のための柔軟な基盤です。シンプルに始め、十分にテストし、adoption、churn、expansion の metric に基づいて改善を重ねてください。
 </Info>

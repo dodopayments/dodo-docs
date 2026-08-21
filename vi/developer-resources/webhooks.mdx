@@ -352,20 +352,45 @@ Nếu không sử dụng SDK, bạn có thể tự xác minh chữ ký theo đ�
   Chúng tôi tuân theo đặc tả Standard Webhooks. Bạn có thể sử dụng các thư viện của họ để xác minh chữ ký: [https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries). Để biết định dạng event payload, xem [Webhook Payload](/developer-resources/webhooks/intents/payment).
 </Info>
 
-### Phản hồi Webhooks
+### Địa chỉ IP nguồn
 
-* Webhook handler phải trả về `2xx status code` để xác nhận đã nhận event.
-* Mọi phản hồi khác sẽ được xem là thất bại và webhook sẽ được retry.
+Xác minh chữ ký là cách được hỗ trợ để xác thực webhook. Cách này chứng minh rằng request được ký bằng webhook secret của bạn, điều mà kiểm tra ở cấp độ mạng không thể thực hiện.
+
+Các lần gửi webhook được thực hiện từ một nhóm địa chỉ IP nguồn thuộc cơ sở hạ tầng gửi của chúng tôi. Nhóm địa chỉ này có thể thay đổi theo thời gian, vì vậy hãy xem các địa chỉ này là chi tiết vận hành thay vì thuộc tính cố định của integration.
+
+<Warning>
+Không sử dụng source IP allowlist làm cơ chế xác thực. Allowlist chỉ cho biết request đến từ đâu, không chứng minh request là chính xác hoặc chưa bị sửa đổi — hãy xác minh header `webhook-signature` trên mọi request, như mô tả trong [Xác minh chữ ký](#verifying-signatures).
+</Warning>
+
+Nếu infrastructure của bạn nằm sau firewall yêu cầu allowlist rõ ràng, hãy lưu ý những điều sau:
+
+- **Không hardcode địa chỉ vĩnh viễn.** Các range được thêm vào và loại bỏ theo thời gian, rule cũ có thể âm thầm chặn các lần gửi.
+- **Yêu cầu các range hiện tại** từ [support@dodopayments.com](mailto:support@dodopayments.com) trước khi khóa firewall, để bảo đảm bạn đang sử dụng danh sách mới nhất.
+- **Theo dõi thông báo thay đổi.** Khi địa chỉ gửi thay đổi, chúng tôi sẽ thông báo qua email cho các merchant bị ảnh hưởng — hãy áp dụng các cập nhật đó trước ngày được nêu để tránh bỏ lỡ các lần gửi.
+- **Luôn bật xác minh chữ ký** bất kể bạn thêm network rule nào.
+
+<Tip>
+Trên các nền tảng serverless và managed hosting, tính năng lọc IP inbound thường không khả dụng hoặc khó duy trì. Xác minh chữ ký là biện pháp kiểm soát phù hợp trong các môi trường này và không yêu cầu allowlist.
+</Tip>
+
+<Info>
+Một lần gửi bị chặn được xử lý giống như mọi lỗi khác và được retry theo lịch mô tả trong [Automatic Retries](#automatic-retries). Nếu firewall rule khiến các lần gửi thất bại, bạn có thể gửi lại chúng sau khi sửa rule — xem [Phát lại và khôi phục message](#replaying-and-recovering-messages).
+</Info>
+
+### Phản hồi webhook
+
+* Webhook handler của bạn phải trả về `2xx status code` để xác nhận đã nhận event.
+* Mọi response khác sẽ được xem là lỗi và webhook sẽ được retry.
 
 ### Best Practices
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  Luôn sử dụng HTTPS URL cho webhook endpoint. HTTP endpoint dễ bị tấn công man-in-the-middle và làm lộ dữ liệu webhook.
+  Luôn sử dụng HTTPS URL cho webhook endpoint. HTTP endpoint dễ bị tấn công man-in-the-middle và làm lộ dữ liệu webhook của bạn.
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  Trả về mã trạng thái `200` ngay sau khi nhận webhook. Xử lý event bất đồng bộ để tránh timeout.
+  Trả về status code `200` ngay khi nhận webhook. Xử lý event bất đồng bộ để tránh timeout.
   
 
   ```javascript
@@ -385,15 +410,15 @@ Nếu không sử dụng SDK, bạn có thể tự xác minh chữ ký theo đ�
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  Lưu webhook secret an toàn bằng environment variables hoặc secrets manager. Không bao giờ commit secret vào version control.
+  Lưu trữ webhook secret an toàn bằng environment variables hoặc secrets manager. Không bao giờ commit secret vào version control.
 </Accordion>
 </AccordionGroup>
 
-## Cấu trúc Webhook Payload
+## Cấu trúc webhook payload
 
-Hiểu cấu trúc webhook payload giúp bạn phân tích và xử lý events chính xác.
+Hiểu cấu trúc webhook payload giúp bạn phân tích cú pháp và xử lý event chính xác.
 
-### Request Format
+### Định dạng request
 
 ```http
 POST /your-webhook-url
@@ -403,7 +428,7 @@ Content-Type: application/json
 ### Headers
 
 <ParamField header="webhook-id" type="string" required>
-Identifier duy nhất cho webhook event này. Sử dụng identifier để kiểm tra idempotency.
+Mã định danh duy nhất của webhook event này. Sử dụng mã này để kiểm tra idempotency.
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
@@ -414,29 +439,29 @@ Chữ ký HMAC SHA256 dùng để xác minh tính xác thực của webhook.
 Unix timestamp (tính bằng giây) khi webhook được gửi.
 </ParamField>
 
-### Request Body
+### Request body
 
 <ResponseField name="business_id" type="string" required>
-Business identifier của Dodo Payments.
+Mã định danh business của bạn trên Dodo Payments.
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-Event type đã kích hoạt webhook này (ví dụ: `payment.succeeded`, `subscription.active`).
+Loại event kích hoạt webhook này (ví dụ: `payment.succeeded`, `subscription.active`).
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-Timestamp được định dạng ISO 8601 cho thời điểm event xảy ra.
+Timestamp được định dạng theo ISO 8601, cho biết thời điểm event xảy ra.
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-Payload dành riêng cho event, chứa thông tin chi tiết về event.
+Payload riêng của event chứa thông tin chi tiết về event.
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
   Loại resource. Một trong các giá trị: `Payment`, `Subscription`, `Refund`, `Dispute`, `LicenseKey`, `CreditLedgerEntry`, `CreditBalanceLow`, `AbandonedCheckout`, `DunningAttempt`, `EntitlementGrant` hoặc `Payout`.
   </ResponseField>
   
-  Các field bổ sung thay đổi tùy theo event type. Xem tài liệu dành riêng cho từng event để biết schema đầy đủ.
+  Các field bổ sung thay đổi tùy theo event type. Xem tài liệu riêng của từng event để biết schema đầy đủ.
 </Expandable>
 </ResponseField>
 
@@ -456,37 +481,37 @@ Payload dành riêng cho event, chứa thông tin chi tiết về event.
 
 <CardGroup cols={2}>
   <Card title="Event Types" icon="list" href="/developer-resources/webhooks/intents/webhook-events-guide">
-    Duyệt tất cả webhook event types hiện có
+    Duyệt qua tất cả webhook event type hiện có
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
     Xem schema payload chi tiết cho từng event
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    Phản hồi `payment.failed` và khôi phục các khoản thanh toán bị từ chối
+    Phản hồi `payment.failed` và khôi phục các payment bị từ chối
   </Card>
 </CardGroup>
 
-## Kiểm thử Webhooks
+## Kiểm thử webhook
 
-Bạn có thể kiểm thử tích hợp webhook trực tiếp từ Dodo Payments dashboard để đảm bảo endpoint hoạt động chính xác trước khi đưa vào production.
+Bạn có thể kiểm thử integration webhook trực tiếp từ Dodo Payments dashboard để bảo đảm endpoint hoạt động chính xác trước khi đưa vào production.
 
 <Steps>
 <Step title="Navigate to Webhooks">
-    Đi đến Dodo Payments Dashboard và điều hướng đến **Developer → Webhooks**.
+    Truy cập Dodo Payments Dashboard và đi đến **Developer → Webhooks**.
 </Step>
 
 <Step title="Select Your Endpoint">
-    Nhấp vào webhook endpoint để truy cập trang chi tiết.
+    Nhấp vào webhook endpoint để mở trang chi tiết.
 </Step>
 
 <Step title="Open Testing Tab">
-    Nhấp vào tab **Testing** để truy cập giao diện kiểm thử webhook.
+    Nhấp vào tab **Testing** để mở giao diện kiểm thử webhook.
 </Step>
 </Steps>
 
-### Gửi Event mẫu
+### Gửi event mẫu
 
-Tab **Testing** gửi một payload mẫu đến endpoint này để bạn có thể xác minh receiver.
+Tab **Testing** gửi một payload mẫu đến endpoint này để bạn xác minh receiver.
 
 <Steps>
 <Step title="Select Event Type">
@@ -494,21 +519,21 @@ Tab **Testing** gửi một payload mẫu đến endpoint này để bạn có t
 </Step>
 
 <Step title="Send Example">
-    Nhấp vào **Send example**. Payload mẫu được gửi đến endpoint URL giống hệt event thực, với cùng cách ký.
+    Nhấp **Send example**. Payload mẫu được gửi đến endpoint URL giống hệt event thật và được ký theo cùng cách.
     
     <Warning>
-    Các message thất bại được gửi từ tab Testing sẽ không được retry. Hãy dùng tab này để xác minh receiver, không dùng để kiểm thử lịch retry.
+    Message thất bại được gửi từ tab Testing sẽ không được retry. Hãy dùng tính năng này để xác minh receiver, không phải để kiểm thử retry schedule.
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    Tab này ghi nhận thời điểm **Last example sent** được gửi đi. Xác nhận event đã đến, việc xác minh chữ ký thành công và bạn đã trả về mã trạng thái `2xx`.
+    Tab ghi lại thời điểm **Last example sent** được gửi. Xác nhận event đã đến, signature verification thành công và bạn đã trả về status code `2xx`.
 </Step>
 </Steps>
 
 ### Ví dụ triển khai
 
-Đây là một triển khai Express.js hoàn chỉnh minh họa việc xác minh và xử lý webhook:
+Dưới đây là implementation Express.js hoàn chỉnh minh họa cách xác minh và xử lý webhook:
 
 <CodeGroup>
 
@@ -601,54 +626,54 @@ console.log("Test webhook sent successfully:", response.data);
 </CodeGroup>
 
 <Tip>
-Kiểm thử kỹ webhook handler bằng giao diện kiểm thử dashboard trước khi xử lý production events. Điều này giúp phát hiện và khắc phục sớm các vấn đề.
+Kiểm thử kỹ webhook handler bằng giao diện kiểm thử trên dashboard trước khi xử lý event production. Việc này giúp phát hiện và khắc phục sớm các vấn đề.
 </Tip>
 
-## Kiểm thử Webhooks bằng CLI
+## Kiểm thử webhook bằng CLI
 
-[Dodo Payments CLI](/developer-resources/sdks/cli) cung cấp hai command để kiểm thử webhooks trong quá trình phát triển local mà không cần rời terminal.
+[Dodo Payments CLI](/developer-resources/sdks/cli) cung cấp hai command để kiểm thử webhook trong quá trình phát triển local mà không cần rời khỏi terminal.
 
-### Lắng nghe Live Webhooks ở Local
+### Lắng nghe webhook trực tiếp trên local
 
-Chuyển tiếp các webhook events thực từ tài khoản test mode đến development server local theo thời gian thực:
+Forward các webhook event thật từ account test mode đến development server local theo thời gian thực:
 
 ```bash
 dodo wh listen
 ```
 
-CLI mở kết nối WebSocket đến Dodo Payments và chuyển tiếp mọi webhook event đến local endpoint (ví dụ: `http://localhost:3000/webhook`), đồng thời giữ nguyên tất cả headers, bao gồm signature headers để kiểm thử xác minh.
+CLI mở kết nối WebSocket đến Dodo Payments và forward mọi webhook event đến local endpoint (ví dụ: `http://localhost:3000/webhook`), giữ nguyên tất cả header, bao gồm signature header để kiểm thử xác minh.
 
 <Info>
-Listener chỉ hoạt động với API keys của **test mode**. Chạy `dodo login` và chọn Test Mode trước khi sử dụng command này.
+Listener chỉ hoạt động với API key **test mode**. Chạy `dodo login` và chọn Test Mode trước khi sử dụng command này.
 </Info>
 
-### Kích hoạt Mock Webhook Events
+### Kích hoạt webhook event giả lập
 
-Gửi webhook payload giả lập đến bất kỳ endpoint nào mà không tạo giao dịch thực:
+Gửi webhook payload giả lập đến bất kỳ endpoint nào mà không tạo transaction thật:
 
 ```bash
 dodo wh trigger
 ```
 
-Công cụ tương tác này cho phép bạn chọn event type và gửi payload giả lập thực tế đến endpoint. Công cụ lặp lại để bạn có thể kiểm thử nhiều events trong một session.
+Công cụ tương tác này cho phép bạn chọn event type và gửi payload giả lập chân thực đến endpoint. Công cụ lặp lại để bạn có thể kiểm thử nhiều event trong cùng một session.
 
-Trigger command bao gồm tất cả 46 event types mà Dodo Payments gửi, bao gồm các nhóm subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning và entitlement grant — xem [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) để biết danh sách chính xác.
+Trigger command bao phủ toàn bộ 47 event type mà Dodo Payments gửi, bao gồm các nhóm subscription, payment, refund, dispute, license key, payout, credit, abandoned checkout, dunning và entitlement grant — xem [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) để biết danh sách chính xác.
 
 <Warning>
-Mock webhook payload từ `dodo wh trigger` không được ký. Chỉ trong quá trình kiểm thử, hãy dùng `unsafe_unwrap()` thay cho `unwrap()` trong webhook handler.
+Webhook payload giả lập từ `dodo wh trigger` không được ký. Chỉ trong quá trình kiểm thử, hãy sử dụng `unsafe_unwrap()` thay cho `unwrap()` trong webhook handler.
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  Xem tài liệu kiểm thử CLI webhook đầy đủ
+  Xem tài liệu kiểm thử webhook CLI đầy đủ
 </Card>
 
-## Advanced Settings
+## Cài đặt nâng cao
 
-Tab **Advanced** cung cấp các tùy chọn cấu hình bổ sung để tinh chỉnh hành vi webhook endpoint.
+Tab **Advanced** cung cấp các tùy chọn cấu hình bổ sung để tinh chỉnh hành vi của webhook endpoint.
 
 ### Rate Limiting (Throttling)
 
-Kiểm soát tốc độ gửi webhook events đến endpoint để tránh làm quá tải hệ thống.
+Kiểm soát tốc độ gửi webhook event đến endpoint để tránh làm hệ thống quá tải.
 
 <Steps>
 <Step title="Open Advanced Tab">
@@ -656,10 +681,10 @@ Kiểm soát tốc độ gửi webhook events đến endpoint để tránh làm 
 </Step>
 
 <Step title="Configure Rate Limit">
-    Trong phần "Rate Limit (throttling)", nhấp vào **Edit** để sửa cài đặt rate limit.
+    Trong phần "Rate Limit (throttling)", nhấp **Edit** để sửa cài đặt rate limit.
     
     <Info>
-    Theo mặc định, webhooks không áp dụng rate limit, nghĩa là events được gửi ngay khi xảy ra.
+    Theo mặc định, webhook không áp dụng rate limit, nghĩa là event được gửi ngay khi xảy ra.
     </Info>
 </Step>
 
@@ -669,32 +694,32 @@ Kiểm soát tốc độ gửi webhook events đến endpoint để tránh làm 
 </Steps>
 
 <Tip>
-Sử dụng rate limiting khi webhook handler cần thời gian xử lý events hoặc khi bạn muốn gom nhiều events thành một nhóm.
+Sử dụng rate limiting khi webhook handler cần thời gian xử lý event hoặc khi bạn muốn gộp nhiều event thành một batch.
 </Tip>
 
 ### Custom Headers
 
-Thêm các HTTP headers tùy chỉnh vào mọi webhook requests được gửi đến endpoint. Tính năng này hữu ích cho việc xác thực, định tuyến hoặc bổ sung metadata.
+Thêm custom HTTP header vào tất cả webhook request được gửi đến endpoint. Tính năng này hữu ích cho authentication, routing hoặc thêm metadata.
 
 <Steps>
 <Step title="Add Headers">
-    Trong phần "Custom Headers", nhập **Key** và **Value** cho mỗi custom header.
+    Trong phần "Custom Headers", nhập **Key** và **Value** cho từng custom header.
 </Step>
 
 <Step title="Add Multiple Headers">
-    Nhấp vào nút **+** để thêm các custom headers bổ sung khi cần.
+    Nhấp nút **+** để thêm các custom header khác khi cần.
 </Step>
 </Steps>
 
-Custom headers của bạn được thêm vào mọi webhook requests đến endpoint này.
+Custom header của bạn được bao gồm trong mọi webhook request đến endpoint này.
 
 ### Transformations
 
 Transformations cho phép bạn sửa payload của webhook và tùy chọn chuyển hướng payload đến URL khác. Tính năng mạnh mẽ này cho phép bạn:
 
 - Sửa cấu trúc payload trước khi xử lý
-- Định tuyến webhooks đến các endpoints khác nhau dựa trên nội dung
-- Thêm hoặc xóa fields khỏi payload
+- Định tuyến webhook đến các endpoint khác nhau dựa trên nội dung
+- Thêm hoặc xóa field khỏi payload
 - Chuyển đổi định dạng dữ liệu
 
 <Steps>
@@ -703,7 +728,7 @@ Transformations cho phép bạn sửa payload của webhook và tùy chọn chuy
 </Step>
 
 <Step title="Configure Transformation">
-    Nhấp vào **Edit transformation** để xác định các quy tắc transformation bằng JavaScript.
+    Nhấp **Edit transformation** để định nghĩa transformation rule bằng JavaScript.
 </Step>
 
 <Step title="Test Transformation">
@@ -718,14 +743,14 @@ Transformations có thể ảnh hưởng đến hiệu suất gửi webhook. Hã
 <Tip>
 Transformations đặc biệt hữu ích cho:
 - Chuyển đổi giữa các định dạng dữ liệu khác nhau
-- Lọc events dựa trên tiêu chí cụ thể
-- Thêm các fields được tính toán vào payload
-- Định tuyến events đến các microservices khác nhau
+- Lọc event dựa trên tiêu chí cụ thể
+- Thêm field được tính toán vào payload
+- Định tuyến event đến các microservice khác nhau
 </Tip>
 
-## Giám sát Webhook Logs
+## Giám sát webhook log
 
-Tab **Logs** cung cấp khả năng quan sát toàn diện trạng thái gửi webhook, cho phép bạn giám sát, gỡ lỗi và quản lý webhook events hiệu quả.
+Tab **Logs** cung cấp khả năng quan sát toàn diện trạng thái gửi webhook, cho phép bạn giám sát, debug và quản lý webhook event hiệu quả.
 
 <Steps>
 <Step title="Navigate to Logs Tab">
@@ -733,50 +758,50 @@ Tab **Logs** cung cấp khả năng quan sát toàn diện trạng thái gửi w
 </Step>
 
 <Step title="Browse Delivery History">
-    Xem bảng gồm tất cả các lần thử gửi webhook, với các cột Event type, Message ID, Event ID, Sent at, Attempted at, Response code và Duration.
+    Xem bảng gồm tất cả lần thử gửi webhook với các cột Event type, Message ID, Event ID, Sent at, Attempted at, Response code và Duration.
 </Step>
 
 <Step title="Search and Filter">
-    Sử dụng thanh tìm kiếm để tìm messages cụ thể theo ID hoặc event type. Lọc theo trạng thái (Succeeded, Failed, Pending, v.v.) để tập trung vào các events cần điều tra.
+    Sử dụng thanh tìm kiếm để tìm message cụ thể theo ID hoặc event type. Lọc theo status (Succeeded, Failed, Pending, v.v.) để tập trung vào các event cần điều tra.
 </Step>
 
 <Step title="View Message Details">
-    Nhấp vào bất kỳ message nào để mở trang chi tiết message, trang này hiển thị:
+    Nhấp vào bất kỳ message nào để mở trang chi tiết message, nơi hiển thị:
     - Webhook payload đầy đủ
     - Mọi lần thử gửi cùng response code và duration
-    - Timestamp của mỗi lần thử
-    - Mọi error messages từ endpoint của bạn
+    - Timestamp của từng lần thử
+    - Mọi error message từ endpoint của bạn
 
-    Mỗi lần thử có thao tác **Replay**, vì vậy bạn có thể gửi lại riêng message đó mà không cần rời khỏi trang.
+    Mỗi lần thử có action **Replay**, cho phép bạn gửi lại riêng message đó mà không cần rời khỏi trang.
 </Step>
 </Steps>
 
-## Giám sát Activity
+## Giám sát activity
 
-Đi đến **Developer → Webhooks** và mở tab **Activity** để xem hiệu suất gửi trên các endpoints.
+Đi đến **Developer → Webhooks** và mở tab **Activity** để xem hiệu suất gửi trên các endpoint của bạn.
 
-**Delivery activity** biểu diễn các lần thử theo thời gian, được phân nhóm thành **Attempts per 5 minutes**, **Attempts per hour** hoặc **Attempts per day** tùy theo khoảng thời gian. Mỗi thanh được chia theo kết quả; khi di chuột lên một phân đoạn, bạn sẽ thấy trạng thái, số lần thử và tỷ lệ của phân đoạn trong tổng số. Trên một endpoint, **Delivery stats (last 24h)** trong tab **Overview** tóm tắt cùng thông tin cho ngày vừa qua.
+**Delivery activity** biểu diễn các lần thử theo thời gian, được nhóm thành **Attempts per 5 minutes**, **Attempts per hour** hoặc **Attempts per day** tùy theo khoảng thời gian. Mỗi thanh được chia theo kết quả; khi di chuột lên một phần, bạn sẽ thấy status, số lần thử và tỷ lệ trên tổng số. Trên một endpoint, **Delivery stats (last 24h)** trong tab **Overview** tóm tắt cùng thông tin cho ngày vừa qua.
 
 <Tip>
-Cột **Error rate (24h)** trong tab **Endpoints** cho bạn biết ngay endpoints nào cần chú ý trước khi mở chúng.
+Cột **Error rate (24h)** trong tab **Endpoints** cho bạn biết nhanh endpoint nào cần được chú ý trước khi mở chúng.
 </Tip>
 
-## Replay và Khôi phục Messages
+## Phát lại và khôi phục message
 
-Cách bạn gửi lại một message phụ thuộc vào số lượng messages cần xử lý:
+Cách gửi lại message phụ thuộc vào số lượng message bạn cần xử lý:
 
-- **Một message** — mở message từ tab **Logs** và sử dụng thao tác **Replay** trên lần thử. Không cần mở endpoint.
-- **Một khoảng messages** — mở endpoint, vì các chế độ hàng loạt chỉ tác động đến một endpoint mỗi lần.
+- **Một message** — mở message từ tab **Logs** và sử dụng action **Replay** trên lần thử đó. Không cần mở endpoint.
+- **Một phạm vi message** — mở endpoint vì các chế độ hàng loạt chỉ tác động đến một endpoint mỗi lần.
 
-### Replay hàng loạt
+### Phát lại hàng loạt
 
-Mở endpoint từ **Developer → Webhooks**. Có ba chế độ, mỗi chế độ chỉ tác động đến endpoint đó. Khoảng thời gian bạn đặt phụ thuộc vào chế độ:
+Mở endpoint từ **Developer → Webhooks**. Có ba chế độ, mỗi chế độ chỉ tác động đến endpoint đó. Phạm vi bạn thiết lập phụ thuộc vào chế độ:
 
-| Chế độ | Tác dụng | Giá trị cần đặt |
+| Chế độ | Tác vụ | Giá trị thiết lập |
 |------|--------------|--------------|
-| **Recover failed messages** | Replay mọi message gửi đến endpoint này nhưng bị thất bại. | Mốc bắt đầu: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** hoặc **2 weeks ago** |
-| **Replay missing messages** | Replay các messages chưa từng được gửi đến endpoint này, chẳng hạn sau khi đăng ký endpoint nhận event type mới. | Các mốc bắt đầu tương tự |
-| **Bulk replay messages** | Replay các messages khớp với bộ lọc bạn chọn, bao gồm cả những messages đã được gửi thành công. | Giới hạn **Since** và **Until**, mặc định là hai tuần gần nhất, cùng event types, channel hoặc tag tùy chọn |
+| **Recover failed messages** | Phát lại mọi message gửi đến endpoint này nhưng thất bại. | Mốc bắt đầu: **8 hours ago**, **Yesterday**, **3 days ago**, **Last week** hoặc **2 weeks ago** |
+| **Replay missing messages** | Phát lại các message chưa từng được gửi đến endpoint này, chẳng hạn sau khi subscribe endpoint vào event type mới. | Các mốc bắt đầu tương tự |
+| **Bulk replay messages** | Phát lại các message khớp với filter bạn chọn, bao gồm cả những message đã được gửi thành công. | Giới hạn **Since** và **Until**, mặc định là hai tuần gần nhất, cùng event type, channel hoặc tag tùy chọn |
 
 <Steps>
 <Step title="Open More Actions">
@@ -784,19 +809,19 @@ Mở endpoint từ **Developer → Webhooks**. Có ba chế độ, mỗi chế �
 </Step>
 
 <Step title="Set the Range">
-    Điền khoảng thời gian mà chế độ đó yêu cầu, như được liệt kê trong bảng.
+    Điền phạm vi mà chế độ đó yêu cầu, như liệt kê trong bảng.
 </Step>
 
 <Step title="Start the Run">
-    Nhấp vào **Recover** hoặc **Replay**, tùy theo chế độ đã chọn.
+    Nhấp **Recover** hoặc **Replay**, tùy theo chế độ bạn đã chọn.
 </Step>
 </Steps>
 
-Mỗi lần chạy xuất hiện trong **Replay history** trên tab **Overview** của endpoint, cùng với chế độ, khoảng thời gian, trạng thái và số messages được gửi lại.
+Mỗi lần chạy xuất hiện trong **Replay history** trên tab **Overview** của endpoint, cùng mode, time range, status và số message được gửi lại.
 
 ## Email Alerts
 
-Nhận email notification khi việc gửi webhooks đến một endpoint thất bại, giúp bạn xử lý vấn đề trước khi chúng tạo thành backlog.
+Nhận thông báo qua email khi việc gửi webhook đến endpoint thất bại, để bạn có thể xử lý vấn đề trước khi chúng tạo thành backlog.
 
 <Steps>
 <Step title="Navigate to Settings Tab">
@@ -808,48 +833,48 @@ Nhận email notification khi việc gửi webhooks đến một endpoint thất
 </Step>
 
 <Step title="Configure Email Addresses">
-  Nhập các địa chỉ sẽ nhận alerts. Phân tách nhiều địa chỉ bằng dấu phẩy và để trống field để tắt alerts.
+  Nhập các địa chỉ sẽ nhận alert. Phân tách nhiều địa chỉ bằng dấu phẩy và để trống field để tắt alert.
 </Step>
 
 <Step title="Save">
-  Nhấp vào **Save** để áp dụng thay đổi.
+  Nhấp **Save** để áp dụng thay đổi.
 </Step>
 </Steps>
 
 <Tip>
-Bật email alerts để sớm phát hiện vấn đề gửi webhook và duy trì các tích hợp đáng tin cậy.
+Bật email alert để phát hiện sớm vấn đề khi gửi webhook và duy trì integration đáng tin cậy.
 </Tip>
 
-## Deploy lên Cloud Platforms
+## Triển khai lên nền tảng cloud
 
-Bạn đã sẵn sàng deploy webhook handler lên production chưa? Chúng tôi cung cấp các hướng dẫn riêng cho từng nền tảng để giúp bạn deploy webhooks lên những cloud providers phổ biến, cùng best practices cho mỗi nền tảng.
+Sẵn sàng triển khai webhook handler lên production? Chúng tôi cung cấp các guide riêng cho từng platform, giúp bạn triển khai webhook lên các cloud provider phổ biến theo best practice của từng platform.
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    Deploy webhooks lên Vercel bằng serverless functions
+    Triển khai webhook lên Vercel bằng serverless function
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    Chạy webhooks trên edge network của Cloudflare
+    Chạy webhook trên edge network của Cloudflare
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    Tích hợp webhooks với Supabase
+    Tích hợp webhook với Supabase
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    Deploy webhooks dưới dạng Netlify serverless functions
+    Triển khai webhook dưới dạng Netlify serverless function
   </Card>
 </CardGroup>
 
 <Info>
-Mỗi hướng dẫn cho nền tảng bao gồm thiết lập environment, xác minh chữ ký và các bước deploy riêng cho nhà cung cấp đó.
+Mỗi platform guide bao gồm thiết lập environment, xác minh chữ ký và các bước triển khai dành riêng cho provider đó.
 </Info>
 
-## Tài liệu API liên quan
+## API reference liên quan
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  Tài liệu API về việc tạo và cấu hình webhook endpoints bằng lập trình
+  API reference để tạo và cấu hình webhook endpoint theo lập trình
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
-  Tài liệu API về việc truy xuất và quản lý webhook endpoints
+  API reference để truy xuất và quản lý webhook endpoint của bạn
 </Card>
 </CardGroup>

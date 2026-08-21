@@ -350,20 +350,45 @@ SDK を使用していない場合は、Standard Webhooks spec に従って自�
   Standard Webhooks specification に従っています。signature の検証には、[https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries](https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries) の libraries を使用できます。event payload formats については、[Webhook Payload](/developer-resources/webhooks/intents/payment) を参照してください。
 </Info>
 
-### Webhooks への応答
+### ソース IP アドレス
 
-* webhook handler は、event の受信を確認するために `2xx status code` を返す必要があります。
-* その他の応答はすべて失敗として扱われ、webhook はリトライされます。
+Webhook を認証するために推奨されている方法は、署名検証です。これにより、リクエストが webhook secret を使って署名されたことを証明できますが、ネットワークレベルのチェックではそれを確認できません。
+
+Webhook の配信は、当社の配信インフラストラクチャに属するソース IP アドレスのプールから送信されます。このプールは随時変更されるため、アドレスは統合の固定された特性ではなく、運用上の詳細として扱ってください。
+
+<Warning>
+認証メカニズムとしてソース IP allowlist を使用しないでください。allowlist で確認できるのはリクエストの送信元だけであり、それが正規のものか、変更されていないかは確認できません。[Verifying Signatures](#verifying-signatures) の説明に従い、すべてのリクエストで `webhook-signature` header を検証してください。
+</Warning>
+
+ファイアウォールの背後にインフラストラクチャがあり、明示的な allowlist が必要な場合は、次の点に注意してください。
+
+- **アドレスを恒久的にハードコードしないでください。** 範囲は時間の経過とともに追加・廃止されるため、古いルールによって配信が気付かないうちにブロックされます。
+- ファイアウォールを制限する前に、[support@dodopayments.com](mailto:support@dodopayments.com) から**現在の範囲をリクエスト**してください。最新のリストに基づいて作業できます。
+- **変更通知を確認してください。** 配信アドレスが変更される場合、影響を受ける Merchant にはメールで通知します。配信の欠落を避けるため、指定された日付までに更新を適用してください。
+- 追加するネットワークルールにかかわらず、**署名検証を有効にしておいてください**。
+
+<Tip>
+Serverless および managed hosting platform では、受信 IP フィルタリングを利用できないか、維持することが現実的でない場合がよくあります。これらの環境で適切な制御となるのは署名検証であり、allowlist は必要ありません。
+</Tip>
+
+<Info>
+ブロックされた配信は、その他の失敗と同様に扱われ、[Automatic Retries](#automatic-retries) に記載されたスケジュールで再試行されます。ファイアウォールルールが原因で配信に失敗した場合は、ルールを修正した後で再送信できます。詳しくは [Replaying and Recovering Messages](#replaying-and-recovering-messages) を参照してください。
+</Info>
+
+### Webhook への応答
+
+* webhook handler は、イベントを受信したことを確認するために `2xx status code` を返す必要があります。
+* その他のレスポンスは失敗として扱われ、webhook は再試行されます。
 
 ### ベストプラクティス
 
 <AccordionGroup>
 <Accordion title="Use HTTPS endpoints only" icon="lock">
-  webhook endpoint には必ず HTTPS URL を使用してください。HTTP endpoint は man-in-the-middle attack に対して脆弱で、webhook data が露出します。
+  webhook endpoint には常に HTTPS URL を使用してください。HTTP endpoint は man-in-the-middle 攻撃に対して脆弱であり、webhook データが公開される可能性があります。
 </Accordion>
 
 <Accordion title="Respond immediately" icon="bolt">
-  webhook の受信時に `200` status code を直ちに返してください。タイムアウトを避けるため、event は非同期で処理します。
+  webhook を受信したら、直ちに `200` status code を返してください。タイムアウトを避けるため、イベントは非同期で処理します。
   
 
   ```javascript
@@ -379,19 +404,19 @@ SDK を使用していない場合は、Standard Webhooks spec に従って自�
 </Accordion>
 
 <Accordion title="Handle duplicate events" icon="rotate">
-  `webhook-id` header を使用して idempotency を実装し、同じ event を副作用なく安全に複数回処理できるようにします。
+  `webhook-id` header を使用して idempotency を実装し、副作用なしに同じイベントを複数回安全に処理できるようにしてください。
 </Accordion>
 
 <Accordion title="Secure your webhook secret" icon="key">
-  webhook secret は environment variables または secrets manager を使用して安全に保管してください。secret を version control に commit しないでください。
+  webhook secret は、environment variables または secrets manager を使用して安全に保存してください。secret を version control にコミットしないでください。
 </Accordion>
 </AccordionGroup>
 
-## Webhook Payload Structure
+## Webhook Payload の構造
 
-webhook payload structure を理解すると、event を正しく解析・処理できます。
+Webhook payload の構造を理解すると、イベントを正しく解析・処理できます。
 
-### Request Format
+### リクエスト形式
 
 ```http
 POST /your-webhook-url
@@ -401,40 +426,40 @@ Content-Type: application/json
 ### Headers
 
 <ParamField header="webhook-id" type="string" required>
-この webhook event の一意の識別子です。idempotency checks に使用します。
+この webhook event の一意の識別子。idempotency チェックに使用します。
 </ParamField>
 
 <ParamField header="webhook-signature" type="string" required>
-webhook の真正性を検証するための HMAC SHA256 signature です。
+webhook の信頼性を検証するための HMAC SHA256 signature。
 </ParamField>
 
 <ParamField header="webhook-timestamp" type="string" required>
-webhook の送信時刻を示す Unix timestamp（秒）です。
+webhook が送信された時刻を表す Unix timestamp（秒単位）。
 </ParamField>
 
 ### Request Body
 
 <ResponseField name="business_id" type="string" required>
-Dodo Payments business の識別子です。
+Dodo Payments のビジネス識別子。
 </ResponseField>
 
 <ResponseField name="type" type="string" required>
-この webhook をトリガーしたイベントタイプです（例: `payment.succeeded`、`subscription.active`）。
+この webhook を発生させたイベントタイプ（例：`payment.succeeded`、`subscription.active`）。
 </ResponseField>
 
 <ResponseField name="timestamp" type="string" required>
-event が発生した時刻を ISO 8601 形式で示します。
+イベントが発生した時刻を ISO 8601 形式で表した timestamp。
 </ResponseField>
 
 <ResponseField name="data" type="object" required>
-event に関する詳細情報を含む、イベント固有の payload です。
+イベントに関する詳細情報を含む、イベント固有の payload。
 
 <Expandable title="Data object properties">
   <ResponseField name="payload_type" type="string">
-  リソースのタイプです。次のいずれかです: `Payment`、`Subscription`、`Refund`、`Dispute`、`LicenseKey`、`CreditLedgerEntry`、`CreditBalanceLow`、`AbandonedCheckout`、`DunningAttempt`、`EntitlementGrant`、または `Payout`。
+  リソースのタイプ。次のいずれかです：`Payment`、`Subscription`、`Refund`、`Dispute`、`LicenseKey`、`CreditLedgerEntry`、`CreditBalanceLow`、`AbandonedCheckout`、`DunningAttempt`、`EntitlementGrant`、または `Payout`。
   </ResponseField>
   
-  追加フィールドはイベントタイプによって異なります。完全な schema については、イベント固有のドキュメントを参照してください。
+  その他のフィールドはイベントタイプによって異なります。完全なスキーマについては、イベント固有のドキュメントを参照してください。
 </Expandable>
 </ResponseField>
 
@@ -457,16 +482,16 @@ event に関する詳細情報を含む、イベント固有の payload です�
     利用可能なすべての webhook event type を参照
   </Card>
   <Card title="Event Payloads" icon="code" href="/developer-resources/webhooks/intents/payment">
-    各イベントの詳細な payload schema を表示
+    各イベントの詳細な payload schema を確認
   </Card>
   <Card title="Handle Payment Failures" icon="screwdriver-wrench" href="/developer-resources/handle-payment-failures">
-    `payment.failed` に対応し、declined payments を復旧
+    `payment.failed` に反応し、declined payment を回復
   </Card>
 </CardGroup>
 
-## Webhooks のテスト
+## Webhook のテスト
 
-本番稼働前にエンドポイントが正しく動作することを確認するため、Dodo Payments dashboard から webhook integration を直接テストできます。
+本番稼働前に endpoint が正しく動作することを確認するため、Dodo Payments dashboard から webhook 統合を直接テストできます。
 
 <Steps>
 <Step title="Navigate to Webhooks">
@@ -478,35 +503,35 @@ event に関する詳細情報を含む、イベント固有の payload です�
 </Step>
 
 <Step title="Open Testing Tab">
-    **Testing** タブをクリックして webhook testing interface を開きます。
+    **Testing** tab をクリックして webhook testing interface を開きます。
 </Step>
 </Steps>
 
 ### Example Event の送信
 
-**Testing** タブはこのエンドポイントにサンプル payload を dispatch し、receiver を検証できるようにします。
+**Testing** tab はこの endpoint にサンプル payload を送信するため、receiver を検証できます。
 
 <Steps>
 <Step title="Select Event Type">
-    **Select an event type** を使用してテストする event を選択します。例: `payment.succeeded` または `payment.failed`。
+    **Select an event type** を使用してテストするイベントを選択します。例：`payment.succeeded` または `payment.failed`。
 </Step>
 
 <Step title="Send Example">
-    **Send example** をクリックします。サンプル payload は実際の event と同じ方法で署名され、実際の event と同じように endpoint URL へ配信されます。
+    **Send example** をクリックします。サンプル payload は実際のイベントと同じように、同じ方法で署名されて endpoint URL に配信されます。
     
     <Warning>
-    Testing タブから送信された失敗メッセージはリトライされません。receiver の検証に使用し、リトライスケジュールのテストには使用しないでください。
+    Testing tab から送信された失敗メッセージは再試行されません。receiver の検証に使用し、再試行スケジュールのテストには使用しないでください。
     </Warning>
 </Step>
 
 <Step title="Check Your Endpoint">
-    このタブには **Last example sent** が送信された時刻が記録されます。event が到着したこと、signature verification が成功したこと、`2xx` status code を返したことを確認してください。
+    tab には **Last example sent** が送信された時刻が記録されます。イベントが到着したこと、署名検証に成功したこと、`2xx` status code を返したことを確認してください。
 </Step>
 </Steps>
 
 ### 実装例
 
-webhook verification と handling を示す、完全な Express.js 実装例を次に示します。
+webhook の検証と処理を示す、完全な Express.js 実装を次に示します。
 
 <CodeGroup>
 
@@ -602,25 +627,25 @@ console.log("Test webhook sent successfully:", response.data);
 production event を処理する前に、dashboard testing interface を使用して webhook handler を十分にテストしてください。これにより、問題を早期に特定して修正できます。
 </Tip>
 
-## CLI を使用した Webhooks のテスト
+## CLI を使用した Webhook のテスト
 
-[Dodo Payments CLI](/developer-resources/sdks/cli) には、ターミナルを離れることなく local development 中に webhooks をテストできる 2 つの command があります。
+[Dodo Payments CLI](/developer-resources/sdks/cli) には、terminal を離れることなく local development 中に webhook をテストできる 2 つのコマンドがあります。
 
-### Live Webhooks をローカルで listen する
+### Live Webhook をローカルでリッスンする
 
-test mode account から実際の webhook event を local development server へリアルタイムで forward します。
+test mode account から実際の webhook event を local development server にリアルタイムで転送します。
 
 ```bash
 dodo wh listen
 ```
 
-CLI は Dodo Payments への WebSocket connection を開き、すべての webhook event を local endpoint（例: `http://localhost:3000/webhook`）へ forward します。検証テスト用に signature headers を含むすべての headers が保持されます。
+CLI は Dodo Payments への WebSocket 接続を開き、すべての webhook event をローカル endpoint（例：`http://localhost:3000/webhook`）に転送します。検証テスト用の signature headers を含む、すべての headers が保持されます。
 
 <Info>
-listener は **test mode** API keys でのみ動作します。この command を使用する前に `dodo login` を実行し、Test Mode を選択してください。
+listener は **test mode** API keys でのみ動作します。このコマンドを使用する前に `dodo login` を実行し、Test Mode を選択してください。
 </Info>
 
-### Mock Webhook Events のトリガー
+### Mock Webhook Event をトリガーする
 
 実際の transaction を作成せずに、任意の endpoint へ mock webhook payload を送信します。
 
@@ -628,36 +653,36 @@ listener は **test mode** API keys でのみ動作します。この command �
 dodo wh trigger
 ```
 
-この interactive tool では event type を選択し、現実的な mock payload を endpoint に送信できます。ループするため、1 回の session で複数の event をテストできます。
+この interactive tool ではイベントタイプを選択し、現実的な mock payload を endpoint に送信できます。ループするため、1 回の session で複数のイベントをテストできます。
 
-trigger command は Dodo Payments が配信する全 46 種類の event type に対応しています。subscription、payment、refund、dispute、license key、payout、credit、abandoned checkout、dunning、entitlement grant の各 family が含まれます。正確な一覧については、[Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) を参照してください。
+trigger command は、Dodo Payments が配信する全 47 種類の event type に対応しています。subscription、payment、refund、dispute、license key、payout、credit、abandoned checkout、dunning、entitlement grant の各ファミリーが含まれます。正確なリストについては [Supported Webhook Events](/developer-resources/sdks/cli#supported-webhook-events) を参照してください。
 
 <Warning>
-`dodo wh trigger` の mock webhook payload には署名がありません。テスト中の webhook handler では `unwrap()` ではなく `unsafe_unwrap()` を使用してください。
+`dodo wh trigger` からの mock webhook payload には署名がありません。テスト中の webhook handler では、`unwrap()` の代わりに `unsafe_unwrap()` を使用してください。
 </Warning>
 
 <Card title="CLI Webhook Testing Docs" icon="terminal" href="/developer-resources/sdks/cli#webhooks">
-  CLI webhook testing の完全なドキュメントを参照
+  CLI webhook testing documentation の全文を参照
 </Card>
 
 ## Advanced Settings
 
-**Advanced** タブには、webhook endpoint の動作を細かく調整するための追加設定オプションがあります。
+**Advanced** tab には、webhook endpoint の動作を細かく調整するための追加設定オプションがあります。
 
 ### Rate Limiting（Throttling）
 
-システムに過剰な負荷がかからないよう、webhook event を endpoint へ配信する rate を制御します。
+システムへの過負荷を防ぐため、webhook event が endpoint に配信される速度を制御します。
 
 <Steps>
 <Step title="Open Advanced Tab">
-    endpoint details page で **Advanced** タブをクリックします。
+    endpoint details page で **Advanced** tab をクリックします。
 </Step>
 
 <Step title="Configure Rate Limit">
-    「Rate Limit (throttling)」セクションで **Edit** をクリックし、rate limit settings を変更します。
+    "Rate Limit (throttling)" セクションで **Edit** をクリックし、rate limit settings を変更します。
     
     <Info>
-    デフォルトでは webhooks に rate limit は適用されず、event は発生するとすぐに配信されます。
+    デフォルトでは webhook に rate limit は適用されないため、イベントは発生するとすぐに配信されます。
     </Info>
 </Step>
 
@@ -667,20 +692,20 @@ trigger command は Dodo Payments が配信する全 46 種類の event type に
 </Steps>
 
 <Tip>
-webhook handler に event の処理時間が必要な場合や、複数の event をまとめて処理したい場合に rate limiting を使用します。
+webhook handler でイベントの処理に時間が必要な場合や、複数のイベントをまとめて処理したい場合に rate limiting を使用します。
 </Tip>
 
 ### Custom Headers
 
-endpoint に送信するすべての webhook request に custom HTTP headers を追加します。認証、ルーティング、メタデータの追加に便利です。
+endpoint に送信するすべての webhook request に custom HTTP headers を追加します。認証、routing、または metadata の追加に便利です。
 
 <Steps>
 <Step title="Add Headers">
-    「Custom Headers」セクションで、各 custom header の **Key** と **Value** を入力します。
+    "Custom Headers" セクションで、各 custom header の **Key** と **Value** を入力します。
 </Step>
 
 <Step title="Add Multiple Headers">
-    **+** ボタンをクリックして、必要に応じて custom headers を追加します。
+    必要に応じて **+** ボタンをクリックし、custom header を追加します。
 </Step>
 </Steps>
 
@@ -688,16 +713,16 @@ custom headers は、この endpoint へのすべての webhook request に含�
 
 ### Transformations
 
-Transformations を使用すると、webhook の payload を変更し、必要に応じて別の URL へ redirect できます。この強力な機能により、次のことが可能になります。
+Transformations を使用すると、webhook の payload を変更し、必要に応じて別の URL にリダイレクトできます。この強力な機能により、次のことが可能になります。
 
-- 処理前に payload structure を変更する
-- 内容に基づいて webhooks を異なる endpoint へ route する
-- payload の field を追加または削除する
-- data formats を変換する
+- 処理前に payload の構造を変更する
+- 内容に基づいて webhook を異なる endpoint に routing する
+- payload のフィールドを追加または削除する
+- data format を変換する
 
 <Steps>
 <Step title="Enable Transformations">
-    **Enabled** switch を切り替えて transformation feature を有効にします。
+    **Enabled** switch をオンにして transformation feature を有効化します。
 </Step>
 
 <Step title="Configure Transformation">
@@ -705,76 +730,76 @@ Transformations を使用すると、webhook の payload を変更し、必要�
 </Step>
 
 <Step title="Test Transformation">
-    transformation test interface を使用し、本番稼働前に transformation が正しく動作することを確認します。
+    transformation test interface を使用して、本番稼働前に transformation が正しく動作することを確認します。
 </Step>
 </Steps>
 
 <Warning>
-Transformations は webhook delivery performance に影響する場合があります。十分にテストし、transformation logic はシンプルかつ効率的に保ってください。
+Transformations は webhook delivery performance に影響を与える可能性があります。十分にテストし、transformation logic はシンプルかつ効率的に保ってください。
 </Warning>
 
 <Tip>
 Transformations は特に次の用途に便利です。
-- 異なる data formats 間で変換する
-- 特定の criteria に基づいて event を filter する
-- payload に computed fields を追加する
-- event を異なる microservices へ route する
+- 異なる data format 間で変換する
+- 特定の条件に基づいてイベントを filtering する
+- payload に計算フィールドを追加する
+- イベントを異なる microservices に routing する
 </Tip>
 
 ## Webhook Logs の監視
 
-**Logs** タブでは webhook delivery status を包括的に確認でき、webhook event を効果的に監視、debug、管理できます。
+**Logs** tab では webhook delivery status を包括的に確認でき、webhook event を効果的に監視、デバッグ、管理できます。
 
 <Steps>
 <Step title="Navigate to Logs Tab">
-    **Developer → Webhooks** に移動し、**Logs** タブを開きます。
+    **Developer → Webhooks** に移動し、**Logs** tab を開きます。
 </Step>
 
 <Step title="Browse Delivery History">
-    Event type、Message ID、Event ID、Sent at、Attempted at、Response code、Duration の列を含む、すべての webhook delivery attempts の table を確認できます。
+    Event type、Message ID、Event ID、Sent at、Attempted at、Response code、Duration の各列を含む、すべての webhook delivery attempt のテーブルを確認できます。
 </Step>
 
 <Step title="Search and Filter">
-    search bar で ID または event type から特定の message を検索します。status（Succeeded、Failed、Pending など）で filter し、調査が必要な event に絞り込めます。
+    search bar を使用して、ID または event type で特定の message を検索します。status（Succeeded、Failed、Pending など）で filtering し、調査が必要なイベントに絞り込めます。
 </Step>
 
 <Step title="View Message Details">
-    message をクリックして message detail page を開くと、次の情報が表示されます。
+    任意の message をクリックして message detail page を開くと、次の情報が表示されます。
     - 完全な webhook payload
-    - response code と duration を含むすべての delivery attempts
+    - response code と duration を含むすべての delivery attempt
     - 各 attempt の timestamp
-    - endpoint からの error messages
+    - endpoint から返されたエラーメッセージ
 
-    各 attempt には **Replay** action があるため、ページを離れずにその message だけを再配信できます。
+    各 attempt には **Replay** action があり、ページを離れずにその message だけを再配信できます。
 </Step>
 </Steps>
 
 ## Activity Monitoring
 
-**Developer → Webhooks** に移動し、**Activity** タブを開くと、各 endpoint の delivery performance を確認できます。
+**Developer → Webhooks** に移動し、**Activity** tab を開くと、各 endpoint の delivery performance を確認できます。
 
-**Delivery activity** には、期間に応じて **Attempts per 5 minutes**、**Attempts per hour**、**Attempts per day** 単位で分類された、時間経過に伴う attempts が表示されます。各 bar は結果別に分割され、segment にカーソルを合わせると status、attempts 数、合計に占める割合が表示されます。endpoint の **Overview** タブにある **Delivery stats (last 24h)** には、過去 1 日分の同じ情報がまとめられます。
+**Delivery activity** では、期間に応じて **Attempts per 5 minutes**、**Attempts per hour**、または **Attempts per day** として分類された attempt の推移を表示します。各バーは結果別に分割され、セグメントにカーソルを合わせると status、attempt 数、全体に占める割合が表示されます。endpoint の **Overview** tab にある **Delivery stats (last 24h)** では、過去 1 日分の同じ情報をまとめて確認できます。
 
 <Tip>
-**Endpoints** タブの **Error rate (24h)** 列を見ると、endpoint を開く前に、対応が必要な endpoint をすぐに確認できます。
+**Endpoints** tab の **Error rate (24h)** 列を見ると、endpoint を開く前に対応が必要な endpoint をすぐに把握できます。
 </Tip>
 
-## メッセージの Replay と Recovery
+## Message の再生と復旧
 
-message を再配信する方法は、必要な件数によって異なります。
+message を再配信する方法は、必要な数によって異なります。
 
-- **1 件の message** — **Logs** タブから開き、attempt の **Replay** action を使用します。endpoint を開く必要はありません。
-- **複数の message** — bulk mode は一度に 1 つの endpoint に対して実行されるため、endpoint を開きます。
+- **1 件の message** — **Logs** tab から message を開き、attempt の **Replay** action を使用します。endpoint を開く必要はありません。
+- **複数の message の範囲** — bulk mode は一度に 1 つの endpoint に対して実行されるため、endpoint を開きます。
 
-### 一括 Replay
+### Bulk での再生
 
-**Developer → Webhooks** から endpoint を開きます。3 つの mode が利用でき、それぞれその endpoint のみに対して実行されます。設定する range は mode によって異なります。
+**Developer → Webhooks** から endpoint を開きます。3 つの mode が利用でき、それぞれその endpoint だけに対して実行されます。設定する範囲は mode によって異なります。
 
-| Mode | What it does | What you set |
+| Mode | 動作 | 設定内容 |
 |------|--------------|--------------|
-| **Recover failed messages** | この endpoint への配信に失敗したすべての message を replay します。 | 開始地点: **8 hours ago**、**Yesterday**、**3 days ago**、**Last week**、**2 weeks ago** のいずれか |
-| **Replay missing messages** | この endpoint に一度も dispatch されなかった message を replay します。たとえば、新しい event type を購読した後などです。 | 同じ開始地点 |
-| **Bulk replay messages** | 選択した filter に一致する message を replay します。すでに正常配信された message も含まれます。 | **Since** と **Until** の範囲（デフォルトは過去 2 週間）、さらに任意の event types、channel、tag |
+| **Recover failed messages** | この endpoint への配信に失敗したすべての message を Replay します。 | 開始地点：**8 hours ago**、**Yesterday**、**3 days ago**、**Last week**、または **2 weeks ago** |
+| **Replay missing messages** | たとえば新しい event type を subscribe した後など、この endpoint に一度も dispatch されていない message を Replay します。 | 同じ開始地点 |
+| **Bulk replay messages** | 選択した filtering に一致する message を Replay します。すでに正常に配信された message も含まれます。 | **Since** と **Until** の範囲（デフォルトは過去 2 週間）、および任意の event type、channel、tag |
 
 <Steps>
 <Step title="Open More Actions">
@@ -782,7 +807,7 @@ message を再配信する方法は、必要な件数によって異なります
 </Step>
 
 <Step title="Set the Range">
-    table に記載されている、その mode に必要な range を入力します。
+    table に記載されている、その mode が求める範囲を入力します。
 </Step>
 
 <Step title="Start the Run">
@@ -790,15 +815,15 @@ message を再配信する方法は、必要な件数によって異なります
 </Step>
 </Steps>
 
-各 run は endpoint の **Overview** タブにある **Replay history** の下に表示されます。mode、time range、status、再送された message 数を確認できます。
+各実行は endpoint の **Overview** tab にある **Replay history** に表示され、mode、時間範囲、status、再送信された message 数を確認できます。
 
 ## Email Alerts
 
-endpoint への webhook delivery が失敗したときに email notification を受け取り、問題が backlog になる前に対処できます。
+endpoint への webhook delivery が失敗しているときに email notification を受け取り、問題が backlog になる前に対処できるようにします。
 
 <Steps>
 <Step title="Navigate to Settings Tab">
-  **Developer → Webhooks** に移動し、**Settings** タブを開きます。
+  **Developer → Webhooks** に移動し、**Settings** tab を開きます。
 </Step>
 
 <Step title="Find Email Alerting">
@@ -806,7 +831,7 @@ endpoint への webhook delivery が失敗したときに email notification を
 </Step>
 
 <Step title="Configure Email Addresses">
-  alert を受け取る address を入力します。複数の address はカンマで区切り、alert を無効にする場合は field を空にします。
+  alert を受け取るアドレスを入力します。複数のアドレスはカンマで区切り、alert を無効にする場合はフィールドを空にします。
 </Step>
 
 <Step title="Save">
@@ -815,37 +840,37 @@ endpoint への webhook delivery が失敗したときに email notification を
 </Steps>
 
 <Tip>
-email alerts を有効にすると、webhook delivery の問題を早期に検知し、信頼性の高い integrations を維持できます。
+email alert を有効にして webhook delivery の問題を早期に検知し、信頼性の高い統合を維持してください。
 </Tip>
 
-## Cloud Platforms へのデプロイ
+## Cloud Platform へのデプロイ
 
-webhook handler を production にデプロイする準備はできましたか？各 platform に適した best practices とともに、一般的な cloud provider へ webhooks をデプロイするための platform-specific guides を提供しています。
+webhook handler を本番環境にデプロイする準備はできましたか？各 platform に適したベストプラクティスを用いて、一般的な cloud provider に webhook をデプロイできる platform-specific guide を提供しています。
 
 <CardGroup cols={2}>
   <Card title="Vercel" icon="triangle" href="/developer-resources/webhooks/examples/vercel-example">
-    serverless functions を使用して webhooks を Vercel にデプロイ
+    serverless functions を使用して Vercel に webhook をデプロイ
   </Card>
   <Card title="Cloudflare Workers" icon="cloud" href="/developer-resources/webhooks/examples/cloudflare-example">
-    Cloudflare の edge network で webhooks を実行
+    Cloudflare の edge network で webhook を実行
   </Card>
   <Card title="Supabase Edge Functions" icon="database" href="/developer-resources/webhooks/examples/supabase-example">
-    webhooks を Supabase と統合
+    webhook を Supabase と統合
   </Card>
   <Card title="Netlify Functions" icon="circle-nodes" href="/developer-resources/webhooks/examples/netlify-example">
-    webhooks を Netlify serverless functions としてデプロイ
+    webhook を Netlify serverless functions としてデプロイ
   </Card>
 </CardGroup>
 
 <Info>
-各 platform guide には、環境設定、signature verification、その provider 固有の deployment steps が含まれています。
+各 platform guide には、その provider に固有の environment setup、署名検証、deployment steps が含まれています。
 </Info>
 
-## 関連 API Reference
+## 関連する API Reference
 
 <CardGroup cols={2}>
 <Card title="Create Webhook" icon="code" href="/api-reference/webhooks/create-webhook">
-  webhook endpoint を programmatically 作成・設定するための API reference
+  webhook endpoint をプログラムで作成・設定するための API reference
 </Card>
 <Card title="List Webhooks" icon="list" href="/api-reference/webhooks/list-webhooks">
   webhook endpoint を取得・管理するための API reference

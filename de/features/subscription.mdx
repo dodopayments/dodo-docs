@@ -415,22 +415,119 @@ console.log('You will be charged:', preview.immediate_charge.summary);
   Zeige Tarifänderungen an, bevor du sie bestätigst.
 </Card>
 
-## Subscription-Status
+## Abonnements pausieren und fortsetzen
 
-Eine Subscription durchläuft während ihrer Laufzeit eine festgelegte Reihe von Status. Diese Tabelle dient als Referenz für jeden Status, seine Ursache und die Möglichkeit bzw. Vorgehensweise zur Wiederherstellung.
+Beim Pausieren wird ein Abonnement eingefroren, anstatt es zu beenden. Die Abrechnung wird angehalten, der Zugriff entzogen und das Abonnement behält seinen Tarif und seinen Verlauf, sodass der Kunde genau dort weitermachen kann, wo er aufgehört hat. Nutze diese Funktion als Alternative zur Kündigung, um Kunden zu halten.
 
-| Status | Bedeutung | Wiederherstellbar? | Wiederherstellung / nächster Schritt |
-|--------|-----------|--------------------|--------------------------------------|
-| `pending` | Die Subscription wird erstellt oder verarbeitet | — | Warte auf `subscription.active` (oder `subscription.failed`) |
-| `active` | Die Subscription ist aktiv und wird automatisch verlängert | — | Keine Aktion erforderlich |
-| `on_hold` | Eine Zahlung für die Verlängerung (oder eine Tarifänderung) ist fehlgeschlagen; die Subscription ist pausiert | **Ja** | Aktualisiere die Zahlungsmethode, um sie zu reaktivieren – automatisch über [Payment Retries](/features/recovery/payment-retries) und [Dunning](/features/recovery/subscription-dunning) oder manuell über die [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
-| `cancelled` | Die Subscription wurde gekündigt und wird nicht verlängert | Nur erneuter Kauf | Der Kunde muss eine neue Subscription starten; [Dunning](/features/recovery/subscription-dunning) kann zu einem erneuten Kauf auffordern |
-| `failed` | Die **Erstellung** der Subscription ist fehlgeschlagen (das initiale Mandat oder die Zahlung war nicht erfolgreich) | **Nein – endgültig** | Der Kunde muss eine neue Subscription mit einer funktionierenden Zahlungsmethode erstellen |
-| `expired` | Die Subscription hat das Ende ihrer Laufzeit erreicht | — | Der Kunde muss bei Bedarf eine neue Subscription starten |
+Öffne unter **Sales → Subscriptions** ein beliebiges aktives Abonnement und klicke auf **Pause subscription**. Der Status ändert sich zu `paused` und Verlängerungen werden angehalten, bis das Abonnement fortgesetzt wird.
+
+<Frame>
+    <img src="/images/subscriptions/pause-subscription-dashboard.png" alt="Seite mit Abonnementdetails im Dashboard, auf der die Schaltflächen Update, Pause subscription und Cancel Subscription angezeigt werden" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+### Was beim Pausieren geschieht
+
+- **Verlängerungen werden angehalten.** Während das Abonnement pausiert ist, wird keine Rechnung erstellt und keine Verlängerungsgebühr eingezogen.
+- **Der Zugriff wird sofort entzogen.** Beim Pausieren werden alle auf dem Abonnement bereitgestellten und ausstehenden [entitlement grants](/features/entitlements/introduction) widerrufen. Dadurch werden die [license keys](/features/license-keys) deaktiviert und es werden keine neuen Download-URLs für [digital products](/features/digital-product-delivery) ausgegeben. Beim Fortsetzen werden sie erneut gewährt – genauso wie bei der Wiederherstellung aus `on_hold`.
+- **Die Abrechnungsuhr wird eingefroren.** `next_billing_date` und `expires_at` werden beide um genau die Dauer der Pause nach hinten verschoben, sodass der Kunde die bereits bezahlte Zeit behält.
+- **Es gibt keine Begrenzung der Pausendauer.** Ein pausiertes Abonnement bleibt pausiert, bis jemand es fortsetzt. Eine Pausendauer muss nicht im Voraus festgelegt werden.
 
 <Warning>
-`on_hold` und `failed` werden häufig verwechselt. `on_hold` ist ein **wiederherstellbarer** Status für eine bereits aktive Subscription, deren Verlängerung fehlgeschlagen ist. `failed` ist ein **endgültiger** Status, der nur auftritt, wenn die **initiale** Erstellung der Subscription fehlschlägt – die Subscription kann nicht reaktiviert werden.
+Beim Pausieren wird der Zugriff sofort entzogen, nicht erst am Ende des Abrechnungszeitraums. Wenn ein Abonnement den Zugriff auf dein Produkt steuert, solltest du den Kunden darüber informieren, bevor er bestätigt.
 </Warning>
+
+Durch das Fortsetzen erhält das Abonnement wieder den Status `active` und seine Berechtigungen werden wiederhergestellt. Da die Uhr eingefroren war, findet die nächste Verlängerung um die Pausendauer später als ursprünglich geplant statt – ein 12 Tage pausiertes Abonnement verlängert sich 12 Tage später.
+
+### Nutzungsbasierte Abonnements pausieren
+
+Bei einem [usage-based](/features/usage-based-billing/introduction) Abonnement kann zum Zeitpunkt des Pausierens eine Nutzung erfasst, aber noch nicht abgerechnet worden sein. **Bill Usage at Pause** unter **Settings → Subscriptions** bestimmt, was damit geschieht:
+
+| Einstellung | Verhalten |
+|---------|----------|
+| **On** (Standard) | Dodo Payments stellt eine Rechnung für die seit dem letzten Abrechnungsdatum angefallene Nutzung aus und zieht den Betrag sofort ein. |
+| **Off** | Die ausstehende Nutzung wird vorgetragen und auf der nächsten regulären Rechnung des Abonnements abgerechnet. |
+
+Auf diese Weise wird nur die gemessene Nutzung abgerechnet – die wiederkehrende Grundgebühr wird zum Zeitpunkt des Pausierens niemals berechnet. Bei Standard- und On-Demand-Abonnements gibt es nichts abzurechnen, daher hat diese Einstellung keine Auswirkungen auf sie.
+
+<Info>
+**Bill Usage at Pause** wird pro Abrechnungszyklus erfasst. Eine Änderung innerhalb eines Zyklus ändert nicht, wie der bereits laufende Zyklus abgerechnet wird; der neue Wert gilt ab dem nächsten Zyklus.
+</Info>
+
+<Warning>
+Die Abrechnungsrechnung wird wie jede andere Rechnung eingezogen und kann daher fehlschlagen. Wenn sie nach Ablauf der [dunning](/features/recovery/subscription-dunning)-Kulanzfrist unbezahlt bleibt, wechselt das Abonnement zu `on_hold` und bleibt gleichzeitig als pausiert markiert.
+</Warning>
+
+Ein Abonnement in diesem Zustand kann auf zwei Arten fortgesetzt werden. Sie unterscheiden sich darin, wer die ausstehende Nutzung übernimmt:
+
+| Ausweg | Ergebnis |
+|------|--------|
+| Die Abrechnungsrechnung wird bezahlt | Das Abonnement erhält wieder den Status `paused`, nicht `active`. Setze es ausdrücklich fort, sobald der Kunde bereit ist. |
+| Du setzt es direkt fort | Das Abonnement wechselt direkt zu `active` und die unbezahlte Abrechnungsrechnung wird zusammen mit ihren ausstehenden Wiederholungsversuchen **storniert**. Die ausstehende Nutzung wird abgeschrieben. |
+
+<Info>
+Das Fortsetzen ist ein gültiger Ausweg aus diesem Sperrzustand – die Abrechnungsrechnung muss nicht zuerst eingezogen werden. Beachte jedoch, dass durch das Fortsetzen die ausstehende Nutzung erlassen und nicht aufgeschoben wird.
+</Info>
+
+### Kunden erlauben, ihre eigenen Abonnements zu pausieren
+
+**Allow Subscription Pause** unter **Settings → Subscriptions** steuert, ob Kunden Abonnements über das Customer Portal pausieren und fortsetzen können. Die Option ist **standardmäßig deaktiviert**, sodass das Selbstbedienungs-Pausieren ausdrücklich aktiviert werden muss.
+
+<Frame>
+    <img src="/images/subscriptions/subscription-pause-settings.png" alt="Registerkarte mit den Abonnementseinstellungen, auf der die Schalter Allow Subscription Pause und Bill Usage at Pause angezeigt werden" style={{ maxHeight: '500px', width: 'auto' }} />
+</Frame>
+
+Diese Einstellung gilt nur für das Customer Portal. Du kannst Abonnements immer über das Dashboard oder die API pausieren und fortsetzen, unabhängig davon, wie der Schalter eingestellt ist.
+
+Wenn du die Option deaktivierst, werden neue Pausierungen durch Kunden verhindert. Kunden, deren Abonnement bereits pausiert ist, werden jedoch nicht daran gehindert, es fortzusetzen – sie können eine selbst gestartete Pause weiterhin beenden. Von dir gestartete Pausen bleiben unter deiner Kontrolle.
+
+<Card title="Pausing from the Customer Portal" icon="id-card" href="/features/customer-portal#pausing-a-subscription">
+Sieh dir an, was der Kunde einschließlich des Bestätigungsdialogs sieht.
+</Card>
+
+### Über die API pausieren
+
+Pausieren und Fortsetzen erfolgen über ein einzelnes Feld `pause` im Update-Subscription-Endpunkt. Es gibt keinen separaten Pause-Endpunkt.
+
+```typescript
+// Pause
+await client.subscriptions.update('sub_123', { pause: true });
+
+// Resume
+await client.subscriptions.update('sub_123', { pause: false });
+```
+
+<Warning>
+`pause` darf nicht zusammen mit anderen Feldern verwendet werden – eine gemeinsame Übertragung wird mit `422` abgelehnt. Das Setzen von `status` auf `paused` pausiert ein Abonnement **nicht**; verwende stattdessen das Feld `pause`.
+</Warning>
+
+Beim Pausieren wird `subscription.paused` ausgegeben, beim Fortsetzen `subscription.unpaused`. Beide enthalten das vollständige Abonnementobjekt. Dabei ist `paused_at` während der Pause gesetzt und `null` nach dem Fortsetzen.
+
+### Pausieren und andere Aktionen für Abonnements
+
+- **Kündigungen funktionieren weiterhin.** Du kannst ein pausiertes Abonnement genauso kündigen wie ein aktives. Eine offene Abrechnungsrechnung aus der Pause wird dabei storniert.
+- **Geplante Tarifänderungen werden verzögert, nicht verworfen.** Eine für das nächste Abrechnungsdatum geplante [Tarifänderung](#subscription-plan-changes) bleibt während der Pause unverändert und wird beim verschobenen Abrechnungsdatum nach dem Fortsetzen angewendet. Ihr `scheduled_change.effective_at` ist eine Momentaufnahme aus dem Zeitpunkt der Planung und wird nicht an die Pause angepasst. Daher kann ein Datum in der Vergangenheit angezeigt werden – interpretiere es als „war geplant für“ und nicht als garantiertes Datum. Um die Änderung zu verwerfen, statt sie auszuführen, verwende [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan).
+
+## Abonnementstatus
+
+Ein Abonnement durchläuft während seiner Laufzeit eine festgelegte Reihe von Status. Diese Tabelle dient als Referenz für jeden Status, seine Ursache und die Möglichkeit zur Wiederherstellung.
+
+| Status | Bedeutung | Wiederherstellbar? | Wiederherstellung / nächster Schritt |
+|--------|---------------|--------------|---------------------------|
+| `pending` | Das Abonnement wird erstellt oder verarbeitet | — | Warte auf `subscription.active` (oder `subscription.failed`) |
+| `active` | Das Abonnement ist aktiv und wird automatisch verlängert | — | Keine Aktion erforderlich |
+| `on_hold` | Eine Verlängerungszahlung (oder Gebühr für eine Tarifänderung) ist fehlgeschlagen; Verlängerungen wurden angehalten | **Ja** | Aktualisiere die Zahlungsmethode, um das Abonnement zu reaktivieren – automatisch über [Payment Retries](/features/recovery/payment-retries) und [Dunning](/features/recovery/subscription-dunning) oder manuell über die [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `paused` | Das Abonnement wurde von dir oder dem Kunden absichtlich pausiert; die Abrechnung ist eingefroren und der Zugriff wurde entzogen | **Ja** | Setze es mit `pause: false` oder über das Customer Portal fort, wenn das Selbstbedienungs-Pausieren aktiviert ist – siehe [Abonnements pausieren und fortsetzen](#pausing-and-resuming-subscriptions) |
+| `cancelled` | Das Abonnement wurde gekündigt und wird nicht verlängert | Nur erneuter Kauf | Der Kunde muss ein neues Abonnement starten; [Dunning](/features/recovery/subscription-dunning) kann einen erneuten Kauf anstoßen |
+| `failed` | Die **Erstellung** des Abonnements ist fehlgeschlagen (das anfängliche Mandat oder die Zahlung war nicht erfolgreich) | **Nein – endgültig** | Der Kunde muss mit einer funktionierenden Zahlungsmethode ein neues Abonnement erstellen |
+| `expired` | Das Abonnement hat das Ende seiner Laufzeit erreicht | — | Der Kunde muss bei Bedarf ein neues Abonnement starten |
+
+<Warning>
+`on_hold` und `failed` werden häufig verwechselt. `on_hold` ist ein **wiederherstellbarer** Status für ein bereits aktives Abonnement, dessen Verlängerung fehlgeschlagen ist. `failed` ist ein **endgültiger** Status, der nur auftritt, wenn die **erstmalige** Erstellung des Abonnements fehlschlägt – das Abonnement kann nicht reaktiviert werden.
+</Warning>
+
+<Info>
+`on_hold` und `paused` sind ebenfalls unterschiedlich. `on_hold` ist unfreiwillig – eine Zahlung ist fehlgeschlagen. `paused` ist beabsichtigt – du oder der Kunde habt das Abonnement eingefroren, und solange es pausiert ist, wird keine Verlängerung versucht. Bei einem nutzungsbasierten Abonnement kann zum Zeitpunkt des Pausierens weiterhin eine einmalige Abrechnungsrechnung ausstehen; siehe [Nutzungsbasierte Abonnements pausieren](#pausing-usage-based-subscriptions).
+</Info>
 
 ### Zustandsautomat
 
@@ -441,8 +538,13 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> paused: Paused
+    paused --> active: Resumed
+    paused --> on_hold: Pause settlement invoice unpaid (usage-based)
+    on_hold --> paused: Pause settlement invoice paid
     active --> cancelled: Cancelled
     on_hold --> cancelled: Cancelled
+    paused --> cancelled: Cancelled
     active --> expired: Term ends
     failed --> [*]
     cancelled --> [*]
@@ -451,24 +553,29 @@ stateDiagram-v2
 
 ### Status „On Hold“
 
-Eine Subscription wechselt in den Status `on_hold`, wenn:
+Ein Abonnement wechselt in den Status `on_hold`, wenn:
 
-- Eine Zahlung für die Verlängerung fehlschlägt (unzureichendes Guthaben, abgelaufene Karte usw.)
-- Eine Belastung für eine Tarifänderung fehlschlägt
+- Eine Verlängerungszahlung fehlschlägt (unzureichendes Guthaben, abgelaufene Karte usw.)
+- Eine Gebühr für eine Tarifänderung fehlschlägt
 - Die Autorisierung der Zahlungsmethode fehlschlägt
+- Eine [Abrechnungsrechnung für eine Pause](#pausing-usage-based-subscriptions) eines nutzungsbasierten Abonnements unbezahlt bleibt
 
 <Warning>
-Wenn sich eine Subscription im Status `on_hold` befindet, wird sie nicht automatisch verlängert. Du musst die Zahlungsmethode aktualisieren, um die Subscription zu reaktivieren.
+Wenn sich ein Abonnement im Status `on_hold` befindet, wird es nicht automatisch verlängert. Du musst die Zahlungsmethode aktualisieren, um das Abonnement zu reaktivieren.
 </Warning>
 
-### Aus „On Hold“ reaktivieren
+### Aus dem Status „On Hold“ reaktivieren
 
-Um eine Subscription aus dem Status `on_hold` zu reaktivieren, aktualisiere die Zahlungsmethode. Dadurch wird automatisch:
+Um ein Abonnement aus dem Status `on_hold` zu reaktivieren, aktualisiere die Zahlungsmethode. Dadurch werden automatisch folgende Schritte ausgeführt:
 
-1. eine Belastung für die offenen Beträge erstellt
-2. eine Rechnung erzeugt
-3. die Zahlung über die neue Zahlungsmethode verarbeitet
-4. die Subscription nach erfolgreicher Zahlung in den Status `active` reaktiviert
+1. Eine Gebühr für die verbleibenden offenen Beträge wird erstellt
+2. Eine Rechnung wird generiert
+3. Die Zahlung wird mit der neuen Zahlungsmethode verarbeitet
+4. Das Abonnement wird bei erfolgreicher Zahlung in den Status `active` reaktiviert
+
+<Note>
+Die einzige Ausnahme ist ein durch eine unbezahlte Abrechnungsrechnung für eine Pause verursachter Sperrzustand. Durch das Begleichen dieser Rechnung erhält das Abonnement wieder den Status `paused` und nicht `active`, da es sich vor dem Zahlungsfehler in der Pause befand. Setze es ausdrücklich fort, sobald die Rechnung beglichen ist.
+</Note>
 
 ```typescript
 // Reactivate subscription from on_hold
@@ -488,51 +595,63 @@ if (response.payment_id) {
 ```
 
 <Info>
-Nach der erfolgreichen Aktualisierung der Zahlungsmethode für eine Subscription im Status `on_hold` erhältst du die Webhook-Events `payment.succeeded` gefolgt von `subscription.active`.
+Nach der erfolgreichen Aktualisierung der Zahlungsmethode für ein Abonnement im Status `on_hold` erhältst du die Webhook-Ereignisse `payment.succeeded` gefolgt von `subscription.active`.
 </Info>
 
-### Webhook-Events nach Übergang
+### Webhook-Ereignisse nach Übergang
 
-Jeder Übergang erzeugt einen Webhook, sodass du die Logik für Berechtigungen ohne Polling steuern kannst:
+Jeder Statusübergang löst einen Webhook aus, sodass du die Berechtigungslogik ohne Polling steuern kannst:
 
 | Übergang | Ereignis |
 |------------|-------|
-| Subscription aktiviert | `subscription.active` |
-| Erneuerung erfolgreich | `subscription.renewed` |
-| Erneuerung fehlgeschlagen → pausiert | `subscription.on_hold` |
-| Subscription pausiert | `subscription.paused` |
-| Pausierte Subscription fortgesetzt | `subscription.unpaused` |
+| Abonnement aktiviert | `subscription.active` |
+| Verlängerung erfolgreich | `subscription.renewed` |
+| Verlängerung fehlgeschlagen → On Hold | `subscription.on_hold` |
+| Abonnement pausiert | `subscription.paused` |
+| Pausiertes Abonnement fortgesetzt | `subscription.unpaused` |
 | Erstellung fehlgeschlagen | `subscription.failed` |
-| Plan hochgestuft/herabgestuft | `subscription.plan_changed` |
+| Tarif hochgestuft/herabgestuft | `subscription.plan_changed` |
 | Gekündigt | `subscription.cancelled` |
 | Laufzeit beendet | `subscription.expired` |
 | Beliebige Feldänderungen | `subscription.updated` |
 
 <Card title="Subscription Webhook Payloads" icon="webhook" href="/developer-resources/webhooks/intents/subscription">
-Sieh dir das vollständige Payload-Schema für Subscription-Lifecycle-Events an.
+Sieh dir das vollständige Payload-Schema für Lifecycle-Ereignisse von Abonnements an.
 </Card>
 
 ## API-Verwaltung
 
 <AccordionGroup>
 <Accordion title="Create subscriptions">
-Verwende `POST /subscriptions`, um Subscriptions programmgesteuert aus Produkten mit optionalen Testzeiträumen und Add-ons zu erstellen.
+Verwende `POST /checkouts`, um Abonnements programmgesteuert aus Produkten mit optionalen Testphasen (`subscription_data.trial_period_days`) und Add-ons (`product_cart[].addons`) zu erstellen.
 
-<Card title="API Reference" icon="code" href="/api-reference/subscriptions/post-subscriptions">
-Sieh dir die API zum Erstellen einer Subscription an.
+<Warning>
+`POST /subscriptions` ist veraltet. Bestehende Integrationen funktionieren weiterhin, neue Integrationen sollten jedoch [Checkout Sessions](/api-reference/checkout-sessions/create) verwenden.
+</Warning>
+
+<Card title="API Reference" icon="code" href="/api-reference/checkout-sessions/create">
+Sieh dir die API zum Erstellen einer Checkout Session an.
 </Card>
 </Accordion>
 
 <Accordion title="Update subscriptions">
-Verwende `PATCH /subscriptions/{subscription_id}`, um zum nächsten Abrechnungsdatum zu kündigen, den Subscription-Zeitraum zu verlängern, Abrechnungsdetails zu aktualisieren oder Metadaten zu ändern. Um die Menge zu ändern, verwende stattdessen die [API zum Planwechsel](/api-reference/subscriptions/change-plan) — `PATCH` akzeptiert `quantity` nicht.
+Verwende `PATCH /subscriptions/{subscription_id}`, um zum nächsten Abrechnungsdatum zu kündigen, die Abonnementlaufzeit zu verlängern, Abrechnungsdetails zu aktualisieren oder Metadaten zu ändern. Um die Menge zu ändern, verwende stattdessen die [Change Plan API](/api-reference/subscriptions/change-plan) – `PATCH` akzeptiert `quantity` nicht.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-Erfahre, wie du Subscription-Details aktualisierst.
+Erfahre, wie du Abonnementdetails aktualisierst.
+</Card>
+</Accordion>
+
+<Accordion title="Pause and resume subscriptions">
+Pausieren und Fortsetzen erfolgen über denselben Endpunkt `PATCH /subscriptions/{subscription_id}` und verwenden das Feld `pause`: `pause: true` pausiert ein aktives Abonnement, und `pause: false` setzt es fort. Das Feld kann in derselben Anfrage nicht mit anderen Feldern kombiniert werden. Eine vollständige Beschreibung des Verhaltens, der Abrechnungseffekte und der zugehörigen Geschäftseinstellungen findest du unter [Abonnements pausieren und fortsetzen](#pausing-and-resuming-subscriptions).
+
+<Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
+Sieh dir die API zum Aktualisieren eines Abonnements einschließlich des Feldes `pause` an.
 </Card>
 </Accordion>
 
 <Accordion title="Change plans (proration)">
-Ändere das aktive Produkt und die Mengen mit Proration-Steuerungen.
+Ändere das aktive Produkt und die Mengen mit Steuerung der anteiligen Abrechnung.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/change-plan">
 Sieh dir die Optionen für Tarifänderungen an.
@@ -540,15 +659,15 @@ Sieh dir die Optionen für Tarifänderungen an.
 </Accordion>
 
 <Accordion title="On‑demand charges">
-Bei On-Demand-Subscriptions kannst du bestimmte Beträge nach Bedarf berechnen.
+Bei On-Demand-Abonnements kannst du bestimmte Beträge nach Bedarf berechnen.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/create-charge">
-Eine On-Demand-Subscription belasten.
+Ein On-Demand-Abonnement berechnen.
 </Card>
 </Accordion>
 
 <Accordion title="List and retrieve">
-Verwende `GET /subscriptions`, um alle Subscriptions aufzulisten, und `GET /subscriptions/{id}`, um eine einzelne abzurufen.
+Verwende `GET /subscriptions`, um alle Abonnements aufzulisten, und `GET /subscriptions/{id}`, um ein einzelnes abzurufen.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-subscriptions">
 Sieh dir die APIs zum Auflisten und Abrufen an.
@@ -556,35 +675,35 @@ Sieh dir die APIs zum Auflisten und Abrufen an.
 </Accordion>
 
 <Accordion title="Usage history">
-Rufe erfasste Nutzung für nutzungsbasierte oder hybride Preismodelle ab.
+Rufe erfasste Nutzung für gemessene oder hybride Preismodelle ab.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/get-usage-history">
-Siehe die API für die Nutzungshistorie.
+Sieh dir die API für den Nutzungsverlauf an.
 </Card>
 </Accordion>
 
 <Accordion title="Update payment method">
-Aktualisiere die Zahlungsmethode für eine Subscription. Bei aktiven Subscriptions wird die Zahlungsmethode für zukünftige Verlängerungen aktualisiert. Bei Subscriptions im Status `on_hold` wird die Subscription reaktiviert, indem eine Belastung für die offenen Beträge erstellt wird.
+Aktualisiere die Zahlungsmethode für ein Abonnement. Bei aktiven Abonnements wird die Zahlungsmethode für zukünftige Verlängerungen aktualisiert. Bei Abonnements im Status `on_hold` wird das Abonnement reaktiviert, indem eine Gebühr für die verbleibenden offenen Beträge erstellt wird.
 
-Beim Erstellen eines neuen Links für Zahlungsmethoden (dem Anfragetyp `New`) kannst du `allowed_payment_method_types` übergeben, um einzuschränken, welche Zahlungsmethoden der Kunde auf dieser Seite sieht. Kunden sehen niemals eine Methode, die nicht in der Liste enthalten ist. Die Aufnahme einer Methode garantiert jedoch nicht, dass sie angezeigt wird, da ihre Verfügbarkeit weiterhin von Faktoren wie dem Standort des Kunden und deinen Unternehmenseinstellungen abhängt.
+Beim Erstellen eines neuen Links für eine Zahlungsmethode (dem Anfragetyp `New`) kannst du `allowed_payment_method_types` übergeben, um einzuschränken, welche Zahlungsmethoden der Kunde auf dieser Seite sieht. Kunden sehen niemals eine Methode, die nicht in der Liste enthalten ist. Die Aufnahme einer Methode garantiert jedoch nicht, dass sie angezeigt wird, da ihre Verfügbarkeit weiterhin von Faktoren wie dem Standort des Kunden und deinen Geschäftseinstellungen abhängt.
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/update-payment-method">
-Erfahre, wie du Zahlungsmethoden aktualisierst und Subscriptions reaktivierst.
+Erfahre, wie du Zahlungsmethoden aktualisierst und Abonnements reaktivierst.
 </Card>
 </Accordion>
 </AccordionGroup>
 
 ## Häufige Anwendungsfälle
 
-- **SaaS und APIs**: Gestufter Zugriff mit Add-ons für Sitze oder Nutzung
-- **Inhalte und Medien**: Monatlicher Zugriff mit einführenden Testzeiträumen
-- **B2B-Supporttarife**: Jahresverträge mit Premium-Support-Add-ons
+- **SaaS und APIs**: Gestaffelter Zugriff mit Add-ons für Sitze oder Nutzung
+- **Inhalte und Medien**: Monatlicher Zugriff mit Einführungstests
+- **B2B-Supportpläne**: Jahresverträge mit Premium-Support-Add-ons
 - **Tools und Plugins**: Lizenzschlüssel und versionierte Releases
 
 ## Integrationsbeispiele
 
-### Checkout-Sessions (Subscriptions)
-Füge beim Erstellen von Checkout-Sessions dein Subscription-Produkt und optionale Add-ons hinzu:
+### Checkout Sessions (Abonnements)
+Füge beim Erstellen von Checkout Sessions dein Abonnementprodukt und optionale Add-ons hinzu:
 
 ```typescript
 const session = await client.checkoutSessions.create({
@@ -597,8 +716,8 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Tarifänderungen mit Proration
-Upgrade oder downgrade eine Subscription und steuere das Proration-Verhalten:
+### Tarifänderungen mit anteiliger Abrechnung
+Stufe ein Abonnement hoch oder herunter und steuere das Verhalten der anteiligen Abrechnung:
 
 ```typescript
 await client.subscriptions.changePlan('sub_123', {
@@ -608,7 +727,7 @@ await client.subscriptions.changePlan('sub_123', {
 });
 ```
 
-### Kündigung zum nächsten Abrechnungsdatum
+### Zum nächsten Abrechnungsdatum kündigen
 Plane eine Kündigung, die am Ende des aktuellen Abrechnungszeitraums wirksam wird:
 
 ```typescript
@@ -617,8 +736,8 @@ await client.subscriptions.update('sub_123', {
 });
 ```
 
-### Subscription-Zeitraum verlängern
-Verlängere die Laufzeit einer Subscription, indem du einen neuen `subscription_period_count` und `subscription_period_interval` an `PATCH /subscriptions/{subscription_id}` übergibst. Das Ablaufdatum der Subscription wird anhand der neuen Anzahl und des neuen Intervalls neu berechnet — zum Beispiel, um einem Kunden zusätzliche Zeit in seinem aktuellen Plan zu gewähren:
+### Abonnementlaufzeit verlängern
+Verlängere die Laufzeit eines Abonnements, indem du einen neuen `subscription_period_count` und `subscription_period_interval` an `PATCH /subscriptions/{subscription_id}` übergibst. Das Ablaufdatum des Abonnements wird anhand der neuen Anzahl und des neuen Intervalls neu berechnet – zum Beispiel, um einem Kunden zusätzliche Zeit für seinen aktuellen Tarif zu gewähren:
 
 ```typescript
 await client.subscriptions.update('sub_123', {
@@ -628,11 +747,11 @@ await client.subscriptions.update('sub_123', {
 ```
 
 <Note>
-Der Zeitraum einer Subscription kann nur **verlängert**, niemals verkürzt werden.
+Die Laufzeit eines Abonnements kann nur **verlängert**, niemals verkürzt werden.
 </Note>
 
-### On-Demand-Subscriptions
-Erstelle eine On-Demand-Subscription und berechne Gebühren später nach Bedarf:
+### On-Demand-Abonnements
+Erstelle ein On-Demand-Abonnement und berechne Gebühren später nach Bedarf:
 
 ```typescript
 const onDemand = await client.subscriptions.create({
@@ -650,8 +769,8 @@ await client.subscriptions.charge(onDemand.subscription_id, {
 });
 ```
 
-### Zahlungsmethode für aktive Subscription aktualisieren
-Aktualisiere die Zahlungsmethode für eine aktive Subscription:
+### Zahlungsmethode für aktives Abonnement aktualisieren
+Aktualisiere die Zahlungsmethode für ein aktives Abonnement:
 
 ```typescript
 // Update with new payment method
@@ -671,8 +790,8 @@ await client.subscriptions.updatePaymentMethod('sub_123', {
 });
 ```
 
-### Subscription aus „on_hold“ reaktivieren
-Reaktiviere eine Subscription, die aufgrund einer fehlgeschlagenen Zahlung pausiert wurde:
+### Abonnement aus „on_hold“ reaktivieren
+Reaktiviere ein Abonnement, das aufgrund einer fehlgeschlagenen Zahlung in den Status „On Hold“ gewechselt ist:
 
 ```typescript
 // Update payment method - automatically creates charge for remaining dues
@@ -690,70 +809,70 @@ if (response.payment_id) {
 }
 ```
 
-## Subscriptions mit RBI-konformen Mandaten
+## Abonnements mit RBI-konformen Mandaten
 
-  UPI- und indische Karten-Subscriptions unterliegen den Bestimmungen der RBI (Reserve Bank of India) und bestimmten Mandatsanforderungen:
+  UPI- und indische Kartenabonnements unterliegen den Vorschriften der RBI (Reserve Bank of India) mit spezifischen Anforderungen an Mandate:
 
   ### Mandatslimits
 
-  Typ und Betrag des Mandats hängen von der wiederkehrenden Belastung deiner Subscription ab:
+  Typ und Betrag des Mandats hängen von der wiederkehrenden Gebühr deines Abonnements ab:
 
-  - **Belastungen unterhalb des Mandatsgrenzwerts (standardmäßig ₹15,000):** Wir erstellen ein On-Demand-Mandat über den Grenzwert. Der Subscription-Betrag wird entsprechend der Subscription-Frequenz regelmäßig bis zur Höhe des Mandatslimits berechnet.
-  - **Belastungen in Höhe des Mandatsgrenzwerts oder darüber:** Wir erstellen ein Subscription-Mandat (oder On-Demand-Mandat) über den genauen Subscription-Betrag.
+  - **Gebühren unter dem Mandatsuntergrenzwert (standardmäßig ₹15.000):** Wir erstellen ein On-Demand-Mandat über den Untergrenzwert. Der Abonnementbetrag wird entsprechend der Abonnementfrequenz regelmäßig bis zum Mandatslimit berechnet.
+  - **Gebühren in Höhe des oder über dem Mandatsuntergrenzwert:** Wir erstellen ein Abonnementmandat (oder On-Demand-Mandat) über den genauen Abonnementbetrag.
 
-  Der Mandatsgrenzwert kann pro Merchant oder pro Anfrage über `mandate_min_amount_inr_paise` (INR-Paise) konfiguriert werden. Der bei der Bank registrierte Betrag ist `max(mandate_floor, billing_amount)` – dadurch wird der Grenzwert effektiv zur kundenseitigen Autorisierungsobergrenze, sobald die Abrechnung niedriger ist.
+  Der Mandatsuntergrenzwert kann pro Händler oder pro Anfrage über `mandate_min_amount_inr_paise` (INR-Paise) konfiguriert werden. Der bei der Bank registrierte Betrag ist `max(mandate_floor, billing_amount)` – dadurch wird der Untergrenzwert effektiv zum kunden sichtbaren Autorisierungslimit, wenn die Abrechnung niedriger ausfällt.
 
-Ausführliche Informationen zu RBI-konformen Mandaten und dem konfigurierbaren Mandatsgrenzwert für indische Zahlungsmethoden findest du auf der Seite <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
+Ausführliche Informationen zu RBI-konformen Mandaten und dem konfigurierbaren Mandatsuntergrenzwert für indische Zahlungsmethoden findest du auf der Seite <a href="/features/payment-methods/india#configurable-mandate-floor">India Payment Methods</a>.
 
-  ### Hinweise zu Upgrades und Downgrades
+  ### Überlegungen zu Hoch- und Herabstufungen
 
-  **Wichtig:** Berücksichtige bei Upgrades oder Downgrades von Subscriptions sorgfältig die Mandatslimits:
+  **Wichtig:** Berücksichtige bei der Hoch- oder Herabstufung von Abonnements sorgfältig die Mandatslimits:
 
-  - Wenn ein Upgrade oder Downgrade zu einem Belastungsbetrag von mehr als Rs 15,000 führt und das bestehende On-Demand-Zahlungslimit überschreitet, kann die Transaktionsbelastung fehlschlagen.
-  - In solchen Fällen muss der Kunde möglicherweise seine Zahlungsmethode aktualisieren oder die Subscription erneut ändern, um ein neues Mandat mit dem korrekten Limit einzurichten.
+  - Wenn eine Hoch- oder Herabstufung zu einem Gebührenbetrag von mehr als 15.000 Rupien führt und das bestehende On-Demand-Zahlungslimit überschreitet, kann die Transaktionsgebühr fehlschlagen.
+  - In solchen Fällen muss der Kunde möglicherweise seine Zahlungsmethode aktualisieren oder das Abonnement erneut ändern, um ein neues Mandat mit dem korrekten Limit einzurichten.
 
-  ### Autorisierung hoher Belastungen
+  ### Autorisierung hoher Gebühren
 
-  Für Subscription-Belastungen von Rs 15,000 oder mehr gilt:
+  Bei Abonnementgebühren von 15.000 Rupien oder mehr:
 
   - Die Bank fordert den Kunden zur Autorisierung der Transaktion auf.
-  - Wenn der Kunde die Transaktion nicht autorisiert, schlägt sie fehl und die Subscription wird pausiert.
+  - Wenn der Kunde die Transaktion nicht autorisiert, schlägt die Transaktion fehl und das Abonnement wird in den Status „On Hold“ versetzt.
 
-  ### 48-stündige Verarbeitungsverzögerung
+  ### Verarbeitungsverzögerung von 48 Stunden
 
-  **Verarbeitungszeitplan:** Wiederkehrende Belastungen bei indischen Karten und UPI-Subscriptions folgen einem besonderen Verarbeitungsmuster:
+  **Verarbeitungszeitplan:** Wiederkehrende Gebühren für indische Karten- und UPI-Abonnements folgen einem besonderen Verarbeitungsmuster:
 
-  - Belastungen werden am geplanten Datum entsprechend der Subscription-Frequenz **initiiert**.
-  - Die tatsächliche **Abbuchung** vom Konto des Kunden erfolgt erst **48 Stunden** nach Initiierung der Zahlung.
-  - Dieses 48-Stunden-Fenster kann sich je nach Antworten der Bank-API um **weitere 2–3 Stunden** verlängern.
+  - Die Gebühren werden am geplanten Datum entsprechend der Abonnementfrequenz **initiiert**.
+  - Der tatsächliche **Einzug** vom Konto des Kunden erfolgt erst **48 Stunden** nach der Zahlungsinitiierung.
+  - Dieses 48-Stunden-Fenster kann je nach Antworten der Bank-API um **2–3 zusätzliche Stunden** verlängert werden.
 
-  ### Zeitraum für die Mandatskündigung
+  ### Zeitfenster für die Mandatskündigung
 
-  Während des 48-stündigen Verarbeitungsfensters gilt:
+  Während des 48-stündigen Verarbeitungsfensters:
 
   - Kunden können das Mandat über ihre Banking-Apps kündigen.
-  - Wenn ein Kunde das Mandat in diesem Zeitraum kündigt, bleibt die Subscription **aktiv** (dies ist ein Sonderfall, der nur bei indischen Karten- und UPI-AutoPay-Subscriptions auftritt).
-  - Die tatsächliche Abbuchung kann jedoch fehlschlagen. In diesem Fall versetzen wir die Subscription in den Status **On Hold**.
+  - Wenn ein Kunde das Mandat in diesem Zeitraum kündigt, bleibt das Abonnement **aktiv** (dies ist ein Sonderfall, der nur bei indischen Karten- und UPI-AutoPay-Abonnements auftritt).
+  - Der tatsächliche Einzug kann jedoch fehlschlagen. In diesem Fall versetzen wir das Abonnement in den Status **On Hold**.
 
-  **Behandlung von Sonderfällen:** Wenn du Kunden unmittelbar bei Initiierung der Belastung Vorteile, Guthaben oder Subscription-Nutzung gewährst, musst du dieses 48-Stunden-Fenster in deiner Anwendung angemessen berücksichtigen. Erwäge:
+  **Umgang mit Sonderfällen:** Wenn du Kunden unmittelbar bei der Gebühreninitiierung Vorteile, Guthaben oder Abonnementnutzung gewährst, musst du dieses 48-Stunden-Fenster in deiner Anwendung angemessen berücksichtigen. Erwäge Folgendes:
 
-  - Die Aktivierung von Vorteilen bis zur Zahlungsbestätigung zu verzögern
-  - Kulanzzeiträume oder vorübergehenden Zugriff zu implementieren
-  - den Subscription-Status auf Mandatskündigungen zu überwachen
-  - pausierte Subscription-Status in der Anwendungslogik zu behandeln
+  - Die Aktivierung von Vorteilen bis zur Zahlungsbestätigung verzögern
+  - Kulanzfristen oder vorübergehenden Zugriff implementieren
+  - Den Abonnementstatus auf Mandatskündigungen überwachen
+  - Status „On Hold“ von Abonnements in der Anwendungslogik behandeln
 
   <Tip>
-  Überwache Subscription-Webhooks, um Änderungen des Zahlungsstatus zu verfolgen und Sonderfälle zu behandeln, in denen Mandate während des 48-Stunden-Fensters gekündigt werden.
+  Überwache Abonnement-Webhooks, um Änderungen des Zahlungsstatus zu verfolgen und Sonderfälle zu behandeln, in denen Mandate während des 48-Stunden-Fensters gekündigt werden.
   </Tip>
 
 ## Best Practices
 
-- **Beginne mit klaren Tarifstufen**: 2–3 Tarife mit deutlichen Unterschieden
-- **Kommuniziere die Preisgestaltung**: Zeige Summen, Proration und die nächste Verlängerung
-- **Setze Testzeiträume gezielt ein**: Konvertiere mit Onboarding, nicht nur mit Zeit
-- **Nutze Add-ons**: Halte Basistarife einfach und biete zusätzliche Funktionen als Upsell an
-- **Teste Änderungen**: Validiere Tarifänderungen und Proration im Testmodus
+- **Beginne mit klaren Stufen:** 2–3 Tarife mit deutlichen Unterschieden
+- **Kommuniziere die Preise:** Zeige Gesamtbeträge, anteilige Abrechnung und nächste Verlängerung
+- **Setze Testphasen sinnvoll ein:** Konvertiere mit Onboarding, nicht nur durch Zeit
+- **Nutze Add-ons:** Halte Basistarife einfach und biete zusätzliche Funktionen als Upsell an
+- **Teste Änderungen:** Validiere Tarifänderungen und anteilige Abrechnung im Testmodus
 
 <Info>
-Subscriptions sind eine flexible Grundlage für wiederkehrende Umsätze. Beginne einfach, teste gründlich und passe dein Angebot anhand von Kennzahlen zu Akzeptanz, Abwanderung und Expansion iterativ an.
+Abonnements bieten eine flexible Grundlage für wiederkehrende Umsätze. Beginne einfach, teste gründlich und optimiere auf Grundlage von Akzeptanz-, Abwanderungs- und Expansionskennzahlen.
 </Info>
