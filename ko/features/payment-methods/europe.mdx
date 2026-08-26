@@ -257,15 +257,42 @@ BLIK에는 **PLN** 청구 통화가 필요합니다. EUR로 가격을 표시하�
 
 SEPA Direct Debit를 사용하면 유로존 전역의 고객이 카드 대신 은행 계좌에서 직접 결제할 수 있습니다. 일회성 결제를 위해 EUR checkout에서 제공됩니다.
 
-### 작동 방식
-
-고객은 checkout 중에 출금을 승인하고, 결제 금액은 은행 계좌에서 인출됩니다. 이 페이지의 대부분의 유럽 결제 수단과 달리 확인이 즉시 이루어지지 않습니다.
-
 <Warning>
-SEPA Direct Debit는 즉시 처리되지 않습니다. 결제가 확인되기까지 **영업일 기준 6일**이 걸리므로 승인을 정산 완료로 간주하지 마세요. 결제가 succeeded 상태가 된 후에만 주문을 처리해야 합니다.
+**SEPA Direct Debit은 즉시 결제되지 않으며, 결제가 확인되기까지 영업일 기준 최대 6일이 걸립니다.** 이 페이지의 다른 모든 결제 수단과 달리, 결제 시 고객이 출금을 승인했다고 해서 **자금이 정산된 것은 아닙니다.** 결제 checkout 리디렉션 또는 `payment.processing`에서 절대 주문을 처리하지 말고, `payment.succeeded` webhook을 기다리세요.
 </Warning>
 
-### 지원 여부
+### 작동 방식
+
+고객이 결제 중 출금을 승인하면 Dodo Payments가 고객의 은행 계좌에서 자금을 수금합니다. 은행에서 출금을 비동기적으로 정산하므로, 결제는 최종 결과에 도달하기 전에 `processing` 상태를 거칩니다.
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### 결제 진행 일정
+
+| 단계 | 시점 | 결제 상태 | 의미 |
+| :---- | :--- | :------------- | :------------ |
+| **승인** | 결제 시점 | `processing` | 고객이 출금을 승인하고 다시 리디렉션되었습니다. 아직 자금이 **이동하지 않았으므로** 주문을 처리하지 마세요. |
+| **확인** | 최대 **영업일 기준 6일** 후 | `succeeded` | 은행에서 출금을 정산했습니다. 이제 주문을 처리하세요. |
+| **실패** | 최대 **영업일 기준 6일** 후 | `failed` | 출금을 수금할 수 없었습니다(예: 잔액 부족). 주문을 처리하지 말고 고객에게 알리세요. |
+
+고객이 사이트를 떠난 후 며칠이 지나야 확인이 도착하므로, checkout 리디렉션이 아니라 webhook handler가 액세스 권한을 부여해야 합니다. 아래의 [확인 지연 처리](#handling-the-confirmation-delay)를 참조하세요.
+
+### 이용 가능 여부
 
 - **청구 통화:** EUR
 - **거래 유형:** 일회성 결제만 지원(구독에는 사용할 수 없음)
@@ -285,47 +312,93 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### SEPA Test IBANs
+### SEPA 테스트 IBAN
 
-Test Mode에서 checkout 시 아래 IBAN 중 하나를 입력하면 특정 결과가 강제로 발생합니다.
+테스트 모드에서는 결제 시 아래 IBAN 중 하나를 입력하여 특정 결과를 강제로 발생시킬 수 있습니다.
 
-| Test IBAN | Behavior |
+| 테스트 IBAN | 동작 |
 | :-------- | :------- |
 | `DE89370400440532013000` | 결제가 성공합니다. |
 | `DE08370400440532013003` | 최소 3분의 지연 후 결제가 성공합니다. |
 | `DE62370400440532013001` | 결제가 실패합니다. |
 | `DE78370400440532013004` | 최소 3분의 지연 후 결제가 실패합니다. |
-| `DE35370400440532013002` | 결제가 성공한 후 즉시 dispute됩니다. |
+| `DE35370400440532013002` | 결제가 성공한 후 즉시 분쟁이 제기됩니다. |
 | `DE65370400440002222227` | 잔액 부족으로 결제가 실패합니다. |
 | `DE18370400440000066666` | 은행 계좌를 사용할 수 없어 결제 수단을 생성할 수 없습니다. |
 
-국가별 동작을 테스트하려면 다른 유로존 국가에 해당하는 성공 IBAN을 사용하세요:
+국가별 동작을 테스트하려면 다른 유로존 국가에 해당하는 성공 IBAN을 사용하세요.
 
-| Country | Success IBAN |
+| 국가 | 성공 IBAN |
 | :------ | :----------- |
-| 오스트리아 | `AT611904300234573201` |
-| 벨기에 | `BE62510007547061` |
-| 에스토니아 | `EE382200221020145685` |
-| 핀란드 | `FI2112345600000785` |
-| 프랑스 | `FR1420041010050500013M02606` |
-| 아일랜드 | `IE29AIBK93115212345678` |
-| 룩셈부르크 | `LU280019400644750000` |
+| Austria | `AT611904300234573201` |
+| Belgium | `BE62510007547061` |
+| Estonia | `EE382200221020145685` |
+| Finland | `FI2112345600000785` |
+| France | `FR1420041010050500013M02606` |
+| Ireland | `IE29AIBK93115212345678` |
+| Luxembourg | `LU280019400644750000` |
 
 <Note>
-지연 테스트 IBAN은 고객이 checkout을 떠난 후 한참 뒤에 SEPA 결제가 확인되므로, checkout redirect가 아닌 webhook handler가 액세스 권한을 부여하는지 확인하는 데 유용합니다.
+지연 테스트 IBAN은 checkout을 떠난 후에도 SEPA 결제가 한참 뒤에 확인되므로, checkout 리디렉션이 아니라 webhook handler가 액세스 권한을 부여하는지 확인하는 데 유용합니다.
 </Note>
+
+### 확인 지연 처리
+
+SEPA는 checkout 후 영업일 기준 최대 6일이 지나야 정산되므로, 결제가 완료되었는지 확인하기 위해 브라우저 리디렉션에 의존할 수 없습니다. 대신 webhook 이벤트를 기준으로 주문 처리를 진행하세요. `payload.type`를 활성화하고 각 단계를 처리하세요.
+
+| 이벤트 유형 | 발생 시점 | 수행할 작업 |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | 고객이 checkout에서 출금을 승인하고 다시 리디렉션된 시점 | **주문을 처리하지 마세요.** 주문을 보류 상태로 표시하고, 선택적으로 고객에게 결제가 처리 중이라고 안내하세요. |
+| `payment.succeeded` | 은행에서 출금을 정산한 시점(최대 영업일 기준 6일 후) | 주문을 처리하세요. 액세스 권한을 부여하고, 제품을 프로비저닝하며, 영수증을 전송하세요. |
+| `payment.failed` | 출금을 수금할 수 없었던 시점 | 고객에게 알리고 재시도를 요청하세요. 주문은 처리하지 마세요. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+항상 **webhook의 `payment.succeeded`에서 주문을 처리하고**, checkout 리디렉션 또는 `payment.processing`에서는 절대 처리하지 마세요. 리디렉션은 고객이 출금을 승인하는 즉시 발생하며, 실제로 자금이 정산되기 며칠 전에 실행됩니다. 처리하기 전에 webhook signature를 확인하세요. 설정 방법은 [Webhooks 가이드](/developer-resources/webhooks)를, 전체 이벤트 목록은 [Webhook Event 가이드](/developer-resources/webhooks/intents/webhook-events-guide)를 참조하세요.
+</Tip>
+
+<Warning>
+checkout에서 고객의 기대치를 설정하세요. 출금이 정산된 후에만 액세스 권한이 부여되므로, SEPA 고객에게 주문이 처리 중이며 결제가 확인되면 알림을 받게 된다고 안내하세요. 그렇지 않으면 고객이 카드 결제처럼 즉시 액세스할 수 있다고 예상할 수 있습니다.
+</Warning>
 
 ## Satispay (유럽)
 
-Satispay는 특히 이탈리아에서 널리 사용되는 유럽 모바일 결제 네트워크로, 고객이 카드 또는 은행 정보를 공유하지 않고 Satispay 앱에서 직접 결제할 수 있도록 합니다. Satispay는 **EUR**로 정산됩니다.
+Satispay는 특히 이탈리아에서 널리 사용되는 유럽 모바일 결제 네트워크로, 고객이 카드나 은행 정보를 공유하지 않고 Satispay 앱에서 직접 결제할 수 있게 합니다. Satispay는 **EUR**로 정산됩니다.
 
 ### 기능
 
 - 카드 네트워크와 독립적인 앱 기반 결제
-- 이탈리아에서 높은 보급률을 보이며 다른 유럽 시장에서도 성장 중
+- 이탈리아 전역에서 높은 도입률을 보이며 다른 유럽 시장에서도 성장 중
 - 일회성 결제와 구독 모두 지원
 
-### 지원 여부
+### 이용 가능 여부
 
 - **청구 통화:** EUR
 - **거래 유형:** 일회성 결제 및 구독
@@ -345,21 +418,21 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-## API Method Types
+## API Method 유형
 
-| Type | Method | Country |
+| 유형 | Method | 국가 |
 | :--- | :----- | :------ |
-| `ideal` | iDEAL | 네덜란드 |
-| `bancontact_card` | Bancontact | 벨기에 |
-| `eps` | EPS | 오스트리아 |
-| `multibanco` | Multibanco | 포르투갈 |
-| `blik` | BLIK | 폴란드 |
-| `sepa` | SEPA Direct Debit | 유로존 |
-| `satispay` | Satispay | 유럽(이탈리아) |
+| `ideal` | iDEAL | Netherlands |
+| `bancontact_card` | Bancontact | Belgium |
+| `eps` | EPS | Austria |
+| `multibanco` | Multibanco | Portugal |
+| `blik` | BLIK | Poland |
+| `sepa` | SEPA Direct Debit | Eurozone |
+| `satispay` | Satispay | Europe (Italy) |
 
-## 다국가 유럽 checkout
+## 여러 국가를 지원하는 유럽 checkout
 
-여러 유럽 국가의 고객을 대상으로 하는 비즈니스라면 모든 지역 결제 수단을 포함하세요:
+여러 유럽 국가의 고객을 대상으로 비즈니스를 운영한다면 모든 지역 결제 수단을 포함하세요.
 
 ```javascript
 const session = await client.checkoutSessions.create({
@@ -380,28 +453,28 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-Dodo는 고객 위치에 따라 관련 결제 수단만 자동으로 표시합니다. 네덜란드 고객에게는 iDEAL이, 벨기에 고객에게는 Bancontact가 표시됩니다.
+Dodo는 고객의 위치를 기준으로 관련 결제 수단만 자동으로 표시합니다. 네덜란드 고객에게는 iDEAL이, 벨기에 고객에게는 Bancontact가 표시됩니다.
 
 ## 테스트
 
 유럽 결제 수단은 Test Mode에서 테스트할 수 있습니다. 테스트 flow는 은행 인증 프로세스를 시뮬레이션합니다.
 
 <Note>
-SEPA Direct Debit는 다른 방식으로 테스트합니다. 시뮬레이션된 은행 flow 대신 테스트 IBAN을 직접 입력합니다. [SEPA Test IBANs](#sepa-test-ibans)를 참조하세요.
+SEPA Direct Debit은 다르게 테스트합니다. 시뮬레이션된 은행 flow 대신 테스트 IBAN을 직접 입력합니다. [SEPA 테스트 IBAN](#sepa-test-ibans)을 참조하세요.
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-Dodo Payments 테스트 API 키를 사용하세요.
+Dodo Payments의 테스트 API 키를 사용하세요.
 </Step>
 
 <Step title="Set appropriate billing address">
-결제 수단에 맞게 청구 주소의 국가를 설정하세요:
+청구지 주소의 국가를 결제 수단에 맞게 설정하세요.
 - `NL`(iDEAL)
 - `BE`(Bancontact)
 - `AT`(EPS)
 - `PT`(Multibanco)
-- `PL`(BLIK, PLN 청구 통화 사용)
+- `PL`(BLIK(PLN 청구 통화 사용))
 - `IT`(Satispay)
 </Step>
 
@@ -410,27 +483,31 @@ Dodo Payments 테스트 API 키를 사용하세요.
 </Step>
 </Steps>
 
-## 모범 사례
+## 권장 사항
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-네덜란드 고객에게 판매한다면 iDEAL을 포함하세요. 이는 미국에서 Visa를 받지 않는 것과 같으며, 상당한 매출을 잃게 됩니다.
+네덜란드 고객에게 판매한다면 iDEAL을 포함하세요. 이를 지원하지 않는 것은 미국에서 Visa를 받지 않는 것과 같습니다. 상당한 매출을 잃게 될 수 있습니다.
 </Accordion>
 
 <Accordion title="Match currency to region">
-대부분의 유럽 결제 수단에는 EUR이 필요하므로 가격 책정이 Euro 거래를 지원하는지 확인하세요. 유일한 예외는 **PLN**(폴란드 즈워티) 청구에서만 제공되는 BLIK입니다.
+대부분의 유럽 결제 수단에는 EUR이 필요하므로 가격이 유로 거래를 지원하는지 확인하세요. 한 가지 예외는 BLIK으로, **PLN**(폴란드 즈워티) 청구에서만 제공됩니다.
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-모든 유럽 결제 수단은 은행 사이트로 redirect됩니다. return URL 처리가 견고하고 flow 중간에 이탈하는 사용자를 고려하는지 확인하세요.
+모든 유럽 결제 수단은 은행 사이트로 리디렉션됩니다. return URL 처리가 안정적이고 사용자가 flow 중간에 이탈하는 경우를 고려하는지 확인하세요.
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-모든 유럽 고객이 이러한 지역 결제 수단에 액세스할 수 있는 것은 아닙니다(관광객, 해외 거주자 등). 항상 `credit` 및 `debit`를 fallback으로 포함하세요.
+모든 유럽 고객이 이러한 지역 결제 수단을 이용할 수 있는 것은 아닙니다(관광객, 외국인 거주자 등). 항상 `credit` 및 `debit`를 fallback으로 포함하세요.
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉시 결제를 전제로 주문 처리를 차단하지 말고, 비동기 확인에는 webhook을 사용하세요.
+Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉시 결제를 기준으로 주문 처리를 차단하지 말고, 비동기 확인에는 webhook을 사용하세요.
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit은 확인까지 영업일 기준 최대 **6일**이 걸립니다. checkout 리디렉션 또는 `payment.processing`에서 절대 주문을 처리하지 마세요. `payment.succeeded` webhook에서만 액세스 권한을 부여하고, checkout에서 고객이 주문이 보류 중임을 알 수 있도록 기대치를 설정하세요. [확인 지연 처리](#handling-the-confirmation-delay)를 참조하세요.
 </Accordion>
 </AccordionGroup>
 
@@ -438,7 +515,7 @@ Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉
 
 <AccordionGroup>
 <Accordion title="European method not appearing">
-**확인 사항:**
+**확인할 사항:**
 1. 고객의 청구 국가가 결제 수단의 국가와 일치하나요?
 2. 통화가 EUR로 설정되어 있나요?
 3. 결제 수단이 `allowed_payment_method_types`에 포함되어 있나요?
@@ -457,7 +534,7 @@ Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉
 
 <Accordion title="Redirect not completing">
 **원인:**
-- 은행 redirect 중 고객이 브라우저를 닫음
+- 은행 리디렉션 중 고객이 브라우저를 닫음
 - 인증 중 네트워크 문제 발생
 - return URL이 잘못 구성됨
 
@@ -465,15 +542,21 @@ Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**원인:** 고객이 결제 reference를 받았지만 아직 결제하지 않음.
+**원인:** 고객이 결제 reference를 받았지만 아직 결제하지 않았습니다.
 
-**해결 방법:** ATM 기반 결제에서는 정상적인 동작입니다. webhook 확인을 기다리세요. reference는 일반적으로 24~72시간 후 만료됩니다.
+**해결 방법:** ATM 기반 결제에서는 정상적인 상황입니다. webhook 확인을 기다리세요. reference는 일반적으로 24~72시간 후 만료됩니다.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**원인:** SEPA Direct Debit은 고객의 은행을 통해 비동기적으로 정산됩니다.
+
+**해결 방법:** 정상적인 상황입니다. `payment.processing` 상태는 출금이 정산되기 전까지 영업일 기준 최대 **6일** 동안 지속될 수 있습니다. 최종 `payment.succeeded`(주문 처리) 또는 `payment.failed`(주문을 처리하지 않음) webhook을 기다리세요. checkout 리디렉션을 확인으로 간주하지 마세요. [확인 지연 처리](#handling-the-confirmation-delay)를 참조하세요.
 </Accordion>
 </AccordionGroup>
 
-## PSD2 Compliance
+## PSD2 준수
 
-모든 유럽 결제 수단은 PSD2(Payment Services Directive 2) 규정을 준수합니다:
+모든 유럽 결제 수단은 PSD2(Payment Services Directive 2) 규정을 준수합니다.
 
 - **Strong Customer Authentication (SCA)** — 은행 인증 flow에 내장됨
 - **Secure Communication** — 모든 데이터가 보안 채널을 통해 전송됨
@@ -495,6 +578,6 @@ Multibanco ATM 결제는 완료까지 몇 시간이 걸릴 수 있습니다. 즉
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
-결제 확인을 비동기 방식으로 처리하세요.
+결제 확인을 비동기적으로 처리하세요.
 </Card>
 </CardGroup>

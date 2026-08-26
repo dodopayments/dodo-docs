@@ -258,13 +258,40 @@ BLIK memerlukan mata uang penagihan **PLN**. Jika Anda menetapkan harga dalam EU
 
 SEPA Direct Debit memungkinkan pelanggan di seluruh Zona Euro membayar langsung dari rekening bank mereka, bukan menggunakan kartu. Metode ini ditawarkan pada checkout EUR untuk pembayaran satu kali.
 
-### Cara Kerja
-
-Pelanggan mengotorisasi debit selama checkout dan pembayaran ditarik dari rekening bank mereka. Tidak seperti sebagian besar metode Eropa di halaman ini, konfirmasi tidak dilakukan secara langsung.
-
 <Warning>
-SEPA Direct Debit tidak instan. Pembayaran memerlukan waktu **6 hari kerja** untuk dikonfirmasi, jadi jangan menganggap otorisasi sebagai penyelesaian — penuhi pesanan hanya setelah pembayaran mencapai status succeeded.
+**SEPA Direct Debit tidak instan — pembayaran memerlukan waktu hingga 6 hari kerja untuk dikonfirmasi.** Tidak seperti metode lainnya di halaman ini, pelanggan yang mengotorisasi debit saat checkout **tidak** berarti dana telah berhasil dicairkan. Jangan pernah memenuhi pesanan berdasarkan pengalihan checkout atau `payment.processing`; tunggu webhook `payment.succeeded`.
 </Warning>
+
+### Cara Kerjanya
+
+Pelanggan mengotorisasi debit selama checkout, lalu Dodo Payments menarik dana dari rekening bank mereka. Karena bank menyelesaikan debit secara asinkron, pembayaran akan berada dalam status `processing` sebelum mencapai hasil akhir:
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Linimasa Pembayaran
+
+| Tahap | Kapan | Status pembayaran | Artinya |
+| :---- | :--- | :------------- | :------------ |
+| **Otorisasi** | Saat checkout | `processing` | Pelanggan menyetujui debit dan dialihkan kembali. Dana **belum** berpindah — jangan memenuhi pesanan. |
+| **Konfirmasi** | Hingga **6 hari kerja** kemudian | `succeeded` | Bank telah menyelesaikan debit. Penuhi pesanan sekarang. |
+| **Kegagalan** | Hingga **6 hari kerja** kemudian | `failed` | Debit tidak dapat ditagih (misalnya, dana tidak mencukupi). Jangan memenuhi pesanan; beri tahu pelanggan. |
+
+Karena konfirmasi diterima beberapa hari setelah pelanggan meninggalkan situs Anda, handler webhook Anda — bukan pengalihan checkout — harus menjadi dasar pemberian akses. Lihat [Menangani Penundaan Konfirmasi](#handling-the-confirmation-delay) di bawah.
 
 ### Ketersediaan
 
@@ -288,9 +315,9 @@ const session = await client.checkoutSessions.create({
 
 ### IBAN Pengujian SEPA
 
-Dalam mode pengujian, masukkan salah satu IBAN di bawah ini saat checkout untuk memaksa hasil tertentu.
+Dalam mode pengujian, masukkan salah satu IBAN di bawah saat checkout untuk memaksa hasil tertentu.
 
-| IBAN Pengujian | Perilaku |
+| IBAN pengujian | Perilaku |
 | :-------- | :------- |
 | `DE89370400440532013000` | Pembayaran berhasil. |
 | `DE08370400440532013003` | Pembayaran berhasil setelah penundaan setidaknya tiga menit. |
@@ -300,9 +327,9 @@ Dalam mode pengujian, masukkan salah satu IBAN di bawah ini saat checkout untuk 
 | `DE65370400440002222227` | Pembayaran gagal karena dana tidak mencukupi. |
 | `DE18370400440000066666` | Rekening bank tidak dapat digunakan, sehingga metode pembayaran tidak dapat dibuat. |
 
-Untuk menguji perilaku khusus negara, gunakan IBAN berhasil yang setara untuk negara lain di Zona Euro:
+Untuk menguji perilaku khusus negara, gunakan IBAN keberhasilan yang setara untuk negara Zona Euro lainnya:
 
-| Negara | IBAN Berhasil |
+| Negara | IBAN keberhasilan |
 | :------ | :----------- |
 | Austria | `AT611904300234573201` |
 | Belgia | `BE62510007547061` |
@@ -316,14 +343,60 @@ Untuk menguji perilaku khusus negara, gunakan IBAN berhasil yang setara untuk ne
 IBAN pengujian yang tertunda berguna untuk memastikan bahwa handler webhook Anda — bukan pengalihan checkout — yang memberikan akses, karena pembayaran SEPA dikonfirmasi jauh setelah pelanggan meninggalkan checkout.
 </Note>
 
+### Menangani Penundaan Konfirmasi
+
+Karena SEPA diselesaikan hingga 6 hari kerja setelah checkout, Anda tidak dapat mengandalkan pengalihan browser untuk mengetahui apakah pembayaran telah dicairkan. Sebagai gantinya, jalankan proses pemenuhan berdasarkan event webhook. Aktifkan `payload.type` dan tangani setiap tahap:
+
+| Jenis event | Saat dipicu | Tindakan |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | Pelanggan mengotorisasi debit saat checkout dan dialihkan kembali. | **Jangan memenuhi pesanan.** Tandai pesanan sebagai tertunda dan, jika perlu, beri tahu pelanggan bahwa pembayaran mereka sedang diproses. |
+| `payment.succeeded` | Bank telah menyelesaikan debit (hingga 6 hari kerja kemudian). | Penuhi pesanan — berikan akses, lakukan provision produk, dan kirim tanda terima. |
+| `payment.failed` | Debit tidak dapat ditagih. | Beri tahu pelanggan dan minta mereka mencoba lagi; jangan memenuhi pesanan. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Selalu **penuhi pesanan berdasarkan `payment.succeeded` dari webhook**, bukan berdasarkan pengalihan checkout atau `payment.processing`. Pengalihan dipicu saat pelanggan mengotorisasi debit — beberapa hari sebelum dana benar-benar dicairkan. Verifikasi signature webhook sebelum memprosesnya; lihat [panduan Webhooks](/developer-resources/webhooks) untuk penyiapan, dan [Panduan Event Webhook](/developer-resources/webhooks/intents/webhook-events-guide) untuk daftar event lengkap.
+</Tip>
+
+<Warning>
+Tetapkan ekspektasi pelanggan saat checkout. Karena akses hanya diberikan setelah debit dicairkan, beri tahu pelanggan SEPA bahwa pesanan mereka sedang diproses dan mereka akan diberi tahu setelah pembayaran dikonfirmasi — jika tidak, mereka mungkin mengharapkan akses instan seperti pada pembayaran kartu.
+</Warning>
+
 ## Satispay (Eropa)
 
-Satispay adalah jaringan pembayaran seluler Eropa yang populer, terutama di Italia, yang memungkinkan pelanggan membayar langsung dari aplikasi Satispay mereka tanpa membagikan detail kartu atau bank. Satispay diselesaikan dalam **EUR**.
+Satispay adalah jaringan pembayaran seluler Eropa yang populer, terutama di Italia, yang memungkinkan pelanggan membayar langsung dari aplikasi Satispay tanpa membagikan detail kartu atau bank. Satispay menyelesaikan pembayaran dalam **EUR**.
 
 ### Fitur
 
 - Pembayaran berbasis aplikasi yang tidak bergantung pada jaringan kartu
-- Adopsi yang kuat di Italia dan terus berkembang di pasar Eropa lainnya
+- Adopsi yang kuat di seluruh Italia dan terus berkembang di pasar Eropa lainnya
 - Mendukung pembayaran satu kali dan langganan
 
 ### Ketersediaan
@@ -381,23 +454,23 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-Dodo secara otomatis hanya menampilkan metode yang relevan berdasarkan lokasi pelanggan. Pelanggan dari Belanda akan melihat iDEAL; pelanggan dari Belgia akan melihat Bancontact.
+Dodo secara otomatis hanya menampilkan metode yang relevan berdasarkan lokasi pelanggan. Pelanggan Belanda akan melihat iDEAL; pelanggan Belgia akan melihat Bancontact.
 
 ## Pengujian
 
 Metode pembayaran Eropa dapat diuji dalam Test Mode. Alur pengujian menyimulasikan proses autentikasi bank.
 
 <Note>
-SEPA Direct Debit diuji secara berbeda — alih-alih alur bank yang disimulasikan, Anda memasukkan IBAN pengujian secara langsung. Lihat [IBAN Pengujian SEPA](#sepa-test-ibans).
+SEPA Direct Debit diuji dengan cara yang berbeda — alih-alih alur bank yang disimulasikan, Anda memasukkan IBAN pengujian secara langsung. Lihat [IBAN Pengujian SEPA](#sepa-test-ibans).
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-Gunakan kunci API pengujian Dodo Payments Anda.
+Gunakan API keys pengujian Dodo Payments Anda.
 </Step>
 
 <Step title="Set appropriate billing address">
-Tetapkan negara alamat penagihan agar sesuai dengan metode pembayaran:
+Atur negara alamat penagihan agar sesuai dengan metode pembayaran:
 - `NL` untuk iDEAL
 - `BE` untuk Bancontact
 - `AT` untuk EPS
@@ -415,15 +488,15 @@ Ikuti alur autentikasi bank yang disimulasikan di lingkungan pengujian.
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-Jika Anda menjual kepada pelanggan dari Belanda, sertakan iDEAL. Tidak melakukannya sama seperti tidak menerima Visa di AS — Anda akan kehilangan penjualan dalam jumlah besar.
+Jika Anda menjual kepada pelanggan Belanda, sertakan iDEAL. Tidak menyertakannya seperti tidak menerima Visa di AS — Anda akan kehilangan penjualan yang signifikan.
 </Accordion>
 
 <Accordion title="Match currency to region">
-Sebagian besar metode pembayaran Eropa memerlukan EUR — pastikan penetapan harga Anda mendukung transaksi Euro. Satu pengecualiannya adalah BLIK, yang hanya ditawarkan dengan penagihan **PLN** (Złoty Polandia).
+Sebagian besar metode pembayaran Eropa memerlukan EUR — pastikan harga Anda mendukung transaksi Euro. Satu-satunya pengecualian adalah BLIK, yang hanya tersedia dalam **PLN** (Złoty Polandia) untuk penagihan.
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-Semua metode Eropa melibatkan pengalihan ke situs bank. Pastikan penanganan return URL Anda kuat dan memperhitungkan pengguna yang berhenti di tengah alur.
+Semua metode Eropa melibatkan pengalihan ke situs bank. Pastikan penanganan return URL Anda andal dan memperhitungkan pengguna yang membatalkan proses di tengah jalan.
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
@@ -431,7 +504,11 @@ Tidak semua pelanggan Eropa memiliki akses ke metode regional ini (wisatawan, ek
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Pembayaran Multibanco melalui ATM mungkin memerlukan waktu berjam-jam untuk selesai. Jangan menunda pemenuhan pesanan sambil menunggu pembayaran langsung — gunakan webhook untuk konfirmasi asinkron.
+Pembayaran ATM Multibanco dapat memerlukan waktu berjam-jam untuk selesai. Jangan menahan pemenuhan pesanan berdasarkan pembayaran instan — gunakan webhook untuk konfirmasi asinkron.
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit memerlukan waktu hingga **6 hari kerja** untuk dikonfirmasi. Jangan pernah memenuhi pesanan berdasarkan pengalihan checkout atau `payment.processing` — berikan akses hanya berdasarkan webhook `payment.succeeded`, dan tetapkan ekspektasi saat checkout agar pelanggan mengetahui bahwa pesanan mereka tertunda. Lihat [Menangani Penundaan Konfirmasi](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -440,35 +517,41 @@ Pembayaran Multibanco melalui ATM mungkin memerlukan waktu berjam-jam untuk sele
 <AccordionGroup>
 <Accordion title="European method not appearing">
 **Periksa:**
-1. Apakah negara penagihan pelanggan sesuai dengan negara metode?
-2. Apakah mata uang ditetapkan ke EUR?
-3. Apakah metode disertakan dalam `allowed_payment_method_types`?
+1. Apakah negara penagihan pelanggan sesuai dengan negara metode tersebut?
+2. Apakah mata uang diatur ke EUR?
+3. Apakah metode tersebut disertakan dalam `allowed_payment_method_types`?
 
-**Solusi:** Metode Eropa memiliki batasan regional yang ketat. Pelanggan dengan negara penagihan `DE` (Jerman) tidak akan melihat iDEAL, yang hanya tersedia di Belanda.
+**Solusi:** Metode Eropa bersifat khusus regional. Pelanggan dengan negara penagihan `DE` (Jerman) tidak akan melihat iDEAL, yang hanya tersedia di Belanda.
 </Accordion>
 
 <Accordion title="Bank authentication failed">
 **Penyebab:**
 - Pelanggan membatalkan proses selama autentikasi bank
-- Sistem autentikasi bank sedang tidak tersedia untuk sementara
+- Sistem autentikasi bank sementara tidak tersedia
 - Pelanggan memasukkan kredensial yang salah
 
-**Solusi:** Pelanggan harus mencoba lagi. Jika masalah berlanjut, sarankan untuk mencoba metode pembayaran lain.
+**Solusi:** Pelanggan harus mencoba lagi. Jika masalah terus terjadi, sarankan untuk mencoba metode pembayaran lain.
 </Accordion>
 
 <Accordion title="Redirect not completing">
 **Penyebab:**
-- Pelanggan menutup browser selama pengalihan ke bank
+- Pelanggan menutup browser selama pengalihan bank
 - Masalah jaringan selama autentikasi
-- Return URL dikonfigurasi dengan tidak benar
+- Return URL salah dikonfigurasi
 
-**Solusi:** Pastikan return URL sudah benar dan dapat diakses. Pastikan URL tersebut menangani status berhasil maupun gagal.
+**Solusi:** Pastikan return URL sudah benar dan dapat diakses. Pastikan URL tersebut menangani status berhasil dan gagal.
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
 **Penyebab:** Pelanggan menerima referensi pembayaran tetapi belum membayar.
 
 **Solusi:** Hal ini wajar untuk pembayaran berbasis ATM. Tunggu konfirmasi webhook. Referensi biasanya kedaluwarsa dalam 24–72 jam.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**Penyebab:** SEPA Direct Debit diselesaikan secara asinkron melalui bank pelanggan.
+
+**Solusi:** Hal ini wajar. Status `payment.processing` dapat berlangsung hingga **6 hari kerja** sebelum debit dicairkan. Tunggu webhook terminal `payment.succeeded` (penuhi pesanan) atau `payment.failed` (jangan penuhi pesanan) — jangan menganggap pengalihan checkout sebagai konfirmasi. Lihat [Menangani Penundaan Konfirmasi](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -477,8 +560,8 @@ Pembayaran Multibanco melalui ATM mungkin memerlukan waktu berjam-jam untuk sele
 Semua metode pembayaran Eropa mematuhi peraturan PSD2 (Payment Services Directive 2):
 
 - **Strong Customer Authentication (SCA)** — Terintegrasi dalam alur autentikasi bank
-- **Komunikasi Aman** — Semua data dikirim melalui saluran yang aman
-- **Perlindungan Konsumen** — Kepatuhan penuh terhadap hak konsumen UE
+- **Secure Communication** — Semua data dikirim melalui saluran yang aman
+- **Consumer Protection** — Kepatuhan penuh terhadap hak konsumen UE
 
 ## Halaman Terkait
 
@@ -492,7 +575,7 @@ Dukungan mata uang dan konversi otomatis.
 </Card>
 
 <Card title="Checkout Guide" icon="book" href="/developer-resources/checkout-session">
-Panduan implementasi checkout lengkap.
+Panduan lengkap implementasi checkout.
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">

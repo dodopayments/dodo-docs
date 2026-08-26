@@ -1,10 +1,11 @@
 ---
 openapi: post /subscriptions/{subscription_id}/change-plan
 title: योजना बदलें
-description: एक मौजूदा सदस्यता की योजना को संशोधित करें, जो विभिन्न मूल्य स्तरों
-  पर अपग्रेड और डाउनग्रेड दोनों को सक्षम बनाता है।<br/><br/>नोट&colon; यह योजना
-  को अपग्रेड/डाउनग्रेड करने के लिए ग्राहक की मौजूदा भुगतान जानकारी का उपयोग
-  करेगा।
+description: किसी मौजूदा subscription के plan में बदलाव करें, जिससे अलग-अलग
+  pricing tiers में upgrade और downgrade दोनों संभव हों।<br/><br/>ध्यान
+  दें&colon; डिफ़ॉल्ट रूप से इसमें customer की मौजूदा payment information का
+  उपयोग होता है। इसके बजाय hosted checkout page के माध्यम से charge करने के लिए
+  collect_via_payment_link सेट करें।
 keywords:
   - Dodo Payments
   - API reference
@@ -39,20 +40,38 @@ keywords:
 यदि `on_payment_failure` निर्दिष्ट नहीं है, तो व्यवहार डैशबोर्ड में आपके व्यवसाय-स्तरीय सेटिंग्स पर डिफ़ॉल्ट होता है।
 </Info>
 
-## छूट कोड
+## Payment Link के माध्यम से भुगतान संग्रह करना
 
-आप योजना बदलते समय एक या अधिक **स्टैक्ड डिस्काउंट कोड** लागू कर सकते हैं, इसके लिए `discount_codes` एरे (अधिकतम 20 एंट्री, एरे ऑर्डर में लागू) पास करें। एकल `discount_code` फ़ील्ड को अब हटा दिया गया है लेकिन मौजूदा इंटीग्रेशनों के लिए काम करता है; इसे `discount_codes` के साथ उसी रिक्वेस्ट में संयोजित नहीं किया जा सकता।
+customer को उसके saved payment method से charge करने के बजाय hosted checkout page पर भेजने के लिए `collect_via_payment_link` को `true` पर सेट करें। इसके बाद response में `payment_id`, `payment_link`, `client_secret` और `expires_on` शामिल होते हैं — payment पूरा करने के लिए customer को `payment_link` पर redirect करें।
 
-| `discount_codes` मान | व्यवहार |
+इसके लिए आवश्यक है:
+
+| Requirement | Why |
+|-------------|-----|
+| Business में `allow_plan_change_via_payment_link` capability enabled हो | डिफ़ॉल्ट रूप से बंद रहती है; इसे **Settings → Subscriptions → Collect Plan Change Payments by Payment Link** में toggle किया जाता है। |
+| `effective_at: immediately` | Scheduled change लागू होने तक कोई charge नहीं करता, इसलिए checkout के माध्यम से अभी collect करने के लिए कुछ नहीं होता। |
+| **effective** `on_payment_failure`, `prevent_change` हो | Checkout payment वास्तव में सफल होने तक subscription को अपने current plan पर बने रहना चाहिए। आपको field भेजने की आवश्यकता नहीं है — `prevent_change` का business-level default भी इसके लिए पर्याप्त है। |
+
+जो request इन शर्तों को पूरा नहीं करती, वह `422` लौटाती है। Link का payment न होने तक subscription अपने current plan पर बनी रहती है और आगे की `change-plan` request `409` लौटाती है।
+
+<Info>
+पूरे flow के लिए [Subscription Upgrade & Downgrade Guide](/developer-resources/subscription-upgrade-downgrade#collecting-payment-via-a-checkout-link) देखें, जिसमें यह भी शामिल है कि customer declined payment को कैसे retry करता है और link expire होने पर क्या होता है।
+</Info>
+
+## Discount Codes
+
+plan बदलते समय `discount_codes` array पास करके एक या अधिक **stacked discount codes** लागू किए जा सकते हैं (अधिकतम 20 entries, जिन्हें array के क्रम में लागू किया जाता है)। Singular `discount_code` field deprecated है, लेकिन existing integrations के लिए अभी भी काम करता है; इसे उसी request में `discount_codes` के साथ combine नहीं किया जा सकता।
+
+| `discount_codes` value | Behavior |
 |------------------------|----------|
-| प्रदत्त नहीं (`null` / छोड़ दिया गया) | मौजूदा डिस्काउंट्स को `preserve_on_plan_change=true` के साथ संरक्षित किया जाता है यदि वे नए उत्पाद के लिए लागू होते हैं। |
-| `[]` (खाली एरे) | **सभी** मौजूदा डिस्काउंट्स को सब्सक्रिप्शन से हटा दिया जाता है। |
-| `["CODE_A", "CODE_B", ...]` | किसी भी मौजूदा डिस्काउंट्स को इस स्टैक्ड सेट के साथ बदल दिया जाता है, जिसका सत्यापन और अनुप्रयोग एरे ऑर्डर में होता है। |
+| प्रदान नहीं किया गया (`null` / omitted) | यदि नए product पर लागू हों, तो `preserve_on_plan_change=true` वाले existing discounts सुरक्षित रखे जाते हैं। |
+| `[]` (empty array) | Subscription से existing discounts **सभी** हटा दिए जाते हैं। |
+| `["CODE_A", "CODE_B", ...]` | किसी भी existing discount को इस stacked set से replace करता है, जिसे validate करके array के क्रम में लागू किया जाता है। |
 
 <Tip>
-प्लान परिवर्तन के दौरान उन्नयन पर प्रचारात्मक मूल्य निर्धारण पेश करने के लिए डिस्काउंट कोड का उपयोग करें, या ग्राहकों को नए प्लान टियर पर माइग्रेट करते समय कोड पास करें।
+Upgrade पर promotional pricing देने के लिए plan changes के दौरान discount codes का उपयोग करें, या customers को नए plan tier पर migrate करते समय codes पास करें।
 </Tip>
 
 <Tip>
-महत्वपूर्ण उन्नयन के लिए `prevent_change` का उपयोग करें जहां आप प्रीमियम सुविधाओं तक पहुंच देने से पहले भुगतान सुनिश्चित करना चाहते हैं।
+Critical upgrades के लिए `prevent_change` का उपयोग करें, जहाँ आप premium features का access देने से पहले payment सुनिश्चित करना चाहते हैं।
 </Tip>

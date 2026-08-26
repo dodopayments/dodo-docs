@@ -259,13 +259,40 @@ BLIK requiere una moneda de facturación **PLN**. Si indicas tus precios en EUR,
 
 SEPA Direct Debit permite a los clientes de toda la zona euro pagar directamente desde su cuenta bancaria en lugar de usar una tarjeta. Se ofrece en checkouts en EUR para pagos únicos.
 
-### Cómo Funciona
-
-El cliente autoriza el débito durante el checkout y el pago se cobra de su cuenta bancaria. A diferencia de la mayoría de los métodos europeos de esta página, la confirmación no es inmediata.
-
 <Warning>
-SEPA Direct Debit no es instantáneo. Un pago tarda **6 días laborables** en confirmarse, así que no consideres la autorización como una liquidación: completa el pedido solo cuando el pago alcance un estado succeeded.
+**SEPA Direct Debit no es instantáneo: un pago tarda hasta 6 días hábiles en confirmarse.** A diferencia de cualquier otro método de esta página, que el cliente autorice el débito durante el checkout **no** significa que el dinero se haya liquidado. Nunca completes el pedido en la redirección del checkout ni en `payment.processing`; espera al webhook `payment.succeeded`.
 </Warning>
+
+### Cómo funciona
+
+El cliente autoriza el débito durante el checkout y, después, Dodo Payments cobra los fondos de su cuenta bancaria. Como el banco liquida el débito de forma asíncrona, el pago pasa por un estado `processing` antes de llegar a un resultado final:
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Cronología del pago
+
+| Etapa | Cuándo | Estado del pago | Qué significa |
+| :---- | :--- | :------------- | :------------ |
+| **Autorización** | Durante el checkout | `processing` | El cliente aprobó el débito y fue redirigido de vuelta. El dinero **todavía no** se ha movido; no completes el pedido. |
+| **Confirmación** | Hasta **6 días hábiles** después | `succeeded` | El banco liquidó el débito. Completa el pedido ahora. |
+| **Error** | Hasta **6 días hábiles** después | `failed` | No se pudo cobrar el débito (por ejemplo, por fondos insuficientes). No completes el pedido; notifica al cliente. |
+
+Como la confirmación llega días después de que el cliente abandona tu sitio, tu controlador de webhook —no la redirección del checkout— debe ser el encargado de conceder el acceso. Consulta [Cómo gestionar el retraso de confirmación](#handling-the-confirmation-delay) a continuación.
 
 ### Disponibilidad
 
@@ -297,11 +324,11 @@ En el modo de prueba, introduce uno de los IBAN siguientes durante el checkout p
 | `DE08370400440532013003` | El pago se realiza correctamente después de un retraso de al menos tres minutos. |
 | `DE62370400440532013001` | El pago falla. |
 | `DE78370400440532013004` | El pago falla después de un retraso de al menos tres minutos. |
-| `DE35370400440532013002` | El pago se realiza correctamente y, después, se impugna de inmediato. |
+| `DE35370400440532013002` | El pago se realiza correctamente y, después, se disputa de inmediato. |
 | `DE65370400440002222227` | El pago falla debido a fondos insuficientes. |
 | `DE18370400440000066666` | La cuenta bancaria no se puede utilizar, por lo que no se puede crear el método de pago. |
 
-Para probar el comportamiento específico de cada país, utiliza el IBAN de éxito equivalente de otro país de la zona euro:
+Para probar el comportamiento específico de cada país, utiliza el IBAN de éxito equivalente de otro país de la eurozona:
 
 | País | IBAN de éxito |
 | :------ | :----------- |
@@ -314,18 +341,64 @@ Para probar el comportamiento específico de cada país, utiliza el IBAN de éxi
 | Luxemburgo | `LU280019400644750000` |
 
 <Note>
-Los IBAN de prueba con retraso son útiles para confirmar que es tu gestor de webhooks —y no la redirección del checkout— quien concede el acceso, ya que los pagos de SEPA se confirman mucho después de que el cliente abandone el checkout.
+Los IBAN de prueba con retraso son útiles para confirmar que tu controlador de webhook —en lugar de la redirección del checkout— es el que concede el acceso, ya que los pagos SEPA se confirman mucho después de que el cliente abandona el checkout.
 </Note>
+
+### Cómo gestionar el retraso de confirmación
+
+Como SEPA se liquida hasta 6 días hábiles después del checkout, no puedes confiar en la redirección del navegador para saber si un pago se ha liquidado. En su lugar, gestiona el cumplimiento mediante eventos de webhook. Activa `payload.type` y gestiona cada etapa:
+
+| Tipo de evento | Cuándo se activa | Qué hacer |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | El cliente autorizó el débito durante el checkout y fue redirigido de vuelta. | **No completes el pedido.** Marca el pedido como pendiente y, opcionalmente, informa al cliente de que su pago se está procesando. |
+| `payment.succeeded` | El banco liquidó el débito (hasta 6 días hábiles después). | Completa el pedido: concede el acceso, aprovisiona el producto y envía el recibo. |
+| `payment.failed` | No se pudo cobrar el débito. | Notifica al cliente y pídele que vuelva a intentarlo; no completes el pedido. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Completa siempre el pedido con `payment.succeeded` desde el webhook, nunca desde la redirección del checkout ni desde `payment.processing`. La redirección se activa en el momento en que el cliente autoriza el débito, días antes de que el dinero se liquide. Verifica la firma del webhook antes de procesarlo; consulta la [guía de Webhooks](/developer-resources/webhooks) para configurarlo y la [Guía de eventos de Webhook](/developer-resources/webhooks/intents/webhook-events-guide) para ver la lista completa de eventos.
+</Tip>
+
+<Warning>
+Establece las expectativas del cliente durante el checkout. Como el acceso solo se concede después de que se liquide el débito, informa a los clientes de SEPA de que su pedido se está procesando y de que recibirán una notificación cuando se confirme el pago; de lo contrario, podrían esperar acceso instantáneo, como ocurre con un pago con tarjeta.
+</Warning>
 
 ## Satispay (Europa)
 
-Satispay es una popular red europea de pagos móviles, especialmente en Italia, que permite a los clientes pagar directamente desde su aplicación de Satispay sin compartir los datos de su tarjeta o cuenta bancaria. Satispay liquida en **EUR**.
+Satispay es una popular red europea de pagos móviles, especialmente en Italia, que permite a los clientes pagar directamente desde su aplicación de Satispay sin compartir datos de tarjetas ni bancarios. Satispay liquida los pagos en **EUR**.
 
-### Funciones
+### Características
 
 - Pagos basados en una aplicación e independientes de las redes de tarjetas
 - Gran adopción en Italia y crecimiento en otros mercados europeos
-- Compatible tanto con pagos únicos como con suscripciones
+- Admite pagos únicos y suscripciones
 
 ### Disponibilidad
 
@@ -356,12 +429,12 @@ const session = await client.checkoutSessions.create({
 | `eps` | EPS | Austria |
 | `multibanco` | Multibanco | Portugal |
 | `blik` | BLIK | Polonia |
-| `sepa` | SEPA Direct Debit | Zona euro |
+| `sepa` | SEPA Direct Debit | Eurozona |
 | `satispay` | Satispay | Europa (Italia) |
 
-## Checkout europeo multidestino
+## Checkout europeo multidivisa
 
-Para las empresas que prestan servicio en varios países europeos, incluye todos los métodos regionales:
+Para empresas que atienden a varios países europeos, incluye todos los métodos regionales:
 
 ```javascript
 const session = await client.checkoutSessions.create({
@@ -389,12 +462,12 @@ Dodo muestra automáticamente solo los métodos relevantes según la ubicación 
 Los métodos de pago europeos se pueden probar en el modo de prueba. El flujo de prueba simula el proceso de autenticación bancaria.
 
 <Note>
-SEPA Direct Debit se prueba de otra manera: en lugar de un flujo bancario simulado, introduces directamente un IBAN de prueba. Consulta [IBAN de prueba de SEPA](#sepa-test-ibans).
+SEPA Direct Debit se prueba de forma diferente: en lugar de un flujo bancario simulado, introduces directamente un IBAN de prueba. Consulta [IBAN de prueba de SEPA](#sepa-test-ibans).
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-Usa tus claves de API de prueba de Dodo Payments.
+Utiliza tus claves de API de prueba de Dodo Payments.
 </Step>
 
 <Step title="Set appropriate billing address">
@@ -408,7 +481,7 @@ Establece el país de la dirección de facturación para que coincida con el mé
 </Step>
 
 <Step title="Complete the test flow">
-Sigue el flujo simulado de autenticación bancaria en el entorno de prueba.
+Sigue el flujo de autenticación bancaria simulado en el entorno de prueba.
 </Step>
 </Steps>
 
@@ -416,23 +489,27 @@ Sigue el flujo simulado de autenticación bancaria en el entorno de prueba.
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-Si vendes a clientes neerlandeses, incluye iDEAL. No hacerlo es como no aceptar Visa en EE. UU.: perderás ventas importantes.
+Si vendes a clientes neerlandeses, incluye iDEAL. No hacerlo equivale a no aceptar Visa en EE. UU.: perderás una cantidad significativa de ventas.
 </Accordion>
 
 <Accordion title="Match currency to region">
-La mayoría de los métodos de pago europeos requieren EUR; asegúrate de que tus precios admitan transacciones en euros. La única excepción es BLIK, que solo se ofrece con facturación en **PLN** (zloty polaco).
+La mayoría de los métodos de pago europeos requieren EUR; asegúrate de que tus precios admitan transacciones en euros. La única excepción es BLIK, que solo se ofrece en **PLN** (esloti polaco).
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-Todos los métodos europeos implican redirecciones a sitios web bancarios. Asegúrate de que la gestión de la URL de retorno sea sólida y contemple a los usuarios que abandonan el flujo a mitad del proceso.
+Todos los métodos europeos implican redirecciones a sitios bancarios. Asegúrate de que la gestión de la URL de retorno sea sólida y contemple a los usuarios que abandonan el flujo a mitad del proceso.
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-No todos los clientes europeos tienen acceso a estos métodos regionales (turistas, expatriados, etc.). Incluye siempre `credit` y `debit` como alternativas.
+No todos los clientes europeos tienen acceso a estos métodos regionales (turistas, expatriados, etc.). Incluye siempre `credit` y `debit` como opciones alternativas.
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Los pagos en cajeros automáticos de Multibanco pueden tardar horas en completarse. No bloquees el cumplimiento del pedido esperando un pago inmediato; utiliza webhooks para la confirmación asíncrona.
+Los pagos en cajeros automáticos mediante Multibanco pueden tardar horas en completarse. No bloquees el cumplimiento por la espera de un pago inmediato; utiliza webhooks para la confirmación asíncrona.
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit tarda hasta **6 días hábiles** en confirmarse. Nunca completes el pedido desde la redirección del checkout ni desde `payment.processing`; concede el acceso únicamente desde el webhook `payment.succeeded` y establece las expectativas durante el checkout para que los clientes sepan que su pedido está pendiente. Consulta [Cómo gestionar el retraso de confirmación](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -460,26 +537,32 @@ Los pagos en cajeros automáticos de Multibanco pueden tardar horas en completar
 <Accordion title="Redirect not completing">
 **Causas:**
 - El cliente cerró el navegador durante la redirección bancaria
-- Problemas de red durante la autenticación
-- URL de retorno configurada incorrectamente
+- Se produjeron problemas de red durante la autenticación
+- La URL de retorno está mal configurada
 
 **Solución:** Verifica que la URL de retorno sea correcta y accesible. Asegúrate de que gestione tanto los estados de éxito como los de error.
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**Causa:** El cliente recibió una referencia de pago, pero aún no ha pagado.
+**Causa:** El cliente recibió la referencia de pago, pero todavía no ha pagado.
 
 **Solución:** Esto es normal en los pagos basados en cajeros automáticos. Espera la confirmación del webhook. La referencia suele caducar en un plazo de 24 a 72 horas.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**Causa:** SEPA Direct Debit se liquida de forma asíncrona a través del banco del cliente.
+
+**Solución:** Esto es normal. Un estado `payment.processing` puede durar hasta **6 días hábiles** antes de que se liquide el débito. Espera al webhook terminal `payment.succeeded` (completar el pedido) o `payment.failed` (no completar el pedido); no consideres la redirección del checkout como una confirmación. Consulta [Cómo gestionar el retraso de confirmación](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
 ## Cumplimiento de PSD2
 
-Todos los métodos de pago europeos cumplen las normativas de PSD2 (Payment Services Directive 2):
+Todos los métodos de pago europeos cumplen las normativas de PSD2 (Directiva 2 de Servicios de Pago):
 
-- **Autenticación reforzada de clientes (SCA)** — Integrada en el flujo de autenticación bancaria
-- **Comunicación segura** — Todos los datos se transmiten mediante canales seguros
-- **Protección del consumidor** — Cumplimiento pleno de los derechos de los consumidores de la UE
+- **Autenticación reforzada de clientes (SCA)**: integrada en el flujo de autenticación bancaria
+- **Comunicación segura**: todos los datos se transmiten mediante canales seguros
+- **Protección del consumidor**: cumplimiento íntegro de los derechos de los consumidores de la UE
 
 ## Páginas relacionadas
 
@@ -493,7 +576,7 @@ Compatibilidad con monedas y conversión automática.
 </Card>
 
 <Card title="Checkout Guide" icon="book" href="/developer-resources/checkout-session">
-Guía completa de implementación del checkout.
+Guía completa para implementar el checkout.
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">

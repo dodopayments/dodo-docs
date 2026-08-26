@@ -258,13 +258,40 @@ BLIK kräver PLN som **faktureringsvaluta**. Om du anger dina priser i EUR aktiv
 
 SEPA Direct Debit låter kunder i hela euroområdet betala direkt från sitt bankkonto i stället för att använda ett kort. Det erbjuds i EUR-kassor för engångsbetalningar.
 
+<Warning>
+**SEPA Direct Debit är inte omedelbar — en betalning tar upp till 6 arbetsdagar att bekräfta.** Till skillnad från alla andra metoder på den här sidan innebär det **inte** att pengarna har kommit in när kunden godkänner autogireringen i kassan. Slutför aldrig ordern vid omdirigering från kassan eller vid `payment.processing`; vänta på webhooken `payment.succeeded`.
+</Warning>
+
 ### Så fungerar det
 
-Kunden godkänner debiteringen i kassan och betalningen hämtas från kundens bankkonto. Till skillnad från de flesta europeiska metoder på den här sidan sker bekräftelsen inte omedelbart.
+Kunden godkänner autogireringen i kassan, och Dodo Payments hämtar sedan pengarna från kundens bankkonto. Eftersom banken behandlar autogireringen asynkront går betalningen igenom ett tillstånd av typen `processing` innan den når ett slutgiltigt resultat:
 
-<Warning>
-SEPA Direct Debit är inte omedelbart. Det tar **6 bankdagar** att bekräfta en betalning, så behandla inte godkännandet som en avräkning — slutför leveransen först när betalningen har statusen succeeded.
-</Warning>
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Betalningens tidslinje
+
+| Steg | När | Betalningsstatus | Vad det innebär |
+| :---- | :--- | :------------- | :------------ |
+| **Godkännande** | I kassan | `processing` | Kunden godkände autogireringen och omdirigerades tillbaka. Pengarna har **inte** flyttats ännu — slutför inte ordern. |
+| **Bekräftelse** | Upp till **6 arbetsdagar** senare | `succeeded` | Banken har genomfört autogireringen. Slutför ordern nu. |
+| **Misslyckande** | Upp till **6 arbetsdagar** senare | `failed` | Autogireringen kunde inte genomföras (t.ex. på grund av otillräckliga medel). Slutför inte ordern; meddela kunden. |
+
+Eftersom bekräftelsen kommer flera dagar efter att kunden lämnar din webbplats måste din webhook-hanterare — inte omdirigeringen från kassan — styra när åtkomst beviljas. Se [Hantera fördröjningen för bekräftelse](#handling-the-confirmation-delay) nedan.
 
 ### Tillgänglighet
 
@@ -286,9 +313,9 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### Test-IBAN för SEPA
+### SEPA-test-IBAN
 
-I testläge anger du en av IBAN-koderna nedan i kassan för att tvinga fram ett specifikt resultat.
+I testläge anger du en av IBAN-numren nedan i kassan för att tvinga fram ett specifikt resultat.
 
 | Test-IBAN | Beteende |
 | :-------- | :------- |
@@ -300,9 +327,9 @@ I testläge anger du en av IBAN-koderna nedan i kassan för att tvinga fram ett 
 | `DE65370400440002222227` | Betalningen misslyckas på grund av otillräckliga medel. |
 | `DE18370400440000066666` | Bankkontot kan inte användas, så betalningsmetoden kan inte skapas. |
 
-Om du vill testa landsspecifikt beteende använder du motsvarande IBAN för lyckad betalning för ett annat land i euroområdet:
+Om du vill testa landsspecifikt beteende använder du motsvarande lyckade IBAN för ett annat eurolandsland:
 
-| Land | IBAN för lyckad betalning |
+| Land | Lyckad IBAN |
 | :------ | :----------- |
 | Österrike | `AT611904300234573201` |
 | Belgien | `BE62510007547061` |
@@ -313,16 +340,62 @@ Om du vill testa landsspecifikt beteende använder du motsvarande IBAN för lyck
 | Luxemburg | `LU280019400644750000` |
 
 <Note>
-De fördröjda test-IBAN-koderna är användbara för att bekräfta att det är din webhook-hanterare — inte omdirigeringen från kassan — som beviljar åtkomst, eftersom SEPA-betalningar bekräftas långt efter att kunden lämnat kassan.
+De fördröjda test-IBAN-numren är användbara för att bekräfta att det är din webhook-hanterare — och inte omdirigeringen från kassan — som beviljar åtkomst, eftersom SEPA-betalningar bekräftas långt efter att kunden lämnar kassan.
 </Note>
+
+### Hantera fördröjningen för bekräftelse
+
+Eftersom SEPA slutförs upp till 6 arbetsdagar efter kassan kan du inte förlita dig på webbläsarens omdirigering för att veta om en betalning har kommit in. Styr i stället orderhanteringen utifrån webhook-händelser. Aktivera `payload.type` och hantera varje steg:
+
+| Händelsetyp | När den utlöses | Vad du ska göra |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | Kunden godkände autogireringen i kassan och omdirigerades tillbaka. | **Slutför inte ordern.** Markera ordern som väntande och informera vid behov kunden om att betalningen behandlas. |
+| `payment.succeeded` | Banken har genomfört autogireringen (upp till 6 arbetsdagar senare). | Slutför ordern — bevilja åtkomst, tillhandahåll produkten och skicka kvittot. |
+| `payment.failed` | Autogireringen kunde inte genomföras. | Meddela kunden och be kunden försöka igen; slutför inte ordern. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Slutför alltid ordern vid `payment.succeeded` från webhooken, aldrig vid omdirigeringen från kassan eller vid `payment.processing`. Omdirigeringen sker i samma ögonblick som kunden godkänner autogireringen — flera dagar innan pengarna faktiskt kommer in. Verifiera webhook-signaturen innan behandlingen påbörjas; se [Webhooks-guiden](/developer-resources/webhooks) för konfiguration och [Webhook Event Guide](/developer-resources/webhooks/intents/webhook-events-guide) för den fullständiga händelselistan.
+</Tip>
+
+<Warning>
+Sätt rätt förväntningar hos kunden i kassan. Eftersom åtkomst endast beviljas efter att autogireringen har genomförts ska du informera SEPA-kunder om att deras order behandlas och att de får ett meddelande när betalningen har bekräftats — annars kan de förvänta sig omedelbar åtkomst som vid en kortbetalning.
+</Warning>
 
 ## Satispay (Europa)
 
-Satispay är ett populärt europeiskt mobilt betalningsnätverk, särskilt i Italien, som låter kunder betala direkt från sin Satispay-app utan att dela kort- eller bankuppgifter. Satispay avräknas i **EUR**.
+Satispay är ett populärt europeiskt mobilbetalningsnätverk, särskilt i Italien, som låter kunder betala direkt från sin Satispay-app utan att dela kort- eller bankuppgifter. Satispay avräknas i **EUR**.
 
 ### Funktioner
 
-- Appbaserade betalningar som är oberoende av kortnätverk
+- Appbaserade betalningar som inte är beroende av kortnätverk
 - Stor användning i Italien och växande användning på andra europeiska marknader
 - Stöder både engångsbetalningar och prenumerationer
 
@@ -381,14 +454,14 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-Dodo visar automatiskt endast relevanta metoder baserat på kundens plats. En nederländsk kund ser iDEAL, medan en belgisk kund ser Bancontact.
+Dodo visar automatiskt endast de relevanta metoderna baserat på kundens plats. En nederländsk kund ser iDEAL; en belgisk kund ser Bancontact.
 
 ## Testning
 
-Europeiska betalningsmetoder kan testas i testläge. Testflödet simulerar bankens autentiseringsprocess.
+Europeiska betalningsmetoder kan testas i Test Mode. Testflödet simulerar bankens autentiseringsprocess.
 
 <Note>
-SEPA Direct Debit testas på ett annat sätt — i stället för ett simulerat bankflöde anger du en test-IBAN direkt. Se [Test-IBAN för SEPA](#sepa-test-ibans).
+SEPA Direct Debit testas på ett annat sätt — i stället för ett simulerat bankflöde anger du en test-IBAN direkt. Se [SEPA-test-IBAN](#sepa-test-ibans).
 </Note>
 
 <Steps>
@@ -397,7 +470,7 @@ Använd dina test-API-nycklar för Dodo Payments.
 </Step>
 
 <Step title="Set appropriate billing address">
-Ange landet för faktureringsadressen så att det matchar betalningsmetoden:
+Ange faktureringsadressens land så att det matchar betalningsmetoden:
 - `NL` för iDEAL
 - `BE` för Bancontact
 - `AT` för EPS
@@ -407,7 +480,7 @@ Ange landet för faktureringsadressen så att det matchar betalningsmetoden:
 </Step>
 
 <Step title="Complete the test flow">
-Följ det simulerade bankautentiseringsflödet i testmiljön.
+Följ det simulerade autentiseringsflödet hos banken i testmiljön.
 </Step>
 </Steps>
 
@@ -415,7 +488,7 @@ Följ det simulerade bankautentiseringsflödet i testmiljön.
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-Om du säljer till nederländska kunder bör du inkludera iDEAL. Att inte göra det är som att inte acceptera Visa i USA — du kommer att förlora betydande försäljning.
+Om du säljer till nederländska kunder ska du inkludera iDEAL. Att inte göra det är som att inte acceptera Visa i USA — du kommer att förlora betydande försäljning.
 </Accordion>
 
 <Accordion title="Match currency to region">
@@ -423,15 +496,19 @@ De flesta europeiska betalningsmetoder kräver EUR — se till att din prissätt
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-Alla europeiska metoder innebär omdirigeringar till banksidor. Se till att hanteringen av din retur-URL är robust och tar hänsyn till användare som avbryter mitt i flödet.
+Alla europeiska metoder innebär omdirigeringar till bankwebbplatser. Se till att hanteringen av retur-URL:er är robust och tar hänsyn till användare som avbryter mitt i flödet.
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-Alla europeiska kunder har inte tillgång till dessa regionala metoder (turister, utlandsboende med flera). Inkludera alltid `credit` och `debit` som alternativ.
+Alla europeiska kunder har inte tillgång till dessa regionala metoder (turister, utlandsboende och så vidare). Inkludera alltid `credit` och `debit` som alternativ.
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Multibanco-uttagsbetalningar kan ta flera timmar att slutföra. Blockera inte leveransen i väntan på omedelbar betalning — använd webhooks för asynkron bekräftelse.
+Multibanco ATM-betalningar kan ta flera timmar att slutföra. Blockera inte orderhanteringen i väntan på omedelbar betalning — använd webhooks för asynkron bekräftelse.
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit tar upp till **6 arbetsdagar** att bekräfta. Slutför aldrig ordern vid omdirigeringen från kassan eller vid `payment.processing` — bevilja åtkomst endast från webhooken `payment.succeeded` och ange tydliga förväntningar i kassan så att kunderna vet att deras order väntar. Se [Hantera fördröjningen för bekräftelse](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -444,7 +521,7 @@ Multibanco-uttagsbetalningar kan ta flera timmar att slutföra. Blockera inte le
 2. Är valutan inställd på EUR?
 3. Ingår metoden i `allowed_payment_method_types`?
 
-**Lösning:** Europeiska metoder är strikt regionala. En kund med faktureringslandet `DE` (Tyskland) ser inte iDEAL, som endast är tillgängligt i Nederländerna.
+**Lösning:** Europeiska metoder är strikt regionala. En kund med faktureringsland `DE` (Tyskland) ser inte iDEAL, som endast finns i Nederländerna.
 </Accordion>
 
 <Accordion title="Bank authentication failed">
@@ -453,12 +530,12 @@ Multibanco-uttagsbetalningar kan ta flera timmar att slutföra. Blockera inte le
 - Bankens autentiseringssystem är tillfälligt otillgängligt
 - Kunden angav felaktiga inloggningsuppgifter
 
-**Lösning:** Kunden bör försöka igen. Om problemet kvarstår kan du föreslå att kunden provar en annan betalningsmetod.
+**Lösning:** Kunden bör försöka igen. Om problemet kvarstår kan du föreslå att kunden testar en annan betalningsmetod.
 </Accordion>
 
 <Accordion title="Redirect not completing">
 **Orsaker:**
-- Kunden stängde webbläsaren under bankomdirigeringen
+- Kunden stängde webbläsaren under bankens omdirigering
 - Nätverksproblem under autentiseringen
 - Retur-URL:en är felkonfigurerad
 
@@ -466,17 +543,23 @@ Multibanco-uttagsbetalningar kan ta flera timmar att slutföra. Blockera inte le
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**Orsak:** Kunden har fått en betalningsreferens men har ännu inte betalat.
+**Orsak:** Kunden fick en betalningsreferens men har ännu inte betalat.
 
-**Lösning:** Detta är förväntat för uttagsbaserade betalningar. Vänta på bekräftelse via webhook. Referensen upphör vanligtvis att gälla efter 24–72 timmar.
+**Lösning:** Detta är förväntat för ATM-baserade betalningar. Vänta på webhook-bekräftelsen. Referensen upphör vanligtvis att gälla efter 24–72 timmar.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**Orsak:** SEPA Direct Debit genomförs asynkront via kundens bank.
+
+**Lösning:** Detta är förväntat. Ett tillstånd av typen `payment.processing` kan vara i upp till **6 arbetsdagar** innan autogireringen genomförs. Vänta på den slutgiltiga webhooken `payment.succeeded` (slutför ordern) eller `payment.failed` (slutför inte ordern) — behandla inte omdirigeringen från kassan som en bekräftelse. Se [Hantera fördröjningen för bekräftelse](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
 ## PSD2-efterlevnad
 
-Alla europeiska betalningsmetoder följer PSD2-regelverket (Payment Services Directive 2):
+Alla europeiska betalningsmetoder följer PSD2-reglerna (Payment Services Directive 2):
 
-- **Strong Customer Authentication (SCA)** — Inbyggd i bankautentiseringsflödet
+- **Strong Customer Authentication (SCA)** — Inbyggd i bankens autentiseringsflöde
 - **Säker kommunikation** — Alla data överförs via säkra kanaler
 - **Konsumentskydd** — Full efterlevnad av EU:s konsumenträttigheter
 
@@ -492,7 +575,7 @@ Valutastöd och automatisk konvertering.
 </Card>
 
 <Card title="Checkout Guide" icon="book" href="/developer-resources/checkout-session">
-Fullständig guide till implementering av kassan.
+Komplett guide till implementering av kassan.
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
