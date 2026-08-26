@@ -258,15 +258,42 @@ BLIK के लिए **PLN** billing currency आवश्यक है। य�
 
 SEPA Direct Debit से Eurozone के ग्राहक card का उपयोग करने के बजाय सीधे अपने bank account से भुगतान कर सकते हैं। यह one-time payments के लिए EUR checkouts पर उपलब्ध है।
 
-### यह कैसे काम करता है
-
-ग्राहक checkout के दौरान debit को authorize करता है और payment उसके bank account से collect किया जाता है। इस page की अधिकांश European methods के विपरीत, confirmation तुरंत नहीं होता।
-
 <Warning>
-SEPA Direct Debit instant नहीं है। किसी payment को confirm होने में **6 business days** लगते हैं, इसलिए authorization को settlement न मानें — payment के succeeded state में पहुँचने के बाद ही fulfillment करें।
+**SEPA Direct Debit तुरंत नहीं होता — किसी payment की पुष्टि में 6 business days तक लग सकते हैं।** इस पेज की अन्य सभी methods से अलग, checkout पर debit को authorize करने का अर्थ यह **नहीं** है कि पैसा clear हो गया है। checkout redirect या `payment.processing` पर order कभी fulfill न करें; `payment.succeeded` webhook की प्रतीक्षा करें।
 </Warning>
 
-### Availability
+### यह कैसे काम करता है
+
+Customer checkout के दौरान debit को authorize करता है, जिसके बाद Dodo Payments उसके bank account से funds collect करता है। Bank debit को asynchronously clear करता है, इसलिए payment terminal outcome तक पहुँचने से पहले `processing` state से गुजरता है:
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Payment Timeline
+
+| Stage | कब | Payment status | इसका अर्थ |
+| :---- | :--- | :------------- | :------------ |
+| **Authorization** | checkout पर | `processing` | Customer ने debit approve किया और वापस redirect किया गया। पैसा अभी **transfer नहीं हुआ है** — fulfill न करें। |
+| **Confirmation** | इसके **6 business days** बाद तक | `succeeded` | Bank ने debit clear कर दिया। अब order fulfill करें। |
+| **Failure** | इसके **6 business days** बाद तक | `failed` | Debit collect नहीं किया जा सका (जैसे, अपर्याप्त funds)। Fulfill न करें; customer को सूचित करें। |
+
+Customer के आपकी site छोड़ने के कई दिनों बाद confirmation आती है, इसलिए access देने का कार्य checkout redirect को नहीं, बल्कि आपके webhook handler को करना चाहिए। नीचे [Confirmation Delay को संभालना](#handling-the-confirmation-delay) देखें।
+
+### उपलब्धता
 
 - **Billing currency:** EUR
 - **Transaction type:** केवल one-time payments (subscriptions के लिए उपलब्ध नहीं)
@@ -288,45 +315,91 @@ const session = await client.checkoutSessions.create({
 
 ### SEPA Test IBANs
 
-Test Mode में checkout पर नीचे दिए गए IBANs में से कोई एक दर्ज करके किसी विशेष outcome को force करें।
+Test mode में किसी विशेष outcome को बाध्य करने के लिए checkout पर नीचे दिए गए IBANs में से एक दर्ज करें।
 
-| Test IBAN | Behavior |
+| Test IBAN | व्यवहार |
 | :-------- | :------- |
-| `DE89370400440532013000` | Payment सफल होती है। |
-| `DE08370400440532013003` | कम से कम तीन मिनट की देरी के बाद payment सफल होती है। |
-| `DE62370400440532013001` | Payment विफल होती है। |
-| `DE78370400440532013004` | कम से कम तीन मिनट की देरी के बाद payment विफल होती है। |
-| `DE35370400440532013002` | Payment सफल होती है, फिर तुरंत dispute हो जाती है। |
-| `DE65370400440002222227` | अपर्याप्त funds के कारण payment विफल होती है। |
-| `DE18370400440000066666` | Bank account उपयोग योग्य नहीं है, इसलिए payment method बनाई नहीं जा सकती। |
+| `DE89370400440532013000` | Payment सफल होता है। |
+| `DE08370400440532013003` | कम से कम तीन मिनट की देरी के बाद payment सफल होता है। |
+| `DE62370400440532013001` | Payment विफल होता है। |
+| `DE78370400440532013004` | कम से कम तीन मिनट की देरी के बाद payment विफल होता है। |
+| `DE35370400440532013002` | Payment सफल होता है, फिर तुरंत dispute किया जाता है। |
+| `DE65370400440002222227` | अपर्याप्त funds के कारण payment विफल होता है। |
+| `DE18370400440000066666` | Bank account अनुपयोगी है, इसलिए payment method बनाई नहीं जा सकती। |
 
-Country-specific behavior का परीक्षण करने के लिए, किसी अन्य Eurozone country का equivalent success IBAN उपयोग करें:
+Country-specific behavior को test करने के लिए, किसी अन्य Eurozone country का equivalent success IBAN इस्तेमाल करें:
 
 | Country | Success IBAN |
 | :------ | :----------- |
-| Austria | `AT611904300234573201` |
-| Belgium | `BE62510007547061` |
-| Estonia | `EE382200221020145685` |
-| Finland | `FI2112345600000785` |
-| France | `FR1420041010050500013M02606` |
-| Ireland | `IE29AIBK93115212345678` |
-| Luxembourg | `LU280019400644750000` |
+| ऑस्ट्रिया | `AT611904300234573201` |
+| बेल्जियम | `BE62510007547061` |
+| एस्टोनिया | `EE382200221020145685` |
+| फ़िनलैंड | `FI2112345600000785` |
+| फ़्रांस | `FR1420041010050500013M02606` |
+| आयरलैंड | `IE29AIBK93115212345678` |
+| लक्ज़मबर्ग | `LU280019400644750000` |
 
 <Note>
-Delayed test IBANs यह confirm करने के लिए उपयोगी हैं कि access देने का काम checkout redirect नहीं, बल्कि आपका webhook handler कर रहा है, क्योंकि customer के checkout छोड़ने के काफी समय बाद SEPA payments confirm होती हैं।
+Delayed test IBANs यह पुष्टि करने के लिए उपयोगी हैं कि access checkout redirect के बजाय आपके webhook handler से दिया जाता है, क्योंकि SEPA payments customer के checkout छोड़ने के काफी समय बाद confirm होते हैं।
 </Note>
+
+### Confirmation Delay को संभालना
+
+क्योंकि SEPA checkout के 6 business days बाद तक settle हो सकता है, इसलिए payment clear हुआ या नहीं यह जानने के लिए browser redirect पर निर्भर नहीं रह सकते। इसके बजाय, fulfillment को webhook events से संचालित करें। `payload.type` को on करें और प्रत्येक stage को संभालें:
+
+| Event Type | यह कब fire होता है | क्या करें |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | Customer ने checkout पर debit authorize किया और वापस redirect किया गया। | **Fulfill न करें।** Order को pending mark करें और, वैकल्पिक रूप से, customer को बताएं कि उनका payment process हो रहा है। |
+| `payment.succeeded` | Bank ने debit clear कर दिया (6 business days बाद तक)। | Order fulfill करें — access दें, product provision करें और receipt भेजें। |
+| `payment.failed` | Debit collect नहीं किया जा सका। | Customer को सूचित करें और retry करने के लिए कहें; fulfill न करें। |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+हमेशा **webhook से प्राप्त `payment.succeeded` पर fulfill करें**, checkout redirect या `payment.processing` पर कभी नहीं। Redirect उसी क्षण fire होता है जब customer debit authorize करता है — यानी money के वास्तव में clear होने से कई दिन पहले। Processing से पहले webhook signature verify करें; setup के लिए [Webhooks guide](/developer-resources/webhooks) और पूरी event list के लिए [Webhook Event Guide](/developer-resources/webhooks/intents/webhook-events-guide) देखें।
+</Tip>
+
+<Warning>
+checkout पर customer की अपेक्षाएं स्पष्ट करें। क्योंकि access debit clear होने के बाद ही दिया जाता है, SEPA customers को बताएं कि उनका order process हो रहा है और payment confirm होने पर उन्हें सूचित किया जाएगा — अन्यथा वे card payment की तरह instant access की अपेक्षा कर सकते हैं।
+</Warning>
 
 ## Satispay (Europe)
 
-Satispay एक लोकप्रिय European mobile payment network है, विशेष रूप से Italy में। इससे ग्राहक card या bank details साझा किए बिना सीधे अपने Satispay app से भुगतान कर सकते हैं। Satispay का settlement **EUR** में होता है।
+Satispay एक लोकप्रिय European mobile payment network है, विशेष रूप से Italy में। यह customers को card या bank details साझा किए बिना सीधे अपने Satispay app से payment करने देता है। Satispay **EUR** में settle होता है।
 
 ### Features
 
 - Card networks से स्वतंत्र app-based payments
-- Italy में मजबूत adoption और अन्य European markets में बढ़ती स्वीकार्यता
-- One-time payments और subscriptions, दोनों का समर्थन
+- पूरे Italy में व्यापक adoption और अन्य European markets में बढ़ता उपयोग
+- One-time payments और subscriptions दोनों को support करता है
 
-### Availability
+### उपलब्धता
 
 - **Billing currency:** EUR
 - **Transaction type:** One-time payments और subscriptions
@@ -360,7 +433,7 @@ const session = await client.checkoutSessions.create({
 
 ## Multi-Country European Checkout
 
-कई European countries में services देने वाले businesses के लिए सभी regional methods शामिल करें:
+कई European countries में सेवा देने वाले businesses के लिए, सभी regional methods शामिल करें:
 
 ```javascript
 const session = await client.checkoutSessions.create({
@@ -381,23 +454,23 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-Dodo customer location के आधार पर अपने-आप केवल relevant methods दिखाता है। Dutch customer को iDEAL और Belgian customer को Bancontact दिखाई देगा।
+Dodo customer की location के आधार पर केवल relevant methods दिखाता है। Dutch customer को iDEAL और Belgian customer को Bancontact दिखाई देगा।
 
 ## Testing
 
-European payment methods का परीक्षण Test Mode में किया जा सकता है। Test flow bank authentication process का simulation करता है।
+European payment methods को Test Mode में test किया जा सकता है। Test flow bank authentication process का simulation करता है।
 
 <Note>
-SEPA Direct Debit का परीक्षण अलग तरीके से किया जाता है — simulated bank flow के बजाय, आप सीधे एक test IBAN दर्ज करते हैं। [SEPA Test IBANs](#sepa-test-ibans) देखें।
+SEPA Direct Debit को अलग तरीके से test किया जाता है — simulated bank flow के बजाय, आप सीधे test IBAN दर्ज करते हैं। [SEPA Test IBANs](#sepa-test-ibans) देखें।
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-अपने Dodo Payments test API keys का उपयोग करें।
+अपने Dodo Payments test API keys का इस्तेमाल करें।
 </Step>
 
 <Step title="Set appropriate billing address">
-Billing address country को payment method के country से match करने के लिए set करें:
+Billing address country को payment method से match करने के लिए set करें:
 - `NL` iDEAL के लिए
 - `BE` Bancontact के लिए
 - `AT` EPS के लिए
@@ -407,7 +480,7 @@ Billing address country को payment method के country से match कर
 </Step>
 
 <Step title="Complete the test flow">
-Test environment में simulated bank authentication flow को follow करें।
+Test environment में simulated bank authentication flow का पालन करें।
 </Step>
 </Steps>
 
@@ -415,11 +488,11 @@ Test environment में simulated bank authentication flow को follow क�
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-यदि आप Dutch customers को बेचते हैं, तो iDEAL शामिल करें। ऐसा न करना US में Visa स्वीकार न करने जैसा है — आपकी काफ़ी sales कम हो जाएँगी।
+यदि आप Dutch customers को sell करते हैं, तो iDEAL शामिल करें। ऐसा न करना US में Visa स्वीकार न करने जैसा है — आपकी काफी sales कम हो जाएंगी।
 </Accordion>
 
 <Accordion title="Match currency to region">
-अधिकांश European payment methods के लिए EUR आवश्यक है — सुनिश्चित करें कि आपकी pricing Euro transactions का समर्थन करती है। एकमात्र अपवाद BLIK है, जो केवल **PLN** (Polish Złoty) billing पर उपलब्ध है।
+अधिकांश European payment methods के लिए EUR आवश्यक है — सुनिश्चित करें कि आपकी pricing Euro transactions को support करती है। एकमात्र अपवाद BLIK है, जो केवल **PLN** (Polish Złoty) billing पर उपलब्ध है।
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
@@ -427,11 +500,15 @@ Test environment में simulated bank authentication flow को follow क�
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-सभी European customers के पास इन regional methods की access नहीं होती (tourists, expats आदि)। Fallback के रूप में हमेशा `credit` और `debit` शामिल करें।
+सभी European customers के पास इन regional methods का access नहीं होता (tourists, expats आदि)। हमेशा `credit` और `debit` को fallback के रूप में शामिल करें।
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Multibanco ATM payments को पूरा होने में कई घंटे लग सकते हैं। तत्काल payment के आधार पर fulfillment को block न करें — async confirmation के लिए webhooks का उपयोग करें।
+Multibanco ATM payments को पूरा होने में कई घंटे लग सकते हैं। Immediate payment के आधार पर fulfillment को block न करें — async confirmation के लिए webhooks का इस्तेमाल करें।
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit की पुष्टि में **6 business days** तक लग सकते हैं। Checkout redirect या `payment.processing` पर कभी fulfill न करें — access केवल `payment.succeeded` webhook से दें और checkout पर अपेक्षाएं स्पष्ट करें ताकि customers जानें कि उनका order pending है। [Confirmation Delay को संभालना](#handling-the-confirmation-delay) देखें।
 </Accordion>
 </AccordionGroup>
 
@@ -440,45 +517,51 @@ Multibanco ATM payments को पूरा होने में कई घं
 <AccordionGroup>
 <Accordion title="European method not appearing">
 **जाँचें:**
-1. क्या customer का billing country method के country से match करता है?
-2. क्या currency EUR पर set है?
-3. क्या method `allowed_payment_method_types` में शामिल है?
+1. क्या Customer का billing country method के country से match करता है?
+2. क्या Currency EUR पर set है?
+3. क्या Method को `allowed_payment_method_types` में शामिल किया गया है?
 
-**समाधान:** European methods सख्ती से regional होती हैं। जिस customer का billing country `DE` (Germany) है, उसे iDEAL दिखाई नहीं देगा, क्योंकि iDEAL केवल Netherlands के लिए है।
+**समाधान:** European methods strictly regional हैं। Billing country `DE` (Germany) वाला customer iDEAL नहीं देखेगा, क्योंकि यह केवल Netherlands के लिए है।
 </Accordion>
 
 <Accordion title="Bank authentication failed">
 **कारण:**
-- Customer ने bank authentication के दौरान cancellation की
+- Customer ने bank authentication के दौरान cancel किया
 - Bank का authentication system अस्थायी रूप से unavailable है
 - Customer ने गलत credentials दर्ज किए
 
-**समाधान:** Customer को फिर से प्रयास करना चाहिए। समस्या जारी रहने पर कोई दूसरी payment method आज़माने का सुझाव दें।
+**समाधान:** Customer को retry करना चाहिए। समस्या बनी रहने पर, कोई अलग payment method आज़माने का सुझाव दें।
 </Accordion>
 
 <Accordion title="Redirect not completing">
 **कारण:**
 - Customer ने bank redirect के दौरान browser बंद कर दिया
 - Authentication के दौरान network issues
-- Return URL गलत configured है
+- Return URL गलत configure किया गया है
 
-**समाधान:** जाँचें कि return URL सही और accessible है। सुनिश्चित करें कि यह success और failure, दोनों states को handle करता है।
+**समाधान:** Verify करें कि return URL सही और accessible है। सुनिश्चित करें कि यह success और failure दोनों states को संभालता है।
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**कारण:** Customer को payment reference मिल गया है, लेकिन उसने अभी तक payment नहीं की है।
+**कारण:** Customer को payment reference मिल गया है, लेकिन उसने अभी तक payment नहीं किया है।
 
-**समाधान:** ATM-based payments के लिए यह expected behavior है। Webhook confirmation की प्रतीक्षा करें। Reference आमतौर पर 24-72 घंटों में expire हो जाता है।
+**समाधान:** ATM-based payments के लिए यह expected है। Webhook confirmation की प्रतीक्षा करें। Reference आम तौर पर 24-72 घंटे में expire हो जाता है।
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**कारण:** SEPA Direct Debit customer के bank के माध्यम से asynchronously clear होता है।
+
+**समाधान:** यह expected है। Debit clear होने से पहले `payment.processing` state **6 business days** तक चल सकती है। Terminal `payment.succeeded` (fulfill) या `payment.failed` (fulfill न करें) webhook की प्रतीक्षा करें — checkout redirect को confirmation न मानें। [Confirmation Delay को संभालना](#handling-the-confirmation-delay) देखें।
 </Accordion>
 </AccordionGroup>
 
 ## PSD2 Compliance
 
-सभी European payment methods PSD2 (Payment Services Directive 2) regulations का पालन करती हैं:
+सभी European payment methods PSD2 (Payment Services Directive 2) regulations का अनुपालन करते हैं:
 
 - **Strong Customer Authentication (SCA)** — Bank authentication flow में built-in
 - **Secure Communication** — सभी data secure channels के माध्यम से transmit किया जाता है
-- **Consumer Protection** — EU consumer rights का पूर्ण compliance
+- **Consumer Protection** — EU consumer rights का पूर्ण अनुपालन
 
 ## Related Pages
 
@@ -496,6 +579,6 @@ Complete checkout implementation guide।
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
-Payment confirmations को asynchronously handle करें।
+Payment confirmations को asynchronously संभालें।
 </Card>
 </CardGroup>

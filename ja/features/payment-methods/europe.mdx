@@ -257,18 +257,45 @@ BLIKには**PLN**の請求通貨が必要です。EURで価格を提示してい
 
 SEPA Direct Debitを利用すると、ユーロ圏の顧客はカードを使わず、銀行口座から直接支払えます。1回限りの支払いでは、EURのチェックアウトで利用できます。
 
-### 仕組み
-
-顧客はチェックアウト中に引き落としを承認し、支払いは銀行口座から回収されます。このページにあるほとんどのヨーロッパの決済方法とは異なり、確認は即時には行われません。
-
 <Warning>
-SEPA Direct Debitは即時決済ではありません。支払いの確認には**6営業日**かかるため、承認を決済完了として扱わないでください。支払いがsucceeded状態になってからのみ、フルフィルメントを実行してください。
+**SEPA Direct Debit は即時ではありません — 支払いの確認には最大 6 営業日かかります。** このページにある他のすべての方法とは異なり、チェックアウト時に顧客が引き落としを承認しても、**入金が確定したことを意味しません**。チェックアウトのリダイレクト時、または `payment.processing` の時点では、決して注文を履行しないでください。`payment.succeeded` webhook を待ってください。
 </Warning>
 
-### 利用可能状況
+### 仕組み
+
+顧客がチェックアウト中に引き落としを承認すると、Dodo Payments が顧客の銀行口座から資金を回収します。銀行による引き落としの決済は非同期で行われるため、支払いは最終的な結果に到達する前に `processing` 状態を経由します。
+
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### 支払いのタイムライン
+
+| 段階 | タイミング | 支払いステータス | 意味 |
+| :---- | :--- | :------------- | :------------ |
+| **承認** | チェックアウト時 | `processing` | 顧客が引き落としを承認し、リダイレクトされて戻ってきた状態です。まだ資金は移動していないため、履行しないでください。 |
+| **確認** | 最大 **6 営業日**後 | `succeeded` | 銀行が引き落としを決済した状態です。この時点で注文を履行してください。 |
+| **失敗** | 最大 **6 営業日**後 | `failed` | 引き落としを回収できなかった状態です（例：残高不足）。履行せず、顧客に通知してください。 |
+
+顧客がサイトを離れてから数日後に確認が届くため、アクセスを付与する処理はチェックアウトのリダイレクトではなく webhook ハンドラーで行う必要があります。以下の [確認の遅延への対処](#handling-the-confirmation-delay) を参照してください。
+
+### 利用可否
 
 - **請求通貨:** EUR
-- **取引タイプ:** 1回限りの支払いのみ（サブスクリプションでは利用不可）
+- **取引タイプ:** 1 回限りの支払いのみ（サブスクリプションでは利用できません）
 
 ### 設定
 
@@ -285,50 +312,96 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### SEPA Test IBANs
+### SEPA Test IBAN
 
-Test Modeでは、チェックアウト時に以下のIBANのいずれかを入力すると、特定の結果を強制できます。
+テストモードでは、チェックアウト時に以下の IBAN のいずれかを入力すると、特定の結果を強制できます。
 
-| Test IBAN | Behavior |
+| Test IBAN | 動作 |
 | :-------- | :------- |
 | `DE89370400440532013000` | 支払いが成功します。 |
-| `DE08370400440532013003` | 少なくとも3分の遅延後に支払いが成功します。 |
+| `DE08370400440532013003` | 少なくとも 3 分の遅延後に支払いが成功します。 |
 | `DE62370400440532013001` | 支払いが失敗します。 |
-| `DE78370400440532013004` | 少なくとも3分の遅延後に支払いが失敗します。 |
-| `DE35370400440532013002` | 支払いが成功した後、直ちにdisputeされます。 |
+| `DE78370400440532013004` | 少なくとも 3 分の遅延後に支払いが失敗します。 |
+| `DE35370400440532013002` | 支払いが成功した直後に dispute されます。 |
 | `DE65370400440002222227` | 残高不足により支払いが失敗します。 |
-| `DE18370400440000066666` | 銀行口座が使用できないため、決済方法を作成できません。 |
+| `DE18370400440000066666` | 銀行口座を使用できないため、支払い方法を作成できません。 |
 
-国ごとの動作をテストするには、別のユーロ圏の国に対応する成功用IBANを使用してください。
+国固有の動作をテストするには、別の Eurozone 国に対応する成功用 IBAN を使用してください。
 
-| Country | Success IBAN |
+| 国 | 成功用 IBAN |
 | :------ | :----------- |
-| オーストリア | `AT611904300234573201` |
-| ベルギー | `BE62510007547061` |
-| エストニア | `EE382200221020145685` |
-| フィンランド | `FI2112345600000785` |
-| フランス | `FR1420041010050500013M02606` |
-| アイルランド | `IE29AIBK93115212345678` |
-| ルクセンブルク | `LU280019400644750000` |
+| Austria | `AT611904300234573201` |
+| Belgium | `BE62510007547061` |
+| Estonia | `EE382200221020145685` |
+| Finland | `FI2112345600000785` |
+| France | `FR1420041010050500013M02606` |
+| Ireland | `IE29AIBK93115212345678` |
+| Luxembourg | `LU280019400644750000` |
 
 <Note>
-遅延テスト用IBANは、アクセスを許可するのがチェックアウトのリダイレクトではなくwebhookハンドラーであることを確認するのに役立ちます。SEPAの支払いは、顧客がチェックアウトを離れた後、かなり時間が経ってから確認されるためです。
+遅延テスト用 IBAN は、アクセスを付与する処理がチェックアウトのリダイレクトではなく webhook ハンドラーによって行われることを確認するのに役立ちます。SEPA の支払いは、顧客がチェックアウトを離れたかなり後に確認されるためです。
 </Note>
 
-## Satispay（ヨーロッパ）
+### 確認の遅延への対処
 
-Satispayは、特にイタリアで普及しているヨーロッパのモバイル決済ネットワークです。カード情報や銀行情報を共有せず、Satispayアプリから直接支払えます。Satispayの決済通貨は**EUR**です。
+SEPA はチェックアウト後、最大 6 営業日かけて決済されるため、支払いが確定したかどうかをブラウザーのリダイレクトだけで判断することはできません。代わりに、webhook イベントに基づいて履行を進めてください。`payload.type` を有効にし、各段階を処理します。
+
+| イベントタイプ | 発生時点 | 対応 |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | 顧客がチェックアウト時に引き落としを承認し、リダイレクトされて戻った時点。 | **履行しないでください。** 注文を保留中としてマークし、必要に応じて支払いを処理中であることを顧客に伝えます。 |
+| `payment.succeeded` | 銀行が引き落としを決済した時点（最大 6 営業日後）。 | 注文を履行します — アクセスを付与し、商品をプロビジョニングし、レシートを送信します。 |
+| `payment.failed` | 引き落としを回収できなかった時点。 | 顧客に通知して再試行を促します。履行しないでください。 |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+必ず **webhook の `payment.succeeded` で履行**し、チェックアウトのリダイレクト時や `payment.processing` の時点では決して履行しないでください。リダイレクトは顧客が引き落としを承認した瞬間、つまり実際に入金が確定する数日前に発生します。処理前に webhook の署名を検証してください。設定については [Webhooks ガイド](/developer-resources/webhooks)、イベント一覧については [Webhook Event Guide](/developer-resources/webhooks/intents/webhook-events-guide) を参照してください。
+</Tip>
+
+<Warning>
+チェックアウト時に顧客の期待値を適切に設定してください。アクセスは引き落としが決済された後にのみ付与されるため、SEPA の顧客には注文を処理中であり、支払いが確認され次第通知されることを伝えます。そうしないと、カード決済のように即時アクセスできると期待する可能性があります。
+</Warning>
+
+## Satispay（Europe）
+
+Satispay は、特に Italy で普及している European のモバイル決済ネットワークです。カード情報や銀行情報を共有せず、顧客が Satispay アプリから直接支払えるようにします。Satispay の決済通貨は **EUR** です。
 
 ### 特徴
 
 - カードネットワークに依存しないアプリベースの支払い
-- イタリアで広く利用され、他のヨーロッパ市場でも拡大中
-- 1回限りの支払いとサブスクリプションの両方に対応
+- Italy 全域で高い普及率があり、他の European 市場でも拡大中
+- 1 回限りの支払いとサブスクリプションの両方をサポート
 
-### 利用可能状況
+### 利用可否
 
 - **請求通貨:** EUR
-- **取引タイプ:** 1回限りの支払いとサブスクリプション
+- **取引タイプ:** 1 回限りの支払いとサブスクリプション
 
 ### 設定
 
@@ -349,17 +422,17 @@ const session = await client.checkoutSessions.create({
 
 | Type | Method | Country |
 | :--- | :----- | :------ |
-| `ideal` | iDEAL | オランダ |
-| `bancontact_card` | Bancontact | ベルギー |
-| `eps` | EPS | オーストリア |
-| `multibanco` | Multibanco | ポルトガル |
-| `blik` | BLIK | ポーランド |
-| `sepa` | SEPA Direct Debit | ユーロ圏 |
-| `satispay` | Satispay | ヨーロッパ（イタリア） |
+| `ideal` | iDEAL | Netherlands |
+| `bancontact_card` | Bancontact | Belgium |
+| `eps` | EPS | Austria |
+| `multibanco` | Multibanco | Portugal |
+| `blik` | BLIK | Poland |
+| `sepa` | SEPA Direct Debit | Eurozone |
+| `satispay` | Satispay | Europe (Italy) |
 
-## 複数の国に対応するヨーロッパ向けチェックアウト
+## 複数国向け European チェックアウト
 
-複数のヨーロッパ諸国にサービスを提供する事業者は、地域ごとの決済方法をすべて含めてください。
+複数の European 国の顧客にサービスを提供するビジネスでは、地域に対応するすべての支払い方法を含めてください。
 
 ```javascript
 const session = await client.checkoutSessions.create({
@@ -380,28 +453,28 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-Dodoは、顧客の所在地に基づいて関連する決済方法のみを自動的に表示します。オランダの顧客にはiDEALが、ベルギーの顧客にはBancontactが表示されます。
+Dodo は、顧客の所在地に基づいて関連する支払い方法のみを自動的に表示します。Dutch の顧客には iDEAL が、Belgian の顧客には Bancontact が表示されます。
 
 ## テスト
 
-ヨーロッパの決済方法はTest Modeでテストできます。テストフローでは、銀行の認証プロセスをシミュレートします。
+European の支払い方法は Test Mode でテストできます。テストフローでは、銀行認証プロセスをシミュレートします。
 
 <Note>
-SEPA Direct Debitのテスト方法は異なります。シミュレートされた銀行フローの代わりに、テスト用IBANを直接入力します。[SEPA Test IBANs](#sepa-test-ibans)を参照してください。
+SEPA Direct Debit のテスト方法は異なります。シミュレートされた銀行フローの代わりに、テスト用 IBAN を直接入力します。[SEPA Test IBAN](#sepa-test-ibans) を参照してください。
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-Dodo PaymentsのテストAPIキーを使用してください。
+Dodo Payments のテスト API キーを使用してください。
 </Step>
 
 <Step title="Set appropriate billing address">
-請求先住所の国を、決済方法に合わせて設定してください。
+支払い方法に合わせて請求先住所の国を設定してください。
 - `NL`（iDEAL）
 - `BE`（Bancontact）
 - `AT`（EPS）
 - `PT`（Multibanco）
-- `PL`（BLIK、請求通貨はPLN）
+- `PL`（BLIK、請求通貨は PLN）
 - `IT`（Satispay）
 </Step>
 
@@ -414,23 +487,27 @@ Dodo PaymentsのテストAPIキーを使用してください。
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-オランダの顧客に販売する場合は、iDEALを含めてください。これは、米国でVisaに対応しないようなもので、大きな売上機会を失うことになります。
+Dutch の顧客に販売する場合は、iDEAL を含めてください。これは US で Visa を受け付けないようなもので、大幅に売上を失うことになります。
 </Accordion>
 
 <Accordion title="Match currency to region">
-ヨーロッパの決済方法の多くではEURが必要です。価格設定がユーロ取引に対応していることを確認してください。例外はBLIKで、**PLN**（ポーランドズウォティ）請求でのみ利用できます。
+European の支払い方法のほとんどでは EUR が必要です。価格設定が Euro 取引に対応していることを確認してください。唯一の例外は BLIK で、**PLN**（Polish Złoty）の請求でのみ提供されます。
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-ヨーロッパのすべての決済方法では、銀行サイトへのリダイレクトが発生します。return URLの処理が堅牢で、フローの途中で離脱したユーザーにも対応できることを確認してください。
+European のすべての支払い方法では、銀行サイトへのリダイレクトが発生します。return URL の処理が堅牢で、フローの途中で離脱するユーザーにも対応できることを確認してください。
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-すべてのヨーロッパの顧客がこれらの地域固有の決済方法を利用できるとは限りません（旅行者、駐在者など）。常に`credit`と`debit`を代替手段として含めてください。
+European の顧客全員がこれらの地域固有の支払い方法を利用できるわけではありません（観光客、国外居住者など）。常に `credit` と `debit` をフォールバックとして含めてください。
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-MultibancoのATM支払いは完了までに数時間かかることがあります。即時の支払い完了を条件にフルフィルメントを停止せず、非同期の確認にはwebhookを使用してください。
+Multibanco の ATM 支払いは完了までに数時間かかることがあります。即時の支払い完了を条件に履行をブロックせず、非同期の確認には webhook を使用してください。
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit の確認には最大 **6 営業日**かかります。チェックアウトのリダイレクト時や `payment.processing` の時点では決して履行せず、`payment.succeeded` webhook からのみアクセスを付与してください。また、顧客が注文は保留中であると理解できるよう、チェックアウト時に期待値を設定してください。[確認の遅延への対処](#handling-the-confirmation-delay) を参照してください。
 </Accordion>
 </AccordionGroup>
 
@@ -438,63 +515,69 @@ MultibancoのATM支払いは完了までに数時間かかることがありま�
 
 <AccordionGroup>
 <Accordion title="European method not appearing">
-**確認事項:**
-1. 顧客の請求先国は決済方法の国と一致していますか？
-2. 通貨はEURに設定されていますか？
-3. 決済方法は`allowed_payment_method_types`に含まれていますか？
+**確認項目:**
+1. 顧客の請求先の国は支払い方法の国と一致していますか？
+2. 通貨は EUR に設定されていますか？
+3. 支払い方法は `allowed_payment_method_types` に含まれていますか？
 
-**解決策:** ヨーロッパの決済方法は地域が厳密に限定されています。請求先国が`DE`（ドイツ）の顧客には、オランダでのみ利用できるiDEALは表示されません。
+**解決策:** European の支払い方法は地域が厳密に限定されています。請求先の国が `DE`（Germany）の顧客には、Netherlands 専用の iDEAL は表示されません。
 </Accordion>
 
 <Accordion title="Bank authentication failed">
 **原因:**
-- 銀行認証中に顧客がキャンセルした
+- 顧客が銀行認証中にキャンセルした
 - 銀行の認証システムが一時的に利用できない
 - 顧客が誤った認証情報を入力した
 
-**解決策:** 顧客に再試行してもらってください。問題が解消しない場合は、別の決済方法を試すよう案内してください。
+**解決策:** 顧客に再試行してもらってください。問題が続く場合は、別の支払い方法を試すよう案内してください。
 </Accordion>
 
 <Accordion title="Redirect not completing">
 **原因:**
-- 銀行へのリダイレクト中に顧客がブラウザを閉じた
+- 顧客が銀行へのリダイレクト中にブラウザーを閉じた
 - 認証中にネットワークの問題が発生した
-- return URLの設定が誤っている
+- return URL の設定が誤っている
 
-**解決策:** return URLが正しく、アクセス可能であることを確認してください。成功状態と失敗状態の両方を処理できることを確認してください。
+**解決策:** return URL が正しく、アクセス可能であることを確認してください。成功状態と失敗状態の両方を処理できることを確認してください。
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**原因:** 顧客は支払い参照番号を受け取ったものの、まだ支払っていません。
+**原因:** 顧客は支払い参照番号を受け取りましたが、まだ支払っていません。
 
-**解決策:** ATMベースの支払いでは想定される動作です。webhookによる確認を待ってください。参照番号は通常24～72時間で期限切れになります。
+**解決策:** ATM ベースの支払いでは想定される動作です。webhook による確認を待ってください。通常、参照番号は 24～72 時間で期限切れになります。
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**原因:** SEPA Direct Debit は顧客の銀行を通じて非同期に決済されます。
+
+**解決策:** 想定される動作です。`payment.processing` 状態は、引き落としが決済されるまで最大 **6 営業日**続くことがあります。最終状態である `payment.succeeded`（履行）または `payment.failed`（履行しない）の webhook を待ってください。チェックアウトのリダイレクトを確認として扱わないでください。[確認の遅延への対処](#handling-the-confirmation-delay) を参照してください。
 </Accordion>
 </AccordionGroup>
 
-## PSD2コンプライアンス
+## PSD2 コンプライアンス
 
-ヨーロッパのすべての決済方法は、PSD2（Payment Services Directive 2）規制に準拠しています。
+European のすべての支払い方法は PSD2（Payment Services Directive 2）規制に準拠しています。
 
 - **Strong Customer Authentication (SCA)** — 銀行認証フローに組み込まれています
 - **Secure Communication** — すべてのデータが安全なチャネル経由で送信されます
-- **Consumer Protection** — EUの消費者権利に完全準拠しています
+- **Consumer Protection** — EU の消費者権利に完全準拠しています
 
 ## 関連ページ
 
 <CardGroup cols={2}>
 <Card title="Payment Methods Overview" icon="credit-card" href="/features/payment-methods">
-対応しているすべての決済方法を確認します。
+サポートされているすべての支払い方法を確認します。
 </Card>
 
 <Card title="Adaptive Currency" icon="globe" href="/features/adaptive-currency">
-通貨の対応状況と自動換算について説明します。
+通貨のサポートと自動換算について説明します。
 </Card>
 
 <Card title="Checkout Guide" icon="book" href="/developer-resources/checkout-session">
-チェックアウトの実装ガイド全体を確認します。
+チェックアウト実装の完全ガイドです。
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
-支払いの確認を非同期で処理します。
+支払い確認を非同期で処理します。
 </Card>
 </CardGroup>

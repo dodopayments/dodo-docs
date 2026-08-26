@@ -258,18 +258,45 @@ BLIK yêu cầu tiền tệ thanh toán là **PLN**. Nếu bạn báo giá bằn
 
 SEPA Direct Debit cho phép khách hàng trên toàn Khu vực Eurozone thanh toán trực tiếp từ tài khoản ngân hàng thay vì sử dụng thẻ. Phương thức này được cung cấp trên các trang thanh toán bằng EUR cho các khoản thanh toán một lần.
 
+<Warning>
+**SEPA Direct Debit không tức thì — một khoản thanh toán có thể mất tối đa 6 ngày làm việc để được xác nhận.** Không giống mọi phương thức khác trên trang này, việc khách hàng ủy quyền ghi nợ khi thanh toán **không** có nghĩa là tiền đã được ghi có. Không bao giờ hoàn tất đơn hàng khi chuyển hướng từ checkout hoặc khi nhận `payment.processing`; hãy chờ webhook `payment.succeeded`.
+</Warning>
+
 ### Cách thức hoạt động
 
-Khách hàng ủy quyền trích nợ trong quá trình thanh toán và khoản tiền được thu từ tài khoản ngân hàng của họ. Không giống hầu hết các phương thức châu Âu khác trên trang này, việc xác nhận không diễn ra ngay lập tức.
+Khách hàng ủy quyền ghi nợ trong quá trình checkout, sau đó Dodo Payments thu tiền từ tài khoản ngân hàng của họ. Vì ngân hàng xử lý việc ghi nợ không đồng bộ, khoản thanh toán sẽ chuyển qua trạng thái `processing` trước khi đạt đến kết quả cuối cùng:
 
-<Warning>
-SEPA Direct Debit không diễn ra tức thì. Một khoản thanh toán cần **6 ngày làm việc** để được xác nhận, vì vậy không được coi việc ủy quyền là quyết toán — chỉ thực hiện cung cấp dịch vụ khi khoản thanh toán chuyển sang trạng thái succeeded.
-</Warning>
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Tiến trình thanh toán
+
+| Giai đoạn | Thời điểm | Trạng thái thanh toán | Ý nghĩa |
+| :---- | :--- | :------------- | :------------ |
+| **Ủy quyền** | Khi checkout | `processing` | Khách hàng đã chấp thuận ghi nợ và được chuyển hướng trở lại. Tiền **chưa** được chuyển — không hoàn tất đơn hàng. |
+| **Xác nhận** | Sau tối đa **6 ngày làm việc** | `succeeded` | Ngân hàng đã xử lý xong việc ghi nợ. Hãy hoàn tất đơn hàng ngay. |
+| **Thất bại** | Sau tối đa **6 ngày làm việc** | `failed` | Không thể thu tiền ghi nợ (ví dụ: không đủ tiền). Không hoàn tất đơn hàng; thông báo cho khách hàng. |
+
+Vì xác nhận đến vài ngày sau khi khách hàng rời khỏi trang web, webhook handler — chứ không phải chuyển hướng từ checkout — phải là cơ chế cấp quyền truy cập. Xem [Xử lý độ trễ xác nhận](#handling-the-confirmation-delay) bên dưới.
 
 ### Tính khả dụng
 
 - **Tiền tệ thanh toán:** EUR
-- **Loại giao dịch:** Chỉ thanh toán một lần (không khả dụng cho gói đăng ký)
+- **Loại giao dịch:** Chỉ thanh toán một lần (không hỗ trợ subscription)
 
 ### Cấu hình
 
@@ -286,21 +313,21 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-### IBAN kiểm thử SEPA
+### IBAN SEPA dùng để kiểm thử
 
-Ở chế độ kiểm thử, nhập một trong các IBAN dưới đây tại trang thanh toán để buộc một kết quả cụ thể.
+Ở chế độ kiểm thử, nhập một trong các IBAN dưới đây khi checkout để buộc tạo ra một kết quả cụ thể.
 
 | IBAN kiểm thử | Hành vi |
 | :-------- | :------- |
-| `DE89370400440532013000` | Khoản thanh toán thành công. |
-| `DE08370400440532013003` | Khoản thanh toán thành công sau khoảng trễ ít nhất ba phút. |
-| `DE62370400440532013001` | Khoản thanh toán thất bại. |
-| `DE78370400440532013004` | Khoản thanh toán thất bại sau khoảng trễ ít nhất ba phút. |
-| `DE35370400440532013002` | Khoản thanh toán thành công, sau đó lập tức bị tranh chấp. |
-| `DE65370400440002222227` | Khoản thanh toán thất bại do không đủ tiền. |
+| `DE89370400440532013000` | Thanh toán thành công. |
+| `DE08370400440532013003` | Thanh toán thành công sau độ trễ ít nhất ba phút. |
+| `DE62370400440532013001` | Thanh toán thất bại. |
+| `DE78370400440532013004` | Thanh toán thất bại sau độ trễ ít nhất ba phút. |
+| `DE35370400440532013002` | Thanh toán thành công, sau đó ngay lập tức bị dispute. |
+| `DE65370400440002222227` | Thanh toán thất bại do không đủ tiền. |
 | `DE18370400440000066666` | Tài khoản ngân hàng không thể sử dụng, vì vậy không thể tạo phương thức thanh toán. |
 
-Để kiểm thử hành vi theo từng quốc gia, hãy sử dụng IBAN thành công tương ứng của một quốc gia khác trong Khu vực Eurozone:
+Để kiểm thử hành vi theo từng quốc gia, hãy sử dụng IBAN thành công tương ứng của một quốc gia khác trong Eurozone:
 
 | Quốc gia | IBAN thành công |
 | :------ | :----------- |
@@ -313,23 +340,69 @@ const session = await client.checkoutSessions.create({
 | Luxembourg | `LU280019400644750000` |
 
 <Note>
-Các IBAN kiểm thử có độ trễ hữu ích để xác nhận rằng trình xử lý webhook — chứ không phải chuyển hướng của trang thanh toán — là thành phần cấp quyền truy cập, vì các khoản thanh toán SEPA được xác nhận rất lâu sau khi khách hàng rời trang thanh toán.
+Các IBAN kiểm thử có độ trễ hữu ích để xác nhận rằng webhook handler — thay vì chuyển hướng từ checkout — là cơ chế cấp quyền truy cập, vì thanh toán SEPA được xác nhận rất lâu sau khi khách hàng rời khỏi checkout.
 </Note>
 
-## Satispay (Châu Âu)
+### Xử lý độ trễ xác nhận
 
-Satispay là một mạng lưới thanh toán di động phổ biến tại châu Âu, đặc biệt là ở Ý, cho phép khách hàng thanh toán trực tiếp từ ứng dụng Satispay mà không cần chia sẻ thông tin thẻ hoặc ngân hàng. Satispay quyết toán bằng **EUR**.
+Vì SEPA được quyết toán trong vòng tối đa 6 ngày làm việc sau checkout, bạn không thể dựa vào chuyển hướng của trình duyệt để biết liệu khoản thanh toán đã được ghi có hay chưa. Thay vào đó, hãy điều khiển việc hoàn tất đơn hàng bằng các webhook event. Bật `payload.type` và xử lý từng giai đoạn:
+
+| Loại event | Thời điểm phát sinh | Việc cần làm |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | Khách hàng đã ủy quyền ghi nợ khi checkout và được chuyển hướng trở lại. | **Không hoàn tất đơn hàng.** Đánh dấu đơn hàng đang chờ và, nếu muốn, thông báo cho khách hàng rằng khoản thanh toán đang được xử lý. |
+| `payment.succeeded` | Ngân hàng đã xử lý xong việc ghi nợ (sau tối đa 6 ngày làm việc). | Hoàn tất đơn hàng — cấp quyền truy cập, provision sản phẩm, gửi receipt. |
+| `payment.failed` | Không thể thu tiền ghi nợ. | Thông báo cho khách hàng và yêu cầu thử lại; không hoàn tất đơn hàng. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Luôn **hoàn tất đơn hàng khi nhận `payment.succeeded` từ webhook**, không bao giờ thực hiện việc này khi chuyển hướng từ checkout hoặc khi nhận `payment.processing`. Chuyển hướng được thực hiện ngay khi khách hàng ủy quyền ghi nợ — trước khi tiền thực sự được ghi có vài ngày. Hãy xác minh chữ ký webhook trước khi xử lý; xem [hướng dẫn Webhooks](/developer-resources/webhooks) để thiết lập và [Hướng dẫn Webhook Event](/developer-resources/webhooks/intents/webhook-events-guide) để xem danh sách event đầy đủ.
+</Tip>
+
+<Warning>
+Hãy thiết lập kỳ vọng cho khách hàng ngay tại checkout. Vì quyền truy cập chỉ được cấp sau khi khoản ghi nợ được xử lý xong, hãy cho khách hàng SEPA biết rằng đơn hàng của họ đang được xử lý và họ sẽ được thông báo khi thanh toán được xác nhận — nếu không, họ có thể mong đợi quyền truy cập tức thì như khi thanh toán bằng thẻ.
+</Warning>
+
+## Satispay (Europe)
+
+Satispay là một mạng lưới thanh toán di động phổ biến ở châu Âu, đặc biệt là tại Ý, cho phép khách hàng thanh toán trực tiếp từ ứng dụng Satispay mà không cần chia sẻ thông tin thẻ hoặc ngân hàng. Satispay quyết toán bằng **EUR**.
 
 ### Tính năng
 
-- Thanh toán dựa trên ứng dụng, độc lập với các mạng lưới thẻ
-- Mức độ sử dụng cao trên khắp nước Ý và đang tăng trưởng ở các thị trường châu Âu khác
-- Hỗ trợ cả thanh toán một lần và gói đăng ký
+- Thanh toán qua ứng dụng, độc lập với các mạng lưới thẻ
+- Mức độ sử dụng cao trên toàn nước Ý và đang phát triển ở các thị trường châu Âu khác
+- Hỗ trợ cả thanh toán một lần và subscription
 
 ### Tính khả dụng
 
 - **Tiền tệ thanh toán:** EUR
-- **Loại giao dịch:** Thanh toán một lần và gói đăng ký
+- **Loại giao dịch:** Thanh toán một lần và subscription
 
 ### Cấu hình
 
@@ -346,21 +419,21 @@ const session = await client.checkoutSessions.create({
 });
 ```
 
-## Loại phương thức API
+## Các loại API Method
 
-| Loại | Phương thức | Quốc gia |
+| Loại | Method | Quốc gia |
 | :--- | :----- | :------ |
 | `ideal` | iDEAL | Hà Lan |
 | `bancontact_card` | Bancontact | Bỉ |
 | `eps` | EPS | Áo |
 | `multibanco` | Multibanco | Bồ Đào Nha |
 | `blik` | BLIK | Ba Lan |
-| `sepa` | SEPA Direct Debit | Khu vực Eurozone |
-| `satispay` | Satispay | Châu Âu (Ý) |
+| `sepa` | SEPA Direct Debit | Eurozone |
+| `satispay` | Satispay | Europe (Italy) |
 
-## Trang thanh toán đa quốc gia tại châu Âu
+## Checkout châu Âu đa quốc gia
 
-Đối với các doanh nghiệp phục vụ nhiều quốc gia châu Âu, hãy bao gồm tất cả phương thức theo khu vực:
+Đối với các doanh nghiệp phục vụ nhiều quốc gia châu Âu, hãy thêm tất cả các phương thức theo khu vực:
 
 ```javascript
 const session = await client.checkoutSessions.create({
@@ -385,15 +458,15 @@ Dodo tự động chỉ hiển thị các phương thức phù hợp dựa trên
 
 ## Kiểm thử
 
-Các phương thức thanh toán châu Âu có thể được kiểm thử trong Test Mode. Quy trình kiểm thử mô phỏng quá trình xác thực ngân hàng.
+Các phương thức thanh toán châu Âu có thể được kiểm thử trong Test Mode. Quy trình kiểm thử mô phỏng quy trình xác thực ngân hàng.
 
 <Note>
-SEPA Direct Debit được kiểm thử theo cách khác — thay vì quy trình ngân hàng mô phỏng, bạn nhập trực tiếp một IBAN kiểm thử. Xem [IBAN kiểm thử SEPA](#sepa-test-ibans).
+SEPA Direct Debit được kiểm thử theo cách khác — thay vì quy trình ngân hàng mô phỏng, bạn nhập trực tiếp IBAN kiểm thử. Xem [IBAN SEPA dùng để kiểm thử](#sepa-test-ibans).
 </Note>
 
 <Steps>
 <Step title="Enable test mode">
-Sử dụng các khóa API kiểm thử của Dodo Payments.
+Sử dụng test API keys của Dodo Payments.
 </Step>
 
 <Step title="Set appropriate billing address">
@@ -411,27 +484,31 @@ Thực hiện theo quy trình xác thực ngân hàng mô phỏng trong môi tr�
 </Step>
 </Steps>
 
-## Phương pháp hay nhất
+## Thực tiễn tốt nhất
 
 <AccordionGroup>
 <Accordion title="Always include regional methods for target markets">
-Nếu bạn bán hàng cho khách hàng Hà Lan, hãy cung cấp iDEAL. Không làm như vậy cũng giống như không chấp nhận Visa tại Mỹ — bạn sẽ mất một lượng doanh thu đáng kể.
+Nếu bán hàng cho khách hàng Hà Lan, hãy thêm iDEAL. Không làm vậy cũng giống như không chấp nhận Visa tại Mỹ — bạn sẽ mất một lượng doanh số đáng kể.
 </Accordion>
 
 <Accordion title="Match currency to region">
-Hầu hết các phương thức thanh toán châu Âu yêu cầu EUR — hãy đảm bảo mô hình định giá của bạn hỗ trợ các giao dịch bằng Euro. Ngoại lệ duy nhất là BLIK, chỉ được cung cấp với hình thức thanh toán bằng **PLN** (Złoty Ba Lan).
+Hầu hết các phương thức thanh toán châu Âu đều yêu cầu EUR — hãy đảm bảo bảng giá của bạn hỗ trợ các giao dịch bằng Euro. Ngoại lệ duy nhất là BLIK, chỉ được cung cấp với tiền tệ thanh toán **PLN** (Złoty Ba Lan).
 </Accordion>
 
 <Accordion title="Handle redirects gracefully">
-Tất cả các phương thức châu Âu đều chuyển hướng đến trang web ngân hàng. Hãy đảm bảo việc xử lý return URL của bạn đủ ổn định và tính đến những người dùng thoát giữa chừng.
+Tất cả các phương thức châu Âu đều chuyển hướng khách hàng đến trang web của ngân hàng. Hãy đảm bảo việc xử lý return URL của bạn đủ tin cậy và có tính đến trường hợp người dùng thoát giữa chừng.
 </Accordion>
 
 <Accordion title="Provide card fallbacks">
-Không phải tất cả khách hàng châu Âu đều có quyền truy cập vào các phương thức theo khu vực này (khách du lịch, người nước ngoài sinh sống tại địa phương, v.v.). Luôn bao gồm `credit` và `debit` làm phương án dự phòng.
+Không phải mọi khách hàng châu Âu đều có quyền truy cập vào các phương thức theo khu vực này (khách du lịch, người nước ngoài sinh sống tại địa phương, v.v.). Luôn thêm `credit` và `debit` làm phương án dự phòng.
 </Accordion>
 
 <Accordion title="Consider Multibanco timing">
-Thanh toán Multibanco qua ATM có thể mất vài giờ để hoàn tất. Đừng chặn việc cung cấp dịch vụ chỉ vì chưa nhận được thanh toán ngay lập tức — hãy sử dụng webhook để xác nhận bất đồng bộ.
+Thanh toán Multibanco qua ATM có thể mất vài giờ để hoàn tất. Đừng chặn việc hoàn tất đơn hàng vì thanh toán tức thì — hãy sử dụng webhook để xác nhận không đồng bộ.
+</Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit mất tối đa **6 ngày làm việc** để được xác nhận. Không bao giờ hoàn tất đơn hàng khi chuyển hướng từ checkout hoặc khi nhận `payment.processing` — chỉ cấp quyền truy cập từ webhook `payment.succeeded` và thiết lập kỳ vọng tại checkout để khách hàng biết đơn hàng đang chờ xử lý. Xem [Xử lý độ trễ xác nhận](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -440,9 +517,9 @@ Thanh toán Multibanco qua ATM có thể mất vài giờ để hoàn tất. Đ�
 <AccordionGroup>
 <Accordion title="European method not appearing">
 **Kiểm tra:**
-1. Quốc gia thanh toán của khách hàng có khớp với quốc gia của phương thức không?
+1. Quốc gia thanh toán của khách hàng có khớp với quốc gia của method không?
 2. Tiền tệ có được đặt là EUR không?
-3. Phương thức có được bao gồm trong `allowed_payment_method_types` không?
+3. Method có được thêm vào `allowed_payment_method_types` không?
 
 **Giải pháp:** Các phương thức châu Âu bị giới hạn nghiêm ngặt theo khu vực. Khách hàng có quốc gia thanh toán là `DE` (Đức) sẽ không thấy iDEAL, vì iDEAL chỉ dành cho Hà Lan.
 </Accordion>
@@ -451,24 +528,30 @@ Thanh toán Multibanco qua ATM có thể mất vài giờ để hoàn tất. Đ�
 **Nguyên nhân:**
 - Khách hàng đã hủy trong quá trình xác thực ngân hàng
 - Hệ thống xác thực của ngân hàng tạm thời không khả dụng
-- Khách hàng đã nhập sai thông tin xác thực
+- Khách hàng đã nhập sai thông tin đăng nhập
 
 **Giải pháp:** Khách hàng nên thử lại. Nếu sự cố vẫn tiếp diễn, hãy đề xuất thử một phương thức thanh toán khác.
 </Accordion>
 
 <Accordion title="Redirect not completing">
 **Nguyên nhân:**
-- Khách hàng đã đóng trình duyệt trong khi chuyển hướng đến ngân hàng
+- Khách hàng đã đóng trình duyệt trong khi được chuyển hướng đến ngân hàng
 - Sự cố mạng trong quá trình xác thực
-- return URL được cấu hình không chính xác
+- Return URL được cấu hình không chính xác
 
-**Giải pháp:** Xác minh return URL là chính xác và có thể truy cập. Đảm bảo URL này xử lý cả trạng thái thành công và thất bại.
+**Giải pháp:** Xác minh return URL chính xác và có thể truy cập. Đảm bảo URL này xử lý cả trạng thái thành công và thất bại.
 </Accordion>
 
 <Accordion title="Multibanco payment pending">
-**Nguyên nhân:** Khách hàng đã nhận được mã tham chiếu thanh toán nhưng chưa thanh toán.
+**Nguyên nhân:** Khách hàng đã nhận mã tham chiếu thanh toán nhưng chưa thanh toán.
 
-**Giải pháp:** Đây là hành vi dự kiến đối với các khoản thanh toán qua ATM. Hãy chờ xác nhận webhook. Mã tham chiếu thường hết hạn sau 24–72 giờ.
+**Giải pháp:** Đây là hành vi dự kiến đối với các khoản thanh toán qua ATM. Hãy chờ webhook xác nhận. Mã tham chiếu thường hết hạn sau 24–72 giờ.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**Nguyên nhân:** SEPA Direct Debit được xử lý không đồng bộ thông qua ngân hàng của khách hàng.
+
+**Giải pháp:** Đây là hành vi dự kiến. Trạng thái `payment.processing` có thể kéo dài tối đa **6 ngày làm việc** trước khi khoản ghi nợ được xử lý xong. Hãy chờ webhook cuối cùng `payment.succeeded` (hoàn tất đơn hàng) hoặc `payment.failed` (không hoàn tất đơn hàng) — không coi chuyển hướng từ checkout là xác nhận. Xem [Xử lý độ trễ xác nhận](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
@@ -478,9 +561,9 @@ Tất cả các phương thức thanh toán châu Âu đều tuân thủ các qu
 
 - **Strong Customer Authentication (SCA)** — Được tích hợp vào quy trình xác thực ngân hàng
 - **Secure Communication** — Tất cả dữ liệu được truyền qua các kênh bảo mật
-- **Consumer Protection** — Tuân thủ đầy đủ các quyền của người tiêu dùng tại EU
+- **Consumer Protection** — Tuân thủ đầy đủ các quyền của người tiêu dùng EU
 
-## Trang liên quan
+## Các trang liên quan
 
 <CardGroup cols={2}>
 <Card title="Payment Methods Overview" icon="credit-card" href="/features/payment-methods">
@@ -492,10 +575,10 @@ Hỗ trợ tiền tệ và chuyển đổi tự động.
 </Card>
 
 <Card title="Checkout Guide" icon="book" href="/developer-resources/checkout-session">
-Hướng dẫn triển khai trang thanh toán đầy đủ.
+Hướng dẫn triển khai checkout đầy đủ.
 </Card>
 
 <Card title="Webhooks" icon="webhook" href="/developer-resources/webhooks">
-Xử lý xác nhận thanh toán một cách bất đồng bộ.
+Xử lý các xác nhận thanh toán không đồng bộ.
 </Card>
 </CardGroup>

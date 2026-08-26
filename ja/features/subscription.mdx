@@ -486,18 +486,18 @@ console.log('You will be charged:', preview.immediate_charge.summary);
 
 ### API による一時停止
 
-一時停止と再開は、update subscription endpoint の単一の `pause` field で行います。個別の pause endpoint はありません。
+一時停止と再開は、サブスクリプション更新エンドポイントの `status` フィールドを通じて実行します。個別の一時停止エンドポイントはありません。
 
 ```typescript
 // Pause
-await client.subscriptions.update('sub_123', { pause: true });
+await client.subscriptions.update('sub_123', { status: 'paused' });
 
 // Resume
-await client.subscriptions.update('sub_123', { pause: false });
+await client.subscriptions.update('sub_123', { status: 'active' });
 ```
 
 <Warning>
-`pause` は他のすべての field と排他的です。他の field と一緒に送信すると `422` で拒否されます。`status` を `paused` に設定してもサブスクリプションは一時停止されません。代わりに `pause` field を使用してください。
+`paused` または `active` を単独で送信してください。いずれかを他のフィールドと組み合わせると、`422` が返されて拒否されます。以前の boolean 型の `pause` フィールドは削除され、現在は常に `422` で失敗します。そのため、まだこのフィールドを使用している呼び出し元には、サイレントな no-op ではなく明確なエラーが返されます。
 </Warning>
 
 一時停止すると `subscription.paused` が発行され、再開すると `subscription.unpaused` が発行されます。どちらも完全な subscription object を含み、一時停止中は `paused_at` が設定され、再開後は `null` が設定されます。
@@ -511,14 +511,14 @@ await client.subscriptions.update('sub_123', { pause: false });
 
 サブスクリプションは、存続期間中に定義済みの一連の status を遷移します。この table は、すべての status、その原因、復旧方法（または復旧できるかどうか）を確認するためのリファレンスです。
 
-| Status | What it means | Recoverable? | Recovery path / next step |
+| ステータス | 意味 | 復旧可能か | 復旧方法 / 次のステップ |
 |--------|---------------|--------------|---------------------------|
-| `pending` | サブスクリプションを作成または処理中です | — | `subscription.active`（または `subscription.failed`）を待ちます |
-| `active` | サブスクリプションはアクティブで、自動的に更新されます | — | 対応不要 |
-| `on_hold` | 更新 payment（または plan-change charge）が失敗し、更新が停止しています | **Yes** | [Payment Retries](/features/recovery/payment-retries) と [Dunning](/features/recovery/subscription-dunning) により自動的に、または [Update Payment Method API](/api-reference/subscriptions/update-payment-method) により手動で payment method を更新して再有効化します |
-| `paused` | サブスクリプションはあなたまたは顧客によって意図的に一時停止され、billing が凍結され、アクセスが取り消されています | **Yes** | `pause: false` で再開するか、セルフサービスの一時停止が有効な場合は Customer Portal から再開します。[Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) を参照してください |
-| `cancelled` | サブスクリプションはキャンセルされ、更新されません | 再購入のみ | 顧客は新しいサブスクリプションを開始する必要があります。[Dunning](/features/recovery/subscription-dunning) により再購入を促せます |
-| `failed` | サブスクリプションの **creation** に失敗しました（initial mandate または payment が成功しませんでした） | **No — terminal** | 顧客は有効な payment method を使用して新しいサブスクリプションを作成する必要があります |
+| `pending` | サブスクリプションを作成または処理しています | — | `subscription.active`（または `subscription.failed`）を待ちます |
+| `active` | サブスクリプションは有効で、自動的に更新されます | — | 対応は不要です |
+| `on_hold` | 更新時の支払い（またはプラン変更による請求）が失敗し、更新が停止しています | **はい** | 支払い方法を更新して再有効化します。[Payment Retries](/features/recovery/payment-retries) と [Dunning](/features/recovery/subscription-dunning) による自動更新、または [Update Payment Method API](/api-reference/subscriptions/update-payment-method) による手動更新が可能です |
+| `paused` | サブスクリプションはあなたまたは顧客によって意図的に一時停止され、請求が凍結されてアクセスが取り消されています | **はい** | `status: active` で再開するか、セルフサービスの一時停止が有効になっている場合は Customer Portal から再開します。詳細は [サブスクリプションの一時停止と再開](#pausing-and-resuming-subscriptions) を参照してください |
+| `cancelled` | サブスクリプションはキャンセルされ、更新されません | 再購入のみ | 顧客は新しいサブスクリプションを開始する必要があります。[Dunning](/features/recovery/subscription-dunning) によって再購入を促すことができます |
+| `failed` | サブスクリプションの **作成** に失敗しました（初回の mandate または支払いが成功しませんでした） | **いいえ — 終端状態** | 顧客は、利用可能な支払い方法を使用して新しいサブスクリプションを作成する必要があります |
 | `expired` | サブスクリプションが契約期間の終了に達しました | — | 顧客が希望する場合は、新しいサブスクリプションを開始する必要があります |
 
 <Warning>
@@ -643,10 +643,10 @@ subscription details の更新方法を確認できます。
 </Accordion>
 
 <Accordion title="Pause and resume subscriptions">
-一時停止と再開は、`pause` field を使用して同じ `PATCH /subscriptions/{subscription_id}` endpoint で行います。`pause: true` はアクティブなサブスクリプションを一時停止し、`pause: false` は再開します。この field は同じ request 内で他の field と組み合わせることはできません。動作、billing への影響、関連する business settings の詳細については、[Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) を参照してください。
+一時停止と再開には、`status` フィールドを使用して同じ `PATCH /subscriptions/{subscription_id}` エンドポイントを使用します。`status: paused` は有効なサブスクリプションを一時停止し、`status: active` は再開します。同じリクエスト内で、どちらの値も他のフィールドと組み合わせることはできません。動作の詳細、請求への影響、および関連するビジネス設定については、[サブスクリプションの一時停止と再開](#pausing-and-resuming-subscriptions) を参照してください。
 
 <Card title="API Reference" icon="code" href="/api-reference/subscriptions/patch-subscriptions">
-`pause` field を含む update subscription API を確認できます。
+`status` フィールドを含むサブスクリプション更新 API を確認できます。
 </Card>
 </Accordion>
 
