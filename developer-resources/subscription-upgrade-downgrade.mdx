@@ -149,6 +149,14 @@ Controls behavior when the plan change payment fails:
 If not specified, uses the business-level default setting.
 </ParamField>
 
+<ParamField path="collect_via_payment_link" type="boolean">
+Collect the plan-change amount with a payment link instead of charging the subscription's saved payment method. The customer pays on a hosted checkout page.
+
+Requires the business's `allow_plan_change_via_payment_link` capability (**Settings → Subscriptions → Collect Plan Change Payments by Payment Link**), `effective_at: immediately`, and `on_payment_failure: prevent_change`. See [Collecting Payment via a Checkout Link](#collecting-payment-via-a-checkout-link).
+
+Ignored by the preview route.
+</ParamField>
+
 <ParamField path="discount_codes" type="array">
 Optional **stacked** discount codes to apply to the new plan (max 20, applied in array order). Behavior depends on what you pass:
 
@@ -337,15 +345,122 @@ Use the Change Plan API to modify product, quantity, and proration behavior for 
   </Tab>
 </Tabs>
 
-A successful plan change returns `200 OK` with an **empty response body**.
+A successful plan change returns `200 OK` immediately — before any charge has actually settled. What the body (`ChangePlanResponse`) contains depends on how the change was collected:
+
+| Case | `payment_id` / `payment_link` / `client_secret` / `expires_on` |
+|------|------------------------------------------------------------|
+| Scheduled change (`effective_at: next_billing_date`) | All `null` — nothing is charged yet |
+| `proration_billing_mode: do_not_bill` | All `null` — nothing to charge |
+| Ordinary immediate charge (saved payment method) | All `null` |
+| `collect_via_payment_link: true` (link issued) | All **populated** — checkout handles for the customer |
 
 <Note>
-Because there is no response payload, always rely on webhook events (e.g. <code>subscription.plan_changed</code>, <code>payment.succeeded</code>, <code>payment.failed</code>) to confirm the outcome, or re-read the subscription with <code>GET /subscriptions/&#123;subscription_id&#125;</code>.
+In every case, this response is not a payment result — only that the request itself was accepted. It says nothing about whether an immediate charge actually succeeded.
+
+For an **ordinary immediate charge**, that outcome resolves off-session, right after the call.
+
+For a **`collect_via_payment_link` request**, it resolves later and asynchronously — the response only hands you a checkout link, the subscription stays on its current plan, and nothing is known about the outcome until the customer actually completes payment on that link.
+
+Either way, don't infer the outcome from this response. Confirm it via webhook (<code>payment.succeeded</code>, <code>payment.failed</code>, <code>subscription.plan_changed</code>) or by re-reading the subscription with <code>GET /subscriptions/&#123;subscription_id&#125;</code> — see [What Happens While the Link Is Unpaid](#what-happens-while-the-link-is-unpaid) for the payment-link case specifically.
 </Note>
 
 
 <Warning>
 If the immediate charge fails, the subscription may move to `subscription.on_hold` until payment succeeds.
+</Warning>
+
+## Collecting Payment via a Checkout Link
+
+By default, an immediate plan change charges the subscription's saved payment method directly. Set `collect_via_payment_link: true` to send the customer to a hosted checkout page instead — useful when there's no saved payment method you're allowed to charge off-session, or when you want the customer to actively confirm the new price.
+
+<Info>
+This is also what powers the **Collect Plan Change Payments by Payment Link** toggle in **Settings → Subscriptions**, which routes the built-in [Customer Portal](/features/customer-portal#collecting-plan-change-payments-by-payment-link)'s plan-change flow through checkout instead of the saved card.
+</Info>
+
+### Requirements
+
+`collect_via_payment_link: true` only succeeds when **all** of the following hold — otherwise the request fails with `422`:
+
+- The business has the `allow_plan_change_via_payment_link` capability enabled (**Settings → Subscriptions → Collect Plan Change Payments by Payment Link**).
+- `effective_at` is `immediately` (the default). A scheduled change (`next_billing_date`) never needs a checkout page, since nothing is charged until it applies.
+- The **effective** `on_payment_failure` resolves to `prevent_change`. You don't have to send it explicitly — if your business-level default (see **Business & Collection Defaults** below) is already `prevent_change`, omitting the field satisfies this too. An explicit `apply_change`, or a resolved default of `apply_change`, fails with `422`.
+
+<Info>
+`collect_via_payment_link` isn't limited to upgrades — it applies to any immediate change that results in a charge, downgrades included, as long as the requirements above are met.
+</Info>
+
+If the change comes out to **zero or a credit** — `proration_billing_mode: do_not_bill`, or another mode that happens to net to nothing this cycle — there's nothing to put on a checkout page. No payment link is issued, `payment_link` and friends come back `null`, and the change applies immediately, the same as it would without `collect_via_payment_link`. This isn't a `422`; the flag only takes effect when there's a positive amount to collect. If you set `collect_via_payment_link` on plan changes generically rather than on clear-cut upgrades, call [Preview Plan Change](/api-reference/subscriptions/preview-change-plan) first and only request a link when the previewed amount is worth collecting.
+
+<Tabs>
+<Tab title="Node.js SDK">
+```javascript
+const response = await client.subscriptions.changePlan('sub_123', {
+  product_id: 'pdt_pro',
+  quantity: 1,
+  proration_billing_mode: 'prorated_immediately',
+  effective_at: 'immediately',
+  on_payment_failure: 'prevent_change',
+  collect_via_payment_link: true,
+});
+
+// Hand response.payment_link to your frontend and send the customer there
+console.log(response.payment_link);
+```
+</Tab>
+<Tab title="Python SDK">
+```python
+response = client.subscriptions.change_plan(
+    subscription_id="sub_123",
+    product_id="pdt_pro",
+    quantity=1,
+    proration_billing_mode="prorated_immediately",
+    effective_at="immediately",
+    on_payment_failure="prevent_change",
+    collect_via_payment_link=True,
+)
+
+# Hand response.payment_link to your frontend and send the customer there
+print(response.payment_link)
+```
+</Tab>
+<Tab title="HTTP">
+```bash
+curl -X POST "$DODO_API_BASE/subscriptions/sub_123/change-plan" \
+  -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product_id": "pdt_pro",
+    "quantity": 1,
+    "proration_billing_mode": "prorated_immediately",
+    "effective_at": "immediately",
+    "on_payment_failure": "prevent_change",
+    "collect_via_payment_link": true
+  }'
+```
+</Tab>
+</Tabs>
+
+A successful request returns the checkout handles:
+
+```json
+{
+  "payment_id": "<payment_id>",
+  "payment_link": "https://checkout.dodopayments.com/...",
+  "client_secret": "<client_secret>",
+  "expires_on": "<expires_on>"
+}
+```
+
+### What Happens While the Link Is Unpaid
+
+- The subscription stays on its **current** plan — `product_id`, `recurring_pre_tax_amount`, and `next_billing_date` are all untouched until the link is paid.
+- A further `change-plan` request on the same subscription is rejected with `409 PendingPlanChangeExists` while the link is pending. Cancel a *scheduled* change with `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` if needed, but that endpoint doesn't cancel a pending payment-link change — only a successful payment or expiry does.
+- The customer can retry a card on the **same** checkout session after a decline; a fresh `change-plan` call is not the retry path.
+- If the link is never paid, it stops working after `expires_on` — the subscription automatically becomes free to accept a new plan-change request shortly after.
+- If a *scheduled* change (`next_billing_date`) already existed and you replace it with `cancel_scheduled_change_plan: true`, the original schedule stays in place while the link is unpaid, and is only cancelled once the link is paid — in the same transaction that applies the new plan.
+
+<Warning>
+Once an immediate payment-link change is issued, every further plan-change request on that subscription — including the side-effect-free preview — is blocked until the link resolves. Don't issue a link you don't intend to have the customer pay right away.
 </Warning>
 
 ## Managing Addons
@@ -1111,7 +1226,7 @@ Handle common API errors gracefully in your implementation:
 
 <AccordionGroup>
 <Accordion title="200 OK">
-Plan change request processed successfully. The response body is empty. If `on_payment_failure=prevent_change`, the plan change stays pending until payment succeeds.
+Plan change request processed successfully. The response body is empty, except for a successful `collect_via_payment_link` request, which returns checkout handles — see [Collecting Payment via a Checkout Link](#collecting-payment-via-a-checkout-link). If `on_payment_failure=prevent_change`, the plan change stays pending until payment succeeds.
 </Accordion>
 
 <Accordion title="400 Bad Request">
@@ -1127,11 +1242,11 @@ Subscription ID not found or doesn't belong to your account.
 </Accordion>
 
 <Accordion title="409 Conflict">
-A pending plan change already exists for this subscription (`PendingPlanChangeExists`). Cancel the scheduled change with `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` before submitting a new one.
+A pending plan change already exists for this subscription (`PendingPlanChangeExists`). For a *scheduled* change, cancel it with `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` before submitting a new one. For a pending *payment-link* change, there's no cancel endpoint — the subscription accepts a new plan-change request once the customer pays or the link expires.
 </Accordion>
 
 <Accordion title="422 Unprocessable Entity">
-The subscription is inactive or on-demand; plan change is not supported.
+The subscription is inactive or on-demand, or the request is not eligible for `collect_via_payment_link` — the business doesn't have the capability enabled, `effective_at` isn't `immediately`, or `on_payment_failure` isn't `prevent_change`. See [Requirements](#requirements).
 </Accordion>
 
 <Accordion title="500 Internal Server Error">
