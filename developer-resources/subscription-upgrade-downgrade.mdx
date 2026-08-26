@@ -345,7 +345,7 @@ Use the Change Plan API to modify product, quantity, and proration behavior for 
   </Tab>
 </Tabs>
 
-A successful plan change returns `200 OK`. The body is a `ChangePlanResponse` — `payment_id`, `payment_link`, `client_secret`, and `expires_on` are `null` unless the change involved an immediate charge; a `collect_via_payment_link` request populates all four with checkout handles.
+A successful plan change returns `200 OK`. The body is a `ChangePlanResponse`. `payment_id` is set whenever the change triggers an immediate charge — with or without `collect_via_payment_link` — and is `null` for a scheduled change or a `do_not_bill` change. `payment_link`, `client_secret`, and `expires_on` are handles for a **hosted checkout page**: they're `null` for an ordinary charge against the saved payment method, and only populated when the request set `collect_via_payment_link: true`.
 
 <Note>
 The response doesn't confirm the outcome of a charge, only that the request was accepted. Always rely on webhook events (e.g. <code>subscription.plan_changed</code>, <code>payment.succeeded</code>, <code>payment.failed</code>) to confirm the outcome, or re-read the subscription with <code>GET /subscriptions/&#123;subscription_id&#125;</code>.
@@ -371,6 +371,12 @@ This is also what powers the **Collect Plan Change Payments by Payment Link** to
 - The business has the `allow_plan_change_via_payment_link` capability enabled (**Settings → Subscriptions → Collect Plan Change Payments by Payment Link**).
 - `effective_at` is `immediately` (the default). A scheduled change (`next_billing_date`) never needs a checkout page, since nothing is charged until it applies.
 - `on_payment_failure` is `prevent_change`. The subscription cannot move to the new plan before the checkout payment succeeds.
+
+<Info>
+The dashboard tooltip for this setting describes it as covering an "immediate upgrade," but `collect_via_payment_link` isn't limited to upgrades — it applies to any immediate change that results in a charge, downgrades included, as long as the requirements above are met.
+</Info>
+
+`proration_billing_mode: do_not_bill` has nothing to charge, so it applies immediately with no checkout page even when `collect_via_payment_link: true` is set — `payment_link` and friends come back `null`. Other modes can also net to a small or zero amount depending on where the subscription is in its billing cycle. If you're setting `collect_via_payment_link` on plan changes generically (not just clear-cut upgrades), call [Preview Plan Change](/api-reference/subscriptions/preview-change-plan) first and only request the link when the previewed amount is worth collecting.
 
 <Tabs>
 <Tab title="Node.js SDK">
@@ -425,19 +431,19 @@ A successful request returns the checkout handles:
 
 ```json
 {
-  "payment_id": "pay_0NlruUwJxqYVIJ13lPxFw",
-  "payment_link": "https://checkout.dodopayments.com/3bxQRpRl",
-  "client_secret": "pay_0NlruUwJxqYVIJ13lPxFw_secret_dw1PuO23DxLTXcpLQula",
-  "expires_on": "2026-08-21T11:08:17.414Z"
+  "payment_id": "<payment_id>",
+  "payment_link": "https://checkout.dodopayments.com/...",
+  "client_secret": "<client_secret>",
+  "expires_on": "<expires_on>"
 }
 ```
 
-### What happens while the link is unpaid
+### What Happens While the Link Is Unpaid
 
 - The subscription stays on its **current** plan — `product_id`, `recurring_pre_tax_amount`, and `next_billing_date` are all untouched until the link is paid.
 - A further `change-plan` request on the same subscription is rejected with `409 PendingPlanChangeExists` while the link is pending. Cancel a *scheduled* change with `DELETE /subscriptions/{subscription_id}/change-plan/scheduled` if needed, but that endpoint doesn't cancel a pending payment-link change — only a successful payment or expiry does.
 - The customer can retry a card on the **same** checkout session after a decline; a fresh `change-plan` call is not the retry path.
-- If the link is never paid, it stops working after `expires_on`, and the subscription's stuck-payment sweep eventually cancels the pending change so the subscription is free to accept a new plan-change request.
+- If the link is never paid, it stops working after `expires_on` — the subscription automatically becomes free to accept a new plan-change request shortly after.
 - If a *scheduled* change (`next_billing_date`) already existed and you replace it with `cancel_scheduled_change_plan: true`, the original schedule stays in place while the link is unpaid, and is only cancelled once the link is paid — in the same transaction that applies the new plan.
 
 <Warning>
