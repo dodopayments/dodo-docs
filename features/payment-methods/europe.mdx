@@ -247,13 +247,40 @@ BLIK requires a **PLN** billing currency. If you quote your prices in EUR, enabl
 
 SEPA Direct Debit lets customers across the Eurozone pay directly from their bank account instead of using a card. It is offered on EUR checkouts for one-time payments.
 
+<Warning>
+**SEPA Direct Debit is not instant — a payment takes up to 6 business days to confirm.** Unlike every other method on this page, the customer authorizing the debit at checkout does **not** mean the money has cleared. Never fulfill the order on the checkout redirect or on `payment.processing`; wait for the `payment.succeeded` webhook.
+</Warning>
+
 ### How It Works
 
-The customer authorizes the debit during checkout and the payment is collected from their bank account. Unlike most European methods on this page, confirmation is not immediate.
+The customer authorizes the debit during checkout, and Dodo Payments then collects the funds from their bank account. Because the bank clears the debit asynchronously, the payment moves through a `processing` state before it reaches a terminal outcome:
 
-<Warning>
-SEPA Direct Debit is not instant. A payment takes **6 business days** to confirm, so do not treat authorization as settlement — fulfill only once the payment reaches a succeeded state.
-</Warning>
+```mermaid
+sequenceDiagram
+    participant Customer
+    participant Checkout
+    participant Dodo
+    participant Bank
+
+    Customer->>Checkout: Authorize SEPA debit
+    Checkout->>Dodo: Create payment
+    Dodo->>Checkout: Redirect (payment accepted, NOT settled)
+    Dodo-->>Customer: Webhook: payment.processing
+    Note over Dodo,Bank: Bank clears the debit (up to 6 business days)
+    Bank->>Dodo: Debit cleared
+    Dodo-->>Customer: Webhook: payment.succeeded
+    Note over Customer: Fulfill the order here
+```
+
+### Payment Timeline
+
+| Stage | When | Payment status | What it means |
+| :---- | :--- | :------------- | :------------ |
+| **Authorization** | At checkout | `processing` | The customer approved the debit and was redirected back. The money has **not** moved yet — do not fulfill. |
+| **Confirmation** | Up to **6 business days** later | `succeeded` | The bank cleared the debit. Fulfill the order now. |
+| **Failure** | Up to **6 business days** later | `failed` | The debit could not be collected (e.g. insufficient funds). Do not fulfill; notify the customer. |
+
+Because confirmation arrives days after the customer leaves your site, your webhook handler — not the checkout redirect — must be what grants access. See [Handling the Confirmation Delay](#handling-the-confirmation-delay) below.
 
 ### Availability
 
@@ -304,6 +331,52 @@ To test country-specific behavior, use the equivalent success IBAN for another E
 <Note>
 The delayed test IBANs are useful for confirming that your webhook handler — rather than the checkout redirect — is what grants access, since SEPA payments confirm long after the customer leaves the checkout.
 </Note>
+
+### Handling the Confirmation Delay
+
+Because SEPA settles up to 6 business days after checkout, you cannot rely on the browser redirect to know whether a payment cleared. Instead, drive fulfillment from webhook events. Switch on `payload.type` and handle each stage:
+
+| Event Type | When it fires | What to do |
+| :--------- | :------------ | :--------- |
+| `payment.processing` | The customer authorized the debit at checkout and was redirected back. | **Do not fulfill.** Mark the order pending and, optionally, tell the customer their payment is being processed. |
+| `payment.succeeded` | The bank cleared the debit (up to 6 business days later). | Fulfill the order — grant access, provision the product, send the receipt. |
+| `payment.failed` | The debit could not be collected. | Notify the customer and prompt a retry; do not fulfill. |
+
+```javascript Handling SEPA payment events expandable
+app.post('/webhooks/dodo', async (req, res) => {
+  const event = req.body;
+
+  switch (event.type) {
+    case 'payment.processing': {
+      // SEPA debit authorized but NOT settled — this can last up to 6 business days.
+      // Record the order as pending; do not grant access yet.
+      await markOrderPending(event.data.payment_id);
+      break;
+    }
+    case 'payment.succeeded': {
+      // The debit cleared — safe to fulfill now.
+      await fulfillOrder(event.data.payment_id);
+      break;
+    }
+    case 'payment.failed': {
+      // The debit could not be collected (e.g. insufficient funds).
+      await markOrderFailed(event.data.payment_id);
+      // Notify the customer and prompt a retry.
+      break;
+    }
+  }
+
+  res.json({ received: true });
+});
+```
+
+<Tip>
+Always **fulfill on `payment.succeeded` from the webhook**, never on the checkout redirect or on `payment.processing`. The redirect fires the moment the customer authorizes the debit — days before the money actually clears. Verify the webhook signature before processing; see the [Webhooks guide](/developer-resources/webhooks) for setup, and the [Webhook Event Guide](/developer-resources/webhooks/intents/webhook-events-guide) for the full event list.
+</Tip>
+
+<Warning>
+Set customer expectations at checkout. Because access is only granted after the debit clears, tell SEPA customers their order is being processed and that they'll be notified once the payment confirms — otherwise they may expect instant access like a card payment.
+</Warning>
 
 ## Satispay (Europe)
 
@@ -422,6 +495,10 @@ Not all European customers have access to these regional methods (tourists, expa
 <Accordion title="Consider Multibanco timing">
 Multibanco ATM payments may take hours to complete. Don't block fulfillment on immediate payment — use webhooks for async confirmation.
 </Accordion>
+
+<Accordion title="Account for the SEPA 6-day delay">
+SEPA Direct Debit takes up to **6 business days** to confirm. Never fulfill on the checkout redirect or on `payment.processing` — grant access only from the `payment.succeeded` webhook, and set expectations at checkout so customers know their order is pending. See [Handling the Confirmation Delay](#handling-the-confirmation-delay).
+</Accordion>
 </AccordionGroup>
 
 ## Troubleshooting
@@ -458,6 +535,12 @@ Multibanco ATM payments may take hours to complete. Don't block fulfillment on i
 **Cause:** Customer received payment reference but hasn't paid yet.
 
 **Solution:** This is expected for ATM-based payments. Wait for webhook confirmation. Reference typically expires in 24-72 hours.
+</Accordion>
+
+<Accordion title="SEPA payment stuck in processing">
+**Cause:** SEPA Direct Debit clears asynchronously through the customer's bank.
+
+**Solution:** This is expected. A `payment.processing` state can last up to **6 business days** before the debit clears. Wait for the terminal `payment.succeeded` (fulfill) or `payment.failed` (do not fulfill) webhook — do not treat the checkout redirect as confirmation. See [Handling the Confirmation Delay](#handling-the-confirmation-delay).
 </Accordion>
 </AccordionGroup>
 
