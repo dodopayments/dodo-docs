@@ -515,6 +515,7 @@ A subscription moves through a defined set of statuses over its lifetime. This t
 |--------|---------------|--------------|---------------------------|
 | `pending` | The subscription is being created or processed | — | Wait for `subscription.active` (or `subscription.failed`) |
 | `active` | The subscription is active and will renew automatically | — | No action needed |
+| `past_due` | A renewal payment failed while a [grace period](#grace-period) is configured; the customer keeps access until the window ends | **Yes** | Collect the open invoice before the window closes — see [Grace Period](#grace-period) |
 | `on_hold` | A renewal payment (or plan-change charge) failed; renewals have stopped | **Yes** | Update the payment method to reactivate — automatically via [Payment Retries](/features/recovery/payment-retries) and [Dunning](/features/recovery/subscription-dunning), or manually via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
 | `paused` | The subscription was deliberately paused by you or the customer; billing is frozen and access is revoked | **Yes** | Resume it with `status: active`, or from the Customer Portal when self-service pause is enabled — see [Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) |
 | `cancelled` | The subscription was cancelled and will not renew | Re-purchase only | Customer must start a new subscription; [Dunning](/features/recovery/subscription-dunning) can prompt a re-purchase |
@@ -538,6 +539,10 @@ stateDiagram-v2
     pending --> failed: Mandate creation fails
     active --> on_hold: Renewal or plan-change charge fails
     on_hold --> active: Payment method updated / retry succeeds
+    active --> past_due: Renewal fails, grace period enabled
+    past_due --> active: Payment recovers inside the window
+    past_due --> on_hold: Window ends (default)
+    past_due --> cancelled: Window ends, expiry action is cancel
     active --> paused: Paused
     paused --> active: Resumed
     paused --> on_hold: Pause settlement invoice unpaid (usage-based)
@@ -551,6 +556,33 @@ stateDiagram-v2
     expired --> [*]
 ```
 
+### Grace Period
+
+A grace period is an optional window between a failed renewal and the loss of access. Instead of moving straight to `on_hold`, the subscription moves to `past_due` and the customer keeps everything they bought until the window closes.
+
+<Info>
+Grace periods are configured per business and are **disabled by default**. While the feature is off, a failed renewal behaves exactly as it always has and no subscription ever reports `past_due`.
+</Info>
+
+The window is configurable between **1 and 30 days** (default **3**), and you choose what happens when it ends:
+
+| Expiry action | Result at the deadline |
+|---|---|
+| `on_hold` (default) | The subscription moves to `on_hold`. Retries and dunning continue from there. |
+| `cancel_subscription` | The subscription is cancelled and the open invoice is voided. |
+
+**Inside the window**, a `past_due` subscription answers every access and billing question the same way `active` does — entitlements stay granted, [license keys](/features/license-keys) stay enabled, and metered usage keeps accruing. It differs in four ways: it carries a deadline, it does not renew, it cannot be paused, and it emits `subscription.past_due` on entry.
+
+[Payment Retries](/features/recovery/payment-retries) keep firing on their normal schedule throughout the window, and the [dunning](/features/recovery/subscription-dunning) sequence runs alongside them. If a payment succeeds before the deadline, the subscription returns to `active` and the window closes.
+
+<Note>
+The window length and the expiry action are fixed at the moment the subscription enters `past_due`. Changing your grace period settings later does not alter the outcome for a subscription already inside a window.
+</Note>
+
+<Warning>
+`past_due` is a new value of the `status` field, and `subscription.past_due` is a new webhook event type. If your integration decodes `status` into a fixed set of values, or switches on it without a default branch, add `past_due` before the feature is enabled for your account. Code that treats `status` as a plain string needs no change.
+</Warning>
+
 ### On Hold State
 
 A subscription enters `on_hold` state when:
@@ -559,6 +591,7 @@ A subscription enters `on_hold` state when:
 - A plan change charge fails
 - Payment method authorization fails
 - A [pause settlement invoice](#pausing-usage-based-subscriptions) for a usage-based subscription goes unpaid
+- A [grace period](#grace-period) ends without the renewal being paid, and the configured expiry action is `on_hold`
 
 <Warning>
 When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
@@ -607,6 +640,7 @@ Each transition emits a webhook so you can drive entitlement logic without polli
 | Subscription activated | `subscription.active` |
 | Renewal succeeds | `subscription.renewed` |
 | Renewal fails → on hold | `subscription.on_hold` |
+| Renewal fails → grace period | `subscription.past_due` |
 | Subscription paused | `subscription.paused` |
 | Paused subscription resumed | `subscription.unpaused` |
 | Creation fails | `subscription.failed` |
