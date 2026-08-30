@@ -393,7 +393,7 @@ await client.subscriptions.changePlan('sub_123', {
 ```
 
 <Info>
-By default (`effective_at: 'immediately'`) plan changes trigger immediate charges. Pass `effective_at: 'next_billing_date'` to schedule the change for the next billing date instead — the pending change is returned on the subscription as `scheduled_change`, and you can cancel it with [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan). Failed charges may move the subscription to `on_hold` status, unless you pass `on_payment_failure: 'prevent_change'`, which keeps the subscription on its current plan until payment succeeds. Track changes via `subscription.plan_changed` webhook events.
+By default (`effective_at: 'immediately'`) plan changes trigger immediate charges. Pass `effective_at: 'next_billing_date'` to schedule the change for the next billing date instead — the pending change is returned on the subscription as `scheduled_change`, and you can cancel it with [Cancel Scheduled Plan Change](/api-reference/subscriptions/cancel-change-plan). Failed charges may move the subscription to `on_hold` status, unless you pass `on_payment_failure: 'prevent_change'`, which keeps the subscription on its current plan until payment succeeds. Track changes via `subscription.plan_changed` webhook events. Plan changes are rejected while a subscription is `past_due` — see [Grace Period](#grace-period).
 </Info>
 
 ### Previewing Plan Changes
@@ -515,7 +515,8 @@ A subscription moves through a defined set of statuses over its lifetime. This t
 |--------|---------------|--------------|---------------------------|
 | `pending` | The subscription is being created or processed | — | Wait for `subscription.active` (or `subscription.failed`) |
 | `active` | The subscription is active and will renew automatically | — | No action needed |
-| `on_hold` | A renewal payment (or plan-change charge) failed; renewals have stopped | **Yes** | Update the payment method to reactivate — automatically via [Payment Retries](/features/recovery/payment-retries) and [Dunning](/features/recovery/subscription-dunning), or manually via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
+| `past_due` | A renewal payment failed and the [grace period](#grace-period) is open; the customer keeps full access and renewals have stopped | **Yes** | Settle the renewal debt before the deadline — see [Grace Period](#grace-period) |
+| `on_hold` | A renewal payment (or plan-change charge) failed; renewals have stopped, and access is revoked | **Yes** | Update the payment method to reactivate — automatically via [Payment Retries](/features/recovery/payment-retries) and [Dunning](/features/recovery/subscription-dunning), or manually via the [Update Payment Method API](/api-reference/subscriptions/update-payment-method) |
 | `paused` | The subscription was deliberately paused by you or the customer; billing is frozen and access is revoked | **Yes** | Resume it with `status: active`, or from the Customer Portal when self-service pause is enabled — see [Pausing and Resuming Subscriptions](#pausing-and-resuming-subscriptions) |
 | `cancelled` | The subscription was cancelled and will not renew | Re-purchase only | Customer must start a new subscription; [Dunning](/features/recovery/subscription-dunning) can prompt a re-purchase |
 | `failed` | Subscription **creation** failed (the initial mandate or payment did not succeed) | **No — terminal** | Customer must create a new subscription with a working payment method |
@@ -524,6 +525,10 @@ A subscription moves through a defined set of statuses over its lifetime. This t
 <Warning>
 `on_hold` and `failed` are often confused. `on_hold` is a **recoverable** state for an already-active subscription whose renewal failed. `failed` is a **terminal** state that only occurs when the **initial** subscription creation fails — it cannot be reactivated.
 </Warning>
+
+<Info>
+`past_due` and `on_hold` are both involuntary, and they differ in one place: `past_due` keeps the customer's access, `on_hold` removes it. A subscription reaches `past_due` only when you enable a [grace period](#grace-period). Without one, a failed renewal goes straight to `on_hold`.
+</Info>
 
 <Info>
 `on_hold` and `paused` are also distinct. `on_hold` is involuntary — a payment failed. `paused` is deliberate — you or the customer chose to freeze the subscription, and no renewal is attempted while it stays paused. A usage-based subscription can still owe a one-off settlement invoice at the moment it is paused; see [Pausing Usage-Based Subscriptions](#pausing-usage-based-subscriptions).
@@ -536,7 +541,12 @@ stateDiagram-v2
     [*] --> pending
     pending --> active: Creation succeeds
     pending --> failed: Mandate creation fails
-    active --> on_hold: Renewal or plan-change charge fails
+    active --> on_hold: Renewal or plan-change charge fails (no grace period)
+    active --> past_due: Renewal fails and a grace period is set
+    past_due --> active: Renewal debt settled
+    past_due --> on_hold: Grace period ends (on_hold)
+    past_due --> cancelled: Grace period ends (cancel_subscription)
+    past_due --> cancelled: Cancelled
     on_hold --> active: Payment method updated / retry succeeds
     active --> paused: Paused
     paused --> active: Resumed
@@ -559,6 +569,11 @@ A subscription enters `on_hold` state when:
 - A plan change charge fails
 - Payment method authorization fails
 - A [pause settlement invoice](#pausing-usage-based-subscriptions) for a usage-based subscription goes unpaid
+- A [grace period](#grace-period) ends with the renewal debt unpaid, and the expiry action is `on_hold`
+
+<Info>
+If you set a grace period, a failed renewal moves the subscription to `past_due` first. It reaches `on_hold` only when the window ends.
+</Info>
 
 <Warning>
 When a subscription is in `on_hold` state, it will not renew automatically. You must update the payment method to reactivate the subscription.
@@ -598,6 +613,60 @@ if (response.payment_id) {
 After successfully updating the payment method for an `on_hold` subscription, you'll receive `payment.succeeded` followed by `subscription.active` webhook events.
 </Info>
 
+### Grace Period
+
+A grace period is a window between a failed renewal and the loss of access. The subscription moves to `past_due` instead of `on_hold`, and the customer keeps everything they bought until the window ends. This gives the customer time to fix a card without losing your product.
+
+Grace periods are **off by default**. Enable one from **Settings → Subscription → Subscription Grace Period** in your dashboard.
+
+#### Settings
+
+| Setting | Values | Description |
+|---------|--------|-------------|
+| Enabled | on / off | Turns the grace period on for the business. Off by default. |
+| Length | 1 to 30 days | How long the window stays open. The default is 3 days. |
+| On expiry | `on_hold` or `cancel_subscription` | What happens to the subscription when the window ends unpaid. |
+
+#### What happens during the window
+
+While a subscription is `past_due`:
+
+- The customer keeps access. Entitlement grants, license keys and digital product downloads all stay live.
+- Usage-based billing keeps recording usage.
+- The subscription does **not** renew.
+- The subscription cannot be paused.
+- [Dunning](/features/recovery/subscription-dunning) email goes out, and [payment retries](/features/recovery/payment-retries) continue.
+- `subscription.past_due` is emitted at entry.
+
+The `subscription.past_due` webhook carries the deadline as `past_due_ends_at`. Store it when the event arrives — the subscription API does not return this field.
+
+<Info>
+The window is fixed when the subscription enters it. If you change the length or the expiry action later, a window that is already open keeps the values it was given. The new values apply to the next subscription that enters a window.
+</Info>
+
+#### Recovery
+
+The window closes when the renewal debt is settled — through a successful retry, or when the customer updates the payment method. The subscription returns to `active`, and a `subscription.active` webhook is sent.
+
+Only the failed renewal opens a window. An unrelated merchant charge that goes unpaid does not move a subscription to `past_due`.
+
+#### When the window ends
+
+If the renewal debt is still unpaid at the deadline, the subscription moves to `on_hold` or to `cancelled`, as you configured. At the same time:
+
+- A scheduled plan change on the subscription is cancelled.
+- A pending plan change whose invoice is still unpaid is cancelled.
+
+If the expiry action is `cancel_subscription`, the open invoices are also voided, and their payment retries stop.
+
+<Note>
+A pending plan change whose invoice was **paid** is applied while the window is still open, not at the deadline. A paid invoice settles the change whatever the subscription status.
+</Note>
+
+<Warning>
+Plan changes are rejected while a subscription is `past_due`. Settle the renewal debt first.
+</Warning>
+
 ### Webhook Events by Transition
 
 Each transition emits a webhook so you can drive entitlement logic without polling:
@@ -606,6 +675,7 @@ Each transition emits a webhook so you can drive entitlement logic without polli
 |------------|-------|
 | Subscription activated | `subscription.active` |
 | Renewal succeeds | `subscription.renewed` |
+| Renewal fails, grace period opens | `subscription.past_due` |
 | Renewal fails → on hold | `subscription.on_hold` |
 | Subscription paused | `subscription.paused` |
 | Paused subscription resumed | `subscription.unpaused` |
